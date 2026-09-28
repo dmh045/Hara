@@ -6,14 +6,14 @@ does not emit causal evidence or change S/E/C, ASIL, or FTTI evaluation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 from typing import Any
 
 from hara_agent.contracts import FMScenarioTemplate, MethodContract
 from hara_agent.models import (
-    FactProvenance, MalfunctionCandidate, ReviewStatus, ScenarioCandidate,
+    FactProvenance, ItemDefinitionFacts, MalfunctionCandidate, ReviewStatus, ScenarioCandidate,
     SourceRef,
 )
 from hara_agent.services.semantic.scenario_contract import SCENARIO_CONTRACT_VERSION
@@ -22,6 +22,7 @@ from .failure_mode_selector_resolver import (
     FMTemplateSelectorAdapterResolver, FailureModeSelectorResolution,
     FailureModeSelectorResolver, TemplateSelectorResolution,
 )
+from .driver_configuration_service import DriverConfigurationBrancher
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
 
 
@@ -51,6 +52,65 @@ class ScenarioMethodService:
         self.selector_resolver = FailureModeSelectorResolver(method)
         self.template_selector_resolver = FMTemplateSelectorAdapterResolver(method)
         self.risk_vocabulary = RiskVocabularyAdapter(method)
+        policy = method.metadata.get("project_analysis_policy", {})
+        policy = policy if isinstance(policy, dict) else {}
+        decisions = policy.get("decisions", {})
+        decisions = decisions if isinstance(decisions, dict) else {}
+        a5 = decisions.get("A5", {})
+        self.driver_brancher = DriverConfigurationBrancher(
+            policy_id=(
+                str(policy.get("policy_id", ""))
+                if isinstance(a5, dict)
+                and a5.get("status") == "CONFIRMED_FOR_CURRENT_PROJECT"
+                else ""
+            ),
+        )
+
+    def _with_driver_configurations(
+        self, malfunction: MalfunctionCandidate,
+        candidates: list[ScenarioCandidate], audit: dict[str, Any],
+        project_facts: ItemDefinitionFacts | None,
+    ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
+        if project_facts is None or not self.driver_brancher.policy_id:
+            return candidates, audit
+        risk_facts = [
+            {**asdict(fact), "approval": fact.approval.value}
+            for fact in project_facts.risk_facts
+        ]
+        if not any(
+            item.get("parameter") == "DRIVER_IN_VEHICLE"
+            and item.get("approval") == "FINALIZED"
+            and isinstance(item.get("context"), dict)
+            and item["context"].get("allowed_driver_position")
+            for item in risk_facts
+        ):
+            return candidates, audit
+        expanded = []
+        by_parent: dict[str, list[str]] = {}
+        for candidate in candidates:
+            instance = {
+                **candidate.analysis_instance,
+                "malfunction_id": malfunction.malfunction_id,
+            }
+            candidate = replace(candidate, analysis_instance=instance)
+            branches = self.driver_brancher.expand(candidate, risk_facts)
+            expanded.extend(branches)
+            by_parent[candidate.scenario_id] = [item.scenario_id for item in branches]
+        audit["driver_configuration"] = {
+            "policy_id": self.driver_brancher.policy_id,
+            "pre_branch_count": len(candidates),
+            "post_branch_count": len(expanded),
+            "branch_count": sum(
+                bool(item.analysis_instance.get("driver_configuration_branch"))
+                for item in expanded
+            ),
+            "scenario_ids_by_parent": by_parent,
+        }
+        audit["instance_count"] = len(expanded)
+        for option in audit.get("options", []):
+            if isinstance(option, dict) and option.get("scenario_id") in by_parent:
+                option["driver_branch_scenario_ids"] = by_parent[option["scenario_id"]]
+        return expanded, audit
 
     def _selector_template_ids(
         self, selector_type: str, canonical_selector: str,
@@ -252,6 +312,7 @@ class ScenarioMethodService:
 
     def instantiate_analytical_candidates(
         self, malfunction: MalfunctionCandidate, candidates: list[ScenarioCandidate],
+        project_facts: ItemDefinitionFacts | None = None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         """Create isolated M×template-option scenarios from strong matches only."""
         result = self.match_fm_template(malfunction)
@@ -268,7 +329,9 @@ class ScenarioMethodService:
         }
         if not result.injectable:
             audit["selection_mode"] = "BASE_CANDIDATES_ONLY"
-            return list(candidates), audit
+            return self._with_driver_configurations(
+                malfunction, list(candidates), audit, project_facts,
+            )
 
         assert result.template is not None
         instances: list[ScenarioCandidate] = []
@@ -467,7 +530,9 @@ class ScenarioMethodService:
             for option in audit["options"]
         )
         audit["conflict_count"] = sum(bool(option["conflicts"]) for option in audit["options"])
-        return instances, audit
+        return self._with_driver_configurations(
+            malfunction, instances, audit, project_facts,
+        )
 
     def fallback_terms(self) -> tuple[dict[str, object], ...]:
         """Expose unmapped fallback terms for audit; never guess a target dimension."""

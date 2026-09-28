@@ -5,6 +5,7 @@ from time import monotonic
 from typing import Callable
 
 from hara_agent.services.validation import ReleaseGateValidator
+from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudgetExceeded
 
 from .checkpoints import CheckpointRepository
 from .state import HARAState, WorkflowStage
@@ -68,6 +69,22 @@ class WorkflowGraph:
                 self.progress("started", previous.value, 0.0)
             try:
                 state = node(state)
+            except ProviderAttemptBudgetExceeded as exc:
+                if self.checkpoints is None:
+                    raise
+                # A stage may have partially mutated its in-memory state.
+                # Resume only from the last atomic committed checkpoint.
+                state = self.checkpoints.load(state.run_id)
+                state.record(
+                    "provider_attempt_budget_exhausted",
+                    attempts=exc.attempts, limit=exc.limit,
+                    ledger_path=str(exc.ledger_path),
+                    committed_stage=state.stage.value,
+                )
+                self._save(state)
+                if self.review_artifact_writer is not None:
+                    self.review_artifact_writer.write_summary(state)
+                return WorkflowRunResult(state, True, "provider_attempt_budget_exhausted")
             except Exception as exc:
                 if self.review_artifact_writer is not None:
                     self.review_artifact_writer.mark_failed(state, exc)

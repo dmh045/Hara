@@ -291,6 +291,10 @@ class AnalyticalPhysicalInput:
     selection_basis: str = ""
     source_atom_ids: tuple[str, ...] = ()
     review_status: str = "PENDING"
+    source_refs: tuple[dict[str, Any], ...] = ()
+    applicable_scope: dict[str, Any] = field(default_factory=dict)
+    project_rule_id: str = ""
+    project_policy_version: str = ""
 
     def __post_init__(self) -> None:
         if not self.field or not self.reason.strip():

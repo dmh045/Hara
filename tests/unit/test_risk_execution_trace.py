@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import json
+from copy import deepcopy
 
 from hara_agent.contracts import (
     CausalBreakpoint, CausalEdge, CausalGraph, CausalNode, CausalNodeType,
@@ -246,6 +248,84 @@ def test_production_scoring_keeps_coverage_diagnostic_without_blocking_fusa():
         if item["event"] == "structured_risk_scoring_completed"
     )["risk_calculation_inputs"][0]
     assert calculation["exposure_input"]["status"] == "PENDING_METHOD_SEMANTICS"
+
+
+def test_governed_speed_enters_production_risk_context_and_trace(tmp_path):
+    method = _method()
+    source = {
+        "provenance": "PROJECT_INPUT", "approval": "FINALIZED",
+        "source_refs": [{
+            "source_type": "item_document", "source_id": "ItemDef.docx",
+            "location": "环境条件:控车范围", "excerpt": "0–7 kph",
+        }],
+    }
+    facts = {
+        "ego_speed_constraint": {"min_kph": 0.0, "max_kph": 7.0, "unit": "km/h"},
+        "object_speed_kph": 0.0, "relative_distance_m": 7.0,
+        "ego_longitudinal_direction": "FORWARD",
+        "object_longitudinal_direction": "STATIONARY",
+        "object_position": "front", "road_user_type": "VEHICLE",
+        "collision_type": "FRONTAL", "driver_in_vehicle": True,
+        "remote_intervention_available": False,
+        "other_road_user_avoidance_possible": False,
+        "scenario_atom_ids": ["SO010", "PH005"],
+        "method_scenario_dimensions": {
+            "WHERE": {"resolution_status": "RESOLVED", "atom_id": "SO010"},
+            "EGO_ACTION": {"resolution_status": "RESOLVED", "atom_id": "PH005"},
+        },
+    }
+    state = HARAState(run_id="sec-speed-test", stage=WorkflowStage.SCORING)
+    state.functions = [{"function_id": "FUN-1", "name": "parking control"}]
+    state.malfunctions = [{
+        "malfunction_id": "MF-1", "function_id": "FUN-1",
+        "guideword": "Less", "description": "control loss",
+        "component_category": "sensor_camera",
+    }]
+    state.scenarios = [ScenarioCandidate(
+        "SC-1", "parking", "approach stationary vehicle", "front contact",
+        facts=facts, fact_provenance={
+            key: dict(source) for key in facts
+            if key not in {"scenario_atom_ids", "method_scenario_dimensions"}
+        },
+    )]
+    state.item_definition["scenario_assessments"] = [_assessment()]
+    writer = ReviewArtifactWriter(state.run_id, tmp_path)
+
+    score_structured_scenarios(
+        state, MethodRuleScoringService(method), MethodContractASILService(method),
+        review_artifact_writer=writer,
+    )
+
+    assert state.scenarios[0].facts["ego_speed_kph"] == 7.0
+    selected = state.scenarios[0].fact_provenance["ego_speed_kph"]
+    assert selected["project_rule_id"] == "AVP_EGO_SPEED_CLOSED_UPPER_BOUND_V1"
+    assert selected["analysis_value_semantic"] == "CURRENT_OPERATION_EGO_SPEED"
+    calculation = next(
+        item for item in state.audit_trail
+        if item["event"] == "structured_risk_scoring_completed"
+    )["risk_calculation_inputs"][0]
+    context = calculation["hazardous_event_risk_context"]
+    assert context["ego_speed_kph"]["value"] == 7.0
+    assert context["relative_speed_kph"]["value"] == 7.0
+    assert context["ttc_s"]["value"] == 3.6
+    assert state.risk_results[0].severity.value.startswith("S")
+    assert state.risk_results[0].exposure.value.startswith("E")
+    trace = json.loads((tmp_path / state.run_id / "risk_execution_trace.json").read_text())
+    assert trace["scenario_eligibility_summary"]["risk_scoring_invoked"] == 1
+    assert trace["assessments"][0]["controllability"]["derived_ttc"]["closing_speed_kph"] == 7.0
+
+    conflicted = deepcopy(state)
+    conflicted.stage = WorkflowStage.SCORING
+    conflicted.scenarios[0].facts["relative_speed_kph"] = 12.0
+    conflicted.scenarios[0].fact_provenance["relative_speed_kph"] = dict(source)
+    score_structured_scenarios(
+        conflicted, MethodRuleScoringService(method),
+        MethodContractASILService(method),
+    )
+    audit = conflicted.audit_trail[-1]["risk_calculation_inputs"][0]
+    assert audit["physics_conflicts"][0]["field"] == "relative_speed_kph"
+    assert audit["hazardous_event_risk_context"]["relative_speed_kph"]["status"] == "UNAVAILABLE"
+    assert conflicted.risk_results[0].exposure.value.startswith("E")
 
 
 def test_persisted_review_without_canonical_commit_is_not_ineligible():

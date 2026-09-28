@@ -19,10 +19,17 @@ METHOD_FACT_KEYS.update({
     FactType.EXPOSURE: "exposure_method",
 })
 
+_BOOLEAN_FACT_TYPES = frozenset({
+    FactType.DRIVER_IN_VEHICLE,
+    FactType.DIRECT_CONTROL_AVAILABLE,
+    FactType.INTERVENTION_AVAILABLE,
+    FactType.REMOTE_INTERVENTION_AVAILABLE,
+})
+
 
 @dataclass(frozen=True)
 class RiskFactBindingResult:
-    values: dict[str, str | float]
+    values: dict[str, str | float | bool]
     provenance: dict[str, dict[str, Any]]
     sources: tuple[SourceRef, ...]
     audit: dict[str, Any]
@@ -111,6 +118,16 @@ class MethodRiskFactBindingService:
             )
             for predicate in rule.predicates
         }
+        structured = method.structured_risk_method
+        if structured is not None:
+            for rule in structured.controllability_overrides:
+                for condition in (*rule.all_of, *rule.any_of):
+                    try:
+                        rule_fact_types.add(FactType(condition.field.upper()))
+                    except ValueError:
+                        # Some structured inputs have no neutral FactType and
+                        # remain directly scoped Scenario facts.
+                        continue
         self.required = {
             item.fact_type: item for item in method.required_fact_specs
             if item.fact_type in rule_fact_types
@@ -167,7 +184,35 @@ class MethodRiskFactBindingService:
 
     def _normalize_value(
         self, fact_type: FactType, fact: RiskFact
-    ) -> str | float | None:
+    ) -> str | float | bool | None:
+        if (
+            fact_type is FactType.DRIVER_IN_VEHICLE
+            and str(fact.context.get("allowed_driver_position", "")).casefold()
+            == "outside_driver_seat"
+            and str(fact.value).strip().casefold() in {"false", "0"}
+            and not any(
+                marker in " ".join(
+                    source.excerpt.casefold() for source in fact.source_refs
+                )
+                for marker in (
+                    "车外", "outside the vehicle", "outside vehicle",
+                    "not in the vehicle",
+                )
+            )
+        ):
+            # The source says the driver is not in the driver seat. They may
+            # still be elsewhere inside the vehicle, so this cannot prove the
+            # Method predicate "driver_in_vehicle = false".
+            return None
+        if fact_type in _BOOLEAN_FACT_TYPES:
+            if isinstance(fact.value, bool):
+                return fact.value
+            value = str(fact.value).strip().casefold()
+            if value in {"true", "1"}:
+                return True
+            if value in {"false", "0"}:
+                return False
+            return None
         if fact_type in self.numeric_fact_types:
             if not isinstance(fact.value, (int, float)) or isinstance(fact.value, bool):
                 return None
@@ -198,6 +243,7 @@ class MethodRiskFactBindingService:
             if item.source_fact_id not in explicit_active_sources
         ]
         bindings = [*project_facts.method_risk_fact_bindings, *automatic]
+        driver_source_conflict = candidate.get("driver_configuration_source_conflict") is True
         for binding in bindings:
             if binding.method_contract_hash != self.template_hash:
                 hash_mismatch += 1
@@ -207,6 +253,8 @@ class MethodRiskFactBindingService:
             except ValueError:
                 unknown_type += 1
                 continue
+            if driver_source_conflict and fact_type is FactType.DRIVER_IN_VEHICLE:
+                continue
             fact = facts_by_id[binding.source_fact_id]
             if fact_type not in self.required or not self._context_matches(
                 fact.context, candidate
@@ -214,10 +262,12 @@ class MethodRiskFactBindingService:
                 continue
             by_type.setdefault(fact_type, []).append((fact, binding))
 
-        values: dict[str, str | float] = {}
+        values: dict[str, str | float | bool] = {}
         provenance: dict[str, dict[str, Any]] = {}
         sources: list[SourceRef] = []
-        conflicts: list[str] = []
+        conflicts: list[str] = (
+            [FactType.DRIVER_IN_VEHICLE.value] if driver_source_conflict else []
+        )
         invalid: list[str] = []
         for fact_type, matches in by_type.items():
             specificity = max(len(item[0].context) for item in matches)

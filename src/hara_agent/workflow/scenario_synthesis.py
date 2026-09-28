@@ -21,6 +21,9 @@ from hara_agent.services.analysis import (
     ExposureInputReadinessService, RiskExecutionTraceService,
 )
 from hara_agent.services.analysis.scenario_selection_quality import ScenarioShortlistPolicy
+from hara_agent.services.analysis.driver_configuration_service import (
+    DriverConfigurationBrancher,
+)
 from hara_agent.services.reporting import (
     OfflineReportRebuilder, ScenarioSelectorQualityAudit,
 )
@@ -84,8 +87,13 @@ class ScenarioSynthesisRunner:
         self.run_dir = Path(run_dir).expanduser().resolve()
         self.review_root = Path(review_root).expanduser().resolve()
         self.synthesis = ConstrainedScenarioSynthesisService(method)
-        self.physics = AnalyticalPhysicsInstantiationService()
+        self.physics = AnalyticalPhysicsInstantiationService(method)
         self.exposure = ExposureInputReadinessService(method)
+        policy = method.metadata.get("project_analysis_policy", {})
+        policy = policy if isinstance(policy, dict) else {}
+        self.driver_brancher = DriverConfigurationBrancher(
+            policy_id=str(policy.get("policy_id", "")),
+        )
 
     def _parent_inventory(self, source_run_id: str) -> dict[str, str]:
         paths = [self.run_dir / f"{source_run_id}.checkpoint.json"]
@@ -484,6 +492,11 @@ class ScenarioSynthesisRunner:
                 if item.locked_atom_ids
             }
         )
+        driver_branch = child.analysis_instance.get("driver_configuration_branch", {})
+        changed_driver_fields = (
+            ["driver_position", "allowed_driver_position", "driver_in_vehicle"]
+            if isinstance(driver_branch, dict) and driver_branch else []
+        )
         metadata = self._dependency_metadata(parent_assessment)
         if metadata is None:
             return {
@@ -492,6 +505,7 @@ class ScenarioSynthesisRunner:
                 "child_scenario_id": child.scenario_id,
                 "status": "CAUSAL_REVALIDATION_REQUIRED",
                 "changed_dimensions": changed_dimensions,
+                "changed_fields": changed_driver_fields,
                 "causal_reuse_basis": "",
                 "reason": "DEPENDENCY_METADATA_INCOMPLETE",
                 "provider_required": True,
@@ -510,6 +524,7 @@ class ScenarioSynthesisRunner:
                 "TRAFFIC_PATTERN": "traffic_pattern", "EGO_X_ROAD": "ego_road_relation",
             }.get(item, item) for item in changed_dimensions
         }
+        changed_keys.update(changed_driver_fields)
         dependent = sorted(changed_keys & dependencies)
         if dependent:
             return {
@@ -518,9 +533,22 @@ class ScenarioSynthesisRunner:
                 "child_scenario_id": child.scenario_id,
                 "status": "CAUSAL_REVALIDATION_REQUIRED",
                 "changed_dimensions": changed_dimensions,
+                "changed_fields": changed_driver_fields,
                 "dependent_fields": dependent,
                 "causal_reuse_basis": "",
                 "reason": "EXPLICIT_CAUSAL_OR_IDENTITY_DEPENDENCY",
+                "provider_required": True,
+            }
+        if changed_driver_fields and metadata.get("driver_configuration_noninterference") is not True:
+            return {
+                "malfunction_id": synthesis_input.malfunction_id,
+                "parent_scenario_id": synthesis_input.parent_scenario_id,
+                "child_scenario_id": child.scenario_id,
+                "status": "CAUSAL_REVALIDATION_REQUIRED",
+                "changed_dimensions": changed_dimensions,
+                "changed_fields": changed_driver_fields,
+                "causal_reuse_basis": "",
+                "reason": "DRIVER_CONFIGURATION_NONINTERFERENCE_UNPROVEN",
                 "provider_required": True,
             }
         return {
@@ -529,6 +557,7 @@ class ScenarioSynthesisRunner:
             "child_scenario_id": child.scenario_id,
             "status": "CAUSAL_REUSE_PROVEN",
             "changed_dimensions": changed_dimensions,
+            "changed_fields": changed_driver_fields,
             "causal_reuse_basis": str(metadata["child_subset_refinement"]),
             "reason": "EXPLICIT_NONINTERFERENCE",
             "provider_required": False,
@@ -777,6 +806,10 @@ class ScenarioSynthesisRunner:
         children: list[ScenarioCandidate] = []
         instantiations = []
         child_contexts: dict[str, tuple[Any, dict[str, Any]]] = {}
+        typed = parent.item_definition.get("typed", {})
+        typed = typed if isinstance(typed, dict) else {}
+        driver_risk_facts = typed.get("risk_facts", [])
+        driver_risk_facts = driver_risk_facts if isinstance(driver_risk_facts, list) else []
         materialization_inputs = (
             inputs if full_started else smoke_inputs if smoke_passed else []
         )
@@ -809,12 +842,26 @@ class ScenarioSynthesisRunner:
                     child = self._rescope_parent_scenario_facts(
                         child, malfunction_id=synthesis_input.malfunction_id,
                     )
-                    children.append(child)
-                    instantiations.append(instantiation.to_dict())
-                    child_contexts[child.scenario_id] = (
-                        synthesis_input,
-                        parent_assessments[(synthesis_input.malfunction_id, synthesis_input.parent_scenario_id)],
-                    )
+                    for driver_child in self.driver_brancher.expand(
+                        child, driver_risk_facts,
+                    ):
+                        children.append(driver_child)
+                        record = replace(
+                            instantiation, scenario_id=driver_child.scenario_id,
+                        ).to_dict()
+                        branch = driver_child.analysis_instance.get(
+                            "driver_configuration_branch"
+                        )
+                        if branch:
+                            record["driver_configuration_branch"] = deepcopy(branch)
+                        instantiations.append(record)
+                        child_contexts[driver_child.scenario_id] = (
+                            synthesis_input,
+                            parent_assessments[(
+                                synthesis_input.malfunction_id,
+                                synthesis_input.parent_scenario_id,
+                            )],
+                        )
 
         after = Counter()
         for child in children:

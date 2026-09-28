@@ -33,6 +33,12 @@ _ALLOWED_ASCII = re.compile(
     r"(?<![A-Za-z])(?:AVP|HMI|EPB|TTC|ASIL|FTTI|ISO|VDA|FUSA|km|h|S|E|C)(?![A-Za-z])",
     re.IGNORECASE,
 )
+_STATUS_REMARK = re.compile(
+    r"S (?:已计算|待审试算|未计算)；"
+    r"E (?:已计算|待审试算|未计算)；"
+    r"C (?:已计算|待审试算|未计算)；"
+    r"ASIL (?:已计算|待审试算|未计算)"
+)
 
 
 def _lengths(rows: list[Any], field: str) -> dict[str, float | int]:
@@ -145,7 +151,11 @@ def audit_content_presentation(
         "scenario_description": _lengths(rows, "operational_scenario"),
         "scenario_detail": _lengths(rows, "scenario_detail"),
         **{field: _lengths(rows, field) for field in _RATIONAL_FIELDS},
-        "remark_duplicate_information_count": sum(bool(str(row.remark or "").strip()) for row in rows),
+        "remark_duplicate_information_count": sum(
+            bool(str(row.remark or "").strip())
+            and not _STATUS_REMARK.fullmatch(str(row.remark).strip())
+            for row in rows
+        ),
         "scenario_duplicate_count": scenario_duplicates,
         "scenario_duplicate_ratio": round(scenario_duplicates / len(rows), 4) if rows else 0,
         "hazardous_event_duplicate_count": hazardous_event_duplicates,

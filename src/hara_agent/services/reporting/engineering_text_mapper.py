@@ -242,6 +242,154 @@ class EngineeringReportTextMapper:
             values.append(f"交互：{traffic}")
         return "；".join(values)
 
+    @classmethod
+    def physical_inputs(
+        cls, scenario: Any, trace: Mapping[str, Any],
+    ) -> str:
+        """Distinguish accepted risk inputs from unscored scenario candidates."""
+
+        facts = getattr(scenario, "facts", {}) or {}
+        context = trace.get("hazardous_event_risk_context", {})
+        context = context if isinstance(context, Mapping) else {}
+        candidate_only = trace.get("risk_scoring_invoked") is False or not context
+        control = trace.get("controllability", {})
+        control = control if isinstance(control, Mapping) else {}
+        derived = control.get("derived_ttc", {})
+        derived = derived if isinstance(derived, Mapping) else {}
+
+        def value(field: str) -> Any:
+            if field in context:
+                record = context[field]
+                if not isinstance(record, Mapping):
+                    return None
+                return record.get("value") if str(record.get("status", "")) == "AVAILABLE" else None
+            return facts.get(field) if candidate_only else None
+
+        closing_speed = derived.get("closing_speed_kph")
+        if closing_speed is None and candidate_only:
+            closing_speed = facts.get("closing_speed_kph")
+        ttc = value("ttc_s") if "ttc_s" in context else derived.get("ttc_s")
+        if ttc is None and candidate_only:
+            ttc = facts.get("ttc_s")
+        quantities = (
+            ("自车速度", value("ego_speed_kph"), "km/h"),
+            ("目标速度", value("object_speed_kph"), "km/h"),
+            ("相对速度", value("relative_speed_kph"), "km/h"),
+            ("接近速度", closing_speed, "km/h"),
+            ("相对距离", value("relative_distance_m"), "m"),
+            ("TTC", ttc, "s"),
+        )
+        parts = [
+            f"{label}：{cls._number(number)} {unit}"
+            for label, number, unit in quantities
+            if isinstance(number, (int, float)) and not isinstance(number, bool)
+        ]
+        if not any(part.startswith("TTC：") for part in parts) and (
+            str(derived.get("closing_speed_status", "")) == "TTC_NOT_CLOSING"
+        ):
+            parts.append("TTC：未接近，无有限值")
+        position = cls._POSITION_TEXT.get(str(facts.get("object_position", "")).casefold(), "")
+        if position:
+            parts.append(f"目标位置：{position}")
+        directions = {"FORWARD": "前进", "REVERSE": "倒车", "STATIONARY": "静止"}
+        for field, label in (
+            ("ego_longitudinal_direction", "自车方向"),
+            ("object_longitudinal_direction", "目标方向"),
+        ):
+            direction = directions.get(str(facts.get(field, "")).upper(), "")
+            if direction:
+                parts.append(f"{label}：{direction}")
+        if not parts:
+            return ""
+        return (
+            "场景候选（未核实用于评分）：" if candidate_only else ""
+        ) + "；".join(parts)
+
+    @staticmethod
+    def driver_branch(scenario: Any, trace: Mapping[str, Any]) -> str:
+        facts = getattr(scenario, "facts", {}) or {}
+        instance = getattr(scenario, "analysis_instance", {}) or {}
+        branch = instance.get("driver_configuration_branch", {}) if isinstance(instance, Mapping) else {}
+        branch = branch if isinstance(branch, Mapping) else {}
+        position = str(facts.get("driver_position", branch.get("driver_position", "")))
+        label = {
+            "in_driver_seat": "在驾驶位",
+            "outside_driver_seat": "不在驾驶位",
+        }.get(position, "")
+        context = trace.get("hazardous_event_risk_context", {})
+        context = context if isinstance(context, Mapping) else {}
+        vehicle = context.get("driver_in_vehicle", {})
+        if isinstance(vehicle, Mapping) and str(vehicle.get("status", "")) == "AVAILABLE":
+            in_vehicle = vehicle.get("value")
+        elif "driver_in_vehicle" not in context:
+            in_vehicle = facts.get("driver_in_vehicle")
+        else:
+            in_vehicle = None
+        parts = [f"驾驶员：{label}"] if label else []
+        if in_vehicle is True:
+            parts.append("车内状态：在车内")
+        elif in_vehicle is False:
+            parts.append("车内状态：在车外")
+        elif label:
+            parts.append("车内状态：未确定")
+        return "；".join(parts)
+
+    @staticmethod
+    def controllability_branch(trace: Mapping[str, Any]) -> str:
+        control = trace.get("controllability", {})
+        if not isinstance(control, Mapping) or not control:
+            return ""
+        stage = {
+            "OVERRIDE": "干预覆盖",
+            "TTC": "TTC 分档",
+            "UNRESOLVED": "分支未确定",
+        }.get(str(control.get("decision_tree_stage", "")), "")
+        parts = [f"C 分支：{stage}"] if stage else []
+        rule_ids = control.get("rule_ids", [])
+        if isinstance(rule_ids, (list, tuple)):
+            parts.extend(f"命中规则：{item}" for item in rule_ids if str(item))
+        policy = str(control.get("unknown_override_policy", ""))
+        if policy:
+            parts.append(f"未知覆盖策略：{policy}")
+        action = str(control.get("unknown_policy_action", ""))
+        if action and action not in {"NOT_INVOKED", ""}:
+            parts.append(f"策略处理：{action}")
+        return "；".join(parts)
+
+    @staticmethod
+    def analysis_basis(scenario: Any) -> str:
+        provenance = getattr(scenario, "fact_provenance", {}) or {}
+        if not isinstance(provenance, Mapping):
+            return ""
+        labels = {
+            "ego_speed_kph": "自车速度", "object_speed_kph": "目标速度",
+            "relative_distance_m": "相对距离", "ttc_s": "TTC",
+            "driver_position": "驾驶员配置",
+        }
+        parts = []
+        for field, label in labels.items():
+            record = provenance.get(field, {})
+            if not isinstance(record, Mapping) or not record:
+                continue
+            rule = str(
+                record.get("policy_id") or record.get("selection_basis")
+                or record.get("derivation_rule_id") or ""
+            )
+            approval = str(record.get("approval", ""))
+            sources = record.get("source_refs", [])
+            source_locations = [
+                str(item.get("location", ""))
+                for item in sources if isinstance(item, Mapping) and item.get("location")
+            ] if isinstance(sources, (list, tuple)) else []
+            description = [rule] if rule else []
+            if approval and approval != "FINALIZED":
+                description.append("待审设定")
+            if source_locations:
+                description.append("来源 " + ", ".join(dict.fromkeys(source_locations)))
+            if description:
+                parts.append(f"{label}：{'；'.join(description)}")
+        return "；".join(parts)
+
     def scenario(self, scenario: Any, *, variant_count: int = 1) -> tuple[str, str]:
         """Render validated structured facts without exposing Method vocabulary."""
         facts = getattr(scenario, "facts", {}) or {}
@@ -277,6 +425,12 @@ class EngineeringReportTextMapper:
         clauses = [location]
         if mode:
             clauses.append(f"AVP处于{mode}状态")
+        driver_position = {
+            "in_driver_seat": "驾驶员在驾驶位",
+            "outside_driver_seat": "驾驶员不在驾驶位",
+        }.get(str(facts.get("driver_position", "")).strip().casefold(), "")
+        if driver_position:
+            clauses.append(driver_position)
         if context_text:
             clauses.append(context_text)
         if action:

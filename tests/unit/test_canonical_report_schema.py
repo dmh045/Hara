@@ -60,7 +60,7 @@ def test_projection_separates_harm_and_exposes_human_pending_reasons():
     assert row.asil_rationale == "S/E/C 未全部确定，ASIL 暂不评定。"
     assert row.ftti == "Pending"
     assert row.ftti_rationale == "当前运行未启用 FTTI 计算。"
-    assert row.remark == ""
+    assert row.remark == "S 未计算；E 未计算；C 未计算；ASIL 未计算"
     assert row.clarification_ids == "EC-03; EC-01; EC-02"
     assert "ignored" not in row.operational_scenario
 

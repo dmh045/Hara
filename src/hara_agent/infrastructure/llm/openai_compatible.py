@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 
 from hara_agent.config import LLMConfig
 
+from .provider_budget import ProviderAttemptBudget
 from .protocol import LLMRequest, LLMResponse
 
 
@@ -92,10 +93,12 @@ class OpenAICompatibleClient:
 
     THINKING_CAPABLE_PROVIDERS = {"volcengine-agent-plan"}
 
-    def __init__(self, config: LLMConfig, transport: Optional[Transport] = None):
+    def __init__(self, config: LLMConfig, transport: Optional[Transport] = None,
+                 attempt_budget: ProviderAttemptBudget | None = None):
         config.validate()
         self.config = config
         self.transport = transport or self._http_transport
+        self.attempt_budget = attempt_budget
 
     def complete_json(self, request: LLMRequest) -> LLMResponse:
         endpoint = self.config.base_url.rstrip("/")
@@ -643,6 +646,10 @@ class OpenAICompatibleClient:
         attempts = min(configured_attempts, 2) if task == "assess_scenario_feasibility" else configured_attempts
         error_counts: dict[str, int] = {}
         for attempt in range(1, attempts + 1):
+            budget_attempt_id = (
+                self.attempt_budget.begin(request, model=self.config.model)
+                if self.attempt_budget is not None else None
+            )
             attempt_started = time.monotonic()
             print(
                 f"[HARA] LLM request attempt task={task}{context} "
@@ -652,15 +659,17 @@ class OpenAICompatibleClient:
                 flush=True,
             )
             try:
-                return self.transport(
+                response = self.transport(
                     endpoint, headers, body, self.config.timeout_seconds,
-                ), {"attempts": attempt, "error_counts": error_counts}
+                )
             except (
                 TimeoutError, socket.timeout, ConnectionError,
                 http.client.RemoteDisconnected, http.client.IncompleteRead,
                 ConnectionResetError, ConnectionAbortedError, BrokenPipeError,
                 ssl.SSLError, TransientLLMError,
             ) as exc:
+                if budget_attempt_id is not None:
+                    self.attempt_budget.finish(budget_attempt_id, error=exc)
                 category = (
                     exc.category if isinstance(exc, TransientLLMError)
                     else self._exception_type(exc)
@@ -695,6 +704,14 @@ class OpenAICompatibleClient:
                 )
                 if delay:
                     time.sleep(delay)
+                continue
+            except BaseException as exc:
+                if budget_attempt_id is not None:
+                    self.attempt_budget.finish(budget_attempt_id, error=exc)
+                raise
+            if budget_attempt_id is not None:
+                self.attempt_budget.finish(budget_attempt_id, response=response)
+            return response, {"attempts": attempt, "error_counts": error_counts}
         raise RuntimeError("LLM请求未执行")
 
     @staticmethod

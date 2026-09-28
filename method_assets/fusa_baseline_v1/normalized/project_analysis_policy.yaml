@@ -1,0 +1,41 @@
+policy_id: AVP_SEC_2026_09_V1
+version: "1.0"
+project_scope: current_avp_item_definition
+source_kind: USER_RELAYED_HARA_ENGINEERING_OPINION
+source_note: >-
+  A1-A5 were relayed by the user from HARA engineering discussion. This record
+  does not represent a signed engineering release or a quotation from ISO/VDA.
+input_selection:
+  policy_id: EXCLUDE_NONFUNCTIONAL_PERFORMANCE_SPEED_V1
+  excluded_sections_for_scoring:
+    - 性能要求
+  non_operational_speed_sections:
+    - 执行器能力参数要求
+  retained_sections_for_scoring:
+    - 环境条件
+    - 功能要求
+ego_speed_point_selection:
+  rule_id: AVP_EGO_SPEED_CLOSED_UPPER_BOUND_V1
+  choice: UPPER_CLOSED_BOUND_OF_EFFECTIVE_OPERATION_RANGE
+  applies_to: current_ego_analysis_speed
+  status: CONFIRMED_FOR_CURRENT_PROJECT
+  require_finite_closed_upper_bound: true
+  require_source_and_scope: true
+decisions:
+  A1:
+    status: CONFIRMED_FOR_CURRENT_PROJECT
+    scope: Ordinary static objects need no separate object E atom; physical objects and harm analysis remain.
+  A2:
+    status: CONFIRMED_FOR_CURRENT_PROJECT
+    scope: Retain state malfunction identity and analyze its evidenced vehicle control consequence.
+  A3:
+    status: CONFIRMED_FOR_CURRENT_PROJECT
+    scope: Select the closed upper bound of the current applicable ego operating speed range.
+  A4:
+    status: PARTIALLY_SPECIFIED
+    scope: Use explicit scoped facts and deterministic scenario derivation; numeric and C defaults remain candidates until confirmed.
+  A5:
+    status: CONFIRMED_FOR_CURRENT_PROJECT
+    scope: Analyze each allowed driver-seat configuration; outside driver seat does not imply outside vehicle.
+candidate_defaults: []
+release_approval: PENDING

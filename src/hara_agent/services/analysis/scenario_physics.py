@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from enum import Enum
 from typing import Any
 
@@ -19,6 +20,7 @@ class DerivedPhysicsType(str, Enum):
 _ANALYSIS_ORIGIN = FactProvenance.SCENARIO_DEFINED.value
 _FINAL_APPROVALS = {ReviewStatus.FINALIZED.value, "APPROVED"}
 TTC_FORMULA_IDENTITY = "relative_distance_m / (relative_speed_kph / 3.6)"
+TTC_CLOSING_FORMULA_IDENTITY = "relative_distance_m / (closing_speed_kph / 3.6)"
 
 
 def _nonnegative_number(value: Any) -> float | None:
@@ -52,6 +54,152 @@ def closing_relative_speed_kph(
         return None
     opposing = obj_dir != "STATIONARY" and ego_dir != obj_dir
     return round(ego + obj if opposing else abs(ego - obj), 6)
+
+
+def longitudinal_closing_speed_kph(
+    ego_speed_kph: Any, object_speed_kph: Any, *,
+    ego_direction: Any, object_direction: Any, object_position: Any,
+    collision_type: Any,
+) -> float | None:
+    """Return positive approach speed only when longitudinal geometry is known."""
+    ego = _nonnegative_number(ego_speed_kph)
+    obj = _nonnegative_number(object_speed_kph)
+    ego_dir = str(ego_direction or "").strip().upper()
+    obj_dir = str(object_direction or "").strip().upper()
+    position = str(object_position or "").strip().upper()
+    if (
+        ego is None or obj is None
+        or ego_dir not in {"FORWARD", "REVERSE"}
+        or obj_dir not in {"FORWARD", "REVERSE", "STATIONARY"}
+        or position not in {"FRONT", "REAR"}
+        or is_lateral_collision(collision_type)
+    ):
+        return None
+    signed_ego = ego if ego_dir == "FORWARD" else -ego
+    signed_obj = 0.0 if obj_dir == "STATIONARY" else (
+        obj if obj_dir == "FORWARD" else -obj
+    )
+    approach = (signed_ego - signed_obj) * (1 if position == "FRONT" else -1)
+    return round(max(0.0, approach), 6)
+
+
+def select_ego_speed_from_policy(
+    scenario: ScenarioCandidate, *, policy: dict[str, Any], malfunction_id: str,
+) -> tuple[float, dict[str, Any]] | None:
+    """Materialize the governed current-operation speed choice with its lineage."""
+    rule = policy.get("ego_speed_point_selection", {}) if isinstance(policy, dict) else {}
+    if (
+        not isinstance(rule, dict)
+        or rule.get("choice") != "UPPER_CLOSED_BOUND_OF_EFFECTIVE_OPERATION_RANGE"
+        or rule.get("status") != "CONFIRMED_FOR_CURRENT_PROJECT"
+        or not str(rule.get("rule_id", "")).strip()
+        or scenario.facts.get("ego_speed_kph") is not None
+        or scenario.facts.get("ego_speed_value_semantic") == "POST_FAULT_SPEED"
+    ):
+        return None
+    envelope = scenario.facts.get("ego_speed_constraint", {})
+    metadata = scenario.fact_provenance.get("ego_speed_constraint", {})
+    if not isinstance(envelope, dict) or not isinstance(metadata, dict):
+        return None
+    lower = envelope.get("min_kph", envelope.get("speed_min_kph"))
+    upper = envelope.get("max_kph", envelope.get("speed_max_kph"))
+    if (
+        isinstance(lower, bool) or not isinstance(lower, (int, float))
+        or isinstance(upper, bool) or not isinstance(upper, (int, float))
+        or not math.isfinite(lower) or not math.isfinite(upper)
+        or lower < 0 or upper < lower
+        or envelope.get("upper_inclusive", True) is not True
+        or str(metadata.get("approval", "")).upper() not in _FINAL_APPROVALS
+        or not source_has_provenance(metadata)
+    ):
+        return None
+    scope = {
+        "malfunction_id": malfunction_id,
+        "scenario_id": scenario.scenario_id,
+        "parent_scenario_id": scenario.source_scenario_id or scenario.scenario_id,
+    }
+    policy_source = policy.get("source_ref", {})
+    refs = list(metadata.get("source_refs", metadata.get("sources", [])))
+    if not isinstance(policy_source, dict) or not policy_source.get("source_id"):
+        return None
+    refs.append({
+        **policy_source,
+        "location": f"{policy_source.get('location', '')}:ego_speed_point_selection",
+        "excerpt": str(rule["rule_id"]),
+    })
+    return float(upper), {
+        "provenance": FactProvenance.SCENARIO_DEFINED.value,
+        "origin": FactProvenance.SCENARIO_DEFINED.value,
+        "approval": ReviewStatus.FINALIZED.value,
+        "validation_status": "VALIDATED",
+        "analysis_assumption_origin": FactProvenance.SCENARIO_DEFINED.value,
+        "analysis_assumption_scope": scope,
+        "applicable_scope": scope,
+        "source_refs": refs,
+        "input_fact_metadata": [_input_snapshot(
+            "ego_speed_constraint", ReviewStatus.FINALIZED,
+            _input_metadata(scenario, "ego_speed_constraint")[1], metadata,
+        )],
+        "selection_basis": "GOVERNED_CLOSED_UPPER_BOUND",
+        "analysis_value_semantic": "CURRENT_OPERATION_EGO_SPEED",
+        "effective_range_kph": [float(lower), float(upper)],
+        "project_policy_id": str(policy.get("policy_id", "")),
+        "project_policy_version": str(policy.get("version", "")),
+        "project_rule_id": str(rule["rule_id"]),
+        "machine_checks": [
+            "FINITE_NONNEGATIVE_CLOSED_RANGE", "SOURCE_FINALIZED",
+            "SCOPED_TO_MALFUNCTION_AND_SCENARIO",
+        ],
+    }
+
+
+def derive_stationary_object_speed(
+    scenario: ScenarioCandidate, *, method_hash: str,
+    malfunction_id: str,
+) -> tuple[float, dict[str, Any]] | None:
+    """Use a selected Method atom's explicit stationary motion, if any."""
+    if scenario.facts.get("object_speed_kph") is not None:
+        return None
+    bindings = scenario.facts.get("method_scenario_dimensions", {})
+    binding = bindings.get("OBJECT", {}) if isinstance(bindings, dict) else {}
+    if not isinstance(binding, dict) or binding.get("resolution_status") != "RESOLVED":
+        return None
+    atom_id = str(binding.get("atom_id", "")).strip()
+    if not atom_id or atom_id not in scenario.facts.get("scenario_atom_ids", []):
+        return None
+    semantics = binding.get("method_semantics", {})
+    semantics = semantics.get("object", semantics) if isinstance(semantics, dict) else {}
+    if not isinstance(semantics, dict):
+        return None
+    motion = str(semantics.get("motion", semantics.get("motion_state", ""))).upper()
+    if semantics.get("stationary") is not True and motion != "STATIONARY":
+        return None
+    atom_source = binding.get("atom_provenance", {})
+    if not method_hash or not isinstance(atom_source, dict):
+        return None
+    asset = str(atom_source.get("source_asset", "")).strip()
+    rule = str(atom_source.get("source_rule", "")).strip()
+    if not asset or not rule:
+        return None
+    scope = {
+        "malfunction_id": malfunction_id,
+        "scenario_id": scenario.scenario_id,
+        "parent_scenario_id": scenario.source_scenario_id or scenario.scenario_id,
+    }
+    return 0.0, {
+        "provenance": FactProvenance.DERIVED.value,
+        "origin": "METHOD_DEFINED",
+        "approval": ReviewStatus.FINALIZED.value,
+        "validation_status": "VALIDATED",
+        "applicable_scope": scope,
+        "source_refs": [{
+            "source_type": "method_contract", "source_id": method_hash,
+            "location": f"{asset}:{rule}", "excerpt": f"{atom_id}: STATIONARY",
+        }],
+        "selection_basis": "SELECTED_METHOD_ATOM_EXPLICIT_STATIONARY",
+        "source_atom_ids": [atom_id],
+        "derivation_rule_id": "SELECTED_METHOD_ATOM_STATIONARY_ZERO_SPEED",
+    }
 
 
 def time_to_collision_s(distance_m: Any, relative_speed_kph: Any) -> float | None:
@@ -312,43 +460,100 @@ def derive_scenario_physics(
             sources,
             metadata,
         ))
-    relative_speed = scenario.facts.get("relative_speed_kph")
-    ttc = time_to_collision_s(distance_m, relative_speed)
-    if ttc is not None:
-        input_keys = (distance_input_key, "relative_speed_kph")
-        input_metadata = [_input_metadata(scenario, key) for key in input_keys]
-        derived_sources = tuple(dict.fromkeys(
-            source for _, sources, _ in input_metadata for source in sources
+    def derived_record(
+        output_key: str, value: float, input_keys: tuple[str, ...],
+        derivation_type: DerivedPhysicsType, *, formula: str = "",
+    ) -> EvidenceRecord:
+        dependencies = [_input_metadata(scenario, key) for key in input_keys]
+        refs = tuple(dict.fromkeys(
+            source for _, sources, _ in dependencies for source in sources
         ))
-        derived_status = (
+        approval = (
             ReviewStatus.FINALIZED
-            if all(status is ReviewStatus.FINALIZED for status, _, _ in input_metadata)
+            if all(status is ReviewStatus.FINALIZED for status, _, _ in dependencies)
             else ReviewStatus.PENDING
         )
         metadata = {
-            "derivation_type": DerivedPhysicsType.TTC.value,
-            "inputs": [f"SCN.{distance_input_key}", "SCN.relative_speed_kph"],
+            "derivation_type": derivation_type.value,
+            "inputs": [f"SCN.{key}" for key in input_keys],
         }
-        if all(item for _, _, item in input_metadata):
+        if formula:
+            metadata["formula_identity"] = formula
+        if all(item for _, _, item in dependencies):
             metadata["input_fact_metadata"] = [
                 _input_snapshot(key, status, sources, item)
-                for key, (status, sources, item) in zip(input_keys, input_metadata)
+                for key, (status, sources, item) in zip(input_keys, dependencies)
             ]
-        analytical = [
+        metadata.update(_combined_analysis_lineage([
             {**_analysis_lineage(item), "input_field": key}
-            for key, (_, _, item) in zip(input_keys, input_metadata)
+            for key, (_, _, item) in zip(input_keys, dependencies)
             if _analysis_lineage(item)
-        ]
-        metadata.update(_combined_analysis_lineage(analytical))
+        ]))
         if scenario.semantic_fingerprint:
             metadata["semantic_fingerprint"] = scenario.semantic_fingerprint
-        records.append(EvidenceRecord(
-            "DERIVED.ttc_s",
-            ttc,
-            EvidenceKind.DERIVED_PHYSICS,
-            FactProvenance.DERIVED,
-            derived_status,
-            derived_sources,
-            metadata,
+        return EvidenceRecord(
+            f"DERIVED.{output_key}", value,
+            EvidenceKind.DERIVED_PHYSICS, FactProvenance.DERIVED,
+            approval, refs, metadata,
+        )
+
+    ego = scenario.facts.get("ego_speed_kph")
+    obj = scenario.facts.get("object_speed_kph")
+    ego_direction = scenario.facts.get("ego_longitudinal_direction")
+    object_direction = scenario.facts.get("object_longitudinal_direction")
+    collision = scenario.facts.get("collision_type")
+    position = scenario.facts.get("object_position")
+    relative_speed = scenario.facts.get("relative_speed_kph")
+    calculated_relative = closing_relative_speed_kph(
+        ego, obj, ego_direction=ego_direction,
+        object_direction=object_direction, collision_type=collision,
+    )
+    if relative_speed is None and calculated_relative is not None:
+        relative_speed = calculated_relative
+        records.append(derived_record(
+            "relative_speed_kph", calculated_relative,
+            ("ego_speed_kph", "object_speed_kph", "ego_longitudinal_direction",
+             "object_longitudinal_direction", "collision_type"),
+            DerivedPhysicsType.RELATIVE_MOTION,
+        ))
+
+    directional_geometry_supplied = any(
+        key in scenario.facts for key in (
+            "ego_longitudinal_direction", "object_longitudinal_direction",
+        )
+    )
+    if directional_geometry_supplied:
+        closing_speed = longitudinal_closing_speed_kph(
+            ego, obj, ego_direction=ego_direction,
+            object_direction=object_direction, object_position=position,
+            collision_type=collision,
+        )
+        ttc_input_keys = (
+            distance_input_key, "ego_speed_kph", "object_speed_kph",
+            "ego_longitudinal_direction", "object_longitudinal_direction",
+            "object_position", "collision_type",
+        )
+        formula = TTC_CLOSING_FORMULA_IDENTITY
+        if closing_speed is not None:
+            records.append(derived_record(
+                "closing_speed_kph", closing_speed, ttc_input_keys[1:],
+                DerivedPhysicsType.RELATIVE_MOTION,
+            ))
+    else:
+        # An explicit, source-accepted relative speed retains the historical
+        # closing-speed meaning only when no contradictory geometry is given.
+        closing_speed = (
+            relative_speed
+            if "relative_speed_kph" in scenario.facts
+            and not is_lateral_collision(collision)
+            else None
+        )
+        ttc_input_keys = (distance_input_key, "relative_speed_kph")
+        formula = TTC_FORMULA_IDENTITY
+    ttc = time_to_collision_s(distance_m, closing_speed)
+    if ttc is not None:
+        records.append(derived_record(
+            "ttc_s", ttc, ttc_input_keys, DerivedPhysicsType.TTC,
+            formula=formula,
         ))
     return tuple(records)

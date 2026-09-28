@@ -44,7 +44,7 @@ class OfflineReportRebuilder:
         review_reader = ReviewArtifactReader(state.run_id, review_root)
         artifacts = review_reader.read_all()
         trace_path = Path(review_root).expanduser().resolve() / state.run_id / "risk_execution_trace.json"
-        trace = {}
+        trace = None
         if trace_path.is_file():
             trace = json.loads(trace_path.read_text(encoding="utf-8"))
         causal_trace = {}
@@ -76,7 +76,7 @@ class OfflineReportRebuilder:
             causal_trace=causal_trace,
             run_summary=summary,
             style_template_hash=template_hash,
-            risk_trace_reference=str(trace_path),
+            risk_trace_reference=str(trace_path) if trace is not None else "",
             scenario_projection_contexts=scenario_projection_contexts,
         )
         audit_root = (

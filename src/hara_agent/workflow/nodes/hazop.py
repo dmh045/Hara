@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
+import hashlib
+import json
+from typing import Callable
 
 from hara_agent.contracts import Guideword
-from hara_agent.models import FunctionDefinition
+from hara_agent.models import (
+    FunctionDefinition, GuidewordAssessment, GuidewordDisposition,
+    ReviewStatus, SourceRef,
+)
 from hara_agent.services.semantic import GuidewordApplicabilityAgent
 from hara_agent.workflow.state import HARAState, WorkflowStage
 from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
@@ -11,13 +17,64 @@ from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
 from .parallel import ordered_parallel_map
 
 
+GUIDEWORD_BATCH_CHECKPOINT_VERSION = "guideword-function-batch-v1"
+
+
+def _batch_key(agent: GuidewordApplicabilityAgent, function: FunctionDefinition,
+               guidewords: list[str | Guideword]) -> str:
+    client = getattr(agent, "client", None)
+    config = getattr(client, "config", None)
+    material = {
+        "version": GUIDEWORD_BATCH_CHECKPOINT_VERSION,
+        "prompt_version": getattr(agent, "PROMPT_VERSION", ""),
+        "function": asdict(function),
+        "guidewords": [asdict(item) if is_dataclass(item) else str(item)
+                       for item in guidewords],
+        "provider": getattr(config, "provider", type(client).__name__),
+        "model": getattr(config, "model", ""),
+        "guideword_thinking": getattr(config, "guideword_thinking", ""),
+    }
+    return hashlib.sha256(json.dumps(
+        material, ensure_ascii=False, sort_keys=True, default=str,
+    ).encode("utf-8")).hexdigest()
+
+
+def _restore_batch(entry: object, *, key: str, function_id: str):
+    if not isinstance(entry, dict) or entry.get("key") != key:
+        return None
+    try:
+        items = []
+        for value in entry["assessments"]:
+            payload = dict(value)
+            payload["sources"] = [SourceRef(**item) for item in payload.get("sources", [])]
+            payload["status"] = ReviewStatus(payload.get("status", ReviewStatus.PENDING.value))
+            disposition = payload.get("disposition")
+            payload["disposition"] = (
+                GuidewordDisposition(disposition) if disposition else None
+            )
+            items.append(GuidewordAssessment(**payload))
+        audit = dict(entry["audit"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if any(item.function_id != function_id for item in items):
+        return None
+    return items, audit
+
+
 def assess_guidewords(state: HARAState, agent: GuidewordApplicabilityAgent,
                       functions: list[FunctionDefinition],
                       guidewords: list[str | Guideword],
                       max_workers: int = 1,
                       progress=None,
-                      review_artifact_writer: ReviewArtifactWriter | None = None) -> HARAState:
+                      review_artifact_writer: ReviewArtifactWriter | None = None,
+                      checkpoint: Callable[[HARAState], object] | None = None) -> HARAState:
     assessments = []
+    cache = state.item_definition.setdefault("guideword_assessment_batches", {})
+    if not isinstance(cache, dict):
+        cache = {}
+        state.item_definition["guideword_assessment_batches"] = cache
+    batch_by_function = {}
+    pending_functions = []
 
     def record_result(_function, result) -> None:
         if review_artifact_writer is None:
@@ -26,17 +83,56 @@ def assess_guidewords(state: HARAState, agent: GuidewordApplicabilityAgent,
         for assessment in items:
             review_artifact_writer.record_guideword_assessment(assessment)
 
-    batches = ordered_parallel_map(
-        functions,
+    for function in functions:
+        key = _batch_key(agent, function, guidewords)
+        restored = _restore_batch(
+            cache.get(function.function_id), key=key,
+            function_id=function.function_id,
+        )
+        if restored is None:
+            if function.function_id in cache:
+                raise ValueError(
+                    "Committed guideword Function batch no longer matches its "
+                    "inputs or prompt; restart with a new run ID"
+                )
+            pending_functions.append(function)
+        else:
+            batch_by_function[function.function_id] = restored
+            record_result(function, restored)
+
+    def save_batch(function, result) -> None:
+        cache[function.function_id] = {
+            "version": GUIDEWORD_BATCH_CHECKPOINT_VERSION,
+            "key": _batch_key(agent, function, guidewords),
+            "assessments": [asdict(item) for item in result[0]],
+            "audit": result[1],
+        }
+        batch_by_function[function.function_id] = result
+        state.record(
+            "guideword_function_batch_checkpointed",
+            function_id=function.function_id,
+            completed_function_count=len(batch_by_function),
+            total_function_count=len(functions),
+        )
+        if checkpoint is not None:
+            checkpoint(state)
+        record_result(function, result)
+
+    ordered_parallel_map(
+        pending_functions,
         lambda function: agent.assess(function, guidewords),
         max_workers=max_workers,
-        on_progress=(lambda done, total: progress("guideword", done, total)) if progress else None,
-        on_result=record_result,
+        on_progress=(lambda done, _total: progress(
+            "guideword", len(batch_by_function), len(functions),
+        )) if progress else None,
+        on_result=save_batch,
     )
+    batches = [batch_by_function[function.function_id] for function in functions]
     for items, audit in batches:
         assessments.extend(items)
         state.record("guideword_applicability_assessed", **audit)
     state.guideword_assessments = [asdict(item) for item in assessments]
+    state.item_definition.pop("guideword_assessment_batches", None)
     # HAZOP applicability is its own durable artifact.  Do not overload the
     # downstream Malfunction collection or lose negative decisions later.
     state.malfunctions = []

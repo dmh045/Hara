@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from hara_agent.infrastructure.llm.protocol import LLMResponse
+from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudgetExceeded
 from hara_agent.contracts import (
     CandidateOrigin, CoverageLabel, ScenarioSynthesisAssessment,
     SynthesisValidationStatus,
@@ -31,11 +32,56 @@ from hara_agent.services.semantic.scenario_batching import (
 from hara_agent.workflow.scenario_causal_revalidation import (
     ScenarioCausalRevalidationRunner,
 )
+from hara_agent.workflow.checkpoints import CheckpointRepository
+from hara_agent.workflow.state import HARAState, WorkflowStage
 from hara_agent.template import TemplateRoleCompiler
 from hara_agent.workflow.scenario_synthesis import ScenarioSynthesisRunner
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_causal_budget_exhaustion_does_not_become_deferred(tmp_path, method, monkeypatch):
+    import hara_agent.workflow.scenario_causal_revalidation as causal_module
+
+    child = replace(
+        _parent(), scenario_id="SCN-CHILD", source_scenario_id="SCN-PARENT",
+        analysis_instance={"validation_status": "VALIDATED", "malfunction_id": "MF-1"},
+    )
+    run_dir = tmp_path / "agent"
+    review_root = tmp_path / "review"
+    CheckpointRepository(run_dir).save(HARAState(
+        run_id="source", stage=WorkflowStage.COMPLETE,
+        item_definition={"typed": {
+            "system_description": "parking automation",
+            "item_boundary": "vehicle motion controller",
+            "sources": [{"source_type": "item_definition", "source_id": "item.docx"}],
+        }},
+        scenarios=[child], malfunctions=[{**_malfunction(), "causal_chain": ["M", "H"]}],
+    ))
+    queue_path = review_root / "source" / "causal_delta_queue.json"
+    queue_path.parent.mkdir(parents=True)
+    queue_path.write_text(json.dumps({"records": [{
+        "child_scenario_id": "SCN-CHILD",
+        "status": "CAUSAL_REVALIDATION_REQUIRED",
+    }]}), encoding="utf-8")
+
+    class BudgetAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def assess(self, *args):
+            raise ProviderAttemptBudgetExceeded(
+                limit=2, attempts=2, ledger_path=tmp_path / "attempts.jsonl",
+            )
+
+    monkeypatch.setattr(causal_module, "ScenarioFeasibilityAgent", BudgetAgent)
+    runner = ScenarioCausalRevalidationRunner(
+        method=method, client=object(), run_dir=run_dir, review_root=review_root,
+    )
+    with pytest.raises(ProviderAttemptBudgetExceeded):
+        runner.run(source_run_id="source", target_run_id="causal", max_workers=1)
+    assert not CheckpointRepository(run_dir).path_for("causal").exists()
 
 
 def test_causal_resume_recovers_only_complete_validated_malfunction_audits(tmp_path):
@@ -348,6 +394,27 @@ def test_bounded_provider_selection_second_failure_stays_pending(method):
     assert trace["status"] == "PENDING_SCENARIO_SYNTHESIS"
     assert trace["repairs"] == 1
     assert len(trace["calls"]) == 2
+
+
+def test_provider_budget_exhaustion_stops_synthesis_without_repair(method, tmp_path):
+    class BudgetClient(_Client):
+        def __init__(self):
+            super().__init__([])
+            self.calls = 0
+
+        def complete_json(self, request):
+            self.calls += 1
+            raise ProviderAttemptBudgetExceeded(
+                limit=2, attempts=2, ledger_path=tmp_path / "attempts.jsonl",
+            )
+
+    client = BudgetClient()
+    agent = BoundedScenarioSynthesisAgent(
+        client, ConstrainedScenarioSynthesisService(method),
+    )
+    with pytest.raises(ProviderAttemptBudgetExceeded):
+        agent.select(_input(method))
+    assert client.calls == 1
 
 
 def test_odd_speed_incompatible_atom_is_pruned(method):
@@ -813,7 +880,7 @@ def _physics_scenario(**overrides):
     )
 
 
-def test_explicit_stationary_object_atom_derives_zero_speed():
+def test_explicit_stationary_object_atom_derives_zero_speed(method):
     scenario = ScenarioCandidate(
         scenario_id="SCN-STATIONARY", operating_scenario="parking",
         situational_description="stationary object",
@@ -823,12 +890,17 @@ def test_explicit_stationary_object_atom_derives_zero_speed():
             "method_scenario_dimensions": {
                 "OBJECT": {
                     "atom_id": "TEST-STATIONARY",
+                    "resolution_status": "RESOLVED",
+                    "atom_provenance": {
+                        "source_asset": "raw/vda702_atoms.yaml",
+                        "source_rule": "TEST-STATIONARY",
+                    },
                     "method_semantics": {"object": {"motion": "STATIONARY"}},
                 },
             },
         },
     )
-    result = AnalyticalPhysicsInstantiationService().instantiate(
+    result = AnalyticalPhysicsInstantiationService(method).instantiate(
         scenario=scenario, malfunction={"malfunction_id": "MF-1"},
         causal_status="CAUSAL_REVALIDATED",
     )

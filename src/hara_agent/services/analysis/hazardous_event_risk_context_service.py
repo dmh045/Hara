@@ -150,7 +150,10 @@ class HazardousEventRiskContextService:
         relative_speed = values["relative_speed_kph"]
         if (
             relative_speed.status is RiskContextFactStatus.AVAILABLE
-            and float(relative_speed.value) <= 0
+            and (
+                float(relative_speed.value) <= 0
+                or scenario.get("closing_speed_kph") == 0
+            )
             and values["ttc_s"].status is not RiskContextFactStatus.AVAILABLE
         ):
             values["ttc_s"] = HazardousEventRiskFact(

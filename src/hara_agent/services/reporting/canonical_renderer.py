@@ -362,7 +362,8 @@ class HARAReportWorkbookRenderer:
         headers = (
             "HARA-ID", "Semantic Group ID", "Variant", "Scenario ID", "Situational Description",
             "Situational Detailing", "Speed Constraint", "Causal Status",
-            "Object / Interaction", "Hazardous Event",
+            "Object / Interaction", "Hazardous Event", "Physical Inputs",
+            "Driver Branch", "C Decision", "Analysis Basis",
         )
         records = [
             (
@@ -370,12 +371,14 @@ class HARAReportWorkbookRenderer:
                 item.operational_scenario, item.scenario_detail,
                 item.speed_constraint, item.causal_status,
                 item.object_interaction_summary, item.hazardous_event,
+                item.physical_inputs, item.driver_branch,
+                item.controllability_branch, item.analysis_basis,
             )
             for item in view_model.scenario_details
         ]
         self._render_records(
             sheet, "Analytical Scenario Detail", registry, headers, records,
-            width_source_columns=(1, 5, 14, 11, 7, 8, 11, 16, 14, 7),
+            width_source_columns=(1, 5, 14, 11, 7, 8, 11, 16, 14, 7, 11, 14, 16, 14),
         )
 
     @staticmethod

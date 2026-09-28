@@ -5,11 +5,14 @@ import hashlib
 import json
 from typing import Any
 
-from hara_agent.contracts import AnalyticalPhysicalInput, PhysicalValueAuthority
+from hara_agent.contracts import AnalyticalPhysicalInput, MethodContract, PhysicalValueAuthority
 from hara_agent.models import ScenarioCandidate
 
 from .scenario_physics import (
-    TTC_FORMULA_IDENTITY, closing_relative_speed_kph, time_to_collision_s,
+    TTC_FORMULA_IDENTITY, closing_relative_speed_kph,
+    derive_stationary_object_speed, longitudinal_closing_speed_kph,
+    select_ego_speed_from_policy,
+    time_to_collision_s,
 )
 
 
@@ -19,8 +22,17 @@ class AnalyticalPhysicsInstantiationService:
     fields = (
         "ego_speed_kph", "object_speed_kph", "relative_distance_m",
         "road_user_type", "collision_type", "ego_longitudinal_direction",
-        "object_longitudinal_direction",
+        "object_longitudinal_direction", "object_position",
     )
+
+    def __init__(self, method: MethodContract | None = None):
+        self.project_policy = (
+            method.metadata.get("project_analysis_policy", {}) if method is not None else {}
+        )
+        self.method_hash = (
+            str(method.metadata.get("method_source_hash", ""))
+            if method is not None else ""
+        )
 
     @staticmethod
     def _canonical_json(value: Any) -> str:
@@ -44,7 +56,7 @@ class AnalyticalPhysicsInstantiationService:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
 
     def _direct_input(
-        self, scenario: ScenarioCandidate, field: str,
+        self, scenario: ScenarioCandidate, field: str, malfunction_id: str,
     ) -> AnalyticalPhysicalInput:
         value = scenario.facts.get(field)
         metadata = scenario.fact_provenance.get(field, {})
@@ -64,6 +76,26 @@ class AnalyticalPhysicsInstantiationService:
                 review_status=str(metadata.get("approval", "PENDING")),
             )
         if field == "ego_speed_kph":
+            chosen = select_ego_speed_from_policy(
+                scenario, policy=self.project_policy, malfunction_id=malfunction_id,
+            )
+            if chosen is not None:
+                selected, selected_metadata = chosen
+                lower, upper = selected_metadata["effective_range_kph"]
+                return AnalyticalPhysicalInput(
+                    field=field,
+                    authority=PhysicalValueAuthority.SCENARIO_DEFINED,
+                    value=selected, unit="km/h",
+                    allowed_range={"min": lower, "max": upper, "unit": "km/h"},
+                    reason="Current-operation ego speed selected by governed project rule.",
+                    selection_basis=selected_metadata["selection_basis"],
+                    source_atom_ids=tuple(scenario.facts.get("scenario_atom_ids", [])),
+                    review_status="FINALIZED",
+                    source_refs=tuple(selected_metadata["source_refs"]),
+                    applicable_scope=selected_metadata["applicable_scope"],
+                    project_rule_id=selected_metadata["project_rule_id"],
+                    project_policy_version=selected_metadata["project_policy_version"],
+                )
             envelope = scenario.facts.get("ego_speed_constraint", {})
             if isinstance(envelope, dict):
                 lower = envelope.get("min_kph", envelope.get("speed_min_kph"))
@@ -88,26 +120,6 @@ class AnalyticalPhysicsInstantiationService:
             source_atom_ids=tuple(scenario.facts.get("scenario_atom_ids", [])),
         )
 
-    @staticmethod
-    def _stationary_object_atom(
-        scenario: ScenarioCandidate,
-    ) -> tuple[bool, tuple[str, ...]]:
-        """Recognize only explicit structured Method semantics, never labels."""
-        bindings = scenario.facts.get("method_scenario_dimensions", {})
-        binding = bindings.get("OBJECT", {}) if isinstance(bindings, dict) else {}
-        if not isinstance(binding, dict):
-            return False, ()
-        semantics = binding.get("method_semantics", {})
-        semantics = semantics if isinstance(semantics, dict) else {}
-        obj = semantics.get("object", semantics)
-        obj = obj if isinstance(obj, dict) else {}
-        motion = str(
-            obj.get("motion", obj.get("motion_state", obj.get("direction", "")))
-        ).upper()
-        stationary = obj.get("stationary") is True or motion == "STATIONARY"
-        atom_id = str(binding.get("atom_id", "")).strip()
-        return stationary, (atom_id,) if atom_id else ()
-
     def instantiate(
         self, *, scenario: ScenarioCandidate, malfunction: dict[str, Any],
         causal_status: str,
@@ -130,19 +142,23 @@ class AnalyticalPhysicsInstantiationService:
                 "derived": [],
                 "scoreability_statuses": ["CAUSAL_REVALIDATION_BLOCKED"],
             }
-        inputs = [self._direct_input(scenario, field) for field in self.fields]
+        malfunction_id = str(malfunction.get("malfunction_id", ""))
+        inputs = [self._direct_input(scenario, field, malfunction_id) for field in self.fields]
         by_field = {item.field: item for item in inputs}
-        stationary, stationary_atom_ids = self._stationary_object_atom(scenario)
-        if (
-            stationary
-            and by_field["object_speed_kph"].authority is PhysicalValueAuthority.UNAVAILABLE
-        ):
+        stationary = derive_stationary_object_speed(
+            scenario, method_hash=self.method_hash, malfunction_id=malfunction_id,
+        )
+        if stationary is not None and by_field["object_speed_kph"].authority is PhysicalValueAuthority.UNAVAILABLE:
+            _, stationary_metadata = stationary
             replacement = AnalyticalPhysicalInput(
                 field="object_speed_kph", authority=PhysicalValueAuthority.DERIVED,
                 value=0.0, unit="km/h",
                 reason="Selected Method atom explicitly defines a stationary object.",
                 selection_basis="METHOD_ATOM_EXPLICIT_STATIONARY_OBJECT",
-                source_atom_ids=stationary_atom_ids, review_status="FINALIZED",
+                source_atom_ids=tuple(stationary_metadata["source_atom_ids"]),
+                review_status="FINALIZED",
+                source_refs=tuple(stationary_metadata["source_refs"]),
+                applicable_scope=stationary_metadata["applicable_scope"],
             )
             inputs = [
                 replacement if item.field == "object_speed_kph" else item
@@ -176,14 +192,24 @@ class AnalyticalPhysicsInstantiationService:
                     "ego_longitudinal_direction", "object_longitudinal_direction",
                 ],
             })
-            ttc = time_to_collision_s(distance.value, relative)
+            closing = longitudinal_closing_speed_kph(
+                ego.value, obj.value,
+                ego_direction=ego_direction.value,
+                object_direction=object_direction.value,
+                object_position=by_field["object_position"].value,
+                collision_type=collision.value,
+            )
+            ttc = time_to_collision_s(distance.value, closing)
             if ttc is not None:
                 derived.append({
                     "field": "ttc_s",
                     "value": ttc,
                     "unit": "s", "authority": "DERIVED",
                     "derivation": TTC_FORMULA_IDENTITY,
-                    "inputs": ["relative_distance_m", "relative_speed_kph"],
+                    "closing_speed_kph": closing,
+                    "inputs": ["relative_distance_m", "ego_speed_kph", "object_speed_kph",
+                               "ego_longitudinal_direction", "object_longitudinal_direction",
+                               "object_position"],
                 })
         assumption_blocked = any(
             item.authority is PhysicalValueAuthority.ENGINEERING_ANALYSIS_ASSUMPTION

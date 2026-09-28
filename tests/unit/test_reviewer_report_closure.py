@@ -1,7 +1,11 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from pathlib import Path
 from types import SimpleNamespace
+
+from openpyxl import load_workbook
+import pytest
 
 from hara_agent.models import (
     EvidenceValue, ReviewStatus, RiskAssessment, ScenarioCandidate, SourceRef,
@@ -12,6 +16,9 @@ from hara_agent.services.reporting import (
     load_scenario_projection_contexts,
 )
 from hara_agent.workflow.state import HARAState
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _pending() -> EvidenceValue:
@@ -89,6 +96,7 @@ def test_three_siblings_project_to_one_main_row_and_three_detail_rows_without_st
     assert {item.semantic_group_id for item in view.scenario_details} == {"SYNTH-GROUP-1"}
     assert all("行人" in item.object_interaction_summary for item in view.scenario_details)
     assert len(view.audit_references) == 3
+    assert all(not item.risk_trace_reference for item in view.audit_references)
     assert view.projection_metrics["grouping_reduction"] == 2
     assert state == before
 
@@ -225,3 +233,277 @@ def test_fresh_report_context_restores_group_coverage_and_contextual_speed(tmp_p
     assert "当前为综合前审阅投影" in view.rows[0].scenario_detail
     assert view.projection_metrics["contextual_speed_rows"] == 1
     assert state == before
+
+
+def test_driver_branches_and_trial_values_remain_distinct_in_formal_report(tmp_path):
+    from hara_agent.services.reporting import HARAReportWorkbookRenderer
+
+    def finalized(value: str) -> EvidenceValue:
+        return EvidenceValue(value, ReviewStatus.FINALIZED, rule_version="method-v1")
+
+    def risk(scenario_id: str, *, trial: bool) -> RiskAssessment:
+        return RiskAssessment(
+            assessment_id=f"RA-{scenario_id}", scenario_id=scenario_id,
+            severity=finalized("S2"),
+            exposure=(
+                EvidenceValue("E3", ReviewStatus.PENDING, review_reason="CANDIDATE_DEFAULT")
+                if trial else finalized("E3")
+            ),
+            controllability=(
+                EvidenceValue("C2", ReviewStatus.PENDING, review_reason="CONDITIONAL_TRIAL")
+                if trial else finalized("C2")
+            ),
+            asil=(
+                EvidenceValue("B", ReviewStatus.PENDING, review_reason="ASIL depends on S/E/C")
+                if trial else finalized("B")
+            ),
+            malfunction_id="MF-1", hazardous_event="车辆可能与行人碰撞",
+        )
+
+    def scenario(position: str) -> ScenarioCandidate:
+        item = _scenario(1)
+        item.scenario_id = f"SCN-DRIVER-{position}"
+        item.facts.update({
+            "driver_position": position,
+            "ego_speed_kph": 7,
+            "object_speed_kph": 0,
+            "relative_speed_kph": 7,
+            "relative_distance_m": 3,
+            "object_position": "front",
+            "ego_longitudinal_direction": "FORWARD",
+            "object_longitudinal_direction": "STATIONARY",
+        })
+        item.fact_provenance["ego_speed_kph"] = {
+            "approval": "FINALIZED", "policy_id": "AVP_EGO_SPEED_CLOSED_UPPER_BOUND_V1",
+            "source_refs": [{"location": "table[14].row[15]"}],
+        }
+        item.analysis_instance["driver_configuration_branch"] = {
+            "driver_position": position,
+        }
+        return item
+
+    state = _state(("车辆可能与行人碰撞",) * 3)
+    state.scenarios = [scenario("in_driver_seat"), scenario("outside_driver_seat")]
+    state.risk_results = [
+        risk("SCN-DRIVER-in_driver_seat", trial=False),
+        risk("SCN-DRIVER-outside_driver_seat", trial=True),
+    ]
+    def trace(scenario_id: str, *, trial: bool) -> dict:
+        return {
+            "malfunction_id": "MF-1", "scenario_id": scenario_id,
+            "risk_scoring_invoked": True,
+            "severity": {"status": "FINALIZED", "result": "S2"},
+            "exposure": {"status": "PENDING_INPUT" if trial else "FINALIZED", "result": "E3"},
+            "asil": {"status": "PENDING_UPSTREAM_RISK_VALUE" if trial else "FINALIZED", "result": "B"},
+            "hazardous_event_risk_context": {
+                "ego_speed_kph": {"status": "AVAILABLE", "value": 7},
+                "object_speed_kph": {"status": "AVAILABLE", "value": 0},
+                "relative_speed_kph": {"status": "AVAILABLE", "value": 7},
+                "relative_distance_m": {"status": "AVAILABLE", "value": 3},
+                "ttc_s": {"status": "AVAILABLE", "value": 1.54},
+                "driver_in_vehicle": {
+                    "status": "AVAILABLE" if "in_driver" in scenario_id else "PENDING",
+                    "value": True if "in_driver" in scenario_id else None,
+                },
+            },
+            "controllability": {
+                "status": "PENDING_INPUT" if trial else "FINALIZED", "result": "C2",
+                "decision_tree_stage": "TTC", "rule_ids": ["C-TTC-01"],
+                "unknown_override_policy": "UNSPECIFIED",
+                "derived_ttc": {"closing_speed_kph": 7, "ttc_s": 1.54},
+            },
+        }
+
+    schema = load_report_schema()
+    view = HARAReportProjectionService(schema).project(
+        state, _method(), risk_trace={"assessments": [
+            trace("SCN-DRIVER-in_driver_seat", trial=False),
+            trace("SCN-DRIVER-outside_driver_seat", trial=True),
+        ]},
+    )
+    assert len(view.rows) == 2
+    assert "驾驶员在驾驶位" in view.rows[0].operational_scenario
+    assert "驾驶员不在驾驶位" in view.rows[1].operational_scenario
+    assert view.rows[0].remark == "S 已计算；E 已计算；C 已计算；ASIL 已计算"
+    assert view.rows[1].remark == "S 已计算；E 待审试算；C 待审试算；ASIL 待审试算"
+    assert view.rows[1].exposure == "E3（试算）"
+    assert view.rows[1].asil == "B（试算）"
+    assert "待审分析设定" in view.rows[1].exposure_rationale
+    assert view.projection_metrics["score_status_counts"]["asil"] == {
+        "calculated": 1, "conditional_trial": 1, "uncalculated": 0,
+    }
+    assert "自车速度：7 km/h" in view.scenario_details[0].physical_inputs
+    assert "TTC：1.54 s" in view.scenario_details[0].physical_inputs
+    assert "目标位置：前方" in view.scenario_details[0].physical_inputs
+    assert "车内状态：未确定" in view.scenario_details[1].driver_branch
+    assert "命中规则：C-TTC-01" in view.scenario_details[0].controllability_branch
+    assert "table[14].row[15]" in view.scenario_details[0].analysis_basis
+
+    output = tmp_path / "review.xlsx"
+    HARAReportWorkbookRenderer().render(
+        view, ROOT / "references" / "HARA_Template_AI_20260327.xlsx", output, schema,
+    )
+    workbook = load_workbook(output)
+    try:
+        hara = workbook["04_HARA"]
+        detail = workbook["04A_Scenario Detail"]
+        assert hara["X6"].value == view.rows[0].remark
+        assert hara["X7"].value == view.rows[1].remark
+        headers = {detail.cell(4, column).value: column for column in range(1, detail.max_column + 1)}
+        assert detail.cell(5, headers["Physical Inputs"]).value == view.scenario_details[0].physical_inputs
+        assert detail.cell(6, headers["Driver Branch"]).value == view.scenario_details[1].driver_branch
+        assert all(
+            merged.max_row < 6 or merged.min_col > 24
+            for merged in hara.merged_cells.ranges
+        )
+    finally:
+        workbook.close()
+
+
+@pytest.mark.parametrize(("field", "change"), (
+    ("severity", {"result": "S3"}),
+    ("exposure", {"status": "PENDING_INPUT"}),
+    ("controllability", {"result": "C1"}),
+    ("asil", {"status": "PENDING_UPSTREAM_RISK_VALUE"}),
+))
+def test_scored_trace_field_conflict_blocks_report_projection(field, change):
+    state = _state(("车辆可能与行人碰撞",) * 3)
+    state.scenarios = state.scenarios[:1]
+    state.risk_results = state.risk_results[:1]
+    risk = state.risk_results[0]
+    values = {"severity": "S2", "exposure": "E3", "controllability": "C2", "asil": "B"}
+    for name, value in values.items():
+        setattr(risk, name, EvidenceValue(value, ReviewStatus.FINALIZED, rule_version="method-v1"))
+    trace = {
+        "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+        "risk_scoring_invoked": True,
+        **{name: {"status": "FINALIZED", "result": value} for name, value in values.items()},
+    }
+    trace[field].update(change)
+
+    with pytest.raises(ValueError, match=f"disagrees with {field} state"):
+        HARAReportProjectionService(load_report_schema()).project(
+            state, _method(), risk_trace={"assessments": [trace]},
+        )
+
+
+def test_supplied_trace_requires_every_risk_pair_and_rejects_duplicate_rows():
+    state = _state(("车辆可能与行人碰撞",) * 3)
+    service = HARAReportProjectionService(load_report_schema())
+    one = {
+        "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+        "risk_scoring_invoked": False,
+    }
+
+    with pytest.raises(ValueError, match="lacks committed risk pairs"):
+        service.project(state, _method(), risk_trace={"assessments": [one]})
+    with pytest.raises(ValueError, match="duplicate risk pair"):
+        service.project(state, _method(), risk_trace={"assessments": [one, dict(one)]})
+
+
+def test_scored_trace_requires_each_field_status_and_result():
+    state = _state(("车辆可能与行人碰撞",) * 3)
+    state.scenarios = state.scenarios[:1]
+    state.risk_results = state.risk_results[:1]
+    trace = {
+        "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+        "risk_scoring_invoked": True,
+        "severity": {"status": "PENDING_INPUT", "result": None},
+        "exposure": {"status": "PENDING_INPUT", "result": None},
+        "controllability": {"status": "PENDING_INPUT", "result": None},
+    }
+
+    with pytest.raises(ValueError, match="lacks asil status/result"):
+        HARAReportProjectionService(load_report_schema()).project(
+            state, _method(), risk_trace={"assessments": [trace]},
+        )
+
+
+def test_unscored_physical_values_are_labeled_as_scenario_candidates():
+    scenario = _scenario(1)
+    scenario.facts.update({"ego_speed_kph": 7, "relative_distance_m": 3, "ttc_s": 1.54})
+    mapper = EngineeringReportTextMapper()
+
+    candidate_text = mapper.physical_inputs(scenario, {"risk_scoring_invoked": False})
+    assert candidate_text.startswith("场景候选（未核实用于评分）：")
+    assert "自车速度：7 km/h" in candidate_text
+    accepted_text = mapper.physical_inputs(scenario, {
+        "risk_scoring_invoked": True,
+        "hazardous_event_risk_context": {
+            "ego_speed_kph": {"status": "AVAILABLE", "value": 7},
+        },
+    })
+    assert "自车速度：7 km/h" in accepted_text
+    assert "相对距离：3 m" not in accepted_text
+    assert "TTC：1.54 s" not in accepted_text
+
+
+def test_canonical_renderer_reads_current_run_trace_and_writes_real_reference(tmp_path, monkeypatch):
+    from hara_agent.services.reporting import HARAExcelRenderer
+
+    state = _state(("车辆可能与行人碰撞",) * 3)
+    state.scenarios = state.scenarios[:1]
+    state.risk_results = state.risk_results[:1]
+    review_root = tmp_path / "review"
+    trace_path = review_root / state.run_id / "risk_execution_trace.json"
+    trace_path.parent.mkdir(parents=True)
+    trace_path.write_text(json.dumps({
+        "run_id": state.run_id,
+        "method_contract_hash": "method-hash",
+        "assessments": [{
+            "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+            "risk_scoring_invoked": True,
+            "severity": {"status": "PENDING_INPUT", "result": None},
+            "exposure": {"status": "PENDING_INPUT", "result": None},
+            "controllability": {
+                "status": "PENDING_INPUT", "result": None,
+                "decision_tree_stage": "TTC", "rule_ids": ["C-TTC-01"],
+                "unknown_override_policy": "UNSPECIFIED",
+            },
+            "asil": {"status": "PENDING_UPSTREAM_RISK_VALUE", "result": None},
+            "hazardous_event_risk_context": {
+                "ego_speed_kph": {"status": "AVAILABLE", "value": 7},
+            },
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setenv("HARA_REVIEW_ARTIFACT_DIR", str(review_root))
+    output = tmp_path / "report.xlsx"
+    HARAExcelRenderer(
+        report_schema=load_report_schema(), method_contract=_method(),
+    ).render(
+        state, ROOT / "references" / "HARA_Template_AI_20260327.xlsx",
+        output, draft=True,
+    )
+
+    workbook = load_workbook(output, read_only=True)
+    try:
+        detail = workbook["04A_Scenario Detail"]
+        detail_headers = {
+            cell.value: cell.column for cell in detail[4] if cell.value is not None
+        }
+        assert "C-TTC-01" in detail.cell(5, detail_headers["C Decision"]).value
+        assert "自车速度：7 km/h" in detail.cell(5, detail_headers["Physical Inputs"]).value
+        audit = workbook["99_Audit"]
+        audit_headers = {cell.value: cell.column for cell in audit[4] if cell.value is not None}
+        assert audit.cell(5, audit_headers["Risk execution trace"]).value == str(trace_path)
+    finally:
+        workbook.close()
+
+
+def test_canonical_renderer_blocks_scored_state_without_trace(tmp_path, monkeypatch):
+    from hara_agent.services.reporting import HARAExcelRenderer
+
+    state = _state(("车辆可能与行人碰撞",) * 3)
+    state.scenarios = state.scenarios[:1]
+    state.risk_results = state.risk_results[:1]
+    monkeypatch.setenv("HARA_REVIEW_ARTIFACT_DIR", str(tmp_path / "empty-review"))
+    output = tmp_path / "report.xlsx"
+
+    with pytest.raises(ValueError, match="Risk execution trace is required"):
+        HARAExcelRenderer(
+            report_schema=load_report_schema(), method_contract=_method(),
+        ).render(
+            state, ROOT / "references" / "HARA_Template_AI_20260327.xlsx",
+            output, draft=True,
+        )
+    assert not output.exists()

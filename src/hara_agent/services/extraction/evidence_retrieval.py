@@ -73,7 +73,7 @@ class RoutingDiagnostics:
 @dataclass(frozen=True)
 class ContextAssemblyResult:
     block_ids: tuple[str, ...]
-    source_blocks: tuple[dict[str, str], ...]
+    source_blocks: tuple[dict[str, Any], ...]
     text: str
     selected_characters: int
     diagnostics: RoutingDiagnostics
@@ -279,6 +279,11 @@ class CoverageFirstContextAssembler:
             "kind": block_value(blocks[index], "kind"),
             "location": block_value(blocks[index], "location"),
             "text": block_value(blocks[index], "text"),
+            "section_path": (
+                list(blocks[index].get("section_path", []))
+                if isinstance(blocks[index], dict)
+                else list(getattr(blocks[index], "section_path", ()))
+            ),
         } for index in ordered_indices)
 
         fact_diagnostics = []

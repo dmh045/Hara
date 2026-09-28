@@ -29,7 +29,7 @@ from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
 from .parallel import ordered_parallel_map
 
 
-ARTIFACT_SCHEMA_VERSION = "validated-item-artifact-v8-requested-mode-speed-scope"
+ARTIFACT_SCHEMA_VERSION = "validated-item-artifact-v9-source-selection"
 
 
 def _speed_extraction_modes(
@@ -160,10 +160,16 @@ def extract_item_artifacts(
     document_text = str(state.item_definition.get("text", ""))
     source_id = str(state.item_definition.get("source_id", ""))
     blocks = list(state.item_definition.get("blocks", []))
+    source_selection = dict(state.item_definition.get("source_selection", {}))
     client_config = getattr(artifact_agent.client, "config", None)
     cache_material = {
         "document_text": document_text,
         "source_id": source_id,
+        "source_selection_fingerprint": source_selection.get("fingerprint", ""),
+        "source_selection_policy_id": source_selection.get("policy_id", ""),
+        "source_selection_policy_version": source_selection.get("policy_version", ""),
+        "project_policy_id": source_selection.get("project_policy_id", ""),
+        "project_policy_version": source_selection.get("project_policy_version", ""),
         "main_prompt_version": artifact_agent.PROMPT_VERSION,
         "supplement_prompt_version": supplement_agent.PROMPT_VERSION,
         "targeted_prompt_version": (
@@ -193,6 +199,11 @@ def extract_item_artifacts(
     candidate_material = {
         "document_text": document_text,
         "source_id": source_id,
+        "source_selection_fingerprint": source_selection.get("fingerprint", ""),
+        "source_selection_policy_id": source_selection.get("policy_id", ""),
+        "source_selection_policy_version": source_selection.get("policy_version", ""),
+        "project_policy_id": source_selection.get("project_policy_id", ""),
+        "project_policy_version": source_selection.get("project_policy_version", ""),
         "main_prompt_version": artifact_agent.PROMPT_VERSION,
         "provider": cache_material["provider"],
         "base_url": cache_material["base_url"],

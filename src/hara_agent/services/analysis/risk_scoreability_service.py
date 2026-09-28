@@ -12,7 +12,7 @@ from hara_agent.models import evaluate_risk_eligibility_payload
 
 from .hazardous_event_risk_context_service import HazardousEventRiskContextService
 from .risk_vocabulary_adapter import RiskVocabularyAdapter, RiskVocabularyResolution
-from .scenario_physics import source_is_accepted_for
+from .scenario_physics import closing_relative_speed_kph, source_is_accepted_for
 
 
 class RiskScoreabilityService:
@@ -179,14 +179,21 @@ class RiskScoreabilityService:
                 "reason": "LONGITUDINAL_DIRECTION_UNSUPPORTED",
                 "ego": ego,
             }
-        opposing = object_direction != "STATIONARY" and ego_direction != object_direction
-        speed = (
-            float(ego["value"]) + float(object_speed_kph)
-            if opposing else abs(float(ego["value"]) - float(object_speed_kph))
+        speed = closing_relative_speed_kph(
+            ego["value"], object_speed_kph,
+            ego_direction=ego_direction, object_direction=object_direction,
+            collision_type=collision.canonical_value,
         )
+        if speed is None:
+            return {
+                "status": "MISSING",
+                "reason": "LONGITUDINAL_RELATIVE_SPEED_UNRESOLVED",
+                "ego": ego,
+            }
+        opposing = object_direction != "STATIONARY" and ego_direction != object_direction
         return {
             "status": "DERIVED_PHYSICS",
-            "value": round(speed, 6),
+            "value": speed,
             "derivation_rule_id": self._motion_rule_id,
             "input_refs": [
                 "SCN.ego_speed_kph", "SCN.ego_longitudinal_direction",

@@ -21,6 +21,33 @@ class RunConfig:
     operating_mode: Optional[str] = None
     allow_aggregate_speed_fallback: bool = False
     max_workers: int = 4
+    sample_function_limit: int | None = None
+    sample_malfunction_limit: int | None = None
+    sample_parent_scenario_limit: int | None = None
+    sample_function_ids: tuple[str, ...] = ()
+    sample_malfunction_ids: tuple[str, ...] = ()
+    sample_parent_scenario_ids: tuple[str, ...] = ()
+    sample_scenario_pair_limit: int = 32
+    provider_attempt_limit: int | None = None
+
+    @property
+    def bounded_sample(self) -> bool:
+        return self.provider_attempt_limit is not None
+
+    def sample_scope(self) -> dict[str, object]:
+        if not self.bounded_sample:
+            return {}
+        return {
+            "version": "bounded-production-sample-v1",
+            "function_limit": int(self.sample_function_limit or 0),
+            "malfunction_limit": int(self.sample_malfunction_limit or 0),
+            "parent_scenario_limit": int(self.sample_parent_scenario_limit or 0),
+            "scenario_pair_limit": self.sample_scenario_pair_limit,
+            "provider_attempt_limit": int(self.provider_attempt_limit or 0),
+            "function_ids": list(self.sample_function_ids),
+            "malfunction_ids": list(self.sample_malfunction_ids),
+            "parent_scenario_ids": list(self.sample_parent_scenario_ids),
+        }
 
     def validate(self) -> None:
         if not self.item_path.is_file():
@@ -51,3 +78,27 @@ class RunConfig:
             raise ValueError("operating_mode不得为空白字符串")
         if not 1 <= self.max_workers <= 32:
             raise ValueError("max_workers必须在1到32之间")
+        sample_limits = (
+            self.sample_function_limit,
+            self.sample_malfunction_limit,
+            self.sample_parent_scenario_limit,
+        )
+        selectors = (
+            self.sample_function_ids,
+            self.sample_malfunction_ids,
+            self.sample_parent_scenario_ids,
+        )
+        if self.bounded_sample or any(value is not None for value in sample_limits) or any(selectors):
+            if self.provider_attempt_limit is None or self.provider_attempt_limit < 1:
+                raise ValueError("Bounded sample requires a positive Provider attempt limit")
+            if any(value is None or value < 1 for value in sample_limits):
+                raise ValueError("Bounded sample requires positive Function, Malfunction, and parent Scenario limits")
+            if self.sample_scenario_pair_limit < 1:
+                raise ValueError("Bounded sample Scenario pair limit must be positive")
+            if self.max_workers != 1:
+                raise ValueError("Bounded sample requires --max-workers 1 for resumable execution")
+            for ids, limit in zip(selectors, sample_limits):
+                if len(ids) != len(set(ids)) or any(not item.strip() for item in ids):
+                    raise ValueError("Bounded sample IDs must be unique and nonblank")
+                if ids and len(ids) > int(limit or 0):
+                    raise ValueError("Bounded sample IDs exceed their selection limit")

@@ -7,6 +7,7 @@ from typing import Any
 
 from hara_agent.contracts import ScenarioSynthesisAssessment, ScenarioSynthesisInput
 from hara_agent.infrastructure.llm.protocol import LLMClient, LLMRequest
+from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudgetExceeded
 from hara_agent.services.analysis.scenario_synthesis_service import (
     ConstrainedScenarioSynthesisService, ScenarioSynthesisValidationError,
 )
@@ -401,6 +402,10 @@ Return raw JSON matching the schema exactly, without Markdown."""
                         for call in calls
                     ),
                 }
+            except ProviderAttemptBudgetExceeded:
+                # The hard Provider cap is an operational stop, not a
+                # semantic candidate failure eligible for a repair call.
+                raise
             except Exception as exc:
                 code = (
                     exc.code if isinstance(exc, ScenarioSynthesisValidationError)

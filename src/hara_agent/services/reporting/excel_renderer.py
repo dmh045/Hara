@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -90,8 +91,13 @@ class HARAExcelRenderer:
             from .canonical_renderer import HARAReportWorkbookRenderer, style_template_hash
             from .projection import HARAReportProjectionService
 
+            risk_trace, risk_trace_reference = self._load_committed_risk_trace(state)
+
             view_model = HARAReportProjectionService(self.report_schema).project(
-                state, self.method_contract, style_template_hash=style_template_hash(template_path)
+                state, self.method_contract,
+                risk_trace=risk_trace,
+                risk_trace_reference=risk_trace_reference,
+                style_template_hash=style_template_hash(template_path),
             )
             return HARAReportWorkbookRenderer().render(
                 view_model, template_path, output_path, self.report_schema
@@ -127,6 +133,33 @@ class HARAExcelRenderer:
         self._rewrite_package(template, output, replacements)
         self._verify_reopen(output, hara_layout, len(hara_rows), sg_layout, len(sg_rows))
         return output
+
+    def _load_committed_risk_trace(self, state: HARAState) -> tuple[dict | None, str]:
+        from hara_agent.workflow.review_artifacts import ReviewArtifactReader
+
+        review_root = os.getenv("HARA_REVIEW_ARTIFACT_DIR", "runtime/review")
+        trace_path = (
+            ReviewArtifactReader(state.run_id, review_root).directory
+            / "risk_execution_trace.json"
+        )
+        if not trace_path.is_file():
+            if state.risk_results:
+                raise ValueError(
+                    f"Risk execution trace is required for scored state: {trace_path}"
+                )
+            return None, ""
+        try:
+            trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Risk execution trace is malformed: {trace_path}") from exc
+        if not isinstance(trace, dict) or trace.get("run_id") != state.run_id:
+            raise ValueError(f"Risk execution trace run ID does not match state: {trace_path}")
+        method_hash = str(self.method_contract.metadata.get(
+            "method_source_hash", self.method_contract.metadata.get("template_hash", "")
+        ))
+        if method_hash and trace.get("method_contract_hash") != method_hash:
+            raise ValueError(f"Risk execution trace method hash does not match state: {trace_path}")
+        return trace, str(trace_path)
 
     @staticmethod
     def _compile_report_contract(template: Path) -> ReportContract:

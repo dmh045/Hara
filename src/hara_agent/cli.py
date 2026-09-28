@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from types import SimpleNamespace
 
@@ -126,6 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--operating-mode")
     analyze.add_argument("--allow-aggregate-speed-fallback", action="store_true")
     analyze.add_argument("--max-workers", type=int, default=4)
+    analyze.add_argument("--sample-function-limit", type=int)
+    analyze.add_argument("--sample-function-id", action="append", default=[])
+    analyze.add_argument("--sample-malfunction-limit", type=int)
+    analyze.add_argument("--sample-malfunction-id", action="append", default=[])
+    analyze.add_argument("--sample-parent-scenario-limit", type=int)
+    analyze.add_argument("--sample-parent-scenario-id", action="append", default=[])
+    analyze.add_argument("--sample-scenario-pair-limit", type=int, default=32)
+    analyze.add_argument("--provider-attempt-limit", type=int)
     doctor = subparsers.add_parser("doctor", help="检查模板和运行配置，不执行分析")
     doctor.add_argument("--template", type=Path)
     doctor.add_argument(
@@ -411,6 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     synthesis.add_argument("--full", action="store_true")
     synthesis.add_argument("--max-workers", type=int, default=4)
+    synthesis.add_argument("--provider-attempt-limit", type=int)
+    synthesis.add_argument("--provider-budget-run-id")
     causal_revalidation = subparsers.add_parser(
         "revalidate-synthesized-scenarios",
         help="Differentially revalidate only method-valid synthesized child scenarios",
@@ -432,7 +443,63 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("references/HARA_Template_AI_20260327.xlsx"),
     )
     causal_revalidation.add_argument("--max-workers", type=int, default=4)
+    causal_revalidation.add_argument("--provider-attempt-limit", type=int)
+    causal_revalidation.add_argument("--provider-budget-run-id")
     return parser
+
+
+def _shared_provider_budget(args):
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+
+    limit = args.provider_attempt_limit
+    budget_run_id = args.provider_budget_run_id
+    expected_budget_run_id = ""
+    expected_limit = None
+    source_run_id = args.source_run_id
+    for _ in range(3):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", source_run_id):
+            raise ValueError("Child source run ID is invalid")
+        source_checkpoint = args.run_dir / f"{source_run_id}.checkpoint.json"
+        if not source_checkpoint.is_file():
+            break
+        source = json.loads(source_checkpoint.read_text(encoding="utf-8"))
+        events = source.get("audit_trail", [])
+        bounded = next((
+            event for event in events
+            if event.get("event") == "bounded_sample_configured"
+        ), None)
+        if bounded is not None:
+            expected_budget_run_id = source_run_id
+            expected_limit = bounded.get("scope", {}).get("provider_attempt_limit")
+            break
+        ancestor = next((
+            str(event.get("source_run_id", "")) for event in events
+            if event.get("event") == "scenario_synthesis_child_run_materialized"
+        ), "")
+        if not ancestor or ancestor == source_run_id:
+            break
+        source_run_id = ancestor
+    if expected_budget_run_id and limit is None:
+        raise ValueError("Bounded sample child run must reuse its parent Provider budget")
+    if (limit is None) != (budget_run_id is None):
+        raise ValueError(
+            "Child Provider budget requires both --provider-attempt-limit "
+            "and --provider-budget-run-id"
+        )
+    if limit is None:
+        return None
+    if limit < 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", budget_run_id):
+        raise ValueError("Child Provider budget limit/run ID is invalid")
+    if expected_budget_run_id and (
+        budget_run_id != expected_budget_run_id or limit != expected_limit
+    ):
+        raise ValueError("Child Provider budget differs from its bounded parent run")
+    path = args.run_dir / f"{budget_run_id}.provider-attempts.jsonl"
+    if not path.is_file():
+        raise FileNotFoundError(
+            "Shared Provider budget ledger from the parent analyze run is missing"
+        )
+    return ProviderAttemptBudget(path, run_id=budget_run_id, limit=limit)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -594,7 +661,8 @@ def main(argv: list[str] | None = None) -> int:
             baseline_manifest_path=args.baseline,
             report_template_path=args.report_style_template,
         )
-        client = create_llm_client(LLMConfig.from_env())
+        attempt_budget = _shared_provider_budget(args)
+        client = create_llm_client(LLMConfig.from_env(), attempt_budget=attempt_budget)
         smoke_identities = None
         if args.smoke_identity_file is not None:
             identity_payload = json.loads(
@@ -623,6 +691,9 @@ def main(argv: list[str] | None = None) -> int:
             baseline_path=args.baseline,
             report_template_path=args.report_style_template,
         )
+        if attempt_budget is not None:
+            result["shared_provider_attempt_count"] = attempt_budget.attempts
+            result["shared_provider_attempt_ledger"] = str(attempt_budget.path)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result["smoke_passed"]:
             return 2
@@ -638,9 +709,10 @@ def main(argv: list[str] | None = None) -> int:
             baseline_manifest_path=args.baseline,
             report_template_path=args.report_style_template,
         )
+        attempt_budget = _shared_provider_budget(args)
         result = ScenarioCausalRevalidationRunner(
             method=resolution.method,
-            client=create_llm_client(LLMConfig.from_env()),
+            client=create_llm_client(LLMConfig.from_env(), attempt_budget=attempt_budget),
             run_dir=args.run_dir,
             review_root=args.review_root,
         ).run(
@@ -648,6 +720,9 @@ def main(argv: list[str] | None = None) -> int:
             target_run_id=args.target_run_id,
             max_workers=args.max_workers,
         )
+        if attempt_budget is not None:
+            result["shared_provider_attempt_count"] = attempt_budget.attempts
+            result["shared_provider_attempt_ledger"] = str(attempt_budget.path)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "confirm-template-role":
@@ -1847,8 +1922,18 @@ def main(argv: list[str] | None = None) -> int:
         operating_mode=args.operating_mode,
         allow_aggregate_speed_fallback=args.allow_aggregate_speed_fallback,
         max_workers=args.max_workers,
+        sample_function_limit=args.sample_function_limit,
+        sample_malfunction_limit=args.sample_malfunction_limit,
+        sample_parent_scenario_limit=args.sample_parent_scenario_limit,
+        sample_function_ids=tuple(args.sample_function_id),
+        sample_malfunction_ids=tuple(args.sample_malfunction_id),
+        sample_parent_scenario_ids=tuple(args.sample_parent_scenario_id),
+        sample_scenario_pair_limit=args.sample_scenario_pair_limit,
+        provider_attempt_limit=args.provider_attempt_limit,
     )
-    result = HARAApplication.from_env(config).run()
+    application = HARAApplication.from_env(config)
+    result = application.run()
+    attempt_budget = getattr(application.llm_client, "attempt_budget", None)
     print(json.dumps({
         "run_id": result.state.run_id,
         "stage": result.state.stage.value,
@@ -1857,6 +1942,20 @@ def main(argv: list[str] | None = None) -> int:
         "can_publish": result.state.can_publish,
         "risk_count": len(result.state.risk_results),
         "safety_goal_count": len(result.state.safety_goals),
+        "bounded_sample": config.bounded_sample,
+        "provider_attempt_count": (
+            attempt_budget.attempts if attempt_budget is not None else None
+        ),
+        "provider_attempt_ledger": (
+            str(attempt_budget.path) if attempt_budget is not None else ""
+        ),
+        "sample_scope_preview": next(
+            (
+                event for event in reversed(result.state.audit_trail)
+                if event.get("event") == "bounded_sample_scope_preview"
+            ),
+            {},
+        ),
     }, ensure_ascii=False, indent=2))
     if result.reason == "draft_report_generated_pending_review":
         return 0

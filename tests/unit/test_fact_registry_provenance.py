@@ -71,6 +71,7 @@ def test_ttc_is_derived_physics_with_canonical_inputs():
     assert record.metadata == {
         "derivation_type": "TTC",
         "inputs": ["SCN.relative_distance", "SCN.relative_speed_kph"],
+        "formula_identity": "relative_distance_m / (relative_speed_kph / 3.6)",
     }
 
 

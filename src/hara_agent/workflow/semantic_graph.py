@@ -68,6 +68,10 @@ class SemanticWorkflowInputs:
     requested_operating_modes: tuple[str, ...] = ()
     method_contract: MethodContract | None = None
     review_artifact_writer: ReviewArtifactWriter | None = None
+    sample_function_limit: int | None = None
+    sample_malfunction_limit: int | None = None
+    sample_function_ids: tuple[str, ...] = ()
+    sample_malfunction_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,10 +167,38 @@ def _scenario_candidates(state: HARAState, inputs: SemanticWorkflowInputs) -> li
     return candidates
 
 
+def _select_bounded_records(
+    state: HARAState, *, field: str, identity: str, limit: int | None,
+    selected_ids: tuple[str, ...] = (),
+) -> HARAState:
+    if limit is None:
+        return state
+    values = getattr(state, field)
+    if selected_ids:
+        indexed = {str(item.get(identity, "")): item for item in values}
+        missing = [item_id for item_id in selected_ids if item_id not in indexed]
+        if missing:
+            raise ValueError(f"Bounded sample {field} IDs are unavailable: {missing}")
+        selected = [indexed[item_id] for item_id in selected_ids]
+    else:
+        selected = values[:limit]
+    setattr(state, field, selected)
+    inventory = state.item_definition.setdefault("bounded_sample_inventory", {})
+    inventory[field] = {
+        "available_count": len(values),
+        "selected_count": len(selected),
+        "selected_ids": [str(item.get(identity, "")) for item in selected],
+        "omitted_count": len(values) - len(selected),
+    }
+    state.record("bounded_sample_records_selected", field=field, **inventory[field])
+    return state
+
+
 def _assess_guidewords_after_project_context_preflight(
     state: HARAState,
     inputs: SemanticWorkflowInputs,
     agents: SemanticWorkflowAgents,
+    checkpoint: Callable[[HARAState], object] | None = None,
 ) -> HARAState:
     if inputs.project_context_preflight is not None:
         audit = inputs.project_context_preflight(state)
@@ -179,6 +211,7 @@ def _assess_guidewords_after_project_context_preflight(
         max_workers=inputs.max_workers,
         progress=inputs.progress,
         review_artifact_writer=inputs.review_artifact_writer,
+        checkpoint=checkpoint,
     )
 
 
@@ -195,11 +228,18 @@ def build_semantic_frontend_graph(
     )
     graph.add_node(
         WorkflowStage.INITIALIZE,
-        lambda state: read_item_document(state, str(inputs.item_path)),
+        lambda state: read_item_document(
+            state,
+            str(inputs.item_path),
+            project_analysis_policy=(
+                inputs.method_contract.metadata.get("project_analysis_policy", {})
+                if inputs.method_contract is not None else {}
+            ),
+        ),
     )
     graph.add_node(
         WorkflowStage.EXTRACT,
-        lambda state: extract_item_artifacts(
+        lambda state: _select_bounded_records(extract_item_artifacts(
             state,
             ItemArtifactExtractionAgent(
                 agents.client,
@@ -213,17 +253,23 @@ def build_semantic_frontend_graph(
             required_fact_specs=inputs.required_fact_specs,
             requested_operating_modes=inputs.requested_operating_modes,
             review_artifact_writer=inputs.review_artifact_writer,
-        ),
+        ), field="functions", identity="function_id",
+            limit=inputs.sample_function_limit,
+            selected_ids=inputs.sample_function_ids),
     )
     graph.add_node(
         WorkflowStage.FUNCTIONS,
         lambda state: _assess_guidewords_after_project_context_preflight(
             state, inputs, agents,
+            checkpoint=(
+                checkpoint_repository.save
+                if checkpoint_repository is not None else None
+            ),
         ),
     )
     graph.add_node(
         WorkflowStage.HAZOP,
-        lambda state: derive_malfunctions(
+        lambda state: _select_bounded_records(derive_malfunctions(
             state,
             agents.malfunctions,
             [_function(value) for value in state.functions],
@@ -235,7 +281,9 @@ def build_semantic_frontend_graph(
                 FailureModeSelectorResolver(inputs.method_contract)
                 if inputs.method_contract is not None else None
             ),
-        ),
+        ), field="malfunctions", identity="malfunction_id",
+            limit=inputs.sample_malfunction_limit,
+            selected_ids=inputs.sample_malfunction_ids),
     )
     graph.add_node(
         WorkflowStage.MALFUNCTIONS,

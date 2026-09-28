@@ -21,7 +21,7 @@ class RoutedDocumentBlocks:
     task: str
     block_ids: list[str]
     text: str
-    source_blocks: list[dict[str, str]] = field(default_factory=list)
+    source_blocks: list[dict[str, Any]] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -114,6 +114,7 @@ class ItemEvidenceRouter:
             "kind": str(blocks[index].get("kind", "")),
             "location": str(blocks[index].get("location", "")),
             "text": str(blocks[index].get("text", "")),
+            "section_path": list(blocks[index].get("section_path", [])),
         } for index in sorted(matched) if str(blocks[index].get("block_id", "")) in {
             item[0] for item in selected
         }]

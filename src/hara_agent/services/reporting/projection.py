@@ -27,6 +27,15 @@ def _status(evidence: Any) -> str:
     return str(getattr(value, "value", value))
 
 
+_CALCULATED = "已计算"
+_TRIAL = "待审试算"
+_UNCALCULATED = "未计算"
+_TRIAL_MARKERS = (
+    "CONDITIONAL_TRIAL", "CANDIDATE_DEFAULT", "CANDIDATE_POLICY",
+    "TRIAL_PENDING", "PENDING_ANALYSIS_ASSUMPTION", "待审试算",
+)
+
+
 class HARAReportProjectionService:
     """Project committed runtime facts into reviewer-facing report values."""
 
@@ -75,7 +84,7 @@ class HARAReportProjectionService:
     @classmethod
     def _assessment_status(
         cls, *, risk: Any, scenario: Any, trace: Mapping[str, Any],
-        causal_status: str,
+        causal_status: str, trace_provided: bool,
     ) -> str:
         if bool(trace.get("risk_scoring_invoked")):
             return "ELIGIBLE — RISK SCORING INVOKED"
@@ -90,8 +99,121 @@ class HARAReportProjectionService:
         )
         return (
             "ELIGIBLE — RISK SCORING INVOKED"
-            if finalized else "PENDING — RISK SCORING NOT EXECUTED"
+            if finalized and not trace_provided
+            else "PENDING — RISK SCORING NOT EXECUTED"
         )
+
+    @staticmethod
+    def _driver_group_identity(scenario: Any) -> str:
+        facts = getattr(scenario, "facts", {}) or {}
+        instance = getattr(scenario, "analysis_instance", {}) or {}
+        branch = instance.get("driver_configuration_branch", {}) if isinstance(instance, Mapping) else {}
+        position = str(
+            facts.get("driver_position") or facts.get("allowed_driver_position")
+            or (branch.get("driver_position", "") if isinstance(branch, Mapping) else "")
+        )
+        if position:
+            return position
+        in_vehicle = facts.get("driver_in_vehicle")
+        return f"driver_in_vehicle={in_vehicle}" if isinstance(in_vehicle, bool) else ""
+
+    @staticmethod
+    def _score_state(
+        evidence: Any, field_trace: Mapping[str, Any], *, scoring_invoked: bool,
+    ) -> str:
+        value = getattr(evidence, "value", None)
+        if not scoring_invoked or value is None or value == "":
+            return _UNCALCULATED
+        if _status(evidence) == "FINALIZED":
+            return _CALCULATED
+        marker_text = " ".join((
+            str(getattr(evidence, "review_reason", "")),
+            str(field_trace.get("status", "")),
+            str(field_trace.get("calculation_status", "")),
+            str(field_trace.get("trial_status", "")),
+        )).upper()
+        return _TRIAL if any(marker in marker_text for marker in _TRIAL_MARKERS) else _UNCALCULATED
+
+    @classmethod
+    def _score_states(
+        cls, risk: Any, trace: Mapping[str, Any], *, trace_provided: bool,
+    ) -> dict[str, str]:
+        invoked = bool(trace.get("risk_scoring_invoked")) if trace_provided else True
+        states = {
+            field: cls._score_state(
+                getattr(risk, field),
+                trace.get(field, {}) if isinstance(trace.get(field), Mapping) else {},
+                scoring_invoked=invoked,
+            )
+            for field in ("severity", "exposure", "controllability")
+        }
+        asil = getattr(risk, "asil")
+        asil_trace = trace.get("asil", {}) if isinstance(trace.get("asil"), Mapping) else {}
+        states["asil"] = cls._score_state(
+            asil, asil_trace, scoring_invoked=invoked,
+        )
+        if (
+            states["asil"] == _UNCALCULATED
+            and invoked and getattr(asil, "value", None) not in (None, "")
+            and all(states[field] in {_CALCULATED, _TRIAL} for field in (
+                "severity", "exposure", "controllability",
+            ))
+            and any(states[field] == _TRIAL for field in (
+                "severity", "exposure", "controllability",
+            ))
+        ):
+            states["asil"] = _TRIAL
+        return states
+
+    @staticmethod
+    def _validate_scored_trace(risk: Any, trace: Mapping[str, Any]) -> None:
+        """Refuse a scored row whose field results differ from committed state."""
+
+        pair = f"{risk.malfunction_id}/{risk.scenario_id}"
+        for field in ("severity", "exposure", "controllability", "asil"):
+            field_trace = trace.get(field)
+            if (
+                not isinstance(field_trace, Mapping)
+                or "status" not in field_trace
+                or "result" not in field_trace
+            ):
+                raise ValueError(f"Risk execution trace lacks {field} status/result: {pair}")
+            evidence = getattr(risk, field)
+            trace_status = str(field_trace["status"] or "")
+            if not trace_status:
+                raise ValueError(f"Risk execution trace has empty {field} status: {pair}")
+            trace_result = field_trace["result"]
+            trace_value = str(getattr(trace_result, "value", trace_result) or "")
+            if (
+                trace_value != _value(evidence)
+                or (trace_status == "FINALIZED") != (_status(evidence) == "FINALIZED")
+            ):
+                raise ValueError(f"Risk execution trace disagrees with {field} state: {pair}")
+
+    def _display_score(self, evidence: Any, state: str) -> str:
+        if state == _UNCALCULATED:
+            return self.text.pending_value(evidence)
+        value = _value(evidence)
+        return f"{value}（试算）" if state == _TRIAL else value
+
+    def _score_rationale(
+        self, field: str, evidence: Any, trace: Mapping[str, Any], state: str,
+    ) -> str:
+        labels = {
+            "severity": "S", "exposure": "E",
+            "controllability": "C", "asil": "ASIL",
+        }
+        if state == _TRIAL:
+            return f"{labels[field]} 使用待审分析设定完成试算，待确认后方可作为正式评定。"
+        if state == _UNCALCULATED and _status(evidence) == "FINALIZED":
+            return f"当前执行记录未证明 {labels[field]} 已完成评分，暂不展示旧值。"
+        mapper = {
+            "severity": self.text.severity_rationale,
+            "exposure": self.text.exposure_rationale,
+            "controllability": self.text.controllability_rationale,
+            "asil": self.text.asil_rationale,
+        }
+        return mapper[field](evidence, trace)
 
     @staticmethod
     def _normalized_hazardous_event(value: Any) -> str:
@@ -243,10 +365,28 @@ class HARAReportProjectionService:
         ] | None = None,
     ) -> HARAReportViewModel:
         trace_rows = (risk_trace or {}).get("assessments", [])
-        trace_by_pair = {
-            (str(item.get("malfunction_id", "")), str(item.get("scenario_id", ""))): item
-            for item in trace_rows if isinstance(item, Mapping)
-        }
+        if not isinstance(trace_rows, list):
+            raise ValueError("Risk execution trace assessments must be a list")
+        trace_by_pair = {}
+        for item in trace_rows:
+            if not isinstance(item, Mapping):
+                raise ValueError("Risk execution trace assessment must be an object")
+            pair = (str(item.get("malfunction_id", "")), str(item.get("scenario_id", "")))
+            if not all(pair):
+                raise ValueError("Risk execution trace assessment lacks risk pair ID")
+            if pair in trace_by_pair:
+                raise ValueError(f"Risk execution trace has duplicate risk pair: {pair}")
+            trace_by_pair[pair] = item
+        if risk_trace is not None:
+            missing_pairs = {
+                (str(risk.malfunction_id), str(risk.scenario_id))
+                for risk in state.risk_results
+            } - set(trace_by_pair)
+            if missing_pairs:
+                raise ValueError(
+                    "Risk execution trace lacks committed risk pairs: "
+                    + ", ".join(f"{malfunction}/{scenario}" for malfunction, scenario in sorted(missing_pairs))
+                )
         causal_status_by_pair = self._causal_status_by_pair(causal_trace)
         malfunctions = {str(item.get("malfunction_id", "")): item for item in state.malfunctions}
         scenarios = {str(item.scenario_id): item for item in state.scenarios}
@@ -260,6 +400,8 @@ class HARAReportProjectionService:
             if scenario is None:
                 raise ValueError(f"Report projection scenario foreign key missing: {risk.scenario_id}")
             trace = trace_by_pair.get((risk.malfunction_id, risk.scenario_id), {})
+            if bool(trace.get("risk_scoring_invoked")):
+                self._validate_scored_trace(risk, trace)
             instance = getattr(scenario, "analysis_instance", {}) or {}
             hazardous_event_id = str(
                 trace.get("hazardous_event_id", "")
@@ -289,6 +431,16 @@ class HARAReportProjectionService:
             group_key = (
                 *base_key,
                 hashlib.sha256(event_identity.encode("utf-8")).hexdigest()[:12],
+                self._driver_group_identity(scenario),
+                tuple(
+                    (
+                        _value(getattr(risk, field)),
+                        self._score_states(
+                            risk, trace, trace_provided=risk_trace is not None,
+                        )[field],
+                    )
+                    for field in ("severity", "exposure", "controllability", "asil")
+                ),
             )
             entries.append({
                 "risk": risk, "scenario": scenario, "trace": trace,
@@ -296,7 +448,7 @@ class HARAReportProjectionService:
                 "group_key": group_key, "causal_identity": causal_identity,
             })
 
-        grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+        grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
         for entry in entries:
             grouped[entry["group_key"]].append(entry)
         ordered_groups = sorted(
@@ -348,13 +500,17 @@ class HARAReportProjectionService:
             severity_trace = trace.get("severity", {}) if isinstance(trace, Mapping) else {}
             exposure_trace = trace.get("exposure", {}) if isinstance(trace, Mapping) else {}
             control_trace = trace.get("controllability", {}) if isinstance(trace, Mapping) else {}
+            score_states = self._score_states(
+                risk, trace, trace_provided=risk_trace is not None,
+            )
             values = {
-                field: _value(getattr(risk, field)) or self.text.pending_value(getattr(risk, field))
+                field: self._display_score(getattr(risk, field), score_states[field])
                 for field in ("severity", "exposure", "controllability", "asil")
             }
             causal_status = causal_status_by_pair.get((risk.malfunction_id, risk.scenario_id), "")
             assessment_status = self._assessment_status(
                 risk=risk, scenario=scenario, trace=trace, causal_status=causal_status,
+                trace_provided=risk_trace is not None,
             )
             hara_id = f"HARA_{offset:03d}"
             row = HARAReportRowView(
@@ -373,14 +529,23 @@ class HARAReportProjectionService:
                 hazardous_event=self.text.hazardous_event(risk.hazardous_event),
                 potential_harm=self.text.potential_harm(risk.potential_harm, severity=risk.severity),
                 severity=values["severity"],
-                severity_rationale=self.text.severity_rationale(risk.severity, severity_trace),
+                severity_rationale=self._score_rationale(
+                    "severity", risk.severity, severity_trace, score_states["severity"],
+                ),
                 exposure=values["exposure"],
-                exposure_rationale=self.text.exposure_rationale(risk.exposure, exposure_trace),
+                exposure_rationale=self._score_rationale(
+                    "exposure", risk.exposure, exposure_trace, score_states["exposure"],
+                ),
                 controllability=values["controllability"],
-                controllability_rationale=self.text.controllability_rationale(risk.controllability, control_trace),
+                controllability_rationale=self._score_rationale(
+                    "controllability", risk.controllability, control_trace,
+                    score_states["controllability"],
+                ),
                 asil=values["asil"],
-                asil_rationale=self.text.asil_rationale(
-                    risk.asil, trace.get("asil", {}) if isinstance(trace, Mapping) else {},
+                asil_rationale=self._score_rationale(
+                    "asil", risk.asil,
+                    trace.get("asil", {}) if isinstance(trace.get("asil"), Mapping) else {},
+                    score_states["asil"],
                 ),
                 ftti="Pending",
                 ftti_rationale=self.text.ftti_rationale(),
@@ -389,7 +554,13 @@ class HARAReportProjectionService:
                 safe_state="",
                 assessment_status=assessment_status,
                 clarification_ids=self._clarifications(risk),
-                remark="",
+                remark="；".join(
+                    f"{label} {score_states[field]}"
+                    for field, label in (
+                        ("severity", "S"), ("exposure", "E"),
+                        ("controllability", "C"), ("asil", "ASIL"),
+                    )
+                ),
             )
             rows.append(row)
             group_source_counts[str(representative["base_key"][0])] += 1
@@ -404,6 +575,7 @@ class HARAReportProjectionService:
                 child_status = self._assessment_status(
                     risk=child_risk, scenario=child, trace=child_trace,
                     causal_status=child_causal,
+                    trace_provided=risk_trace is not None,
                 )
                 child_operational, child_detail = self.text.scenario(child)
                 variant = self.text.variant_text(child)
@@ -419,6 +591,10 @@ class HARAReportProjectionService:
                     hazardous_event=self.text.hazardous_event(child_risk.hazardous_event),
                     semantic_group_id=self._semantic_group_id(child),
                     object_interaction_summary=self.text.object_interaction_summary(child),
+                    physical_inputs=self.text.physical_inputs(child, child_trace),
+                    driver_branch=self.text.driver_branch(child, child_trace),
+                    controllability_branch=self.text.controllability_branch(child_trace),
+                    analysis_basis=self.text.analysis_basis(child),
                 ))
                 audit.append(AuditReferenceView(
                     run_id=state.run_id,
@@ -428,7 +604,7 @@ class HARAReportProjectionService:
                     hara_id=hara_id,
                     hazardous_event_id=entry["hazardous_event_id"],
                     scenario_id=child.scenario_id,
-                    risk_trace_reference=risk_trace_reference or "risk_execution_trace.json",
+                    risk_trace_reference=risk_trace_reference,
                     clarification_ids=self._clarifications(child_risk),
                     assessment_status=child_status,
                     semantic_group_id=self._semantic_group_id(child),
@@ -440,8 +616,19 @@ class HARAReportProjectionService:
 
         summary = run_summary or {}
 
-        def count(field: str, status: str = "FINALIZED") -> int:
-            return sum(_status(getattr(item, field)) == status for item in state.risk_results)
+        score_counts = {
+            field: Counter(
+                self._score_states(
+                    entry["risk"], entry["trace"],
+                    trace_provided=risk_trace is not None,
+                )[field]
+                for entry in entries
+            )
+            for field in ("severity", "exposure", "controllability", "asil")
+        }
+
+        def count(field: str) -> int:
+            return score_counts[field][_CALCULATED]
 
         method_hash = str(method.metadata.get("method_source_hash", method.metadata.get("template_hash", "")))
         clarification_ids = "; ".join(sorted({
@@ -456,10 +643,20 @@ class HARAReportProjectionService:
             report_schema_hash=self.schema.schema_hash,
             style_template_hash=style_template_hash,
             report_status=(
-                "SCENARIO SYNTHESIS COMPLETE — CAUSAL REVALIDATION IN PROGRESS — "
+                "DRAFT_READY"
+                if entries and all(
+                    score_counts[field][_CALCULATED] == len(entries)
+                    for field in score_counts
+                )
+                else "CONDITIONAL TRIAL — NOT FOR RELEASE"
+                if any(score_counts[field][_TRIAL] for field in score_counts)
+                else "RISK SCORING PARTIAL — NOT FOR RELEASE"
+                if (
+                    any(bool(entry["trace"].get("risk_scoring_invoked")) for entry in entries)
+                    or any(score_counts[field][_CALCULATED] for field in score_counts)
+                )
+                else "SCENARIO SYNTHESIS COMPLETE — CAUSAL REVALIDATION IN PROGRESS — "
                 "RISK SCORING NOT YET EXECUTED"
-                if any(row.assessment_status != "ELIGIBLE — RISK SCORING INVOKED" for row in rows)
-                else "DRAFT_READY"
             ),
             release_status="NOT FOR RELEASE",
             function_count=len(state.functions),
@@ -516,6 +713,14 @@ class HARAReportProjectionService:
                 for item in entries
             ),
             "group_consistency_failures": len(group_consistency_failures),
+            "score_status_counts": {
+                field: {
+                    "calculated": score_counts[field][_CALCULATED],
+                    "conditional_trial": score_counts[field][_TRIAL],
+                    "uncalculated": score_counts[field][_UNCALCULATED],
+                }
+                for field in score_counts
+            },
         }
         return HARAReportViewModel(
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,

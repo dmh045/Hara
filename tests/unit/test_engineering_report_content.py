@@ -141,9 +141,39 @@ def test_projection_derives_synthesis_causal_and_risk_statuses():
         "assessments": [{
             "malfunction_id": "MF-1", "scenario_id": "SCN-1",
             "risk_scoring_invoked": True,
+            **{
+                field: {"status": "PENDING_INPUT", "result": None}
+                for field in ("severity", "exposure", "controllability", "asil")
+            },
         }],
     })
     assert scored.rows[0].assessment_status == "ELIGIBLE — RISK SCORING INVOKED"
+
+
+def test_projection_does_not_publish_stale_values_when_trace_says_scoring_not_invoked():
+    state = _state()
+    for field, value in (
+        ("severity", "S2"), ("exposure", "E3"),
+        ("controllability", "C2"), ("asil", "B"),
+    ):
+        setattr(
+            state.risk_results[0], field,
+            EvidenceValue(value, ReviewStatus.FINALIZED, rule_version="method-v1"),
+        )
+    view = HARAReportProjectionService(load_report_schema()).project(
+        state, _method(), risk_trace={"assessments": [{
+            "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+            "risk_scoring_invoked": False,
+        }]},
+    )
+
+    assert view.rows[0].severity == "Pending"
+    assert view.rows[0].asil == "Pending"
+    assert "暂不展示旧值" in view.rows[0].severity_rationale
+    assert view.rows[0].remark == "S 未计算；E 未计算；C 未计算；ASIL 未计算"
+    assert view.rows[0].assessment_status == "PENDING — RISK SCORING NOT EXECUTED"
+    assert view.projection_metrics["score_status_counts"]["severity"]["calculated"] == 0
+    assert "RISK SCORING NOT YET EXECUTED" in view.summary.report_status
 
 
 def test_exposure_rationale_is_trace_derived_for_finalized_evidence():

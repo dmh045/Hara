@@ -12,6 +12,7 @@ import tempfile
 from typing import Any
 
 from hara_agent.contracts import MethodContract
+from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudgetExceeded
 from hara_agent.models import (
     EvidenceValue, ItemDefinitionFacts, MalfunctionCandidate, ReviewStatus,
     RiskAssessment, ScenarioCandidate, ScenarioFeasibilityAssessment, SourceRef,
@@ -71,7 +72,7 @@ class ScenarioCausalRevalidationRunner:
         self.client = client
         self.run_dir = Path(run_dir).expanduser().resolve()
         self.review_root = Path(review_root).expanduser().resolve()
-        self.physics = AnalyticalPhysicsInstantiationService()
+        self.physics = AnalyticalPhysicsInstantiationService(method)
         self.exposure = ExposureInputReadinessService(method)
 
     def _source_inventory(self, source_run_id: str) -> dict[str, str]:
@@ -302,6 +303,10 @@ class ScenarioCausalRevalidationRunner:
                 malfunction_id = futures[future]
                 try:
                     assessments, audit = future.result()
+                except ProviderAttemptBudgetExceeded:
+                    # The shared Provider cap ends this child run immediately.
+                    # Do not convert it into a deferred semantic assessment.
+                    raise
                 except Exception as exc:
                     failed_malfunctions[malfunction_id] = {
                         "error_type": type(exc).__name__,

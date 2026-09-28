@@ -43,6 +43,7 @@ _CATEGORY_MARKERS: dict[str, tuple[str, ...]] = {
     "ACTION_ABORT": (
         "abort", "cancel", "cancellation", "takeover", "take-over",
         "control handover", "handover", "hand-over",
+        "取消", "接管", "交接", "退出",
     ),
     "OBJECT_PEDESTRIAN": ("pedestrian", "person", "vru", "行人"),
     "OBJECT_CYCLIST": ("cyclist", "bicycle", "two-wheel", "骑行", "自行车"),
@@ -92,6 +93,18 @@ def _explicit_categories(text: str) -> set[str]:
         category for category, markers in _CATEGORY_MARKERS.items()
         if any(marker.casefold() in folded for marker in markers)
     }
+
+
+def _operating_action_categories(text: str) -> set[str]:
+    """Read an operation from scenario wording without treating a place as an action."""
+    categories = _explicit_categories(text) & _ACTION_CATEGORIES
+    folded = text.casefold()
+    if "ACTION_PARK" in categories and not any(marker in folded for marker in (
+        "parking maneuver", "parking-in", "parking-out", "park-in", "park-out",
+        "泊车", "泊入", "泊出",
+    )):
+        categories.remove("ACTION_PARK")
+    return categories
 
 
 def normalize_object_category(value: Any) -> str:
@@ -226,6 +239,7 @@ class ScenarioSemanticQueryBuilder:
         structured_categories: set[str] = set()
         evidence: dict[str, list[str]] = {}
         traffic_evidence: list[dict[str, str]] = []
+        unmapped_object_sources: list[str] = []
 
         def include(
             fields: dict[str, Any], allowed: frozenset[str], *,
@@ -252,6 +266,40 @@ class ScenarioSemanticQueryBuilder:
         }
         action_fields["PARENT.facts.vehicle_state"] = facts.get("vehicle_state", "")
         include(action_fields, _ACTION_CATEGORIES)
+        state_actions = _explicit_categories(_json_text({
+            key: explicit_fields[key] for key in (
+                "MF.description", "MF.functional_effect", "MF.vehicle_level_hazard",
+                "HE.hazardous_event", "CAUSAL.summary",
+            )
+        })) & {"ACTION_ABORT"}
+        operating_action_fields = {
+            "PARENT.situational_description": parent.situational_description,
+            "PARENT.operating_scenario": parent.operating_scenario,
+            "PARENT.facts.operating_scenario": facts.get("operating_scenario", ""),
+            "PARENT.facts.vehicle_state": facts.get("vehicle_state", ""),
+        }
+        operating_actions: set[str] = set()
+        for ref, value in operating_action_fields.items():
+            matched = _operating_action_categories(str(value))
+            operating_actions.update(matched)
+            for category in matched:
+                evidence.setdefault(category, []).append(ref)
+        consequence_actions = _explicit_categories(_json_text({
+            key: explicit_fields[key] for key in (
+                "MF.functional_effect", "MF.vehicle_level_hazard",
+                "HE.hazardous_event", "CAUSAL.summary",
+            )
+        })) & (_ACTION_CATEGORIES - {"ACTION_ABORT", "ACTION_PARK"})
+        if state_actions:
+            # A transition/cancellation is the malfunction identity, not a
+            # physical Method action. A supported operation or control effect
+            # can supply the physical action while the state failure remains
+            # visible for causal validation. Without one, retain the gap.
+            physical_actions = operating_actions | consequence_actions
+            categories.difference_update(_ACTION_CATEGORIES)
+            categories.update(physical_actions or state_actions)
+        else:
+            categories.update(operating_actions)
         include({
             key: explicit_fields[key] for key in (
                 "MF.vehicle_level_hazard", "HE.hazardous_event", "CAUSAL.summary",
@@ -270,10 +318,13 @@ class ScenarioSemanticQueryBuilder:
         }, _ROAD_CATEGORIES)
 
         for field in ("object_type", "road_user_type"):
-            if normalized := normalize_object_category(facts.get(field, "")):
+            raw_object = facts.get(field, "")
+            if normalized := normalize_object_category(raw_object):
                 categories.add(normalized)
                 structured_categories.add(normalized)
                 evidence.setdefault(normalized, []).append(f"PARENT.facts.{field}")
+            elif str(raw_object or "").strip():
+                unmapped_object_sources.append(f"PARENT.facts.{field}")
 
         for field in ("traffic_relation", "interaction_relation", "relative_motion"):
             for relation in _normalize_traffic_relation(facts.get(field, "")):
@@ -294,6 +345,8 @@ class ScenarioSemanticQueryBuilder:
                 categories.add(normalized)
                 structured_categories.add(normalized)
                 evidence.setdefault(normalized, []).append("FM_TEMPLATE.obj_type")
+            elif str(option.get("obj_type", "")).strip():
+                unmapped_object_sources.append("FM_TEMPLATE.obj_type")
             include(
                 {"FM_TEMPLATE.label": option.get("label", "")},
                 _ACTION_CATEGORIES,
@@ -350,7 +403,11 @@ class ScenarioSemanticQueryBuilder:
             "component_category": str(malfunction.get("component_category", "")),
             "operating_mode": parent.operating_mode,
             "action_categories": sorted(categories & _ACTION_CATEGORIES),
+            "operating_action_categories": sorted(operating_actions),
+            "control_consequence_action_categories": sorted(consequence_actions),
+            "state_failure_action_categories": sorted(state_actions),
             "object_categories": sorted(categories & _OBJECT_CATEGORIES),
+            "unmapped_object_sources": list(dict.fromkeys(unmapped_object_sources)),
             "traffic_relations": sorted(categories & _TRAFFIC_CATEGORIES),
             "road_relations": sorted(categories & _ROAD_CATEGORIES),
             # Project ODD is hard legality authority.  Parent location is kept
@@ -546,7 +603,10 @@ class ScenarioDimensionApplicabilityService:
                 reason = "No explicit road-relative vehicle relation is present."
                 trigger = ("NO_ROAD_RELATION",)
         elif dimension == "OBJECT":
-            if set(objects) == {"OBJECT_STATIC"} and not traffic:
+            if (
+                set(objects) == {"OBJECT_STATIC"} and not traffic
+                and not query.get("unmapped_object_sources")
+            ):
                 status = ScenarioDimensionApplicability.NOT_APPLICABLE
                 reason = (
                     "The source-grounded static physical object remains in scenario facts; "
@@ -557,6 +617,10 @@ class ScenarioDimensionApplicabilityService:
                 status = ScenarioDimensionApplicability.REQUIRED
                 reason = "Explicit structured or hazard-target evidence requires an object dimension."
                 trigger = objects
+            elif query.get("unmapped_object_sources"):
+                status = ScenarioDimensionApplicability.REQUIRED
+                reason = "An explicit object has no supported category; object applicability remains unresolved."
+                trigger = tuple(map(str, query["unmapped_object_sources"]))
             else:
                 status = ScenarioDimensionApplicability.NOT_APPLICABLE
                 reason = "No non-ego object or road-user evidence is present."

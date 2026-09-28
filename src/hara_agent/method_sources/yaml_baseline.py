@@ -466,6 +466,49 @@ class YamlBaselineCompiler:
     ) -> MethodContract:
         source_paths = {**manifest["sources"], **manifest["normalized_sources"]}
         refs: list[SourceRef] = []
+        project_policy = assets.get("project_analysis_policy", {})
+        compiled_project_policy: dict[str, Any] = {}
+        if project_policy:
+            selection = project_policy.get("input_selection", {})
+            speed = project_policy.get("ego_speed_point_selection", {})
+            decisions = project_policy.get("decisions", {})
+            if (
+                not str(project_policy.get("policy_id", "")).strip()
+                or not str(project_policy.get("version", "")).strip()
+                or not isinstance(selection, dict)
+                or not str(selection.get("policy_id", "")).strip()
+                or not isinstance(selection.get("excluded_sections_for_scoring"), list)
+                or not isinstance(speed, dict)
+                or speed.get("choice") != "UPPER_CLOSED_BOUND_OF_EFFECTIVE_OPERATION_RANGE"
+                or speed.get("require_finite_closed_upper_bound") is not True
+                or speed.get("require_source_and_scope") is not True
+                or not str(speed.get("rule_id", "")).strip()
+                or not isinstance(decisions, dict)
+                or set(decisions) != {"A1", "A2", "A3", "A4", "A5"}
+            ):
+                raise YamlBaselineCompileError("Invalid governed project analysis policy")
+            compiled_project_policy = {
+                "policy_id": str(project_policy["policy_id"]),
+                "version": str(project_policy["version"]),
+                "project_scope": str(project_policy.get("project_scope", "")),
+                "source_kind": str(project_policy.get("source_kind", "")),
+                "source_note": str(project_policy.get("source_note", "")),
+                "input_selection": dict(selection),
+                "ego_speed_point_selection": dict(speed),
+                "decisions": dict(decisions),
+                "candidate_defaults": list(project_policy.get("candidate_defaults", [])),
+                "release_approval": str(project_policy.get("release_approval", "PENDING")),
+                "source_ref": {
+                    "source_type": "project_analysis_policy",
+                    "source_id": f"{project_policy['policy_id']}@{source_hash}",
+                    "location": source_paths["project_analysis_policy"],
+                    "excerpt": str(project_policy["policy_id"]),
+                },
+            }
+            refs.append(self._source(
+                source_hash, source_paths["project_analysis_policy"],
+                "project_analysis_policy", project_policy,
+            ))
         scenario_method = self._compile_scenario_method(
             bundle_hash_value=source_hash, assets=assets, paths=source_paths,
         )
@@ -1320,6 +1363,7 @@ class YamlBaselineCompiler:
                 "source_kind": "YAML_BASELINE",
                 "method_id": str(manifest["method_id"]),
                 "method_version": str(manifest["method_version"]),
+                "project_analysis_policy": compiled_project_policy,
                 "asset_hashes": dict(sorted(hashes.items())),
                 "scenario_atom_catalog": scenario_atom_catalog,
                 "scenario_aliases": approved_scenario_aliases,

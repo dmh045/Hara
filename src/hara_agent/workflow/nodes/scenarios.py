@@ -115,9 +115,13 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                      review_artifact_writer: ReviewArtifactWriter | None = None) -> HARAState:
     assessments = []
     typed = state.item_definition.get("typed", {})
-    project_registry = (
-        build_project_evidence_registry(ItemDefinitionFacts.from_dict(typed), method)
+    project_facts = (
+        ItemDefinitionFacts.from_dict(typed)
         if isinstance(typed, dict) and typed else None
+    )
+    project_registry = (
+        build_project_evidence_registry(project_facts, method)
+        if project_facts is not None else None
     )
     cache = state.item_definition.setdefault("scenario_assessment_batches", {})
     if not isinstance(cache, dict):
@@ -141,7 +145,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
             }
         else:
             instantiated, audit = template_service.instantiate_analytical_candidates(
-                malfunction, candidates,
+                malfunction, candidates, project_facts=project_facts,
             )
             contextual_candidates[malfunction.malfunction_id] = instantiated
             instantiation_audit[malfunction.malfunction_id] = audit

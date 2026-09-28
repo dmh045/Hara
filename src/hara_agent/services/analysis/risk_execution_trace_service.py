@@ -226,8 +226,12 @@ class RiskExecutionTraceService:
         structured = getattr(self.method, "structured_risk_method", None)
         profile = structured.controllability_profile if structured is not None else None
         relative_speed = scenario.get("relative_speed_kph")
+        closing_speed = scenario.get("closing_speed_kph")
         distance = scenario.get("relative_distance_m", scenario.get("relative_distance"))
         ttc = scenario.get("ttc_s")
+        provenance = scenario.get("_fact_provenance", {})
+        ttc_metadata = provenance.get("ttc_s", {}) if isinstance(provenance, dict) else {}
+        ttc_metadata = ttc_metadata if isinstance(ttc_metadata, dict) else {}
         rule_id = str(result.get("engineering_rule_id", ""))
         override_ids = {item.rule_id for item in (structured.controllability_overrides if structured else ())}
         decision_status = str(result.get("decision_status", ""))
@@ -238,7 +242,11 @@ class RiskExecutionTraceService:
         if unresolved and action == "UNSPECIFIED_BLOCKED":
             action = "NO_TRANSITION_DEFINED"
         ttc_state = (
-            "TTC_NOT_CLOSING" if isinstance(relative_speed, (int, float)) and relative_speed <= 0
+            "TTC_NOT_CLOSING" if (
+                isinstance(closing_speed, (int, float)) and closing_speed <= 0
+                or closing_speed is None
+                and isinstance(relative_speed, (int, float)) and relative_speed <= 0
+            )
             else "AVAILABLE" if ttc is not None else "TTC_MISSING"
         )
         pending = result.get("reasoning", "") if _status(result) != CalculationStatus.FINALIZED.value else ""
@@ -277,7 +285,7 @@ class RiskExecutionTraceService:
                 "other_road_user_avoidance_possible", "relative_distance_m",
                 "relative_speed_kph", "ttc_s",
             ],
-            "derived_ttc": {"relative_distance_m": distance, "relative_speed_kph": relative_speed, "closing_speed_status": ttc_state, "ttc_s": ttc, "source": "DERIVED_PHYSICS" if ttc is not None else "", "formula_identity": TTC_FORMULA_IDENTITY, "risk_context_field": "ttc_s"},
+            "derived_ttc": {"relative_distance_m": distance, "relative_speed_kph": relative_speed, "closing_speed_kph": closing_speed, "closing_speed_status": ttc_state, "ttc_s": ttc, "source": "DERIVED_PHYSICS" if ttc is not None else "", "formula_identity": ttc_metadata.get("formula_identity", TTC_FORMULA_IDENTITY), "risk_context_field": "ttc_s"},
             "override": {"evaluated": True, "matched": rule_id in override_ids, "rule_id": rule_id if rule_id in override_ids else ""},
             "override_resolution": "MATCHED" if rule_id in override_ids else action or "NOT_RECORDED",
             "ttc_branch_eligible": decision_status.startswith("TTC") and bool(ttc is not None),

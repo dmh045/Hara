@@ -53,6 +53,10 @@ class ScenarioDetailView:
     hazardous_event: str
     semantic_group_id: str = ""
     object_interaction_summary: str = ""
+    physical_inputs: str = ""
+    driver_branch: str = ""
+    controllability_branch: str = ""
+    analysis_basis: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
