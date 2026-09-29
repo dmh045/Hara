@@ -292,24 +292,76 @@ class HARAReportWorkbookRenderer:
 
     def _render_summary(self, sheet: Any, view_model: HARAReportViewModel, registry: TemplateStyleRegistry) -> None:
         values = view_model.summary.to_dict()
+        scope = values["scope"]
+
+        def shown(value: Any) -> Any:
+            if value is None:
+                return "NOT RECORDED"
+            if isinstance(value, list):
+                return ", ".join(str(item) for item in value) or "NONE"
+            return value
+
         rows = [
-            ("Run ID", values["run_id"]), ("Method source", values["method_source"]),
+            ("Run Scope", scope.get("run_scope", "")),
+            ("Report Class", scope.get("report_class", "")),
+            ("Release Status", values["release_status"]),
+            ("Run ID", values["run_id"]),
+            ("Scope note", scope.get("scope_note", "")),
+            ("Current full-project HARA population", scope.get("full_project_population", "")),
+            ("04_HARA row meaning", scope.get("hara_row_meaning", "")),
+        ]
+        if scope.get("run_scope") == "BOUNDED ENGINEERING SAMPLE":
+            rows.extend((label, shown(scope.get(key))) for label, key in (
+                ("Provider Attempt Budget", "provider_attempt_budget"),
+                ("Sample Function Limit", "sample_function_limit"),
+                ("Sample Function IDs", "sample_function_ids"),
+                ("Sample Malfunction Limit", "sample_malfunction_limit"),
+                ("Sample Malfunction IDs", "sample_malfunction_ids"),
+                ("Sample Parent Scenario Limit", "sample_parent_scenario_limit"),
+                ("Sample Parent Scenario IDs", "sample_parent_scenario_ids"),
+                ("Scenario Pair Limit", "scenario_pair_limit"),
+            ))
+        rows.extend([
+            ("Functions available before Function sampling", shown(scope.get("extracted_function_count"))),
+            ("Functions selected / omitted", f"{shown(scope.get('selected_function_count'))} / {shown(scope.get('omitted_function_count'))}"),
+            ("Guidewords assessed / applicable / filtered in selected Function scope",
+             " / ".join(str(shown(scope.get(key))) for key in (
+                 "guideword_assessed_count", "guideword_applicable_count", "guideword_filtered_count"
+             ))),
+            ("Malfunctions available within selected Function scope", shown(scope.get("generated_malfunction_count_in_selected_function_scope"))),
+            ("Malfunctions selected / omitted", f"{shown(scope.get('selected_malfunction_count'))} / {shown(scope.get('omitted_malfunction_count'))}"),
+            ("Parent Scenarios available within selected upstream scope", shown(scope.get("available_parent_scenario_count_in_selected_scope"))),
+            ("Parent Scenarios selected / omitted", f"{shown(scope.get('selected_parent_scenario_count'))} / {shown(scope.get('omitted_parent_scenario_count'))}"),
+            ("Method-instantiated scenario pairs", shown(scope.get("method_instantiated_scenario_pair_count"))),
+            ("Analytical children before / after driver branching", f"{shown(scope.get('analytical_child_count_before_driver_branch'))} / {shown(scope.get('analytical_child_count_after_driver_branch'))}"),
+            ("Causal retained / excluded / pending", " / ".join(str(shown(scope.get(key))) for key in (
+                "causal_retained_count", "causal_excluded_count", "causal_pending_count"
+            ))),
+            ("Risk scoring invoked / not invoked", f"{shown(scope.get('risk_scored_count'))} / {shown(scope.get('risk_not_invoked_count'))}"),
+            ("Complete S/E/C/ASIL chain", shown(scope.get("complete_risk_chain_count"))),
+            ("04_HARA review rows", values["eligible_hazardous_event_count"]),
+            ("Method source", values["method_source"]),
             ("Method hash", values["method_hash"]), ("Report schema", values["report_schema"]),
             ("Report schema version", values["report_schema_version"]),
             ("Report schema hash", values["report_schema_hash"]),
             ("Style template hash", values["style_template_hash"]),
-            ("Report status", values["report_status"]), ("Release status", values["release_status"]),
-            ("Functions", values["function_count"]), ("Guideword assessments", values["guideword_assessment_count"]),
-            ("Malfunctions", values["malfunction_count"]),
-            ("Unique Retained Scenarios", values["scenario_count"]),
-            ("Eligible Hazardous Events", values["eligible_hazardous_event_count"]),
+            ("Report status", values["report_status"]),
             ("Severity finalized / pending", f"{values['severity_finalized']} / {values['severity_pending']}"),
             ("Exposure finalized / pending", f"{values['exposure_finalized']} / {values['exposure_pending']}"),
             ("Controllability finalized / pending", f"{values['controllability_finalized']} / {values['controllability_pending']}"),
             ("ASIL finalized / pending", f"{values['asil_finalized']} / {values['asil_pending']}"),
             ("Engineering clarifications", values["clarification_ids"]),
-        ]
+        ])
         self._render_support_table(sheet, "HARA Engineering Report", registry, rows)
+        sheet.column_dimensions["B"].width = 48
+        sheet.column_dimensions["C"].width = 85
+        for row_number, (label, value) in enumerate(rows, start=5):
+            lines = max(
+                1,
+                (len(str(label)) + 45) // 46,
+                (len(str(value or "")) + 81) // 82,
+            )
+            sheet.row_dimensions[row_number].height = min(120, max(24, 18 * lines))
 
     def _render_support_table(
         self,
@@ -594,27 +646,48 @@ class HARAReportWorkbookRenderer:
 
     def _render_audit(self, sheet: Any, view_model: HARAReportViewModel, registry: TemplateStyleRegistry) -> None:
         rows_by_hara_id = {item.hara_id: item for item in view_model.rows}
-        records = [
-            (
-                item.hara_id,
-                rows_by_hara_id[item.hara_id].malfunction_id,
-                item.scenario_id,
-                item.hazardous_event_id,
-                rows_by_hara_id[item.hara_id].function_id,
-                item.assessment_status,
-                item.clarification_ids,
-                item.semantic_group_id,
-                item.parent_scenario_id,
-                item.variant,
-                item.selected_atom_ids,
-                item.source_references,
-                item.method_hash,
-                item.report_schema_hash,
-                item.style_template_hash,
-                item.risk_trace_reference,
-            )
-            for item in view_model.audit_references
-        ]
+        references = {item.scenario_id: item for item in view_model.audit_references}
+        children = view_model.generated_children
+        if children:
+            records = []
+            for child in children:
+                item = references.get(child.scenario_id)
+                hara_row = rows_by_hara_id.get(item.hara_id) if item else None
+                records.append((
+                    item.hara_id if item else "",
+                    child.malfunction_id,
+                    child.scenario_id,
+                    item.hazardous_event_id if item else "",
+                    hara_row.function_id if hara_row else "",
+                    item.assessment_status if item else child.causal_disposition,
+                    item.clarification_ids if item else "",
+                    child.semantic_group_id or (item.semantic_group_id if item else ""),
+                    child.parent_scenario_id or (item.parent_scenario_id if item else ""),
+                    item.variant if item else "",
+                    item.selected_atom_ids if item else "",
+                    item.source_references if item else "",
+                    view_model.method_contract_hash,
+                    view_model.schema_hash,
+                    view_model.style_template_hash,
+                    item.risk_trace_reference if item else (
+                        view_model.audit_references[0].risk_trace_reference
+                        if view_model.audit_references else ""
+                    ),
+                    child.driver_branch,
+                    child.causal_disposition,
+                    child.risk_scoring_invoked,
+                ))
+        else:
+            records = [(
+                item.hara_id, rows_by_hara_id[item.hara_id].malfunction_id,
+                item.scenario_id, item.hazardous_event_id,
+                rows_by_hara_id[item.hara_id].function_id, item.assessment_status,
+                item.clarification_ids, item.semantic_group_id,
+                item.parent_scenario_id, item.variant, item.selected_atom_ids,
+                item.source_references, item.method_hash, item.report_schema_hash,
+                item.style_template_hash, item.risk_trace_reference,
+                "", "", "",
+            ) for item in view_model.audit_references]
         self._render_records(
             sheet, "Audit and Traceability", registry,
             (
@@ -623,12 +696,13 @@ class HARAReportWorkbookRenderer:
                 "Clarification IDs", "Semantic Group ID", "Parent Scenario ID",
                 "Variant", "Selected Atom IDs", "Source References",
                 "Method hash", "Report schema hash", "Style template hash",
-                "Risk execution trace",
+                "Risk execution trace", "Driver Branch", "Causal Disposition",
+                "Risk Scoring Invoked",
             ),
             records,
             width_source_columns=(
                 1, 2, 1, 7, 10, 16, 2, 5,
-                5, 14, 11, 7, 11, 11, 11, 16,
+                5, 14, 11, 7, 11, 11, 11, 16, 14, 16, 11,
             ),
         )
 

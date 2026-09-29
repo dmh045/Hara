@@ -77,6 +77,7 @@ class OfflineReportRebuilder:
             run_summary=summary,
             style_template_hash=template_hash,
             risk_trace_reference=str(trace_path) if trace is not None else "",
+            generated_scenarios=artifacts.get("scenario_candidate", []),
             scenario_projection_contexts=scenario_projection_contexts,
         )
         audit_root = (

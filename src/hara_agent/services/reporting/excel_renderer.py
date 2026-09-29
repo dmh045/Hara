@@ -92,12 +92,19 @@ class HARAExcelRenderer:
             from .projection import HARAReportProjectionService
 
             risk_trace, risk_trace_reference = self._load_committed_risk_trace(state)
+            from hara_agent.workflow.review_artifacts import ReviewArtifactReader
+
+            generated_scenarios = ReviewArtifactReader(
+                state.run_id,
+                os.getenv("HARA_REVIEW_ARTIFACT_DIR", "runtime/review"),
+            ).read_all()["scenario_candidate"]
 
             view_model = HARAReportProjectionService(self.report_schema).project(
                 state, self.method_contract,
                 risk_trace=risk_trace,
                 risk_trace_reference=risk_trace_reference,
                 style_template_hash=style_template_hash(template_path),
+                generated_scenarios=generated_scenarios,
             )
             return HARAReportWorkbookRenderer().render(
                 view_model, template_path, output_path, self.report_schema

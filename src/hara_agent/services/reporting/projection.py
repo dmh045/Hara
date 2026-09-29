@@ -12,7 +12,7 @@ from hara_agent.workflow.state import HARAState
 from .engineering_text_mapper import EngineeringReportTextMapper
 from .report_schema import ReportSchema
 from .view_model import (
-    AuditReferenceView, HARAReportRowView, HARAReportViewModel,
+    AuditReferenceView, GeneratedChildView, HARAReportRowView, HARAReportViewModel,
     MethodBasisView, SafetyGoalView, ScenarioDetailView, SummaryView,
 )
 
@@ -42,6 +42,168 @@ class HARAReportProjectionService:
     def __init__(self, schema: ReportSchema):
         self.schema = schema
         self.text = EngineeringReportTextMapper()
+
+    @staticmethod
+    def _run_scope(
+        state: HARAState, trace_rows: list[Mapping[str, Any]],
+        complete_risk_chain_count: int,
+    ) -> dict[str, Any]:
+        def event(name: str) -> Mapping[str, Any]:
+            return next((
+                item for item in reversed(state.audit_trail)
+                if item.get("event") == name
+            ), {})
+
+        configured = event("bounded_sample_configured")
+        bounded = bool(configured)
+        limits = configured.get("scope", {}) if bounded else {}
+        inventory = state.item_definition.get("bounded_sample_inventory", {})
+        functions = inventory.get("functions", {}) if isinstance(inventory, Mapping) else {}
+        malfunctions = inventory.get("malfunctions", {}) if isinstance(inventory, Mapping) else {}
+        preview = event("bounded_sample_scope_preview")
+        prepared = event("scenario_candidates_prepared")
+        feasibility = event("scenario_feasibility_summary")
+        branches = [
+            item.get("analytical_scenario_instantiation", {}).get("driver_configuration", {})
+            for item in state.audit_trail
+            if item.get("event") == "scenario_feasibility_assessed"
+        ]
+        before_branch = (
+            sum(int(item["pre_branch_count"]) for item in branches)
+            if branches and all("pre_branch_count" in item for item in branches)
+            else None
+        )
+        after_branch = (
+            sum(int(item["post_branch_count"]) for item in branches)
+            if branches and all("post_branch_count" in item for item in branches)
+            else len(trace_rows) if trace_rows else None
+        )
+        guidewords = state.guideword_assessments
+        guideword_applicable = sum(
+            item.get("status") == "FINALIZED" and item.get("applicable") is True
+            for item in guidewords if isinstance(item, Mapping)
+        )
+        guideword_filtered = sum(
+            item.get("status") == "FINALIZED" and item.get("applicable") is False
+            for item in guidewords if isinstance(item, Mapping)
+        )
+        retained = sum(
+            str(item.get("risk_eligibility", {}).get("status", "")) == "ELIGIBLE"
+            for item in trace_rows
+        )
+        excluded = sum(
+            str(item.get("risk_eligibility", {}).get("status", "")).startswith("INELIGIBLE")
+            for item in trace_rows
+        )
+        return {
+            "run_scope": "BOUNDED ENGINEERING SAMPLE" if bounded else "FULL PROJECT HARA",
+            "report_class": (
+                str(configured.get("report_class", "ENGINEERING_SAMPLE_ONLY")).replace("_", " ")
+                if bounded else "PROJECT HARA"
+            ),
+            "full_project_population": (
+                "NOT MEASURED IN THIS RUN"
+                if bounded or not trace_rows else
+                f"{len(state.risk_results)} risk-eligible records in this full-scope run"
+            ),
+            "scope_note": (
+                "This workbook is not a full-project HARA population report."
+                if bounded else ""
+            ),
+            "hara_row_meaning": (
+                "Retained/risk-eligible rows in this bounded engineering sample"
+                if bounded else "Retained/risk-eligible rows in this run"
+            ),
+            "provider_attempt_budget": limits.get("provider_attempt_limit"),
+            "sample_function_limit": limits.get("function_limit"),
+            "sample_function_ids": limits.get("function_ids", []),
+            "sample_malfunction_limit": limits.get("malfunction_limit"),
+            "sample_malfunction_ids": limits.get("malfunction_ids", []),
+            "sample_parent_scenario_limit": limits.get("parent_scenario_limit"),
+            "sample_parent_scenario_ids": limits.get("parent_scenario_ids", []),
+            "scenario_pair_limit": limits.get("scenario_pair_limit"),
+            "extracted_function_count": functions.get(
+                "available_count", len(state.functions) if not bounded else None
+            ),
+            "selected_function_count": functions.get("selected_count", len(state.functions)),
+            "omitted_function_count": functions.get("omitted_count", 0 if not bounded else None),
+            "guideword_assessed_count": len(guidewords),
+            "guideword_applicable_count": guideword_applicable,
+            "guideword_filtered_count": guideword_filtered,
+            "guideword_pending_count": len(guidewords) - guideword_applicable - guideword_filtered,
+            "generated_malfunction_count_in_selected_function_scope": malfunctions.get(
+                "available_count", len(state.malfunctions) if not bounded else None
+            ),
+            "selected_malfunction_count": malfunctions.get("selected_count", len(state.malfunctions)),
+            "omitted_malfunction_count": malfunctions.get("omitted_count", 0 if not bounded else None),
+            "available_parent_scenario_count_in_selected_scope": preview.get(
+                "available_parent_scenario_count",
+                prepared.get("candidate_count") if not bounded else None,
+            ),
+            "selected_parent_scenario_count": preview.get(
+                "parent_scenario_count", prepared.get("candidate_count") if not bounded else None,
+            ),
+            "omitted_parent_scenario_count": (
+                preview["available_parent_scenario_count"] - preview["parent_scenario_count"]
+                if "available_parent_scenario_count" in preview and "parent_scenario_count" in preview
+                else 0 if not bounded and "candidate_count" in prepared else None
+            ),
+            "method_instantiated_scenario_pair_count": preview.get(
+                "scenario_pairs_after_method_instantiation",
+                feasibility.get("scenario_pair_count") if not bounded else None,
+            ),
+            "analytical_child_count_before_driver_branch": before_branch,
+            "analytical_child_count_after_driver_branch": after_branch,
+            "causal_retained_count": retained if trace_rows else None,
+            "causal_excluded_count": excluded if trace_rows else None,
+            "causal_pending_count": len(trace_rows) - retained - excluded if trace_rows else None,
+            "risk_scored_count": sum(bool(item.get("risk_scoring_invoked")) for item in trace_rows),
+            "risk_not_invoked_count": sum(not bool(item.get("risk_scoring_invoked")) for item in trace_rows),
+            "complete_risk_chain_count": complete_risk_chain_count,
+        }
+
+    @staticmethod
+    def _generated_children(
+        trace_rows: list[Mapping[str, Any]],
+        generated_scenarios: list[Mapping[str, Any]],
+    ) -> tuple[GeneratedChildView, ...]:
+        candidates = {
+            str(item.get("scenario_id", "")): item
+            for item in generated_scenarios
+            if isinstance(item, Mapping)
+        }
+        children: list[GeneratedChildView] = []
+        for row in trace_rows:
+            scenario_id = str(row.get("scenario_id", ""))
+            candidate = candidates.get(scenario_id, {})
+            instance = candidate.get("analysis_instance", {})
+            instance = instance if isinstance(instance, Mapping) else {}
+            branch = instance.get("driver_configuration_branch", {})
+            branch = branch if isinstance(branch, Mapping) else {}
+            context = candidate.get("context_resolution", {})
+            context = context if isinstance(context, Mapping) else {}
+            synthesis = context.get("scenario_synthesis", {})
+            synthesis = synthesis if isinstance(synthesis, Mapping) else {}
+            eligibility = row.get("risk_eligibility", {})
+            eligibility = eligibility if isinstance(eligibility, Mapping) else {}
+            causal_status = str(row.get("feasibility", {}).get("causal_status", ""))
+            disposition = (
+                "RETAINED_FOR_RISK" if eligibility.get("status") == "ELIGIBLE"
+                else "CAUSAL_GAP" if causal_status == "CAUSAL_GAP"
+                else "PENDING_CAUSAL"
+            )
+            children.append(GeneratedChildView(
+                scenario_id=scenario_id,
+                parent_scenario_id=str(
+                    candidate.get("source_scenario_id") or instance.get("parent_scenario_id", "")
+                ),
+                malfunction_id=str(row.get("malfunction_id", "")),
+                driver_branch=str(branch.get("driver_position", "")),
+                semantic_group_id=str(instance.get("semantic_group_id") or synthesis.get("semantic_group_id", "")),
+                causal_disposition=disposition,
+                risk_scoring_invoked=bool(row.get("risk_scoring_invoked")),
+            ))
+        return tuple(children)
 
     @staticmethod
     def _clarifications(risk: Any) -> str:
@@ -360,6 +522,7 @@ class HARAReportProjectionService:
         run_summary: Mapping[str, Any] | None = None,
         style_template_hash: str = "",
         risk_trace_reference: str = "",
+        generated_scenarios: list[Mapping[str, Any]] | None = None,
         scenario_projection_contexts: Mapping[
             tuple[str, str, str], Mapping[str, Any]
         ] | None = None,
@@ -630,6 +793,18 @@ class HARAReportProjectionService:
         def count(field: str) -> int:
             return score_counts[field][_CALCULATED]
 
+        complete_risk_chain_count = sum(
+            all(
+                self._score_states(
+                    entry["risk"], entry["trace"],
+                    trace_provided=risk_trace is not None,
+                )[field] == _CALCULATED
+                for field in ("severity", "exposure", "controllability", "asil")
+            )
+            for entry in entries
+        )
+        scope = self._run_scope(state, trace_rows, complete_risk_chain_count)
+
         method_hash = str(method.metadata.get("method_source_hash", method.metadata.get("template_hash", "")))
         clarification_ids = "; ".join(sorted({
             item for row in rows for item in row.clarification_ids.split("; ") if item
@@ -673,6 +848,7 @@ class HARAReportProjectionService:
             asil_finalized=count("asil"),
             asil_pending=len(state.risk_results) - count("asil"),
             clarification_ids=clarification_ids,
+            scope=scope,
         )
         basis = MethodBasisView(
             method_source=summary_view.method_source,
@@ -725,6 +901,7 @@ class HARAReportProjectionService:
         return HARAReportViewModel(
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,
             method_hash, style_template_hash, tuple(details), projection_metrics,
+            self._generated_children(trace_rows, generated_scenarios or []),
         )
 
 
