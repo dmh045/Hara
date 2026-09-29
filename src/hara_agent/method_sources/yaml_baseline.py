@@ -471,6 +471,7 @@ class YamlBaselineCompiler:
         if project_policy:
             selection = project_policy.get("input_selection", {})
             speed = project_policy.get("ego_speed_point_selection", {})
+            controllability = project_policy.get("controllability", {})
             decisions = project_policy.get("decisions", {})
             if (
                 not str(project_policy.get("policy_id", "")).strip()
@@ -485,6 +486,14 @@ class YamlBaselineCompiler:
                 or not str(speed.get("rule_id", "")).strip()
                 or not isinstance(decisions, dict)
                 or set(decisions) != {"A1", "A2", "A3", "A4", "A5"}
+                or not isinstance(controllability, dict)
+                or (controllability and (
+                    controllability.get("unknown_override_policy") not in {
+                        "BLOCK_TTC", "SKIP_TO_TTC", "UNSPECIFIED"
+                    }
+                    or controllability.get("status") != "CONFIRMED_FOR_CURRENT_PROJECT"
+                    or not str(controllability.get("basis", "")).strip()
+                ))
             ):
                 raise YamlBaselineCompileError("Invalid governed project analysis policy")
             compiled_project_policy = {
@@ -495,6 +504,7 @@ class YamlBaselineCompiler:
                 "source_note": str(project_policy.get("source_note", "")),
                 "input_selection": dict(selection),
                 "ego_speed_point_selection": dict(speed),
+                "controllability": dict(controllability),
                 "decisions": dict(decisions),
                 "candidate_defaults": list(project_policy.get("candidate_defaults", [])),
                 "release_approval": str(project_policy.get("release_approval", "PENDING")),
@@ -1141,7 +1151,17 @@ class YamlBaselineCompiler:
             dimension_fallback_policy=str(manifest["policies"]["exposure_dimension_fallback"]),
             source_refs=(domain_rules[0].source_ref, exposure_atoms[0].source_ref),
         )
-        raw_unknown_override_policy = c_asset.get("unknown_override_policy")
+        project_c_policy = compiled_project_policy.get("controllability", {})
+        raw_unknown_override_policy = project_c_policy.get(
+            "unknown_override_policy", c_asset.get("unknown_override_policy"),
+        )
+        if (
+            project_c_policy and c_asset.get("unknown_override_policy") is not None
+            and c_asset["unknown_override_policy"] != raw_unknown_override_policy
+        ):
+            raise YamlBaselineCompileError(
+                "Project controllability policy conflicts with Method profile"
+            )
         compiled_unknown_override_policy = (
             UnknownOverridePolicy.UNSPECIFIED
             if raw_unknown_override_policy is None
@@ -1173,10 +1193,14 @@ class YamlBaselineCompiler:
                 profile_id="iav_avp_v1", source_status="CONFIRMED",
                 unknown_override_policy=compiled_unknown_override_policy,
                 source_ref=self._source(
-                    source_hash, source_paths["controllability_profile"],
+                    source_hash, (
+                        source_paths["project_analysis_policy"]
+                        if project_c_policy else source_paths["controllability_profile"]
+                    ),
                     "unknown_override_policy", {
                         "compiled_value": compiled_unknown_override_policy.value,
-                        "asset_field_present": "unknown_override_policy" in c_asset,
+                        "asset_field_present": bool(project_c_policy)
+                        or "unknown_override_policy" in c_asset,
                     },
                 ),
                 method_hash=source_hash,

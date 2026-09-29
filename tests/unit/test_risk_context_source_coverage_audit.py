@@ -130,7 +130,7 @@ def test_speed_envelope_is_not_promoted_to_relative_speed_or_ttc(service):
     assert relative["classification_counts"] == {"TRUE_PROJECT_FACT_GAP": 1}
     assert relative["source_coverage"]["C_scenario_fields"]["direct_canonical_field_count"] == 0
     ttc = _field(payload, "ttc_s")
-    assert ttc["classification_counts"] == {"METHOD_RULE_PRESENT_BUT_NOT_APPLICABLE": 1}
+    assert ttc["classification_counts"] == {"TRUE_PROJECT_FACT_GAP": 1}
     assert ttc["source_coverage"]["G_deterministic_derivation"]["status"].startswith("PRESENT_AND_WIRED")
 
 

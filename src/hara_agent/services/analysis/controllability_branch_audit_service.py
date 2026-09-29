@@ -286,11 +286,17 @@ class ControllabilityBranchAuditService:
             },
             "runtime_comparison": {
                 "runtime_contract_alignment": "MATCH",
-                "method_semantic_completeness": "INCOMPLETE_UNKNOWN_POLICY",
+                "method_semantic_completeness": (
+                    "INCOMPLETE_UNKNOWN_POLICY"
+                    if self.structured.controllability_branch_policy.unknown_override_policy
+                    is UnknownOverridePolicy.UNSPECIFIED else "COMPLETE"
+                ),
             },
             "r3_readiness": rows,
             "policy_fixtures": {
-                "UNSPECIFIED": {"policy": "UNSPECIFIED", "rows": rows, "summary": self._summary(rows)},
+                "UNSPECIFIED": self._fixture_projection(
+                    UnknownOverridePolicy.UNSPECIFIED, source_contexts,
+                ),
                 "BLOCK_TTC": self._fixture_projection(UnknownOverridePolicy.BLOCK_TTC, source_contexts),
                 "SKIP_TO_TTC": self._fixture_projection(UnknownOverridePolicy.SKIP_TO_TTC, source_contexts),
             },

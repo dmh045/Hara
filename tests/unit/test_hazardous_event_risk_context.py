@@ -161,7 +161,7 @@ def test_relative_distance_m_keeps_finalized_provenance_for_deterministic_ttc():
     candidate = ScenarioCandidate(
         scenario_id="SCN-1", operating_scenario="parking", situational_description="",
         situational_detailing="", status=ReviewStatus.FINALIZED,
-        facts={"relative_distance_m": 10.0, "relative_speed_kph": 8.0},
+        facts={"relative_distance_m": 10.0, "closing_speed_kph": 8.0},
         fact_provenance={
             key: {
                 "approval": "FINALIZED",
@@ -170,13 +170,13 @@ def test_relative_distance_m_keeps_finalized_provenance_for_deterministic_ttc():
                     "location": key,
                 }],
             }
-            for key in ("relative_distance_m", "relative_speed_kph")
+            for key in ("relative_distance_m", "closing_speed_kph")
         },
     )
 
     ttc = next(item for item in derive_scenario_physics(candidate) if item.evidence_ref == "DERIVED.ttc_s")
     assert ttc.approval_status is ReviewStatus.FINALIZED
-    assert ttc.metadata["inputs"] == ["SCN.relative_distance_m", "SCN.relative_speed_kph"]
+    assert ttc.metadata["inputs"] == ["SCN.relative_distance_m", "SCN.closing_speed_kph"]
 
 
 def test_audit_materializes_the_same_source_grounded_ttc_as_runtime_scoring():
@@ -185,7 +185,7 @@ def test_audit_materializes_the_same_source_grounded_ttc_as_runtime_scoring():
             "scenario_id": "SCN-1", "operating_scenario": "parking",
             "situational_description": "", "situational_detailing": "",
             "status": "FINALIZED",
-            "facts": {"relative_distance_m": 10.0, "relative_speed_kph": 8.0},
+            "facts": {"relative_distance_m": 10.0, "closing_speed_kph": 8.0},
             "fact_provenance": {
                 key: {
                     "approval": "FINALIZED",
@@ -194,7 +194,7 @@ def test_audit_materializes_the_same_source_grounded_ttc_as_runtime_scoring():
                         "location": key,
                     }],
                 }
-                for key in ("relative_distance_m", "relative_speed_kph")
+                for key in ("relative_distance_m", "closing_speed_kph")
             },
         }],
         "scenario_feasibility": [{

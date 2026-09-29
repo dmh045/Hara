@@ -190,7 +190,13 @@ class ExposureInputReadinessService:
 
         if not atom_ids:
             binding_issues.append({
-                "code": "SCENARIO_ATOM_SET_EMPTY", "dimensions": [],
+                "code": "SCENARIO_ATOM_SET_EMPTY",
+                "dimensions": sorted(
+                    dimension for dimension, binding in bindings.items()
+                    if str(binding.get("applicability_status", "")).upper()
+                    != "NOT_APPLICABLE"
+                    and not self._is_resolved(binding)
+                ),
             })
         for atom_id in atom_ids:
             if atom_id not in self.by_id:
@@ -232,7 +238,10 @@ class ExposureInputReadinessService:
         if binding_issues:
             return self._result(
                 status="PENDING_ATOM_BINDING",
-                reason_code="EXPOSURE_ATOM_BINDING_INCOMPLETE",
+                reason_code=(
+                    "EXPOSURE_SCENARIO_ATOM_SET_EMPTY" if not atom_ids
+                    else "EXPOSURE_ATOM_BINDING_INCOMPLETE"
+                ),
                 baseline=baseline, bindings=bindings, atom_ids=atom_ids,
                 dimensions=dimensions, binding_issues=binding_issues,
                 unresolved_relevant=unresolved_relevant,

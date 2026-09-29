@@ -166,11 +166,11 @@ def test_missing_relative_speed_and_atoms_remain_pending_inputs():
     assert row["severity"]["status"] == "PENDING_INPUT"
     assert row["severity"]["pending_reason"] == "MISSING_RELATIVE_SPEED"
     assert row["exposure"]["status"] == "PENDING_INPUT"
-    assert row["exposure"]["pending_reason"] == "EXPOSURE_ATOM_BINDING_INCOMPLETE"
+    assert row["exposure"]["pending_reason"] == "EXPOSURE_SCENARIO_ATOM_SET_EMPTY"
     assert row["exposure"]["readiness_status"] == "PENDING_ATOM_BINDING"
 
 
-def test_unresolved_unknown_policy_trace_does_not_project_a_block_policy():
+def test_current_project_unknown_policy_trace_routes_to_ttc():
     method = _method()
     facts = _scoring_facts(method)
     facts.pop("driver_in_vehicle")
@@ -182,11 +182,10 @@ def test_unresolved_unknown_policy_trace_does_not_project_a_block_policy():
         )},
     )
     controllability = trace["assessments"][0]["controllability"]
-    assert controllability["decision_status"] == "METHOD_BRANCH_UNRESOLVED"
-    assert controllability["unknown_policy_action"] == "NO_TRANSITION_DEFINED"
-    assert controllability["ttc_execution_outcome"] == "NOT_ENTERED_METHOD_BRANCH_UNRESOLVED"
-    assert "driver_in_vehicle" in controllability["decision_inputs"]
-    assert controllability["unresolved_inputs"] == ["driver_in_vehicle"]
+    assert controllability["decision_status"] == "TTC_AFTER_UNKNOWN_OVERRIDE"
+    assert controllability["unknown_policy_action"] == "SKIP_TO_TTC"
+    assert controllability["rule_match_states"][0]["state"] == "UNKNOWN"
+    assert "driver_in_vehicle" not in facts
 
 
 def test_pending_coverage_trace_records_native_fusa_execution():

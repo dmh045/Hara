@@ -14,7 +14,7 @@ from typing import Any
 
 from hara_agent.contracts import MethodContract, UnknownOverridePolicy
 
-from .scenario_physics import TTC_FORMULA_IDENTITY
+from .scenario_physics import TTC_CLOSING_FORMULA_IDENTITY
 
 
 class RiskContextSourceCoverageAuditService:
@@ -242,6 +242,8 @@ class RiskContextSourceCoverageAuditService:
             is UnknownOverridePolicy.UNSPECIFIED
         ):
             return "METHOD_RULE_PRESENT_BUT_NOT_APPLICABLE", "NEEDS_ENGINEERING_METHOD", []
+        if field in self._TTC_FIELDS:
+            return "TRUE_PROJECT_FACT_GAP", "NEEDS_NEW_PROJECT_FACT", []
         if field in self._SEVERITY_REQUIRED or field in self._c_override_fields():
             return "TRUE_PROJECT_FACT_GAP", "NEEDS_NEW_PROJECT_FACT", []
         return "NOT_REQUIRED_BY_ACTIVE_METHOD", "NOT_NEEDED", []
@@ -416,7 +418,7 @@ class RiskContextSourceCoverageAuditService:
                         {
                             "rule": "scenario_physics.derive_scenario_physics:TTC",
                             "status": "PRESENT_AND_WIRED_REQUIRES_DISTANCE_AND_POSITIVE_RELATIVE_SPEED",
-                            "formula": TTC_FORMULA_IDENTITY,
+                            "formula": TTC_CLOSING_FORMULA_IDENTITY,
                         } if field == "ttc_s" else {"status": "NO_FIELD_DERIVATION_RULE"}
                     ),
                     "H_adapters_resolvers": {

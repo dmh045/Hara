@@ -367,6 +367,8 @@ def build_parser() -> argparse.ArgumentParser:
     rescore.add_argument("--target-run-id", required=True)
     rescore.add_argument("--checkpoint", type=Path)
     rescore.add_argument("--baseline", type=Path, default=Path("method_assets/fusa_baseline_v1/manifest.yaml"))
+    rescore.add_argument("--source-baseline", type=Path,
+                         help="Original baseline manifest for a proven risk-only method transition")
     rescore.add_argument("--report-style-template", type=Path, default=Path("references/HARA_Template_AI_20260327.xlsx"))
     rescore.add_argument("--risk-input-supplement", type=Path)
     rescore.add_argument("--run-dir", type=Path, default=Path("runtime/agent"))
@@ -609,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
             report_template=args.report_style_template, output=args.output,
             run_dir=args.run_dir, review_root=args.review_root,
             supplement=args.risk_input_supplement,
+            source_baseline=args.source_baseline,
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0

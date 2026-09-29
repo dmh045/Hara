@@ -15,6 +15,7 @@ def context():
     scenario = ScenarioCandidate(
         "SCN-EVAL", "Parking", "atomic", "pedestrian ahead",
         {"relative_distance": "0.5 m", "relative_speed_kph": 5.0,
+         "closing_speed_kph": 5.0,
          "object_position": "ahead"}, semantic_fingerprint="fp-eval",
     )
     return malfunction, scenario, build_fact_registry(malfunction, scenario)

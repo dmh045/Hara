@@ -8,6 +8,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from hara_agent.method_sources import MethodSourceResolver
+from hara_agent.method_sources.yaml_validation import validate_manifest
 from hara_agent.models import ItemDefinitionFacts, evaluate_risk_eligibility_payload
 from hara_agent.services.analysis.risk_services import RiskScoringServices
 from hara_agent.services.analysis.scenario_physics import source_is_accepted_for
@@ -125,7 +126,8 @@ class OfflineRiskRescorer:
     def run(self, *, source_run_id: str, target_run_id: str,
             baseline: Path, report_template: Path, output: Path,
             run_dir: Path = Path("runtime/agent"), review_root: Path = Path("runtime/review"),
-            checkpoint: Path | None = None, supplement: Path | None = None) -> dict:
+            checkpoint: Path | None = None, supplement: Path | None = None,
+            source_baseline: Path | None = None) -> dict:
         started = perf_counter()
         repository = CheckpointRepository(run_dir)
         source_path = (checkpoint or repository.path_for(source_run_id)).resolve()
@@ -166,8 +168,52 @@ class OfflineRiskRescorer:
         resolution = MethodSourceResolver().resolve(
             template_path=None, baseline_manifest_path=baseline, report_template_path=report_template)
         method = resolution.method
-        if (source.method_contract["method_source_hash"] != method.metadata["method_source_hash"]
-                or source.method_contract["contract_version"] != method.contract_version
+        method_transition = None
+        if source.method_contract["method_source_hash"] != method.metadata["method_source_hash"]:
+            if source_baseline is None:
+                raise ValueError("Source method hash changed; source baseline proof required")
+            old_resolution = MethodSourceResolver().resolve(
+                template_path=None, baseline_manifest_path=source_baseline,
+                report_template_path=report_template,
+            )
+            old_manifest, old_assets, old_hashes = validate_manifest(source_baseline.resolve())
+            new_manifest, new_assets, new_hashes = validate_manifest(baseline.resolve())
+            policy_path = new_manifest["normalized_sources"]["project_analysis_policy"]
+            old_policy = old_assets["project_analysis_policy"]
+            new_policy = new_assets["project_analysis_policy"]
+            expected_policy = deepcopy(old_policy)
+            expected_policy["controllability"] = {
+                "unknown_override_policy": "SKIP_TO_TTC",
+                "basis": "POSITIVE_OVERRIDE_ONLY_THEN_TTC_FALLBACK",
+                "status": "CONFIRMED_FOR_CURRENT_PROJECT",
+            }
+            expected_manifest = deepcopy(old_manifest)
+            expected_manifest["asset_hashes"][policy_path] = new_hashes[policy_path]
+            if not all((
+                old_resolution.method.metadata["method_source_hash"]
+                == source.method_contract["method_source_hash"],
+                old_resolution.method.contract_version == method.contract_version,
+                old_resolution.method.compiler_version == method.compiler_version,
+                new_manifest == expected_manifest,
+                set(old_hashes) == set(new_hashes),
+                all(old_hashes[key] == new_hashes[key]
+                    for key in old_hashes if key != policy_path),
+                old_policy.get("controllability") in (None, {}),
+                new_policy == expected_policy,
+            )):
+                raise ValueError("Method transition is not limited to current-project C routing")
+            method_transition = {
+                "type": "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY",
+                "source_method_hash": old_resolution.method.metadata["method_source_hash"],
+                "target_method_hash": method.metadata["method_source_hash"],
+                "source_baseline": str(source_baseline.resolve()),
+                "source_baseline_sha256": file_hash(source_baseline.resolve()),
+                "unchanged_asset_count": len(old_hashes) - 1,
+                "changed_asset": policy_path,
+                "source_policy_sha256": old_hashes[policy_path],
+                "target_policy_sha256": new_hashes[policy_path],
+            }
+        if (source.method_contract["contract_version"] != method.contract_version
                 or source.method_contract["compiler_version"] != method.compiler_version):
             raise ValueError("Source method version/hash incompatible; stage dependency proof is required")
         source_files = [source_path, Path(source.item_definition["source_path"]).resolve(), report_template.resolve()]
@@ -183,10 +229,14 @@ class OfflineRiskRescorer:
         ) if supplement else []
         clean_risk_stage(state)
         state.run_id = target_run_id
+        if method_transition:
+            state.method_contract["method_source_hash"] = method.metadata["method_source_hash"]
+            state.method_contract["template_hash"] = method.metadata["method_source_hash"]
         execution_id = f"risk-{uuid4()}"
         state.record("offline_risk_rescoring_started", source_run_id=source_run_id,
                      source_checkpoint=str(source_path), source_checkpoint_sha256=hashes[str(source_path)],
-                     risk_execution_id=execution_id, supplement_decisions=supplement_decisions)
+                     risk_execution_id=execution_id, supplement_decisions=supplement_decisions,
+                     method_transition=method_transition)
         writer = ReviewArtifactWriter(target_run_id, review_root)
         for item in state.functions:
             writer.record_function(item)
@@ -232,7 +282,8 @@ class OfflineRiskRescorer:
                 "preserved_generation_contract": source.scenario_contract_version,
                 "scenario_fingerprints": {item.scenario_id: item.semantic_fingerprint for item in source.scenarios},
                 "scenario_facts_and_semantics_unchanged": state.scenarios == source.scenarios,
-                "method_source_unchanged": True,
+                "method_source_unchanged": method_transition is None,
+                "method_transition": method_transition,
             },
             "target_checkpoint": str(target_path),
             "reused": {"functions": len(state.functions), "guideword_assessments": len(state.guideword_assessments),

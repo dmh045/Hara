@@ -85,7 +85,7 @@ def test_resolved_atom_absent_from_atom_set_is_pending_binding():
         })
     )
     assert readiness["status"] == "PENDING_ATOM_BINDING"
-    assert readiness["reason_code"] == "EXPOSURE_ATOM_BINDING_INCOMPLETE"
+    assert readiness["reason_code"] == "EXPOSURE_SCENARIO_ATOM_SET_EMPTY"
 
 
 def test_ambiguous_atom_binding_is_pending_ambiguous():
@@ -99,3 +99,47 @@ def test_ambiguous_atom_binding_is_pending_ambiguous():
         })
     )
     assert readiness["status"] == "PENDING_AMBIGUOUS_ATOM_SET"
+
+
+def test_not_applicable_dimension_with_lower_atom_does_not_block():
+    readiness = ExposureInputReadinessService(_method([("E4", "E4"), ("E2", "E2")])).assess(
+        _scenario(atoms=["A1"], bindings={
+            "D1": {"resolution_status": "RESOLVED", "atom_id": "A1"},
+            "D2": {"resolution_status": "NOT_APPLICABLE",
+                   "applicability_status": "NOT_APPLICABLE",
+                   "candidate_atom_ids": ["A2"]},
+        })
+    )
+    assert readiness["status"] == "READY_METHOD_IRRELEVANT_GAPS"
+    assert readiness["unresolved_relevant_dimensions"] == []
+
+
+def test_native_whole_scenario_domain_fallback_is_preserved():
+    readiness = ExposureInputReadinessService(_method([("dash", "E3")])).assess(
+        _scenario(atoms=["A1"], bindings={
+            "D1": {"resolution_status": "RESOLVED", "atom_id": "A1"},
+        })
+    )
+    assert readiness["status"] == "READY_COMPLETE"
+    assert readiness["baseline_exposure"]["requested_domain"] == "Z"
+    assert readiness["baseline_exposure"]["actual_domain"] == "F"
+
+
+def test_source_defined_compound_atom_is_supplied_once():
+    method = _method([("E3", "E3")])
+    exposure = method.structured_risk_method.exposure
+    atom = replace(exposure.atoms[0], dimensions=("D1", "D2"))
+    method = replace(method, structured_risk_method=replace(
+        method.structured_risk_method,
+        exposure=replace(exposure, atoms=(atom,)),
+    ))
+    readiness = ExposureInputReadinessService(method).assess(
+        _scenario(atoms=["A1"], bindings={
+            "D1": {"resolution_status": "RESOLVED", "atom_id": "A1",
+                   "filled_dimensions": ["D1", "D2"]},
+            "D2": {"resolution_status": "RESOLVED", "atom_id": "A1",
+                   "filled_dimensions": ["D1", "D2"]},
+        })
+    )
+    assert readiness["status"] == "READY_COMPLETE"
+    assert readiness["scenario_atom_ids"] == ["A1"]

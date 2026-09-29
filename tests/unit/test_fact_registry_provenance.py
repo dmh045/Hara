@@ -61,7 +61,7 @@ def test_removed_legacy_provenance_is_rejected():
 def test_ttc_is_derived_physics_with_canonical_inputs():
     scenario = ScenarioCandidate(
         "SCN-TTC", "parking", "parking", "closing target",
-        facts={"relative_distance": "10 m", "relative_speed_kph": 18},
+        facts={"relative_distance": "10 m", "closing_speed_kph": 18},
     )
     record = build_fact_registry(_malfunction(), scenario).resolve_record("DERIVED.ttc_s")
     assert record is not None
@@ -70,8 +70,8 @@ def test_ttc_is_derived_physics_with_canonical_inputs():
     assert record.provenance is FactProvenance.DERIVED
     assert record.metadata == {
         "derivation_type": "TTC",
-        "inputs": ["SCN.relative_distance", "SCN.relative_speed_kph"],
-        "formula_identity": "relative_distance_m / (relative_speed_kph / 3.6)",
+        "inputs": ["SCN.relative_distance", "SCN.closing_speed_kph"],
+        "formula_identity": "relative_distance_m / (closing_speed_kph / 3.6)",
     }
 
 

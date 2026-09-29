@@ -177,8 +177,10 @@ def test_synthetic_causal_hara_regression_preserves_scoring_goal_gate_and_draft(
     facts["avoidability_percent"] = 80.0
     facts["relative_distance"] = "10 m"
     facts["relative_speed_kph"] = 18.0
+    facts["closing_speed_kph"] = 18.0
     provenance["relative_distance"] = _source("relative_distance")
     provenance["relative_speed_kph"] = _source("relative_speed_kph")
+    provenance["closing_speed_kph"] = _source("closing_speed_kph")
     state = HARAState(run_id="method-scoring", stage=WorkflowStage.SCORING)
     state.functions = [{"function_id": "FUN-1", "name": "braking control"}]
     state.scenarios = [ScenarioCandidate(

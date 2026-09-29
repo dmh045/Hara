@@ -229,7 +229,12 @@ class SeverityMethodExecutor:
         collision_type = dict(method.collision_types).get(
             consequence.collision_type.strip().upper(), ""
         )
-        if group != "vehicle" and collision_type == "any":
+        # VRU bands in the active Method are collision-configuration independent.
+        # Keep vehicle bands tied to their configured collision type.
+        if group != "vehicle" and any(
+            band.collision_group == group and band.collision_type == "any"
+            for band in method.bands
+        ):
             collision_type = "any"
         if not collision_type:
             return {"value": "", "status": CalculationStatus.PENDING_INPUT,
@@ -389,6 +394,12 @@ class ExposureMethodExecutor:
                 **common, value=policy.all_highest_result,
                 status=CalculationStatus.FINALIZED,
                 reason="FUSA_V1_ALL_E4", aggregation_rule="all_e4",
+            )
+        if len(usable) == 1:
+            # A single usable atom has no inter-atom dependency to resolve.
+            return self._base_result(
+                **common, value=usable[0], status=CalculationStatus.FINALIZED,
+                reason="FUSA_V1_SINGLE_ATOM", aggregation_rule="single_atom",
             )
         if set(policy.mixed_high_operands).issubset(set(usable)):
             return self._base_result(

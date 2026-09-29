@@ -9,7 +9,7 @@ from hara_agent.contracts import AnalyticalPhysicalInput, MethodContract, Physic
 from hara_agent.models import ScenarioCandidate
 
 from .scenario_physics import (
-    TTC_FORMULA_IDENTITY, closing_relative_speed_kph,
+    TTC_CLOSING_FORMULA_IDENTITY, closing_relative_speed_kph,
     derive_stationary_object_speed, longitudinal_closing_speed_kph,
     select_ego_speed_from_policy,
     time_to_collision_s,
@@ -210,7 +210,7 @@ class AnalyticalPhysicsInstantiationService:
                     "field": "ttc_s",
                     "value": ttc,
                     "unit": "s", "authority": "DERIVED",
-                    "derivation": TTC_FORMULA_IDENTITY,
+                    "derivation": TTC_CLOSING_FORMULA_IDENTITY,
                     "closing_speed_kph": closing,
                     "inputs": ["relative_distance_m", "ego_speed_kph", "object_speed_kph",
                                "ego_longitudinal_direction", "object_longitudinal_direction",

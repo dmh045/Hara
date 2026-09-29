@@ -54,7 +54,7 @@ policies:
   ftti_formula_selection: collision_type_first
 
 asset_hashes:
-  normalized/project_analysis_policy.yaml: 2015f9f9840beb741839ed6dde55e24bb580a6163b3f7209db351775134691ae
+  normalized/project_analysis_policy.yaml: bff7ed2aae9ba97781ea3aab79c906395ea886877153486574eec5f680dfcf3e
   raw/atom_spec.yaml: 391ad0433a6f37bb8f1ddc0b7bc004c0c882d4dae364e1420322bb0813331108
   raw/c_iso26262.yaml: 5a64ce1fa4f8d133f51d0aec7d88506f8a0bdf01ce4aa1ea90318ab388aeb8b9
   raw/c_profiles/iav_avp.yaml: 4d966dfc584ee31c066db17f076818fc65ccd088fd0c579c741d2db4e2363dfb

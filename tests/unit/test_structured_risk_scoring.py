@@ -86,6 +86,29 @@ def test_structured_severity_boundaries_and_c_profile():
     assert scored["controllability"]["controllability_score"] == "C1"
 
 
+@pytest.mark.parametrize(("road_user", "speed", "expected"), [
+    ("PEDESTRIAN", 7.0, "S2"),
+    ("CYCLIST", 7.0, "S2"),
+    ("MOTORCYCLIST", 7.0, "S2"),
+])
+def test_vru_any_bands_accept_canonical_frontal_collision(road_user, speed, expected):
+    service = _service()
+    scenario = _scenario(service, speed)
+    scenario["road_user_type"] = road_user
+    severity = service.score(scenario, "hazard")["severity"]
+    assert severity["severity_score"] == expected
+    assert severity["engineering_rule_id"].endswith("-any-2")
+
+
+def test_vehicle_bands_still_require_configured_collision_type():
+    service = _service()
+    scenario = _scenario(service, 7.0)
+    scenario["collision_type"] = "UNMAPPED"
+    severity = service.score(scenario, "hazard")["severity"]
+    assert severity["severity_score"] == ""
+    assert severity["calculation_status"] == CalculationStatus.PENDING_INPUT.value
+
+
 def test_structured_c_override_precedes_ttc():
     service = _service()
     scenario = _scenario(service, 20.0)
@@ -99,16 +122,16 @@ def test_structured_c_override_precedes_ttc():
     assert scored["controllability"]["engineering_rule_id"] == "driver_outside_no_intervention"
 
 
-def test_unknown_override_policy_is_explicit_and_does_not_implicitly_enter_ttc():
+def test_current_project_unknown_override_policy_routes_to_ttc_without_fabricating_facts():
     service = _service()
     scenario = _scenario(service, 20.0)
     scenario.pop("driver_in_vehicle")
     scored = service.score(scenario, "hazard")["controllability"]
-    assert scored["calculation_status"] == CalculationStatus.PENDING_METHOD_SEMANTICS.value
-    assert scored["reasoning"] == "CONTROLLABILITY_UNKNOWN_BRANCH_POLICY_UNSPECIFIED"
-    assert scored["unknown_override_policy"] == UnknownOverridePolicy.UNSPECIFIED.value
-    assert scored["unknown_policy_action"] == "UNSPECIFIED_BLOCKED"
-    assert scored["decision_status"] == "METHOD_BRANCH_UNRESOLVED"
+    assert scored["calculation_status"] == CalculationStatus.FINALIZED.value
+    assert scored["unknown_override_policy"] == UnknownOverridePolicy.SKIP_TO_TTC.value
+    assert scored["unknown_policy_action"] == "SKIP_TO_TTC"
+    assert scored["decision_status"] == "TTC_AFTER_UNKNOWN_OVERRIDE"
+    assert "driver_in_vehicle" not in scenario
 
 
 def test_skip_to_ttc_fixture_preserves_unknown_in_runtime_trace():
@@ -136,7 +159,7 @@ def test_structured_exposure_missing_atom_is_pending_input():
     scored = service.score(scenario, "hazard")
     assert scored["exposure"]["calculation_status"] == CalculationStatus.PENDING_INPUT.value
     assert scored["exposure"]["executor_invoked"] is False
-    assert scored["exposure"]["pending_reason"] == "EXPOSURE_ATOM_BINDING_INCOMPLETE"
+    assert scored["exposure"]["pending_reason"] == "EXPOSURE_SCENARIO_ATOM_SET_EMPTY"
 
 
 def test_pending_coverage_is_diagnostic_only_for_fusa_v1(monkeypatch):

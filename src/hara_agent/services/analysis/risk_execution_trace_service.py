@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from hara_agent.contracts import CalculationStatus, MethodContract
 from hara_agent.models import evaluate_risk_eligibility_payload
 
-from .scenario_physics import TTC_FORMULA_IDENTITY
+from .scenario_physics import TTC_CLOSING_FORMULA_IDENTITY
 
 
 def _value(value: Any) -> Any:
@@ -285,7 +285,7 @@ class RiskExecutionTraceService:
                 "other_road_user_avoidance_possible", "relative_distance_m",
                 "relative_speed_kph", "ttc_s",
             ],
-            "derived_ttc": {"relative_distance_m": distance, "relative_speed_kph": relative_speed, "closing_speed_kph": closing_speed, "closing_speed_status": ttc_state, "ttc_s": ttc, "source": "DERIVED_PHYSICS" if ttc is not None else "", "formula_identity": ttc_metadata.get("formula_identity", TTC_FORMULA_IDENTITY), "risk_context_field": "ttc_s"},
+            "derived_ttc": {"relative_distance_m": distance, "relative_speed_kph": relative_speed, "closing_speed_kph": closing_speed, "closing_speed_status": ttc_state, "ttc_s": ttc, "source": "DERIVED_PHYSICS" if ttc is not None else "", "formula_identity": ttc_metadata.get("formula_identity", TTC_CLOSING_FORMULA_IDENTITY), "risk_context_field": "ttc_s"},
             "override": {"evaluated": True, "matched": rule_id in override_ids, "rule_id": rule_id if rule_id in override_ids else ""},
             "override_resolution": "MATCHED" if rule_id in override_ids else action or "NOT_RECORDED",
             "ttc_branch_eligible": decision_status.startswith("TTC") and bool(ttc is not None),

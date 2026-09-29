@@ -21,6 +21,10 @@ ego_speed_point_selection:
   status: CONFIRMED_FOR_CURRENT_PROJECT
   require_finite_closed_upper_bound: true
   require_source_and_scope: true
+controllability:
+  unknown_override_policy: SKIP_TO_TTC
+  basis: POSITIVE_OVERRIDE_ONLY_THEN_TTC_FALLBACK
+  status: CONFIRMED_FOR_CURRENT_PROJECT
 decisions:
   A1:
     status: CONFIRMED_FOR_CURRENT_PROJECT

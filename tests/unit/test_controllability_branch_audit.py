@@ -68,25 +68,19 @@ def test_proven_nonmatch_of_overrides_allows_ttc_branch():
     ]
 
 
-def test_unknown_override_fact_is_method_branch_unresolved_not_false():
+def test_current_project_unknown_override_fact_routes_to_ttc_without_false_fact():
     context = _context()
     context["driver_in_vehicle"] = {
         "status": "UNAVAILABLE", "value": None,
         "source_type": "UNAVAILABLE", "source_ref": "",
     }
     result = _service().readiness(context)
-    assert result["status"] == "METHOD_BRANCH_UNRESOLVED"
-    assert result["reason"] == "CONTROLLABILITY_UNKNOWN_BRANCH_POLICY_UNSPECIFIED"
-    assert result["unknown_override_policy"] == "UNSPECIFIED"
-    assert result["decision_stage"] == "UNRESOLVED"
-    assert result["unknown_policy_action"] == "NO_TRANSITION_DEFINED"
-    assert result["decision_inputs"] == [
-        "driver_in_vehicle", "remote_intervention_available",
-        "other_road_user_avoidance_possible",
-    ]
-    assert result["unresolved_inputs"] == ["driver_in_vehicle"]
-    assert "required_inputs" not in result
-    assert result["ttc_execution_outcome"] == "NOT_ENTERED_METHOD_BRANCH_UNRESOLVED"
+    assert result["status"] == "READY"
+    assert result["unknown_override_policy"] == "SKIP_TO_TTC"
+    assert result["decision_stage"] == "TTC"
+    assert result["unknown_policy_action"] == "SKIP_TO_TTC"
+    assert result["override_states"]["driver_in_vehicle"] == "UNKNOWN"
+    assert context["driver_in_vehicle"]["value"] is None
 
 
 def test_later_positive_override_wins_after_an_earlier_unknown_rule():
@@ -141,34 +135,28 @@ def test_selected_profile_thresholds_and_source_roles_are_auditable():
     assert [(item["upper_ttc_s"], item["result"]) for item in tree["ttc_thresholds"]] == [
         (3.0, "C3"), (4.0, "C2"), (5.0, "C1"), (None, "C0"),
     ]
-    assert tree["unknown_override_policy"] == "UNSPECIFIED"
-    assert tree["policy_source_ref"] is None
-    assert tree["policy_absence_evidence"] == {
-        "inspected_source": "raw/c_profiles/iav_avp.yaml",
-        "profile_id": "iav_avp_v1",
-        "method_hash": tree["method_hash"],
-        "source_hash": tree["method_hash"],
-        "field_present": False,
-    }
+    assert tree["unknown_override_policy"] == "SKIP_TO_TTC"
+    assert tree["policy_source_ref"]["source"] == "normalized/project_analysis_policy.yaml"
+    assert tree["policy_absence_evidence"] is None
     assert tree["implicit_python_default"] is False
     assert payload["runtime_comparison"] == {
         "runtime_contract_alignment": "MATCH",
-        "method_semantic_completeness": "INCOMPLETE_UNKNOWN_POLICY",
+        "method_semantic_completeness": "COMPLETE",
     }
     assert payload["source_authority_hierarchy"][0]["selected"] is True
     assert payload["source_authority_hierarchy"][2]["runtime_consumer"] == "NONE"
 
 
-def test_r3_projection_marks_unknown_branch_semantics_without_scoring():
+def test_r3_projection_uses_current_project_ttc_route_without_scoring():
     records = ReviewArtifactReader(
         "hara-c9f-validation-r3", ROOT / "runtime/review",
     ).read_all()
     summary = _service().audit(records)["summary"]
     assert summary["causal_relevant_hazardous_events"] == 54
-    assert summary["c_method_branch_unresolved"] == 54
-    assert summary["eligible_for_ttc"] == 0
+    assert summary["c_method_branch_unresolved"] == 0
+    assert summary["eligible_for_ttc"] == 54
     assert summary["c_ready"] == 0
-    assert summary["c_pending_input"] == 0
+    assert summary["c_pending_input"] == 54
 
 
 def test_r3_policy_fixture_projections_keep_method_and_input_gaps_distinct():

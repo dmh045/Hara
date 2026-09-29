@@ -24,6 +24,7 @@ def test_agent_parser_auto_finalizes_only_after_typed_evidence_validation():
             "object_position": "ahead",
             "relative_distance": "0.5 m",
             "relative_speed_kph": 5.0,
+            "closing_speed_kph": 5.0,
             "harm_mechanism": "contact can expose occupants to injury",
         },
         fact_provenance={
@@ -39,6 +40,7 @@ def test_agent_parser_auto_finalizes_only_after_typed_evidence_validation():
             }
             for key in (
                 "object_position", "relative_distance", "relative_speed_kph",
+                "closing_speed_kph",
                 "harm_mechanism",
             )
         },

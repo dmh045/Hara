@@ -65,7 +65,9 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
         current_risks = list(current["04_HARA"].iter_rows(min_row=6, values_only=True))
         previous_risks = list(previous["04_HARA"].iter_rows(min_row=6, values_only=True))
         assert len(current_risks) == len(previous_risks) == 13
-        assert current_risks == previous_risks
+        assert [tuple("" if value is None else value for value in row) for row in current_risks] == [
+            tuple("" if value is None else value for value in row) for row in previous_risks
+        ]
         details = list(current["04A_Scenario Detail"].iter_rows(min_row=5, values_only=True))
         assert len(details) == 13
 

@@ -22,7 +22,7 @@ from hara_agent.services.semantic.project_evidence_registry import (
 )
 from hara_agent.services.analysis.scenario_physics import (
     closing_relative_speed_kph, derive_scenario_physics,
-    derive_stationary_object_speed,
+    derive_stationary_object_speed, derive_stationary_object_direction,
     select_ego_speed_from_policy,
 )
 from hara_agent.workflow.state import HARAState, WorkflowStage
@@ -222,6 +222,24 @@ def score_structured_scenarios(
                     candidate, facts=scoped_facts,
                     fact_provenance=scoped_provenance,
                 )
+        stationary_direction = derive_stationary_object_direction(
+            candidate, malfunction_id=malfunction_id,
+        )
+        if stationary_direction is not None:
+            value, metadata = stationary_direction
+            scoped_facts = {**candidate.facts, "object_longitudinal_direction": value}
+            scoped_provenance = {
+                **candidate.fact_provenance,
+                "object_longitudinal_direction": metadata,
+            }
+            if assessment_counts[scenario_id] == 1:
+                candidate.facts = scoped_facts
+                candidate.fact_provenance = scoped_provenance
+            else:
+                candidate = replace(
+                    candidate, facts=scoped_facts,
+                    fact_provenance=scoped_provenance,
+                )
         scenario = {
             "scenario_id": scenario_id,
             "malfunction_id": malfunction_id,
@@ -232,6 +250,20 @@ def score_structured_scenarios(
                 scenario[key] = malfunction[key]
         scenario["_fact_provenance"] = dict(candidate.fact_provenance)
         physics_conflicts: list[dict[str, Any]] = []
+        stationary_direction_conflict = (
+            scenario.get("object_speed_kph") == 0
+            and "object_longitudinal_direction" in scenario
+            and str(scenario["object_longitudinal_direction"]).upper() != "STATIONARY"
+        )
+        if stationary_direction_conflict:
+            physics_conflicts.append({
+                "field": "object_longitudinal_direction",
+                "explicit_value": scenario["object_longitudinal_direction"],
+                "derived_value": "STATIONARY",
+                "reason": "FACT_SOURCE_CONFLICT",
+            })
+            scenario.pop("object_longitudinal_direction", None)
+            scenario["_fact_provenance"].pop("object_longitudinal_direction", None)
         explicit_relative = scenario.get("relative_speed_kph")
         calculated_relative = closing_relative_speed_kph(
             scenario.get("ego_speed_kph"), scenario.get("object_speed_kph"),
@@ -252,12 +284,21 @@ def score_structured_scenarios(
                 "reason": "FACT_SOURCE_CONFLICT",
             })
         blocked_physics_fields = (
-            {"relative_speed_kph", "ttc_s"} if physics_conflicts else set()
+            {"relative_speed_kph", "ttc_s", "closing_speed_kph"}
+            if any(item["field"] == "relative_speed_kph" for item in physics_conflicts)
+            else {"ttc_s", "closing_speed_kph"}
+            if stationary_direction_conflict else set()
         )
         for field in blocked_physics_fields:
             scenario.pop(field, None)
             scenario["_fact_provenance"].pop(field, None)
-        derived_physics = derive_scenario_physics(candidate)
+        physics_candidate = (
+            replace(candidate, facts={
+                key: value for key, value in candidate.facts.items()
+                if key != "object_longitudinal_direction"
+            }) if stationary_direction_conflict else candidate
+        )
+        derived_physics = derive_scenario_physics(physics_candidate)
         for record in derived_physics:
             key = record.evidence_ref.split(".", 1)[1]
             if key in blocked_physics_fields:

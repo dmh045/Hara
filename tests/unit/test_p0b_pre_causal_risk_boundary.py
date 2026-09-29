@@ -48,12 +48,14 @@ def _scenario() -> ScenarioCandidate:
             "provenance": "PROJECT_INPUT", "approval": "FINALIZED",
             "source_refs": [source],
         }
-        for key in ("relative_distance", "relative_speed_kph", "collision_type", "road_user_type")
+        for key in ("relative_distance", "relative_speed_kph", "closing_speed_kph",
+                    "collision_type", "road_user_type")
     }
     return ScenarioCandidate(
         "SCN-1", "parking", "object ahead", "closing object",
         {
             "relative_distance": "10 m", "relative_speed_kph": 18.0,
+            "closing_speed_kph": 18.0,
             "collision_type": "FRONTAL", "road_user_type": "VEHICLE",
         }, fact_provenance=provenance, status=ReviewStatus.FINALIZED,
         sources=[source], semantic_fingerprint="fp-1",

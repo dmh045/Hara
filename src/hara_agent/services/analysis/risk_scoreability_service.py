@@ -394,7 +394,10 @@ class RiskScoreabilityService:
         )
         override_state = (
             "MATCH" if override_finalized else
-            "NO_MATCH" if readiness["branch"] == "TTC" else "UNKNOWN"
+            "UNKNOWN" if any(
+                item["status"] not in {"EXISTING_PROJECT_FACT", "SCENARIO_DEFINED"}
+                for item in accepted_controls.values()
+            ) else "NO_MATCH" if readiness["branch"] == "TTC" else "UNKNOWN"
         )
         blockers = [
             f"{field.upper()}_ENGINEERING_ASSUMPTION_REQUIRED"

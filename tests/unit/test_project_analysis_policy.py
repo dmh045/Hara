@@ -10,7 +10,8 @@ from hara_agent.services.analysis.analytical_physics_instantiation_service impor
     AnalyticalPhysicsInstantiationService,
 )
 from hara_agent.services.analysis.scenario_physics import (
-    derive_scenario_physics, longitudinal_closing_speed_kph,
+    derive_scenario_physics, derive_stationary_object_direction,
+    longitudinal_closing_speed_kph,
     select_ego_speed_from_policy,
 )
 from hara_agent.template import TemplateRoleCompiler
@@ -136,6 +137,17 @@ def test_explicit_relative_speed_does_not_force_lateral_ttc():
     }
 
 
+def test_explicit_frontal_relative_speed_without_approach_direction_does_not_force_ttc():
+    scenario = ScenarioCandidate(
+        "SC-FRONTAL", "parking", "front interaction", "",
+        facts={"relative_speed_kph": 7.0, "relative_distance_m": 0.3,
+               "collision_type": "FRONTAL", "object_position": "FRONT"},
+    )
+    assert "DERIVED.ttc_s" not in {
+        item.evidence_ref for item in derive_scenario_physics(scenario)
+    }
+
+
 def test_source_linked_zero_speed_target_supplies_severity_speed_without_ttc():
     facts = {
         "ego_speed_kph": 7.0,
@@ -158,3 +170,29 @@ def test_source_linked_zero_speed_target_supplies_severity_speed_without_ttc():
     assert derived["DERIVED.relative_speed_kph"].value == 7.0
     assert "DERIVED.ttc_s" not in derived
     assert "DERIVED.closing_speed_kph" not in derived
+
+
+def test_zero_speed_derives_stationary_direction_with_source_and_never_overwrites():
+    scenario = ScenarioCandidate(
+        "SC-ZERO", "parking", "stationary target", "",
+        facts={"object_speed_kph": 0.0, "ego_speed_kph": 7.0,
+               "object_position": "FRONT", "collision_type": "FRONTAL",
+               "relative_distance_m": 0.3},
+        fact_provenance={"object_speed_kph": {
+            "provenance": "PROJECT_INPUT", "approval": "FINALIZED",
+            "source_refs": [{"source_type": "test", "source_id": "zero",
+                             "location": "object_speed_kph"}],
+        }},
+    )
+    value, provenance = derive_stationary_object_direction(
+        scenario, malfunction_id="MF-1",
+    )
+    assert value == "STATIONARY"
+    assert provenance["derivation_rule_id"] == "ZERO_SPEED_IMPLIES_STATIONARY_VELOCITY"
+    assert provenance["source_refs"][0]["source_id"] == "zero"
+    scenario.facts["object_longitudinal_direction"] = value
+    assert "DERIVED.ttc_s" not in {
+        record.evidence_ref for record in derive_scenario_physics(scenario)
+    }
+    scenario.facts["object_longitudinal_direction"] = "FORWARD"
+    assert derive_stationary_object_direction(scenario, malfunction_id="MF-1") is None

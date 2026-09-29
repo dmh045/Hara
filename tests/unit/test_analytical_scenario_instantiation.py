@@ -252,22 +252,22 @@ def test_analysis_assumption_scope_cannot_be_bypassed_by_approval(
     assert context.relative_distance_m.status is RiskContextFactStatus.UNAVAILABLE
 
 
-def test_ttc_retains_analytical_assumption_source_chain_without_deriving_relative_speed(method):
+def test_ttc_retains_analytical_assumption_source_chain_for_explicit_closing_speed(method):
     instance = ScenarioMethodService(method).instantiate_analytical_candidates(
         _malfunction(), [_parent()],
     )[0][0]
     speed_metadata = deepcopy(instance.fact_provenance["object_speed_kph"])
-    speed_metadata["field"] = "relative_speed_kph"
+    speed_metadata["field"] = "closing_speed_kph"
     speed_metadata["source_refs"] = [{
-        "source_type": "method_contract", "source_id": "relative-speed-source",
-        "location": "template!relative-speed", "excerpt": "configured test input",
+        "source_type": "method_contract", "source_id": "closing-speed-source",
+        "location": "template!closing-speed", "excerpt": "configured test input",
     }]
     synthetic = replace(
         instance,
-        facts={**instance.facts, "relative_speed_kph": 5.0},
+        facts={**instance.facts, "closing_speed_kph": 5.0},
         fact_provenance={
             **instance.fact_provenance,
-            "relative_speed_kph": speed_metadata,
+            "closing_speed_kph": speed_metadata,
         },
     )
 
@@ -279,13 +279,13 @@ def test_ttc_retains_analytical_assumption_source_chain_without_deriving_relativ
     assert ttc.metadata["analysis_assumption_origin"] == "SCENARIO_DEFINED"
     assert ttc.metadata["analysis_assumption_scope"]["scenario_id"] == instance.scenario_id
     assert [item["field"] for item in ttc.metadata["input_fact_metadata"]] == [
-        "relative_distance_m", "relative_speed_kph",
+        "relative_distance_m", "closing_speed_kph",
     ]
     assert [item["input_field"] for item in ttc.metadata["analysis_assumption_inputs"]] == [
-        "relative_distance_m", "relative_speed_kph",
+        "relative_distance_m", "closing_speed_kph",
     ]
     assert {item.location for item in ttc.source_refs} == {
-        instance.sources[-1].location, "template!relative-speed",
+        instance.sources[-1].location, "template!closing-speed",
     }
 
     context = HazardousEventRiskContextService(method).build(
@@ -304,14 +304,14 @@ def test_ttc_with_valid_analysis_distance_and_pending_project_speed_is_unavailab
     )[0][0]
     synthetic = replace(
         instance,
-        facts={**instance.facts, "relative_speed_kph": 5.0},
+        facts={**instance.facts, "closing_speed_kph": 5.0},
         fact_provenance={
             **instance.fact_provenance,
-            "relative_speed_kph": {
+            "closing_speed_kph": {
                 "provenance": "PROJECT_INPUT", "approval": "PENDING",
                 "source_refs": [{
                     "source_type": "item_definition", "source_id": "ItemDef.docx",
-                    "location": "relative_speed", "excerpt": "unconfirmed speed",
+                    "location": "closing_speed", "excerpt": "unconfirmed speed",
                 }],
             },
         },
@@ -331,10 +331,10 @@ def test_ttc_cannot_combine_analytical_inputs_from_different_instances(method):
     speed_metadata["applicable_scope"]["scenario_id"] = "SCN-OTHER"
     synthetic = replace(
         instance,
-        facts={**instance.facts, "relative_speed_kph": 5.0},
+        facts={**instance.facts, "closing_speed_kph": 5.0},
         fact_provenance={
             **instance.fact_provenance,
-            "relative_speed_kph": speed_metadata,
+            "closing_speed_kph": speed_metadata,
         },
     )
 
@@ -352,14 +352,14 @@ def test_ttc_accepts_finalized_project_speed_with_current_analysis_distance(meth
     )[0][0]
     synthetic = replace(
         instance,
-        facts={**instance.facts, "relative_speed_kph": 5.0},
+        facts={**instance.facts, "closing_speed_kph": 5.0},
         fact_provenance={
             **instance.fact_provenance,
-            "relative_speed_kph": {
+            "closing_speed_kph": {
                 "provenance": "PROJECT_INPUT", "approval": "FINALIZED",
                 "source_refs": [{
                     "source_type": "item_definition", "source_id": "ItemDef.docx",
-                    "location": "relative_speed", "excerpt": "confirmed speed",
+                    "location": "closing_speed", "excerpt": "confirmed speed",
                 }],
             },
         },
@@ -390,10 +390,10 @@ def test_ttc_rejects_finalized_project_speed_without_its_own_source_reference(
         speed_metadata["source_refs"] = []
     synthetic = replace(
         instance,
-        facts={**instance.facts, "relative_speed_kph": 5.0},
+        facts={**instance.facts, "closing_speed_kph": 5.0},
         fact_provenance={
             **instance.fact_provenance,
-            "relative_speed_kph": speed_metadata,
+            "closing_speed_kph": speed_metadata,
         },
     )
 
@@ -402,8 +402,6 @@ def test_ttc_rejects_finalized_project_speed_without_its_own_source_reference(
         hazard_node_id="H", scenario=_materialize(synthetic),
     )
 
-    assert context.relative_speed_kph.status is RiskContextFactStatus.UNAVAILABLE
-    assert context.relative_speed_kph.reason == "MISSING_SOURCE_PROVENANCE"
     assert context.ttc_s.status is RiskContextFactStatus.UNAVAILABLE
     assert context.ttc_s.reason == "MISSING_SOURCE_PROVENANCE"
 
@@ -422,7 +420,7 @@ def test_ttc_rejects_analysis_speed_without_its_own_source_reference(
         speed_metadata.pop("source_refs")
     synthetic = replace(
         instance,
-        facts={**instance.facts, "relative_speed_kph": 5.0},
+        facts={**instance.facts, "closing_speed_kph": 5.0},
         fact_provenance={
             **instance.fact_provenance,
             "relative_distance_m": {
@@ -432,7 +430,7 @@ def test_ttc_rejects_analysis_speed_without_its_own_source_reference(
                     "location": "relative_distance", "excerpt": "confirmed distance",
                 }],
             },
-            "relative_speed_kph": speed_metadata,
+            "closing_speed_kph": speed_metadata,
         },
     )
 
@@ -441,8 +439,6 @@ def test_ttc_rejects_analysis_speed_without_its_own_source_reference(
         hazard_node_id="H", scenario=_materialize(synthetic),
     )
 
-    assert context.relative_speed_kph.status is RiskContextFactStatus.UNAVAILABLE
-    assert context.relative_speed_kph.reason == "MISSING_SOURCE_PROVENANCE"
     assert context.ttc_s.status is RiskContextFactStatus.UNAVAILABLE
     assert context.ttc_s.reason == "MISSING_SOURCE_PROVENANCE"
 
@@ -529,10 +525,10 @@ def test_analytical_ttc_is_scoring_only_not_positive_causal_evidence(method):
     speed_metadata = deepcopy(instance.fact_provenance["object_speed_kph"])
     synthetic = replace(
         instance,
-        facts={**instance.facts, "relative_speed_kph": 5.0},
+        facts={**instance.facts, "closing_speed_kph": 5.0},
         fact_provenance={
             **instance.fact_provenance,
-            "relative_speed_kph": speed_metadata,
+            "closing_speed_kph": speed_metadata,
         },
     )
     registry = build_fact_registry(malfunction, synthetic)

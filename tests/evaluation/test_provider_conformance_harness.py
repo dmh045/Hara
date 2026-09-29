@@ -13,7 +13,7 @@ def context():
     scenario = ScenarioCandidate(
         "SCN-1", "mode", "object ahead", "closing state",
         {"object_position": "ahead", "relative_distance": "1 m",
-         "relative_speed_kph": 5.0,
+         "relative_speed_kph": 5.0, "closing_speed_kph": 5.0,
          "harm_mechanism": "contact can expose occupants to injury"},
         semantic_fingerprint="provider-fixture",
     )

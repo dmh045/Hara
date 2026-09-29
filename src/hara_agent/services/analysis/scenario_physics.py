@@ -19,7 +19,6 @@ class DerivedPhysicsType(str, Enum):
 
 _ANALYSIS_ORIGIN = FactProvenance.SCENARIO_DEFINED.value
 _FINAL_APPROVALS = {ReviewStatus.FINALIZED.value, "APPROVED"}
-TTC_FORMULA_IDENTITY = "relative_distance_m / (relative_speed_kph / 3.6)"
 TTC_CLOSING_FORMULA_IDENTITY = "relative_distance_m / (closing_speed_kph / 3.6)"
 
 
@@ -204,6 +203,46 @@ def derive_stationary_object_speed(
         "selection_basis": "SELECTED_METHOD_ATOM_EXPLICIT_STATIONARY",
         "source_atom_ids": [atom_id],
         "derivation_rule_id": "SELECTED_METHOD_ATOM_STATIONARY_ZERO_SPEED",
+    }
+
+
+def derive_stationary_object_direction(
+    scenario: ScenarioCandidate, *, malfunction_id: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Derive stationary velocity from an accepted exact zero-speed fact."""
+    if "object_longitudinal_direction" in scenario.facts:
+        return None
+    speed = scenario.facts.get("object_speed_kph")
+    source = scenario.fact_provenance.get("object_speed_kph", {})
+    if (
+        isinstance(speed, bool) or not isinstance(speed, (int, float))
+        or float(speed) != 0.0 or not isinstance(source, dict)
+        or not source_is_accepted_for(
+            source, malfunction_id=malfunction_id,
+            scenario_id=scenario.scenario_id,
+        )
+    ):
+        return None
+    scope = {
+        "malfunction_id": malfunction_id,
+        "scenario_id": scenario.scenario_id,
+        "parent_scenario_id": scenario.source_scenario_id or scenario.scenario_id,
+    }
+    input_status, input_sources, _ = _input_metadata(
+        scenario, "object_speed_kph",
+    )
+    return "STATIONARY", {
+        "provenance": FactProvenance.DERIVED.value,
+        "origin": FactProvenance.DERIVED.value,
+        "approval": input_status.value,
+        "validation_status": "VALIDATED",
+        "applicable_scope": scope,
+        "source_refs": list(source.get("source_refs", source.get("sources", []))),
+        "input_fact_metadata": [_input_snapshot(
+            "object_speed_kph", input_status, input_sources, source,
+        )],
+        "inputs": ["SCN.object_speed_kph"],
+        "derivation_rule_id": "ZERO_SPEED_IMPLIES_STATIONARY_VELOCITY",
     }
 
 
@@ -424,7 +463,8 @@ def derive_scenario_physics(
     records: list[EvidenceRecord] = []
     normalized: dict[str, tuple[Any, str]] = {}
     for key in (
-        "ego_speed_kph", "relative_speed_kph", "impact_speed_kph", "delta_v_kph",
+        "ego_speed_kph", "relative_speed_kph", "closing_speed_kph",
+        "impact_speed_kph", "delta_v_kph",
     ):
         value = scenario.facts.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
@@ -550,16 +590,12 @@ def derive_scenario_physics(
                 DerivedPhysicsType.RELATIVE_MOTION,
             ))
     else:
-        # An explicit, source-accepted relative speed retains the historical
-        # closing-speed meaning only when no contradictory geometry is given.
-        closing_speed = (
-            relative_speed
-            if "relative_speed_kph" in scenario.facts
-            and not is_lateral_collision(collision)
-            else None
-        )
-        ttc_input_keys = (distance_input_key, "relative_speed_kph")
-        formula = TTC_FORMULA_IDENTITY
+        # Relative-speed magnitude alone does not establish approach geometry.
+        # A separately supplied closing speed can be consumed with its own
+        # source chain; downstream validation rejects unapproved inputs.
+        closing_speed = _nonnegative_number(scenario.facts.get("closing_speed_kph"))
+        ttc_input_keys = (distance_input_key, "closing_speed_kph")
+        formula = TTC_CLOSING_FORMULA_IDENTITY
     ttc = time_to_collision_s(distance_m, closing_speed)
     if ttc is not None:
         records.append(derived_record(
