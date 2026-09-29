@@ -235,6 +235,13 @@ def audit_potential_harm_path(state: Any, view_model: Any) -> dict[str, Any]:
         classification = "UPSTREAM_RISK_NOT_READY"
     elif resolved == 0:
         classification = "METHOD_SEMANTICS_UNAVAILABLE"
+    elif resolved == len(risks):
+        classification = "RESOLVED"
+    elif all(
+        str(getattr(risk.severity.status, "value", risk.severity.status)) != "FINALIZED"
+        for risk in risks if not str(risk.potential_harm or "").strip()
+    ):
+        classification = "PARTIAL_UPSTREAM_RISK_PENDING"
     else:
         classification = "RUNTIME_DEFECT"
     return {

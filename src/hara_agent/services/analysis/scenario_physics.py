@@ -40,16 +40,21 @@ def closing_relative_speed_kph(
     ego_speed_kph: Any, object_speed_kph: Any, *,
     ego_direction: Any, object_direction: Any, collision_type: Any,
 ) -> float | None:
-    """Return the governed longitudinal relative-speed derivation."""
+    """Return longitudinal relative-speed magnitude, independently of TTC approach."""
     ego = _nonnegative_number(ego_speed_kph)
     obj = _nonnegative_number(object_speed_kph)
     ego_dir = str(ego_direction or "").strip().upper()
     obj_dir = str(object_direction or "").strip().upper()
+    if ego is None or obj is None or is_lateral_collision(collision_type):
+        return None
+    # A zero-speed target has zero velocity in either longitudinal direction.
+    # Its relative-speed magnitude is known even when travel direction is not;
+    # approach and TTC still require explicit directional geometry.
+    if obj == 0:
+        return round(ego, 6)
     if (
-        ego is None or obj is None
-        or ego_dir not in {"FORWARD", "REVERSE"}
+        ego_dir not in {"FORWARD", "REVERSE"}
         or obj_dir not in {"FORWARD", "REVERSE", "STATIONARY"}
-        or is_lateral_collision(collision_type)
     ):
         return None
     opposing = obj_dir != "STATIONARY" and ego_dir != obj_dir
@@ -510,10 +515,15 @@ def derive_scenario_physics(
     )
     if relative_speed is None and calculated_relative is not None:
         relative_speed = calculated_relative
+        relative_inputs = (
+            ("ego_speed_kph", "object_speed_kph", "collision_type")
+            if obj == 0 else
+            ("ego_speed_kph", "object_speed_kph", "ego_longitudinal_direction",
+             "object_longitudinal_direction", "collision_type")
+        )
         records.append(derived_record(
             "relative_speed_kph", calculated_relative,
-            ("ego_speed_kph", "object_speed_kph", "ego_longitudinal_direction",
-             "object_longitudinal_direction", "collision_type"),
+            relative_inputs,
             DerivedPhysicsType.RELATIVE_MOTION,
         ))
 

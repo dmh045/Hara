@@ -134,3 +134,27 @@ def test_explicit_relative_speed_does_not_force_lateral_ttc():
     assert "DERIVED.ttc_s" not in {
         item.evidence_ref for item in derive_scenario_physics(scenario)
     }
+
+
+def test_source_linked_zero_speed_target_supplies_severity_speed_without_ttc():
+    facts = {
+        "ego_speed_kph": 7.0,
+        "object_speed_kph": 0.0,
+        "collision_type": "FRONTAL",
+        "object_position": "front",
+        "relative_distance_m": 0.3,
+    }
+    scenario = ScenarioCandidate(
+        "SC-STATIC", "parking", "static object ahead", "",
+        facts=facts,
+        fact_provenance={key: {
+            "provenance": "SCENARIO_DEFINED", "approval": "FINALIZED",
+            "source_refs": [{"source_type": "method_contract", "source_id": "method",
+                             "location": key}],
+            "applicable_scope": {"scenario_id": "SC-STATIC", "malfunction_id": "MF-1"},
+        } for key in facts},
+    )
+    derived = {item.evidence_ref: item for item in derive_scenario_physics(scenario)}
+    assert derived["DERIVED.relative_speed_kph"].value == 7.0
+    assert "DERIVED.ttc_s" not in derived
+    assert "DERIVED.closing_speed_kph" not in derived

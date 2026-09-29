@@ -12,6 +12,10 @@ from hara_agent.models import ReviewStatus, ScenarioCandidate, SourceRef
 
 
 _POSITIONS = ("in_driver_seat", "outside_driver_seat")
+_SOURCE_SEAT_TERMS = {
+    "在驾驶位": "in_driver_seat",
+    "不在驾驶位": "outside_driver_seat",
+}
 
 
 class DriverConfigurationBrancher:
@@ -31,6 +35,28 @@ class DriverConfigurationBrancher:
             except TypeError:
                 continue
         return tuple(dict.fromkeys(result))
+
+    @classmethod
+    def allowed_position(cls, fact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Resolve an exact source seat term without inferring vehicle location."""
+        context = fact.get("context", {})
+        if not isinstance(context, dict) or not cls._source_refs(fact):
+            return "", {}
+        explicit = str(context.get("allowed_driver_position", "")).strip().casefold()
+        if explicit in _POSITIONS:
+            return explicit, context
+        value = str(fact.get("value", "")).strip()
+        position = _SOURCE_SEAT_TERMS.get(value, "")
+        if (
+            position
+            and context.get("位姿状态") == value
+            and all(value in source.excerpt for source in cls._source_refs(fact))
+        ):
+            return position, {
+                **{key: item for key, item in context.items() if key != "位姿状态"},
+                "allowed_driver_position": position,
+            }
+        return "", {}
 
     @staticmethod
     def _scope_matches(context: dict[str, Any], scenario: ScenarioCandidate) -> bool:
@@ -119,11 +145,8 @@ class DriverConfigurationBrancher:
                 continue
             if str(fact.get("approval", "")).upper() != "FINALIZED":
                 continue
-            context = fact.get("context", {})
-            if not isinstance(context, dict) or not self._scope_matches(context, scenario):
-                continue
-            position = str(context.get("allowed_driver_position", "")).casefold()
-            if position not in _POSITIONS:
+            position, context = self.allowed_position(fact)
+            if not position or not self._scope_matches(context, scenario):
                 continue
             for source in self._source_refs(fact):
                 by_position.setdefault(position, []).append((

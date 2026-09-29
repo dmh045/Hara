@@ -80,8 +80,7 @@ class ScenarioMethodService:
         if not any(
             item.get("parameter") == "DRIVER_IN_VEHICLE"
             and item.get("approval") == "FINALIZED"
-            and isinstance(item.get("context"), dict)
-            and item["context"].get("allowed_driver_position")
+            and self.driver_brancher.allowed_position(item)[0]
             for item in risk_facts
         ):
             return candidates, audit

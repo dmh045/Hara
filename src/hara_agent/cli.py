@@ -1814,11 +1814,16 @@ def main(argv: list[str] | None = None) -> int:
                 "technical_fields_in_main_hara": "N",
                 "raw_json_in_main_hara": "N",
             }
-            isolation_artifact = (
+            doctor_audit_root = (
                 Path(os.getenv("HARA_REVIEW_ARTIFACT_DIR", "runtime/review"))
-                / "p2b1-style-cleanup" / "new_sheet_style_isolation_audit.json"
+                / args.review_run_id
+                if args.review_run_id else None
             )
-            if isolation_artifact.is_file():
+            isolation_artifact = (
+                doctor_audit_root / "p2b1-style-cleanup" / "new_sheet_style_isolation_audit.json"
+                if doctor_audit_root is not None else None
+            )
+            if isolation_artifact is not None and isolation_artifact.is_file():
                 isolation = json.loads(isolation_artifact.read_text(encoding="utf-8"))
                 method_basis = isolation["per_sheet"]["05_Method Basis"]
                 isolation_summary = isolation["summary"]
@@ -1838,14 +1843,20 @@ def main(argv: list[str] | None = None) -> int:
                 checks["new_sheet_style_isolation"] = {
                     "ok": True,
                     "visual_layout_status": "NOT_RENDERED",
-                    "artifact_path": str(isolation_artifact),
+                    "artifact_path": str(isolation_artifact or ""),
                 }
             content_artifact = (
-                Path(os.getenv("HARA_REVIEW_ARTIFACT_DIR", "runtime/review"))
-                / "p2c-content" / "content_presentation_audit.json"
+                doctor_audit_root / "p2c-content" / "content_presentation_audit.json"
+                if doctor_audit_root is not None else None
             )
-            harm_artifact = content_artifact.with_name("potential_harm_path_audit.json")
-            if content_artifact.is_file() and harm_artifact.is_file():
+            harm_artifact = (
+                content_artifact.with_name("potential_harm_path_audit.json")
+                if content_artifact is not None else None
+            )
+            if (
+                content_artifact is not None and harm_artifact is not None
+                and content_artifact.is_file() and harm_artifact.is_file()
+            ):
                 content = json.loads(content_artifact.read_text(encoding="utf-8"))
                 harm = json.loads(harm_artifact.read_text(encoding="utf-8"))
                 rows = int(content.get("main_hara_rows", 0))
@@ -1881,7 +1892,7 @@ def main(argv: list[str] | None = None) -> int:
                     "potential_harm_pending": harm.get("pending_count", 0),
                     "remark_duplicate_information": content.get("remark_duplicate_information_count", -1),
                     "content_presentation": content.get("quality_gate", "FAIL"),
-                    "artifact_path": str(content_artifact),
+                    "artifact_path": str(content_artifact or ""),
                 }
             else:
                 checks["engineering_content_presentation"] = {

@@ -82,7 +82,7 @@ class OfflineReportRebuilder:
         audit_root = (
             Path(audit_output_dir).expanduser().resolve()
             if audit_output_dir is not None
-            else Path(review_root).expanduser().resolve()
+            else Path(review_root).expanduser().resolve() / state.run_id
         )
         p2c_audit_dir = audit_root / "p2c-content"
         p2c_audit_dir.mkdir(parents=True, exist_ok=True)

@@ -171,7 +171,7 @@ def test_shared_physics_primitives_match_instantiation_derivations():
     assert closing_relative_speed_kph(
         20.0, 0.0, ego_direction="", object_direction="STATIONARY",
         collision_type="FRONT",
-    ) is None
+    ) == 20.0
     assert time_to_collision_s(30.0, 0.0) is None
     assert "closing_relative_speed_kph" in AnalyticalPhysicsInstantiationService.instantiate.__code__.co_names
 

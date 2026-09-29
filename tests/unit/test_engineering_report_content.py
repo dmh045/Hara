@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 from hara_agent.models import EvidenceValue, ReviewStatus, RiskAssessment, ScenarioCandidate
@@ -108,6 +109,41 @@ def test_potential_harm_path_is_upstream_pending_not_a_projection_gap():
     assert content["quality_gate"] == "PASS"
     assert content["raw_machine_status_leakage_count"] == 0
     assert content["remark_duplicate_information_count"] == 0
+
+
+def test_potential_harm_audit_distinguishes_partial_and_complete_resolution():
+    state = _state()
+    state.risk_results.append(replace(
+        state.risk_results[0], assessment_id="RA-2", scenario_id="SCN-2",
+        severity=EvidenceValue("S1", ReviewStatus.FINALIZED, rule_version="method-hash"),
+        potential_harm="轻中度伤害",
+    ))
+    state.audit_trail[0]["risk_calculation_inputs"].append({
+        "malfunction_id": "MF-1", "scenario_id": "SCN-2",
+        "potential_harm": {"potential_harm": "轻中度伤害", "status": "FINALIZED"},
+    })
+    view = SimpleNamespace(
+        rows=[
+            SimpleNamespace(scenario_id="SCN-1", potential_harm="待S评定完成后确定"),
+            SimpleNamespace(scenario_id="SCN-2", potential_harm="轻中度伤害"),
+        ],
+        scenario_details=[],
+    )
+    partial = audit_potential_harm_path(state, view)
+    assert partial["classification"] == "PARTIAL_UPSTREAM_RISK_PENDING"
+    assert partial["runtime_to_projection_wiring_gap"] is False
+
+    state.risk_results[0] = replace(
+        state.risk_results[0], severity=EvidenceValue(
+            "S1", ReviewStatus.FINALIZED, rule_version="method-hash"
+        ),
+        potential_harm="轻中度伤害",
+    )
+    state.audit_trail[0]["risk_calculation_inputs"][0]["potential_harm"] = {
+        "potential_harm": "轻中度伤害", "status": "FINALIZED",
+    }
+    view.rows[0].potential_harm = "轻中度伤害"
+    assert audit_potential_harm_path(state, view)["classification"] == "RESOLVED"
 
 
 def test_projection_preserves_a_resolved_potential_harm_without_recomputing_it():

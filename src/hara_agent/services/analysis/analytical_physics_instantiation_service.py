@@ -180,17 +180,22 @@ class AnalyticalPhysicsInstantiationService:
         )
         if relative is not None:
             opposing = (
-                object_direction.value != "STATIONARY"
+                obj.value != 0
+                and object_direction.value != "STATIONARY"
                 and ego_direction.value != object_direction.value
+            )
+            relative_inputs = (
+                ["ego_speed_kph", "object_speed_kph", "collision_type"]
+                if obj.value == 0 else
+                ["ego_speed_kph", "object_speed_kph",
+                 "ego_longitudinal_direction", "object_longitudinal_direction",
+                 "collision_type"]
             )
             derived.append({
                 "field": "relative_speed_kph", "value": round(relative, 6),
                 "unit": "km/h", "authority": "DERIVED",
                 "derivation": "OPPOSING_SUM" if opposing else "SAME_OR_STATIONARY_ABS_DIFF",
-                "inputs": [
-                    "ego_speed_kph", "object_speed_kph",
-                    "ego_longitudinal_direction", "object_longitudinal_direction",
-                ],
+                "inputs": relative_inputs,
             })
             closing = longitudinal_closing_speed_kph(
                 ego.value, obj.value,

@@ -194,6 +194,26 @@ def test_driver_seat_branches_are_stable_source_linked_and_not_vehicle_false():
     assert brancher.expand(children[0], facts) == (children[0],)
 
 
+def test_source_seat_terms_from_item_definition_reach_driver_branches():
+    source = SourceRef(
+        "item_definition", "ItemDef.docx", "table[14].row[13]",
+        "位姿状态 | 在驾驶位/不在驾驶位",
+    )
+    facts = tuple({
+        "fact_id": f"RF-{index}", "parameter": "DRIVER_IN_VEHICLE",
+        "value": value, "context": {"位姿状态": value},
+        "approval": "FINALIZED", "source_refs": [source.__dict__.copy()],
+    } for index, value in enumerate(("在驾驶位", "不在驾驶位"), 1))
+    branches = DriverConfigurationBrancher(
+        policy_id="AVP_SEC_2026_09_V1",
+    ).expand(_parent(), facts)
+    assert [item.facts["driver_position"] for item in branches] == [
+        "in_driver_seat", "outside_driver_seat",
+    ]
+    assert branches[0].facts["driver_in_vehicle"] is True
+    assert "driver_in_vehicle" not in branches[1].facts
+
+
 def test_single_driver_position_reuses_existing_scenario_identity():
     brancher = DriverConfigurationBrancher(policy_id="AVP_SEC_2026_09_V1")
     parent = replace(_parent(), facts={"driver_position": "in_driver_seat"})
