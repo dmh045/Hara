@@ -44,13 +44,15 @@ def closing_relative_speed_kph(
     obj = _nonnegative_number(object_speed_kph)
     ego_dir = str(ego_direction or "").strip().upper()
     obj_dir = str(object_direction or "").strip().upper()
-    if ego is None or obj is None or is_lateral_collision(collision_type):
+    if ego is None or obj is None:
         return None
     # A zero-speed target has zero velocity in either longitudinal direction.
     # Its relative-speed magnitude is known even when travel direction is not;
     # approach and TTC still require explicit directional geometry.
     if obj == 0:
         return round(ego, 6)
+    if is_lateral_collision(collision_type):
+        return None
     if (
         ego_dir not in {"FORWARD", "REVERSE"}
         or obj_dir not in {"FORWARD", "REVERSE", "STATIONARY"}

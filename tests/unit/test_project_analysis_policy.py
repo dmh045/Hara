@@ -10,8 +10,8 @@ from hara_agent.services.analysis.analytical_physics_instantiation_service impor
     AnalyticalPhysicsInstantiationService,
 )
 from hara_agent.services.analysis.scenario_physics import (
-    derive_scenario_physics, derive_stationary_object_direction,
-    longitudinal_closing_speed_kph,
+    closing_relative_speed_kph, derive_scenario_physics,
+    derive_stationary_object_direction, longitudinal_closing_speed_kph,
     select_ego_speed_from_policy,
 )
 from hara_agent.template import TemplateRoleCompiler
@@ -124,6 +124,40 @@ def test_ttc_uses_approach_not_relative_speed_magnitude(
     if expected == 0:
         assert derived["DERIVED.relative_speed_kph"] == abs(ego - obj)
         assert derived["DERIVED.closing_speed_kph"] == 0
+
+
+def test_stationary_side_collision_separates_severity_speed_from_ttc():
+    assert closing_relative_speed_kph(
+        7, 0, ego_direction="", object_direction="STATIONARY",
+        collision_type="SIDE",
+    ) == 7
+    assert longitudinal_closing_speed_kph(
+        7, 0, ego_direction="", object_direction="STATIONARY",
+        object_position="LEFT", collision_type="SIDE",
+    ) is None
+    assert closing_relative_speed_kph(
+        7, 3, ego_direction="FORWARD", object_direction="REVERSE",
+        collision_type="SIDE",
+    ) is None
+    facts = {
+        "ego_speed_kph": 7.0, "object_speed_kph": 0.0,
+        "collision_type": "SIDE", "object_position": "LEFT",
+        "relative_distance_m": 0.3,
+    }
+    scenario = ScenarioCandidate(
+        "SC-SIDE-STATIC", "parking", "stationary target at side", "",
+        facts=facts,
+        fact_provenance={key: {
+            "provenance": "SCENARIO_DEFINED", "approval": "FINALIZED",
+            "source_refs": [{"source_type": "method_contract", "source_id": "method",
+                             "location": key}],
+            "applicable_scope": {"scenario_id": "SC-SIDE-STATIC", "malfunction_id": "MF-1"},
+        } for key in facts},
+    )
+    derived = {item.evidence_ref: item.value for item in derive_scenario_physics(scenario)}
+    assert derived["DERIVED.relative_speed_kph"] == 7.0
+    assert "DERIVED.closing_speed_kph" not in derived
+    assert "DERIVED.ttc_s" not in derived
 
 
 def test_explicit_relative_speed_does_not_force_lateral_ttc():
