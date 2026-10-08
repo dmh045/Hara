@@ -38,6 +38,7 @@ class FMTemplateMatchResult:
     template_selector_resolution: tuple[TemplateSelectorResolution, ...] = ()
     selector_resolution: FailureModeSelectorResolution | None = None
     qualification_tier: str = ""
+    decision_source_ref: dict[str, Any] | None = None
 
     @property
     def injectable(self) -> bool:
@@ -194,6 +195,79 @@ class ScenarioMethodService:
             return FMTemplateMatchResult(
                 "NO_MATCH", None, (), "", "NO_TEMPLATE_CATALOG",
                 selector_resolution=selector_resolution,
+            )
+        policy = self.method.metadata.get("project_analysis_policy", {})
+        policy = policy if isinstance(policy, dict) else {}
+        governed = policy.get("engineering_decisions", {})
+        governed = governed if isinstance(governed, dict) else {}
+        exact_fields = {
+            "malfunction_id": malfunction.malfunction_id,
+            "function_id": malfunction.function_id,
+            "guideword_id": malfunction.guideword_id,
+            "description": malfunction.description,
+            "functional_effect": malfunction.functional_effect,
+            "vehicle_level_hazard": malfunction.vehicle_level_hazard,
+            "component_category": selector_resolution.canonical_component_category,
+            "failure_type": selector_resolution.canonical_failure_type,
+        }
+        scoped = [
+            (decision_id, decision) for decision_id, decision in governed.items()
+            if isinstance(decision, dict)
+            and decision.get("status") == "CONFIRMED_FOR_CURRENT_PROJECT"
+            and decision.get("approved_template_id")
+            and decision.get("malfunction_id") == malfunction.malfunction_id
+        ]
+        if scoped:
+            approved = [
+                (decision_id, decision) for decision_id, decision in scoped
+                if decision.get("effective_project_scope") == policy.get("project_scope")
+                and all(decision.get(key) == value for key, value in exact_fields.items())
+            ]
+            if len(approved) != 1 or len(scoped) != 1:
+                return FMTemplateMatchResult(
+                    "AMBIGUOUS", None, (), "",
+                    "GOVERNED_DECISION_SCOPE_MISMATCH",
+                    selector_resolution=selector_resolution,
+                    qualification_tier="GOVERNED_PROJECT_DECISION_SCOPE_MISMATCH",
+                )
+            decision_id, decision = approved[0]
+            template_id = str(decision["approved_template_id"])
+            matches = [
+                item for item in catalog.templates
+                if item.template_id == template_id
+                and item.source_role == "SCENARIO_TEMPLATE_CONSTRAINT"
+            ]
+            option_ids = [
+                f"{template_id}:OPTION:{index}"
+                for index in range(1, len(matches[0].required_scenarios) + 1)
+            ] if len(matches) == 1 else []
+            if (
+                len(matches) != 1
+                or decision.get("approved_option_ids") != option_ids
+                or not option_ids
+            ):
+                return FMTemplateMatchResult(
+                    "AMBIGUOUS", None, (), "",
+                    "GOVERNED_TEMPLATE_OR_OPTION_MISMATCH",
+                    selector_resolution=selector_resolution,
+                    qualification_tier="GOVERNED_PROJECT_DECISION_INVALID",
+                )
+            source_ref = policy.get("source_ref", {})
+            source_ref = source_ref if isinstance(source_ref, dict) else {}
+            return FMTemplateMatchResult(
+                "STRONG_MATCH", matches[0], (template_id,), template_id,
+                "GOVERNED_PROJECT_DECISION",
+                matched_by=("ENGINEERING_DECISION",),
+                matched_terms=(decision_id,),
+                selector_resolution=selector_resolution,
+                qualification_tier="GOVERNED_EXACT_MALFUNCTION_CLASS",
+                decision_source_ref={
+                    **source_ref,
+                    "location": (
+                        f"{source_ref.get('location', '')}:"
+                        f"engineering_decisions.{decision_id}"
+                    ),
+                },
             )
         fm_text = " ".join((
             malfunction.description, malfunction.functional_effect,

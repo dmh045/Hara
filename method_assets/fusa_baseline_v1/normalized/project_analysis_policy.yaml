@@ -41,5 +41,32 @@ decisions:
   A5:
     status: CONFIRMED_FOR_CURRENT_PROJECT
     scope: Analyze each allowed driver-seat configuration; outside driver seat does not imply outside vehicle.
+engineering_decisions:
+  D1_BRAKING_OVERCOMMAND_TEMPLATE_APPLICABILITY:
+    status: CONFIRMED_FOR_CURRENT_PROJECT
+    decision: CONFIRMED_EQUIVALENT_TO_UNINTENDED_BRAKING
+    source_kind: USER_RELAYED_HARA_ENGINEERING_OPINION
+    source_note: "2026-10-08 user answer Q1=A: use the existing unintended-braking template and its rear-collision physical options for this exact malfunction."
+    effective_project_scope: current_avp_item_definition
+    malfunction_id: MF-F01-002
+    function_id: F01
+    guideword_id: GW-MORE
+    description: MDC输出的制动减速度控制指令幅值超出泊车场景需求值
+    functional_effect: IPB执行过大的制动扭矩，车辆减速度超过预期
+    vehicle_level_hazard: 泊车时车辆急减速，易引发后车追尾或车内乘员前倾磕碰
+    component_category: computing
+    failure_type: excessive
+    approved_template_id: FM_TEMPLATE_003
+    approved_option_ids: ["FM_TEMPLATE_003:OPTION:1", "FM_TEMPLATE_003:OPTION:2"]
+    release_status: PENDING
+  D2_HARM_MECHANISM_BRANCHING:
+    status: CONFIRMED_FOR_CURRENT_PROJECT
+    decision: PRIMARY_REAR_END_COLLISION_ONLY
+    source_kind: USER_RELAYED_HARA_ENGINEERING_OPINION
+    source_note: "2026-10-08 user answer Q2=B: rear-end collision is the primary HARA S/E/C scoring basis; occupant deceleration remains documented but is not scored as a collision proxy."
+    effective_project_scope: current_avp_item_definition
+    malfunction_id: MF-F01-002
+    harm_mechanism_id: HARM_REAR_END_COLLISION
+    release_status: PENDING
 candidate_defaults: []
 release_approval: PENDING

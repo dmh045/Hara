@@ -473,6 +473,7 @@ class YamlBaselineCompiler:
             speed = project_policy.get("ego_speed_point_selection", {})
             controllability = project_policy.get("controllability", {})
             decisions = project_policy.get("decisions", {})
+            engineering_decisions = project_policy.get("engineering_decisions", {})
             if (
                 not str(project_policy.get("policy_id", "")).strip()
                 or not str(project_policy.get("version", "")).strip()
@@ -486,6 +487,16 @@ class YamlBaselineCompiler:
                 or not str(speed.get("rule_id", "")).strip()
                 or not isinstance(decisions, dict)
                 or set(decisions) != {"A1", "A2", "A3", "A4", "A5"}
+                or not isinstance(engineering_decisions, dict)
+                or any(
+                    not isinstance(value, dict)
+                    or value.get("status") != "CONFIRMED_FOR_CURRENT_PROJECT"
+                    or not str(value.get("source_kind", "")).strip()
+                    or not str(value.get("source_note", "")).strip()
+                    or not str(value.get("effective_project_scope", "")).strip()
+                    or value.get("release_status") not in {"PENDING", "APPROVED"}
+                    for value in engineering_decisions.values()
+                )
                 or not isinstance(controllability, dict)
                 or (controllability and (
                     controllability.get("unknown_override_policy") not in {
@@ -506,6 +517,7 @@ class YamlBaselineCompiler:
                 "ego_speed_point_selection": dict(speed),
                 "controllability": dict(controllability),
                 "decisions": dict(decisions),
+                "engineering_decisions": dict(engineering_decisions),
                 "candidate_defaults": list(project_policy.get("candidate_defaults", [])),
                 "release_approval": str(project_policy.get("release_approval", "PENDING")),
                 "source_ref": {

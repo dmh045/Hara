@@ -92,6 +92,7 @@ def test_upper_bound_fails_closed_when_range_is_not_approved_finite_closed(metho
     (7, 3, "FORWARD", "FORWARD", "front", 4),
     (7, 10, "FORWARD", "FORWARD", "front", 0),
     (7, 10, "FORWARD", "FORWARD", "rear", 3),
+    (7, 0, "FORWARD", "STATIONARY", "rear", 0),
     (7, 0, "FORWARD", "STATIONARY", "left", None),
 ])
 def test_ttc_uses_approach_not_relative_speed_magnitude(

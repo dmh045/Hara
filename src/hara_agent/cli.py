@@ -473,6 +473,17 @@ def build_parser() -> argparse.ArgumentParser:
     causal_revalidation.add_argument("--max-workers", type=int, default=4)
     causal_revalidation.add_argument("--provider-attempt-limit", type=int)
     causal_revalidation.add_argument("--provider-budget-run-id")
+    fm_options = subparsers.add_parser(
+        "materialize-governed-fm-options",
+        help="Expand an approved FM template's physical options from committed children",
+    )
+    fm_options.add_argument("--source-run-id", required=True)
+    fm_options.add_argument("--target-run-id", required=True)
+    fm_options.add_argument("--baseline", type=Path, required=True)
+    fm_options.add_argument("--source-baseline", type=Path, required=True)
+    fm_options.add_argument("--report-style-template", type=Path, required=True)
+    fm_options.add_argument("--run-dir", type=Path, default=Path("runtime/agent"))
+    fm_options.add_argument("--review-root", type=Path, default=Path("runtime/review"))
     return parser
 
 
@@ -837,6 +848,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result["smoke_passed"]:
             return 2
+        return 0
+    if args.command == "materialize-governed-fm-options":
+        from hara_agent.workflow.governed_fm_option_materialization import (
+            GovernedFMOptionMaterializer,
+        )
+
+        result = GovernedFMOptionMaterializer().run(
+            source_run_id=args.source_run_id,
+            target_run_id=args.target_run_id,
+            baseline=args.baseline,
+            source_baseline=args.source_baseline,
+            report_template=args.report_style_template,
+            run_dir=args.run_dir,
+            review_root=args.review_root,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "revalidate-synthesized-scenarios":
         from hara_agent.infrastructure.llm.factory import create_llm_client

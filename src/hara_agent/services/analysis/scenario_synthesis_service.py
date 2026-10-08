@@ -493,6 +493,7 @@ class ConstrainedScenarioSynthesisService:
         qualification = "PARENT_SOURCE_TEMPLATE" if template is not None else ""
         matched_by: tuple[str, ...] = ()
         matched_terms: tuple[str, ...] = ()
+        decision_source_ref: dict[str, Any] = {}
         if template is None:
             causal_chain = malfunction.get("causal_chain", [])
             typed = MalfunctionCandidate(
@@ -516,6 +517,7 @@ class ConstrainedScenarioSynthesisService:
             qualification = match.qualification_tier
             matched_by = match.matched_by
             matched_terms = match.matched_terms
+            decision_source_ref = match.decision_source_ref or {}
         assert template is not None
 
         constraints = []
@@ -542,6 +544,7 @@ class ConstrainedScenarioSynthesisService:
             "qualification": qualification,
             "matched_by": list(matched_by),
             "matched_terms": list(matched_terms),
+            "decision_source_ref": decision_source_ref,
             "applicable_semantics": {
                 "keywords": list(template.match.keywords),
                 "component_categories": list(template.match.component_categories),
