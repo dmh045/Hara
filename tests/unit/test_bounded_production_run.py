@@ -163,3 +163,36 @@ def test_bounded_child_requires_same_parent_ledger(tmp_path):
     args.provider_budget_run_id = "wrong"
     with pytest.raises(ValueError, match="differs"):
         _shared_provider_budget(args)
+
+
+def test_synthesis_after_parent_recovery_keeps_original_rescore_budget(tmp_path):
+    (tmp_path / "origin.provider-attempts.jsonl").touch()
+    (tmp_path / "origin.checkpoint.json").write_text(json.dumps({
+        "audit_trail": [{"event": "bounded_sample_configured",
+                         "scope": {"provider_attempt_limit": 15}}],
+    }))
+    (tmp_path / "rescore.checkpoint.json").write_text(json.dumps({
+        "audit_trail": [
+            {"event": "bounded_sample_configured",
+             "scope": {"provider_attempt_limit": 15}},
+            {"event": "offline_risk_rescoring_started", "source_run_id": "origin"},
+        ],
+    }))
+    (tmp_path / "recovery.checkpoint.json").write_text(json.dumps({
+        "audit_trail": [{"event": "parent_he_recovery_child_run_materialized",
+                         "source_run_id": "rescore"}],
+    }))
+    (tmp_path / "synthesis.checkpoint.json").write_text(json.dumps({
+        "audit_trail": [{"event": "scenario_synthesis_child_run_materialized",
+                         "source_run_id": "recovery"}],
+    }))
+    args = Namespace(
+        provider_attempt_limit=15, provider_budget_run_id="origin",
+        run_dir=tmp_path, source_run_id="synthesis",
+    )
+    shared = _shared_provider_budget(args)
+    assert shared.path == tmp_path / "origin.provider-attempts.jsonl"
+    assert shared.limit == 15
+    args.provider_attempt_limit = 24
+    with pytest.raises(ValueError, match="differs"):
+        _shared_provider_budget(args)

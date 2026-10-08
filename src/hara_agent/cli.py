@@ -424,6 +424,30 @@ def build_parser() -> argparse.ArgumentParser:
     synthesis.add_argument("--max-workers", type=int, default=4)
     synthesis.add_argument("--provider-attempt-limit", type=int)
     synthesis.add_argument("--provider-budget-run-id")
+    parent_recovery = subparsers.add_parser(
+        "recover-parent-he",
+        help="Revalidate only source-linked parent Scenario candidates as a child run",
+    )
+    parent_recovery.add_argument("--source-run-id", required=True)
+    parent_recovery.add_argument("--historical-review-run-id", required=True)
+    parent_recovery.add_argument("--target-run-id", required=True)
+    parent_recovery.add_argument("--malfunction-id", required=True)
+    parent_recovery.add_argument("--historical-parent-scenario-id", action="append", required=True)
+    parent_recovery.add_argument("--operating-mode", required=True)
+    parent_recovery.add_argument("--run-dir", type=Path, default=Path("runtime/agent"))
+    parent_recovery.add_argument("--review-root", type=Path, default=Path("runtime/review"))
+    parent_recovery.add_argument(
+        "--baseline", type=Path,
+        default=Path("method_assets/fusa_baseline_v1/manifest.yaml"),
+    )
+    parent_recovery.add_argument(
+        "--report-style-template", type=Path,
+        default=Path("references/HARA_Template_AI_20260327.xlsx"),
+    )
+    parent_recovery.add_argument("--provider-attempt-limit", required=True, type=int)
+    parent_recovery.add_argument("--provider-budget-run-id", required=True)
+    parent_recovery.add_argument("--phase-attempt-limit", type=int, default=24)
+    parent_recovery.add_argument("--dry-run", action="store_true")
     causal_revalidation = subparsers.add_parser(
         "revalidate-synthesized-scenarios",
         help="Differentially revalidate only method-valid synthesized child scenarios",
@@ -458,7 +482,7 @@ def _shared_provider_budget(args):
     expected_budget_run_id = ""
     expected_limit = None
     source_run_id = args.source_run_id
-    for _ in range(3):
+    for _ in range(6):
         if not re.fullmatch(r"[A-Za-z0-9_-]+", source_run_id):
             raise ValueError("Child source run ID is invalid")
         source_checkpoint = args.run_dir / f"{source_run_id}.checkpoint.json"
@@ -473,10 +497,17 @@ def _shared_provider_budget(args):
         if bounded is not None:
             expected_budget_run_id = source_run_id
             expected_limit = bounded.get("scope", {}).get("provider_attempt_limit")
-            break
+            if (
+                args.run_dir / f"{source_run_id}.provider-attempts.jsonl"
+            ).is_file():
+                break
         ancestor = next((
             str(event.get("source_run_id", "")) for event in events
-            if event.get("event") == "scenario_synthesis_child_run_materialized"
+            if event.get("event") in {
+                "scenario_synthesis_child_run_materialized",
+                "parent_he_recovery_child_run_materialized",
+                "offline_risk_rescoring_started",
+            }
         ), "")
         if not ancestor or ancestor == source_run_id:
             break
@@ -653,6 +684,97 @@ def main(argv: list[str] | None = None) -> int:
             "child_scenarios": str(args.child_scenarios) if payload["materialized_children"] else "",
             "summary": payload["summary"],
             "provider_calls": 0,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "recover-parent-he":
+        from hara_agent.infrastructure.llm.factory import create_llm_client
+        from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+        from hara_agent.workflow.checkpoints import CheckpointRepository
+        from hara_agent.workflow.parent_he_recovery import ParentHERecoveryRunner
+
+        resolution = MethodSourceResolver().resolve(
+            template_path=None,
+            baseline_manifest_path=args.baseline,
+            report_template_path=args.report_style_template,
+        )
+        repository = CheckpointRepository(args.run_dir)
+        source = repository.load(args.source_run_id)
+        origin = next((
+            str(item.get("source_run_id", ""))
+            for item in source.audit_trail
+            if item.get("event") == "offline_risk_rescoring_started"
+        ), "")
+        if origin != args.provider_budget_run_id:
+            raise ValueError("Parent recovery budget must follow the rescore source ancestry")
+        if args.historical_review_run_id != origin:
+            raise ValueError("Parent recovery review must match the bounded source run")
+        original = repository.load(origin)
+        bounded = next((
+            item for item in original.audit_trail
+            if item.get("event") == "bounded_sample_configured"
+        ), None)
+        if (
+            bounded is None
+            or bounded.get("scope", {}).get("provider_attempt_limit")
+            != args.provider_attempt_limit
+        ):
+            raise ValueError("Parent recovery budget differs from its bounded source")
+        if args.phase_attempt_limit < 1 or args.phase_attempt_limit > 24:
+            raise ValueError("Parent recovery phase attempt limit must be in 1..24")
+        ledger = args.run_dir / f"{origin}.provider-attempts.jsonl"
+        if not ledger.is_file():
+            raise FileNotFoundError("Parent recovery source Provider ledger is absent")
+        source_budget = ProviderAttemptBudget(
+            ledger, run_id=origin, limit=args.provider_attempt_limit,
+        )
+        budget = ProviderAttemptBudget(
+            ledger, run_id=origin,
+            limit=min(
+                source_budget.limit,
+                source_budget.attempts + args.phase_attempt_limit,
+            ),
+        )
+        remaining = budget.limit - budget.attempts
+        runner = ParentHERecoveryRunner(
+            method=resolution.method,
+            client=(
+                None if args.dry_run else
+                create_llm_client(LLMConfig.from_env(), attempt_budget=budget)
+            ),
+            run_dir=args.run_dir, review_root=args.review_root,
+        )
+        inputs = {
+            "source_run_id": args.source_run_id,
+            "historical_review_run_id": args.historical_review_run_id,
+            "malfunction_id": args.malfunction_id,
+            "historical_parent_scenario_ids": args.historical_parent_scenario_id,
+            "operating_mode": args.operating_mode,
+        }
+        if args.dry_run:
+            prepared = runner.prepare(**inputs)
+            print(json.dumps({
+                "status": "PARENT_RECOVERY_PREFLIGHT_READY",
+                "mappings": prepared["mappings"],
+                "historical_budget_limit": source_budget.limit,
+                "historical_attempts_used": budget.attempts,
+                "remaining_shared_attempts": remaining,
+                "provider_calls": 0,
+            }, ensure_ascii=False, indent=2))
+            return 0
+        if remaining < 1:
+            raise ValueError("Parent recovery source Provider budget is exhausted")
+        starting_attempts = budget.attempts
+        result = runner.run(target_run_id=args.target_run_id, **inputs)
+        new_attempts = budget.attempts - starting_attempts
+        if new_attempts > args.phase_attempt_limit:
+            raise RuntimeError("P5-L phase Provider attempt limit exceeded")
+        print(json.dumps({
+            "run_id": result["run_id"],
+            "retained_parent_count": result["retained_parent_count"],
+            "causal_gap_count": result["causal_gap_count"],
+            "provider_attempts_new": new_attempts,
+            "shared_ledger": str(budget.path),
+            "checkpoint": result["checkpoint"],
         }, ensure_ascii=False, indent=2))
         return 0
     if args.command == "synthesize-scenarios":
