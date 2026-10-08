@@ -421,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON artifact whose failures list supplies stable recovery-smoke identities",
     )
     synthesis.add_argument("--full", action="store_true")
+    synthesis.add_argument("--resume-provider-trace", action="store_true")
     synthesis.add_argument("--max-workers", type=int, default=4)
     synthesis.add_argument("--provider-attempt-limit", type=int)
     synthesis.add_argument("--provider-budget-run-id")
@@ -429,10 +430,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Revalidate only source-linked parent Scenario candidates as a child run",
     )
     parent_recovery.add_argument("--source-run-id", required=True)
-    parent_recovery.add_argument("--historical-review-run-id", required=True)
+    parent_recovery.add_argument("--historical-review-run-id", default="")
     parent_recovery.add_argument("--target-run-id", required=True)
     parent_recovery.add_argument("--malfunction-id", required=True)
-    parent_recovery.add_argument("--historical-parent-scenario-id", action="append", required=True)
+    parent_recovery.add_argument("--historical-parent-scenario-id", action="append", default=[])
+    parent_recovery.add_argument("--current-parent-scenario-id", action="append", default=[])
     parent_recovery.add_argument("--operating-mode", required=True)
     parent_recovery.add_argument("--run-dir", type=Path, default=Path("runtime/agent"))
     parent_recovery.add_argument("--review-root", type=Path, default=Path("runtime/review"))
@@ -699,15 +701,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         repository = CheckpointRepository(args.run_dir)
         source = repository.load(args.source_run_id)
-        origin = next((
+        historical_origin = next((
             str(item.get("source_run_id", ""))
             for item in source.audit_trail
             if item.get("event") == "offline_risk_rescoring_started"
         ), "")
+        current_only = bool(args.current_parent_scenario_id)
+        if current_only == bool(args.historical_parent_scenario_id):
+            raise ValueError("Select current or historical parent IDs, not both")
+        origin = args.source_run_id if current_only else historical_origin
         if origin != args.provider_budget_run_id:
-            raise ValueError("Parent recovery budget must follow the rescore source ancestry")
-        if args.historical_review_run_id != origin:
+            raise ValueError("Parent recovery budget must follow its bounded source ancestry")
+        if not current_only and args.historical_review_run_id != origin:
             raise ValueError("Parent recovery review must match the bounded source run")
+        if current_only and args.historical_review_run_id:
+            raise ValueError("Current parent recovery cannot use historical review")
         original = repository.load(origin)
         bounded = next((
             item for item in original.audit_trail
@@ -745,13 +753,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         inputs = {
             "source_run_id": args.source_run_id,
-            "historical_review_run_id": args.historical_review_run_id,
             "malfunction_id": args.malfunction_id,
-            "historical_parent_scenario_ids": args.historical_parent_scenario_id,
             "operating_mode": args.operating_mode,
         }
+        if current_only:
+            inputs["current_parent_scenario_ids"] = args.current_parent_scenario_id
+        else:
+            inputs["historical_review_run_id"] = args.historical_review_run_id
+            inputs["historical_parent_scenario_ids"] = args.historical_parent_scenario_id
         if args.dry_run:
-            prepared = runner.prepare(**inputs)
+            prepared = (
+                runner.prepare_current(**inputs) if current_only
+                else runner.prepare(**inputs)
+            )
             print(json.dumps({
                 "status": "PARENT_RECOVERY_PREFLIGHT_READY",
                 "mappings": prepared["mappings"],
@@ -810,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
             target_run_id=args.target_run_id,
             smoke_count=args.smoke_count,
             smoke_identities=smoke_identities,
+            resume_provider_trace=args.resume_provider_trace,
             run_full=args.full,
             max_workers=args.max_workers,
             output_path=args.output,

@@ -5,6 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from hara_agent.contracts import (
     CausalBreakpoint, CausalEdge, CausalGraph, CausalNode,
     CausalNodeType, CausalRelation, EvidenceBinding,
@@ -156,3 +158,31 @@ def test_recovery_regenerates_and_commits_parent_without_promoting_old_child(
     )
     assert child.audit_trail[0]["event"] == "parent_he_recovery_child_run_materialized"
     assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source_sha
+
+    state.run_id = "fresh"
+    state.scenarios = []
+    state.audit_trail = [
+        {"event": "bounded_sample_configured",
+         "scope": {"provider_attempt_limit": 23}},
+        {"event": "bounded_sample_scope_preview",
+         "selected_parent_scenario_ids": [current[0].scenario_id]},
+    ]
+    CheckpointRepository(run_dir).save(state)
+    fresh = ParentHERecoveryRunner(
+        method=method, client=object(), run_dir=run_dir, review_root=review_dir,
+    )
+    with pytest.raises(ValueError, match="bounded scope preview"):
+        fresh.prepare_current(
+            source_run_id="fresh", malfunction_id="MF-1",
+            current_parent_scenario_ids=["UNSELECTED"], operating_mode="Active",
+        )
+    current_result = fresh.run(
+        source_run_id="fresh", target_run_id="fresh-parent",
+        malfunction_id="MF-1", current_parent_scenario_ids=[current[0].scenario_id],
+        operating_mode="Active",
+    )
+    current_child = CheckpointRepository(run_dir).load("fresh-parent")
+    assert current_result["retained_parent_count"] == 1
+    assert current_child.scenarios[0].scenario_id == current[0].scenario_id
+    assert current_result["historical_review_run_id"] == ""
+    assert current_result["parent_context_mappings"][0]["historical_identity_reused"] is False

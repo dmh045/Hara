@@ -716,3 +716,22 @@ def test_selector_quality_audit_reports_plan_metrics_without_provider(method):
     assert audit["traffic_pattern"]["required_but_missing"] == 0
     assert audit["traffic_pattern"]["not_applicable"] == 2
     assert audit["ranking"]["combination_beam_truncated_groups"] == 0
+
+
+def test_selector_quality_counts_unrefined_parent_atom_as_integer(method):
+    service = ConstrainedScenarioSynthesisService(method)
+    parent = _build(
+        service, "Stationary vehicle may contact a static obstacle.",
+        parent=_parent(object_type="static_obstacle"),
+    )
+    child = ScenarioCandidate(
+        "CHILD", "parking", "bounded child", "",
+        facts={"method_scenario_dimensions": {
+            "EGO_DYNAMICS": {
+                "parent_method_atom": "Audi_decel_emergency",
+                "child_refined_atom": "",
+            },
+        }},
+    )
+    audit = ScenarioSelectorQualityAudit().build((parent,), children=(child,))
+    assert audit["ego_dynamics"]["broad_bucket_retained"] == 1

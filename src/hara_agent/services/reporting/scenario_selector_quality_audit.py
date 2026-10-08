@@ -180,7 +180,7 @@ class ScenarioSelectorQualityAudit:
                 ),
                 "refined_children": sum(bool(item.get("child_refined_atom")) for item in child_bindings),
                 "broad_bucket_retained": sum(
-                    item.get("parent_method_atom")
+                    bool(item.get("parent_method_atom"))
                     and not item.get("child_refined_atom") for item in child_bindings
                 ),
                 "unique_dynamics": len({

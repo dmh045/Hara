@@ -569,6 +569,56 @@ def test_historical_smoke_variant_count_is_a_scoped_non_mutating_override(method
     assert synthesis_input.coverage_plan.desired_variant_count == 3
 
 
+def test_completed_smoke_trace_recovery_is_bound_to_source_and_identity(
+    method, tmp_path,
+):
+    runner = ScenarioSynthesisRunner(method=method, client=None)
+    original = _input(method)
+    identity = {
+        "malfunction_id": original.malfunction_id,
+        "parent_scenario_id": original.parent_scenario_id,
+        "hazardous_event_id": original.hazardous_event_id,
+        "requested_variant_count": 1,
+    }
+    synthesis_input = runner._apply_smoke_plan_overrides([original], [identity])[0]
+    assessments = ConstrainedScenarioSynthesisService(method).validate_provider_payload(
+        synthesis_input, _valid_payload(synthesis_input),
+    )
+    group_id = synthesis_input.semantic_group_id
+    trace_path = tmp_path / "trace.json"
+    audit_path = tmp_path / "audit.json"
+    trace_path.write_text(json.dumps({
+        "artifact_version": "scenario-synthesis-provider-trace-v1",
+        "smoke": {
+            "passed": True, "requested": 1, "executed": 1,
+            "semantic_group_ids": [group_id],
+            "stable_identities": [identity],
+            "selection_records": [{
+                "semantic_group_id": group_id,
+                "variants": [item.to_dict() for item in assessments],
+            }],
+        },
+        "groups": [{"semantic_group_id": group_id, "status": "PASS"}],
+    }))
+    audit_path.write_text(json.dumps({
+        "source_run_id": "source", "run_id": "target",
+        "parent_artifact_hashes_before": {"source": "sha"},
+        "parent_artifacts_mutated": False,
+    }))
+    recovered = runner._recover_completed_smoke(
+        trace_path=trace_path, audit_path=audit_path,
+        smoke_inputs=[synthesis_input], source_run_id="source",
+        target_run_id="target", parent_inventory={"source": "sha"},
+    )
+    assert recovered[group_id][0][0].to_dict() == assessments[0].to_dict()
+    with pytest.raises(ValueError, match="source binding"):
+        runner._recover_completed_smoke(
+            trace_path=trace_path, audit_path=audit_path,
+            smoke_inputs=[synthesis_input], source_run_id="source",
+            target_run_id="target", parent_inventory={"source": "changed"},
+        )
+
+
 def test_overlapping_logical_atoms_fail_as_compound_conflict(method):
     service, synthesis_input = _compound_input(method)
     with pytest.raises(ScenarioSynthesisValidationError) as caught:

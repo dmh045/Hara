@@ -11,7 +11,10 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
-from hara_agent.contracts import MethodContract, ScenarioSynthesisAssessment
+from hara_agent.contracts import (
+    CoverageLabel, MethodContract, ScenarioSynthesisAssessment,
+    SynthesisValidationStatus,
+)
 from hara_agent.models import (
     EvidenceValue, ReviewStatus, RiskAssessment, ScenarioCandidate,
     evaluate_risk_eligibility_payload,
@@ -463,6 +466,99 @@ class ScenarioSynthesisRunner:
                 })
         return existing
 
+    def _recover_completed_smoke(
+        self, *, trace_path: Path, audit_path: Path,
+        smoke_inputs: list[Any], source_run_id: str, target_run_id: str,
+        parent_inventory: dict[str, str],
+    ) -> dict[str, tuple[tuple[ScenarioSynthesisAssessment, ...], dict[str, Any]]]:
+        """Reuse a fully committed Provider trace after an offline-only failure."""
+        if not trace_path.is_file() or not audit_path.is_file():
+            raise ValueError("Completed smoke trace and source audit are required for resume")
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        if (
+            audit.get("source_run_id") != source_run_id
+            or audit.get("run_id") != target_run_id
+            or audit.get("parent_artifact_hashes_before") != parent_inventory
+            or audit.get("parent_artifacts_mutated") is not False
+        ):
+            raise ValueError("Completed smoke trace source binding differs")
+        smoke = trace.get("smoke", {})
+        expected_ids = [item.semantic_group_id for item in smoke_inputs]
+        expected_identities = [{
+            "malfunction_id": item.malfunction_id,
+            "parent_scenario_id": item.parent_scenario_id,
+            "hazardous_event_id": item.hazardous_event_id,
+            "requested_variant_count": item.coverage_plan.desired_variant_count,
+        } for item in smoke_inputs]
+        if (
+            trace.get("artifact_version") != "scenario-synthesis-provider-trace-v1"
+            or smoke.get("passed") is not True
+            or smoke.get("requested") != len(smoke_inputs)
+            or smoke.get("executed") != len(smoke_inputs)
+            or smoke.get("semantic_group_ids") != expected_ids
+            or smoke.get("stable_identities") != expected_identities
+        ):
+            raise ValueError("Completed smoke trace identities or status differ")
+        group_values = trace.get("groups", [])
+        record_values = smoke.get("selection_records", [])
+        groups = {item.get("semantic_group_id"): item for item in group_values}
+        records = {
+            item.get("semantic_group_id"): item
+            for item in record_values
+        }
+        if (
+            len(group_values) != len(expected_ids)
+            or len(record_values) != len(expected_ids)
+            or set(groups) != set(expected_ids)
+            or set(records) != set(expected_ids)
+        ):
+            raise ValueError("Completed smoke trace does not cover the selected groups")
+        recovered = {}
+        for item in smoke_inputs:
+            group_id = item.semantic_group_id
+            group = groups[group_id]
+            variants = records[group_id].get("variants", [])
+            if group.get("status") != "PASS" or len(variants) != item.coverage_plan.desired_variant_count:
+                raise ValueError("Completed smoke trace has an invalid group result")
+            assessments = []
+            expected_labels = [
+                str(intent.get("coverage_label", ""))
+                for intent in item.coverage_plan.variant_intents
+            ]
+            for index, raw in enumerate(variants):
+                if (
+                    raw.get("semantic_group_id") != group_id
+                    or raw.get("validation_status") != "VALIDATED"
+                    or not isinstance(raw.get("selected_atoms"), dict)
+                    or raw.get("coverage_label") != expected_labels[index]
+                    or not str(raw.get("semantic_rationale", "")).strip()
+                    or not isinstance(raw.get("context_refs"), list)
+                    or not raw["context_refs"]
+                    or any(not isinstance(ref, str) or not ref for ref in raw["context_refs"])
+                    or any(
+                        not isinstance(atom_ids, list)
+                        or any(not isinstance(atom_id, str) or not atom_id for atom_id in atom_ids)
+                        for atom_ids in raw["selected_atoms"].values()
+                    )
+                ):
+                    raise ValueError("Completed smoke trace has an invalid assessment")
+                assessments.append(ScenarioSynthesisAssessment(
+                    semantic_group_id=group_id,
+                    coverage_label=CoverageLabel(raw["coverage_label"]),
+                    selected_atoms={
+                        dimension: tuple(atom_ids)
+                        for dimension, atom_ids in raw["selected_atoms"].items()
+                    },
+                    semantic_rationale=str(raw["semantic_rationale"]),
+                    context_refs=tuple(raw["context_refs"]),
+                    validation_status=SynthesisValidationStatus.VALIDATED,
+                    validation_reasons=tuple(raw.get("validation_reasons", [])),
+                    selection_authority=str(raw.get("selection_authority", "")),
+                ))
+            recovered[group_id] = (tuple(assessments), group)
+        return recovered
+
     @staticmethod
     def _dependency_metadata(assessment: dict[str, Any]) -> dict[str, Any] | None:
         causal = assessment.get("causal_assessment", {})
@@ -697,6 +793,7 @@ class ScenarioSynthesisRunner:
         self, *, source_run_id: str, target_run_id: str,
         smoke_count: int = 5, run_full: bool = False, max_workers: int = 4,
         smoke_identities: list[dict[str, Any]] | None = None,
+        resume_provider_trace: bool = False,
         output_path: str | Path | None = None,
         baseline_path: str | Path = "method_assets/fusa_baseline_v1/manifest.yaml",
         report_template_path: str | Path = "references/HARA_Template_AI_20260327.xlsx",
@@ -741,6 +838,15 @@ class ScenarioSynthesisRunner:
         smoke_inputs = self._smoke_groups(
             provider_ready, effective_smoke_count, smoke_identities,
         )
+        if resume_provider_trace:
+            selections = self._recover_completed_smoke(
+                trace_path=provider_trace_path,
+                audit_path=review_dir / "scenario_synthesis_audit.json",
+                smoke_inputs=smoke_inputs,
+                source_run_id=source_run_id,
+                target_run_id=target_run_id,
+                parent_inventory=parent_inventory_before,
+            )
         if smoke_inputs:
             selections = self._run_provider_groups(
                 inputs=smoke_inputs, max_workers=1, progress_path=provider_trace_path,

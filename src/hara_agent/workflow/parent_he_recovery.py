@@ -202,10 +202,80 @@ class ParentHERecoveryRunner:
             "typed": typed, "candidates": selected, "mappings": mappings,
         }
 
+    def prepare_current(
+        self, *, source_run_id: str, malfunction_id: str,
+        current_parent_scenario_ids: list[str], operating_mode: str,
+    ) -> dict[str, Any]:
+        """Select fresh Method parents from an independently bounded source run."""
+        if (
+            not current_parent_scenario_ids
+            or len(current_parent_scenario_ids) != len(set(current_parent_scenario_ids))
+        ):
+            raise ValueError("Current parent Scenario IDs must be nonempty and unique")
+        repository = CheckpointRepository(self.run_dir)
+        source_path = repository.path_for(source_run_id)
+        source = repository.load(source_run_id)
+        if source.method_contract.get("method_source_hash") != self.method.metadata.get(
+            "method_source_hash"
+        ):
+            raise ValueError("Current parent source MethodContract differs from active Method")
+        bounded = next((
+            event for event in source.audit_trail
+            if event.get("event") == "bounded_sample_configured"
+        ), None)
+        preview = next((
+            event for event in source.audit_trail
+            if event.get("event") == "bounded_sample_scope_preview"
+        ), None)
+        if bounded is None or preview is None:
+            raise ValueError("Current parent source requires a committed bounded scope preview")
+        if not set(current_parent_scenario_ids).issubset(set(
+            preview.get("selected_parent_scenario_ids", [])
+        )):
+            raise ValueError("Current parent IDs differ from the bounded scope preview")
+        malfunction_values = [
+            item for item in source.malfunctions
+            if item.get("malfunction_id") == malfunction_id
+        ]
+        if len(malfunction_values) != 1:
+            raise ValueError("Current parent recovery requires one committed malfunction")
+        malfunction = _malfunction(malfunction_values[0])
+        if malfunction.status is not ReviewStatus.FINALIZED:
+            raise ValueError("Current parent malfunction must be FINALIZED")
+        typed = _project_only_typed(source.item_definition.get("typed", {}))
+        project_facts = ItemDefinitionFacts.from_dict(typed)
+        speed = ProjectFactResolver().resolve_speed_context(
+            project_facts, operating_mode, allow_aggregate_fallback=False,
+        )
+        candidates, _ = MethodScenarioCandidateService(self.method).generate(
+            project_facts=project_facts,
+            operating_mode=speed.operating_mode,
+            speed_resolution=speed,
+            functions=[_function(item) for item in source.functions],
+        )
+        by_id = {item.scenario_id: item for item in candidates}
+        if any(item not in by_id for item in current_parent_scenario_ids):
+            raise ValueError("Current parent ID cannot be regenerated from source facts")
+        selected = [by_id[item] for item in current_parent_scenario_ids]
+        return {
+            "source": source, "source_path": source_path,
+            "historical_review_path": None,
+            "malfunction": malfunction, "project_facts": project_facts,
+            "typed": typed, "candidates": selected,
+            "mappings": [{
+                "current_parent_scenario_id": item.scenario_id,
+                "operating_scenario": item.operating_scenario,
+                "source_run_id": source_run_id,
+                "historical_child_scenario_ids": [],
+                "historical_identity_reused": False,
+            } for item in selected],
+        }
+
     def run(
-        self, *, source_run_id: str, historical_review_run_id: str,
-        target_run_id: str, malfunction_id: str,
-        historical_parent_scenario_ids: list[str], operating_mode: str,
+        self, *, source_run_id: str, target_run_id: str, malfunction_id: str,
+        operating_mode: str, historical_review_run_id: str = "",
+        historical_parent_scenario_ids: list[str] | None = None,
+        current_parent_scenario_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         if self.client is None:
             raise ValueError("Parent recovery requires a Provider client")
@@ -216,16 +286,26 @@ class ParentHERecoveryRunner:
         target_review = self.review_root / target_run_id
         if target_path.exists() or target_review.exists():
             raise ValueError("Parent recovery target already exists")
-        prepared = self.prepare(
-            source_run_id=source_run_id,
-            historical_review_run_id=historical_review_run_id,
-            malfunction_id=malfunction_id,
-            historical_parent_scenario_ids=historical_parent_scenario_ids,
-            operating_mode=operating_mode,
-        )
+        if current_parent_scenario_ids:
+            if historical_review_run_id or historical_parent_scenario_ids:
+                raise ValueError("Current and historical parent selection cannot be mixed")
+            prepared = self.prepare_current(
+                source_run_id=source_run_id, malfunction_id=malfunction_id,
+                current_parent_scenario_ids=current_parent_scenario_ids,
+                operating_mode=operating_mode,
+            )
+        else:
+            prepared = self.prepare(
+                source_run_id=source_run_id,
+                historical_review_run_id=historical_review_run_id,
+                malfunction_id=malfunction_id,
+                historical_parent_scenario_ids=historical_parent_scenario_ids or [],
+                operating_mode=operating_mode,
+            )
         before = {
             str(path): _sha256(path)
             for path in (prepared["source_path"], prepared["historical_review_path"])
+            if path is not None
         }
         assessments, agent_audit = ScenarioFeasibilityAgent(
             self.client, batch_max_chars=60000, batch_max_items=8,
