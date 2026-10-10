@@ -22,6 +22,7 @@ sources:
   infeasible_examples: raw/infeasible_examples.yaml
 
 normalized_sources:
+  malfunction_situation_selection: normalized/malfunction_situation_selection.yaml
   guidewords: normalized/guidewords.yaml
   scenario_constraints: normalized/scenario_constraints.yaml
   scenario_aliases: normalized/scenario_aliases.yaml
@@ -54,6 +55,7 @@ policies:
   ftti_formula_selection: collision_type_first
 
 asset_hashes:
+  normalized/malfunction_situation_selection.yaml: 108aa4cd5c7254534b5de26d780d677bbc163a3f12569d05f987d4dee3bea455
   normalized/project_analysis_policy.yaml: c5451002c79111630acfdb4a66d17f3432743c863a64ea816ab4289d25d3b6c4
   raw/atom_spec.yaml: 391ad0433a6f37bb8f1ddc0b7bc004c0c882d4dae364e1420322bb0813331108
   raw/c_iso26262.yaml: 5a64ce1fa4f8d133f51d0aec7d88506f8a0bdf01ce4aa1ea90318ab388aeb8b9

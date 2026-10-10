@@ -339,6 +339,15 @@ class ReviewArtifactWriter:
         with self._lock:
             self._write_json_payload("scenario_alias_proposals.json", value)
 
+    def write_malfunction_situation_selection(self, payload: dict[str, Any]) -> None:
+        """Persist preselection evidence and stage counts, including unresolved pass-through."""
+        if self._disabled:
+            return
+        value = _compact_review_value(payload)
+        value.update({"artifact_version": "malfunction-situation-selection-v1", "run_id": self.run_id, "recorded_at": _now()})
+        with self._lock:
+            self._write_json_payload("malfunction_situation_selection.json", value)
+
     def write_scenario_coverage_proposals(self, payload: dict[str, Any]) -> None:
         """Write review-only Function coverage proposals; never runtime truth."""
         if self._disabled:

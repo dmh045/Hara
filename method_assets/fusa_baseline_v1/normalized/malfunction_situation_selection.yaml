@@ -1,0 +1,869 @@
+# Evidence transcribed from user-supplied P5-O prompt; source workbooks were not inspected.
+schema_version: '1.0'
+source_classification: VALIDATED_PROJECT_HARA_REFERENCE
+selection_policy: CONSERVATIVE_EVIDENCE_FIRST
+documents:
+- document_key: RHP-V2
+  filename: fusa_整车层级_HARA_智驾域_Hands-on MQBBaseline_RHP2.0_HARA_parking_and_driving.xlsx
+  sha256: 14e3c29ef0500150e66e42401ff29b8ff9a2bcccc2e1184a1f29cba8824b5b83
+  source_kind: REFERENCE_PROJECT
+- document_key: RHP-LEGACY
+  filename: MQBEvo-RHP2.0-SOTIF-GuR.xlsx
+  sha256: ffb29c4c4a662ea3ba936ad817af6a37f1d0812e54a0538d2adafba5bb73a763
+  source_kind: REFERENCE_PROJECT
+- document_key: FUSA-NATIVE
+  filename: fusa_agent/core/hara/evaluators/exposure_evaluator.py
+  sha256: E9D78A9B8D5C81EB9837F6EAAF4FA6346201B069F196F56F26851385EF0E1611
+  source_kind: REFERENCE_IMPLEMENTATION
+functional_outputs: [steering_torque, driving_torque, braking_torque, direction_change, parking_brake, remote_engine_off,
+  flasher, driver_display, remote_engine_on]
+families:
+- family_id: PARKING_IN_OUT
+  source_id: FV010
+  source_version: V1
+  candidate_canonical_id: PH005
+  canonical_version: V2
+  mapping_status: MAPPED
+  mapping_source: raw/vda702_atoms.yaml and user-supplied P5-O section 3.1; no inferred cross-version mapping
+- family_id: CROSSING_INTERSECTION
+  source_id: FV080
+  source_version: V1
+  candidate_canonical_id: VD016
+  canonical_version: V2
+  mapping_status: MAPPED
+  mapping_source: raw/vda702_atoms.yaml and user-supplied P5-O section 3.1; no inferred cross-version mapping
+- family_id: FREE_DRIVING
+  source_id: FV100
+  source_version: V1
+  candidate_canonical_id: ''
+  canonical_version: NONE
+  mapping_status: SOURCE_FAMILY_ONLY
+  mapping_source: raw/vda702_atoms.yaml and user-supplied P5-O section 3.1; no inferred cross-version mapping
+- family_id: GARAGE_PARKING
+  source_id: SO020
+  source_version: V1
+  candidate_canonical_id: ''
+  canonical_version: NONE
+  mapping_status: VERSION_CONFLICT
+  mapping_source: raw/vda702_atoms.yaml and user-supplied P5-O section 3.1; no inferred cross-version mapping
+- family_id: HOLD_ON_SLOPE
+  source_id: FV040
+  source_version: V1
+  candidate_canonical_id: ''
+  canonical_version: NONE
+  mapping_status: MAPPING_REVIEW_REQUIRED
+  mapping_source: raw/vda702_atoms.yaml and user-supplied P5-O section 3.1; no inferred cross-version mapping
+- family_id: REMOTE_SWITCH_PAUSE
+  source_id: ''
+  source_version: NONE
+  candidate_canonical_id: ''
+  canonical_version: NONE
+  mapping_status: PROJECT_FACT_REQUIRED
+  mapping_source: raw/vda702_atoms.yaml and user-supplied P5-O section 3.1; no inferred cross-version mapping
+- family_id: ALL_SOURCE_ROAD_SITUATIONS
+  source_id: ''
+  source_version: NONE
+  candidate_canonical_id: ''
+  canonical_version: NONE
+  mapping_status: SOURCE_SCOPE_REVIEW
+  mapping_source: raw/vda702_atoms.yaml and user-supplied P5-O section 3.1; no inferred cross-version mapping
+rules:
+- rule_id: RHP-SIT-P01
+  functional_output: steering_torque
+  source_failure_semantics: [different_to]
+  canonical_failure_types: [wrong_value]
+  function_scope: WITHIN_FUNCTION
+  supported_families: [PARKING_IN_OUT]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Within-function steering torque deviation supports representative parking in/out; other candidates
+    remain unresolved.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [11]
+    columns: D:F,R:S
+    rule_text_or_summary: Within-function steering torque deviation supports representative parking in/out; other
+      candidates remain unresolved.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [11]
+    columns: D:F,R:S
+    rule_text_or_summary: Within-function steering torque deviation supports representative parking in/out; other
+      candidates remain unresolved.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P02
+  functional_output: steering_torque
+  source_failure_semantics: [unwarranted]
+  canonical_failure_types: [unintended_activation]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: [FREE_DRIVING]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Outside-function steering guidance requires independent current-project scope; do not generate high-speed
+    ODD.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [12]
+    columns: D:F,R:S
+    rule_text_or_summary: Outside-function steering guidance requires independent current-project scope; do not
+      generate high-speed ODD.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [12]
+    columns: D:F,R:S
+    rule_text_or_summary: Outside-function steering guidance requires independent current-project scope; do not
+      generate high-speed ODD.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P03
+  functional_output: driving_torque
+  source_failure_semantics: [too_large, too_small]
+  canonical_failure_types: [excessive, degraded]
+  function_scope: WITHIN_FUNCTION
+  supported_families: [PARKING_IN_OUT]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Driving torque magnitude deviations support parking in/out. Legacy does not independently distinguish
+    negative torque.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [14, 15, 17, 18]
+    columns: D:F,R:S
+    rule_text_or_summary: RHP-V2 row group distinguishes positive/negative driving torque magnitude deviations;
+      individual sign-to-row correspondence is not provided in the extraction.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [18, 19]
+    columns: D:F,R:S
+    rule_text_or_summary: RHP-LEGACY records driving torque without separately validated negative-torque subdivision.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P04
+  functional_output: driving_torque
+  source_failure_semantics: [unwarranted]
+  canonical_failure_types: [unintended_activation]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: [ALL_SOURCE_ROAD_SITUATIONS]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: AUDIT
+  runtime_exclusion_authority: false
+  project_scope: REFERENCE_PROJECT_ONLY
+  approval: REFERENCE_ONLY
+  rationale: All source road situations is a broader-scope diagnostic, not current-project ODD authority.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [16, 19]
+    columns: D:F,R:S
+    rule_text_or_summary: All source road situations is a broader-scope diagnostic, not current-project ODD authority.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [20]
+    columns: D:F,R:S
+    rule_text_or_summary: All source road situations is a broader-scope diagnostic, not current-project ODD authority.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P05
+  functional_output: braking_torque
+  source_failure_semantics: [unwarranted]
+  canonical_failure_types: [unintended_activation]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: [ALL_SOURCE_ROAD_SITUATIONS]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: AUDIT
+  runtime_exclusion_authority: false
+  project_scope: REFERENCE_PROJECT_ONLY
+  approval: REFERENCE_ONLY
+  rationale: Outside-function unwarranted braking must not be conflated with within-function excessive braking.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [21]
+    columns: D:F,R:S
+    rule_text_or_summary: Outside-function unwarranted braking must not be conflated with within-function excessive
+      braking.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [14]
+    columns: D:F,R:S
+    rule_text_or_summary: Outside-function unwarranted braking must not be conflated with within-function excessive
+      braking.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P06
+  functional_output: braking_torque
+  source_failure_semantics: [too_small, too_large]
+  canonical_failure_types: [degraded, excessive]
+  function_scope: WITHIN_FUNCTION
+  supported_families: [PARKING_IN_OUT]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Within-function braking torque deficiency/excess supports parking in/out; preserves exact current-project
+    D1/D2 authority.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [22, 23]
+    columns: D:F,R:S
+    rule_text_or_summary: Within-function braking torque deficiency/excess supports parking in/out; preserves exact
+      current-project D1/D2 authority.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [15, 16]
+    columns: D:F,R:S
+    rule_text_or_summary: Within-function braking torque deficiency/excess supports parking in/out; preserves exact
+      current-project D1/D2 authority.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P07
+  functional_output: direction_change
+  source_failure_semantics: [different_to]
+  canonical_failure_types: [wrong_value]
+  function_scope: WITHIN_FUNCTION
+  supported_families: [PARKING_IN_OUT]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Within-function direction deviation supports parking in/out without inventing a physical movement direction.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [25]
+    columns: D:F,R:S
+    rule_text_or_summary: Within-function direction deviation supports parking in/out without inventing a physical
+      movement direction.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [21]
+    columns: D:F,R:S
+    rule_text_or_summary: Within-function direction deviation supports parking in/out without inventing a physical
+      movement direction.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P08
+  functional_output: direction_change
+  source_failure_semantics: [unwarranted]
+  canonical_failure_types: [unintended_activation]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: [ALL_SOURCE_ROAD_SITUATIONS]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: AUDIT
+  runtime_exclusion_authority: false
+  project_scope: REFERENCE_PROJECT_ONLY
+  approval: REFERENCE_ONLY
+  rationale: All source road situations is reference scope only; never expand current ODD.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [26]
+    columns: D:F,R:S
+    rule_text_or_summary: All source road situations is reference scope only; never expand current ODD.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [22]
+    columns: D:F,R:S
+    rule_text_or_summary: All source road situations is reference scope only; never expand current ODD.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P09
+  functional_output: parking_brake
+  source_failure_semantics: [not_active]
+  canonical_failure_types: [loss]
+  function_scope: WITHIN_FUNCTION
+  supported_families: [PARKING_IN_OUT, HOLD_ON_SLOPE, REMOTE_SWITCH_PAUSE]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Keep distinct parking, slope-hold and remote-transition situations when independently evidenced; FV040
+    mapping remains under review.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [30]
+    columns: D:F,R:S
+    rule_text_or_summary: Keep distinct parking, slope-hold and remote-transition situations when independently
+      evidenced; FV040 mapping remains under review.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [26]
+    columns: D:F,R:S
+    rule_text_or_summary: Keep distinct parking, slope-hold and remote-transition situations when independently
+      evidenced; FV040 mapping remains under review.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P10
+  functional_output: parking_brake
+  source_failure_semantics: [unwarranted_close]
+  canonical_failure_types: [unintended_activation]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: [ALL_SOURCE_ROAD_SITUATIONS]
+  authority: SOURCE_UNRESOLVED
+  action: AUDIT
+  runtime_exclusion_authority: false
+  project_scope: REFERENCE_PROJECT_ONLY
+  approval: REFERENCE_ONLY
+  rationale: 'REUSE_CANDIDATE / SOURCE_SCOPE_REVIEW: R says all situations, S says stationary only and moving hazard
+    covered elsewhere.'
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [29]
+    columns: D:F,R:S
+    rule_text_or_summary: 'REUSE_CANDIDATE / SOURCE_SCOPE_REVIEW: R says all situations, S says stationary only
+      and moving hazard covered elsewhere.'
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [25]
+    columns: D:F,R:S
+    rule_text_or_summary: 'REUSE_CANDIDATE / SOURCE_SCOPE_REVIEW: R says all situations, S says stationary only
+      and moving hazard covered elsewhere.'
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P11
+  functional_output: remote_engine_off
+  source_failure_semantics: [unwarranted]
+  canonical_failure_types: [unintended_activation]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: [FREE_DRIVING, CROSSING_INTERSECTION]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Free drive and crossing guidance requires independent current-project outside-function capability.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [35]
+    columns: D:F,R:S
+    rule_text_or_summary: Free drive and crossing guidance requires independent current-project outside-function
+      capability.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [31]
+    columns: D:F,R:S
+    rule_text_or_summary: Free drive and crossing guidance requires independent current-project outside-function
+      capability.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P12
+  functional_output: flasher
+  source_failure_semantics: [different_to, not_active]
+  canonical_failure_types: [wrong_value, loss]
+  function_scope: WITHIN_FUNCTION
+  supported_families: [PARKING_IN_OUT]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Parking guidance applies only to the same evidenced function/interface and established vehicle hazard.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [43, 44]
+    columns: D:F,R:S
+    rule_text_or_summary: Parking guidance applies only to the same evidenced function/interface and established
+      vehicle hazard.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [39, 40]
+    columns: D:F,R:S
+    rule_text_or_summary: Parking guidance applies only to the same evidenced function/interface and established
+      vehicle hazard.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-SIT-P13
+  functional_output: flasher
+  source_failure_semantics: [unwarranted]
+  canonical_failure_types: [unintended_activation]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: [CROSSING_INTERSECTION]
+  authority: SOURCE_SCENARIO_GUIDANCE
+  action: INCLUDE
+  runtime_exclusion_authority: false
+  project_scope: CURRENT_PROJECT_IF_EVIDENCED
+  approval: REFERENCE_ONLY
+  rationale: Crossing guidance requires current-project applicability; no forced intersection generation.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [45]
+    columns: D:F,R:S
+    rule_text_or_summary: Crossing guidance requires current-project applicability; no forced intersection generation.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [41]
+    columns: D:F,R:S
+    rule_text_or_summary: Crossing guidance requires current-project applicability; no forced intersection generation.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-ISOLATED-HMI
+  functional_output: driver_display
+  source_failure_semantics: [different_to, not_active]
+  canonical_failure_types: [wrong_value, loss]
+  function_scope: UNRESOLVED
+  supported_families: []
+  authority: SOURCE_PROJECT_SPECIFIC
+  action: AUDIT
+  runtime_exclusion_authority: false
+  project_scope: REFERENCE_PROJECT_ONLY
+  approval: REFERENCE_ONLY
+  rationale: Source none/no-direct-hazard is project-specific; current misleading information/takeover hazards continue
+    causal assessment.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [8, 9]
+    columns: D:F,R:S
+    rule_text_or_summary: Source none/no-direct-hazard is project-specific; current misleading information/takeover
+      hazards continue causal assessment.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [8, 9]
+    columns: D:F,R:S
+    rule_text_or_summary: Source none/no-direct-hazard is project-specific; current misleading information/takeover
+      hazards continue causal assessment.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-ISOLATED-BCM
+  functional_output: flasher
+  source_failure_semantics: [not_active]
+  canonical_failure_types: [loss]
+  function_scope: OUTSIDE_FUNCTION
+  supported_families: []
+  authority: SOURCE_PROJECT_SPECIFIC
+  action: AUDIT
+  runtime_exclusion_authority: false
+  project_scope: REFERENCE_PROJECT_ONLY
+  approval: REFERENCE_ONLY
+  rationale: Source BCM interface forbids intervention; no current-project equivalent architecture fact is supplied.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [46]
+    columns: D:F,R:S
+    rule_text_or_summary: Source BCM interface forbids intervention; no current-project equivalent architecture
+      fact is supplied.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [42]
+    columns: D:F,R:S
+    rule_text_or_summary: Source BCM interface forbids intervention; no current-project equivalent architecture
+      fact is supplied.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- rule_id: RHP-ISOLATED-ENGINE-START
+  functional_output: remote_engine_on
+  source_failure_semantics: [not_active]
+  canonical_failure_types: [loss]
+  function_scope: WITHIN_FUNCTION
+  supported_families: []
+  authority: SOURCE_PROJECT_SPECIFIC
+  action: AUDIT
+  runtime_exclusion_authority: false
+  project_scope: REFERENCE_PROJECT_ONLY
+  approval: REFERENCE_ONLY
+  rationale: Source no-start/no-hazard conclusion is specific to that fault boundary, not a general exclusion.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: Malfunctions parking
+    rows: [32]
+    columns: D:F,R:S
+    rule_text_or_summary: Source no-start/no-hazard conclusion is specific to that fault boundary, not a general
+      exclusion.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: Malfunctions
+    rows: [28]
+    columns: D:F,R:S
+    rule_text_or_summary: Source no-start/no-hazard conclusion is specific to that fault boundary, not a general
+      exclusion.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+principles:
+- rule_id: RHP-METHOD-SIT-01
+  summary: Representative relevant use cases and source worst-case rationale; never predict ASIL to delete unproven-equivalent
+    scenarios.
+  authority: SOURCE_METHOD_PRINCIPLE
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Methods
+    rows: [10]
+    columns: C:D
+    rule_text_or_summary: Representative relevant use cases and source worst-case rationale; never predict ASIL
+      to delete unproven-equivalent scenarios.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: HARA Methods
+    rows: [10]
+    columns: C:D
+    rule_text_or_summary: Representative relevant use cases and source worst-case rationale; never predict ASIL
+      to delete unproven-equivalent scenarios.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  trigger_semantics: ''
+  exposure_domain: ''
+- rule_id: RHP-METHOD-SIT-02
+  summary: Chinese-adapted VDA-702 applicability must be checked for the target function; do not overwrite atoms.
+  authority: SOURCE_METHOD_PRINCIPLE
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Methods
+    rows: [11]
+    columns: C:D
+    rule_text_or_summary: Chinese-adapted VDA-702 applicability must be checked for the target function; do not
+      overwrite atoms.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: HARA Methods
+    rows: [11]
+    columns: C:D
+    rule_text_or_summary: Chinese-adapted VDA-702 applicability must be checked for the target function; do not
+      overwrite atoms.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  trigger_semantics: ''
+  exposure_domain: ''
+- rule_id: RHP-METHOD-E-01
+  summary: 'error = trigger: immediate vehicle-level effect is assessed in Time / Z.'
+  authority: SOURCE_METHOD_PRINCIPLE
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Methods
+    rows: [13]
+    columns: C:D
+    rule_text_or_summary: 'error = trigger: immediate vehicle-level effect is assessed in Time / Z.'
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: HARA Methods
+    rows: [13]
+    columns: C:D
+    rule_text_or_summary: 'error = trigger: immediate vehicle-level effect is assessed in Time / Z.'
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  trigger_semantics: IMMEDIATE_VEHICLE_EFFECT
+  exposure_domain: Z
+- rule_id: RHP-METHOD-E-02
+  summary: 'situation = trigger: vehicle-level effect needs a specific situation and is assessed in Frequency /
+    F.'
+  authority: SOURCE_METHOD_PRINCIPLE
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Methods
+    rows: [14]
+    columns: C:D
+    rule_text_or_summary: 'situation = trigger: vehicle-level effect needs a specific situation and is assessed
+      in Frequency / F.'
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: HARA Methods
+    rows: [14]
+    columns: C:D
+    rule_text_or_summary: 'situation = trigger: vehicle-level effect needs a specific situation and is assessed
+      in Frequency / F.'
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  trigger_semantics: SITUATION_TRIGGERED
+  exposure_domain: F
+- rule_id: RHP-METHOD-S-01
+  summary: VW accident-research traffic-domain S-Catalog and rear-end special cases; does not authorize replacing
+    the relative-speed primary method.
+  authority: SOURCE_METHOD_PRINCIPLE
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Methods
+    rows: [17]
+    columns: C:D
+    rule_text_or_summary: VW accident-research traffic-domain S-Catalog and rear-end special cases; does not authorize
+      replacing the relative-speed primary method.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: HARA Methods
+    rows: [18]
+    columns: C:D
+    rule_text_or_summary: VW accident-research traffic-domain S-Catalog and rear-end special cases; does not authorize
+      replacing the relative-speed primary method.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  trigger_semantics: ''
+  exposure_domain: ''
+assessment_examples:
+- case_id: GOLD-ZF-BRAKE-WITHIN-01
+  summary: Within-function excessive braking; parking/slow driving treated as redundant.
+  reference_result: 'Both: S1/E3/D/C1'
+  allowed_use: Trigger-semantics and representative-situation reference; not current-project numeric authority.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Parking
+    rows: [41]
+    columns: D:W
+    rule_text_or_summary: Within-function excessive braking; parking/slow driving treated as redundant.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: HARA Parking
+    rows: [39]
+    columns: D:W
+    rule_text_or_summary: Within-function excessive braking; parking/slow driving treated as redundant.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- case_id: GOLD-ZF-PARK-BRAKE-01
+  summary: Parking brake not active needs slope/danger-area interaction; distinct scene refinements.
+  reference_result: RHP-V2 E2/F; RHP-LEGACY E3/F
+  allowed_use: Source F trigger case; no project fact or E assignment.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Parking
+    rows: [52]
+    columns: D:W
+    rule_text_or_summary: Parking brake not active needs slope/danger-area interaction; distinct scene refinements.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: HARA Parking
+    rows: [45]
+    columns: D:W
+    rule_text_or_summary: Parking brake not active needs slope/danger-area interaction; distinct scene refinements.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- case_id: GOLD-E-MIX-01
+  summary: Confirmed 29.11.2019, case 05; Time/T operands E1,E4,E4,E3,E4.
+  reference_result: E1
+  allowed_use: 'METHOD_RULE_DIFFERENCE: current fusa_v1 returns E3; no new formula approved.'
+  source_refs:
+  - document_key: RHP-LEGACY
+    worksheet: HARA  Driving
+    rows: [11]
+    columns: D:AD
+    rule_text_or_summary: Confirmed 29.11.2019, case 05; Time/T operands E1,E4,E4,E3,E4.
+    reference_status: CONFIRMED_IN_SOURCE
+    cross_version_mapping_status: SINGLE_SOURCE
+    project_scope: REFERENCE_PROJECT_ONLY
+- case_id: GOLD-E-MIX-02
+  summary: Frequency/F slope E3 and persons in danger E4.
+  reference_result: E3
+  allowed_use: Reference agreement with mixed-high branch.
+  source_refs:
+  - document_key: RHP-LEGACY
+    worksheet: HARA Parking
+    rows: [45]
+    columns: T:V
+    rule_text_or_summary: Frequency/F slope E3 and persons in danger E4.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: SINGLE_SOURCE
+    project_scope: REFERENCE_PROJECT_ONLY
+- case_id: GOLD-E-COUPLING-01
+  summary: Time/D low friction E2 and persons E2; redundant parking/slow-driving collapsed.
+  reference_result: E1
+  allowed_use: Only with independently supplied independence evidence; do not populate current coupling.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: HARA Parking
+    rows: [37]
+    columns: T:V
+    rule_text_or_summary: Time/D low friction E2 and persons E2; redundant parking/slow-driving collapsed.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: SINGLE_SOURCE
+    project_scope: REFERENCE_PROJECT_ONLY
+- case_id: GOLD-E-CASE-REVIEW
+  summary: Frequency E4/E3/E2 with source note E1; dependency and combination steps unresolved.
+  reference_result: E1 (source note)
+  allowed_use: SOURCE_UNRESOLVED; no general aggregation formula.
+  source_refs:
+  - document_key: RHP-LEGACY
+    worksheet: HARA Parking
+    rows: [47, 48]
+    columns: T:V
+    rule_text_or_summary: Frequency E4/E3/E2 with source note E1; dependency and combination steps unresolved.
+    reference_status: SOURCE_REVIEW
+    cross_version_mapping_status: SINGLE_SOURCE
+    project_scope: REFERENCE_PROJECT_ONLY
+- case_id: GOLD-S-CATALOG
+  summary: Traffic domain by crash configuration and rear-end special cases.
+  reference_result: Source catalog, not a current risk result
+  allowed_use: Authority comparison only; existing severity asset retained.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: S-Catalog
+    rows: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+      30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56,
+      57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83,
+      84, 85, 86, 87, 88, 89, 90]
+    columns: A:H
+    rule_text_or_summary: Traffic domain by crash configuration and rear-end special cases.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: S-Catalog
+    rows: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+      30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56,
+      57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83,
+      84, 85, 86, 87, 88, 89, 90]
+    columns: A:H
+    rule_text_or_summary: Traffic domain by crash configuration and rear-end special cases.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+- case_id: GOLD-C-DEFINITION
+  summary: C0-C3 qualitative avoidability definitions.
+  reference_result: Qualitative C levels
+  allowed_use: Does not prove current 3/4/5-second TTC bands.
+  source_refs:
+  - document_key: RHP-V2
+    worksheet: SCE
+    rows: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+      29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46]
+    columns: A:G
+    rule_text_or_summary: C0-C3 qualitative avoidability definitions.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+  - document_key: RHP-LEGACY
+    worksheet: SCE
+    rows: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+      29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46]
+    columns: A:G
+    rule_text_or_summary: C0-C3 qualitative avoidability definitions.
+    reference_status: EXTRACTED_REFERENCE
+    cross_version_mapping_status: CROSS_SUPPORTED
+    project_scope: REFERENCE_PROJECT_ONLY
+exposure_parity_cases:
+- case_id: FUSA-PARITY-01
+  operands: [E4, E4]
+  coupling: ''
+  expected: E4
+  source_document_key: FUSA-NATIVE
+- case_id: FUSA-PARITY-02
+  operands: [E3, E4]
+  coupling: ''
+  expected: E3
+  source_document_key: FUSA-NATIVE
+- case_id: FUSA-PARITY-03
+  operands: [E1, E3, E4]
+  coupling: ''
+  expected: E3
+  source_document_key: FUSA-NATIVE
+- case_id: FUSA-PARITY-04
+  operands: [E2, E3, E4]
+  coupling: ''
+  expected: E3
+  source_document_key: FUSA-NATIVE
+- case_id: FUSA-PARITY-05
+  operands: [E1, E4]
+  coupling: ''
+  expected: E1
+  source_document_key: FUSA-NATIVE
+- case_id: FUSA-PARITY-06
+  operands: [E2, E2]
+  coupling: independent
+  expected: E1
+  source_document_key: FUSA-NATIVE
+- case_id: FUSA-PARITY-07
+  operands: [E2, E2]
+  coupling: coupled
+  expected: E2
+  source_document_key: FUSA-NATIVE

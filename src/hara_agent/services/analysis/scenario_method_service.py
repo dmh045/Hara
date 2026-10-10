@@ -13,7 +13,7 @@ from typing import Any
 
 from hara_agent.contracts import FMScenarioTemplate, MethodContract
 from hara_agent.models import (
-    FactProvenance, ItemDefinitionFacts, MalfunctionCandidate, ReviewStatus, ScenarioCandidate,
+    FactProvenance, FunctionDefinition, ItemDefinitionFacts, MalfunctionCandidate, ReviewStatus, ScenarioCandidate,
     SourceRef,
 )
 from hara_agent.services.semantic.scenario_contract import SCENARIO_CONTRACT_VERSION
@@ -24,6 +24,7 @@ from .failure_mode_selector_resolver import (
 )
 from .driver_configuration_service import DriverConfigurationBrancher
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
+from .malfunction_situation_selection import MalfunctionSituationSelectionService
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,9 @@ class ScenarioMethodService:
         candidates: list[ScenarioCandidate], audit: dict[str, Any],
         project_facts: ItemDefinitionFacts | None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
+        selection = audit.get("situation_selection", {})
+        selection["post_template_options_count"] = len(candidates)
+        selection["post_driver_branch_count"] = len(candidates)
         if project_facts is None or not self.driver_brancher.policy_id:
             return candidates, audit
         risk_facts = [
@@ -107,6 +111,7 @@ class ScenarioMethodService:
             "scenario_ids_by_parent": by_parent,
         }
         audit["instance_count"] = len(expanded)
+        selection["post_driver_branch_count"] = len(expanded)
         for option in audit.get("options", []):
             if isinstance(option, dict) and option.get("scenario_id") in by_parent:
                 option["driver_branch_scenario_ids"] = by_parent[option["scenario_id"]]
@@ -386,8 +391,12 @@ class ScenarioMethodService:
     def instantiate_analytical_candidates(
         self, malfunction: MalfunctionCandidate, candidates: list[ScenarioCandidate],
         project_facts: ItemDefinitionFacts | None = None,
+        *, function: FunctionDefinition | None = None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         """Create isolated M×template-option scenarios from strong matches only."""
+        candidates, selection = MalfunctionSituationSelectionService(self.method).select(
+            malfunction, candidates, function=function, project_facts=project_facts,
+        )
         result = self.match_fm_template(malfunction)
         audit: dict[str, Any] = {
             "malfunction_id": malfunction.malfunction_id,
@@ -396,7 +405,8 @@ class ScenarioMethodService:
             "matched_by": list(result.matched_by),
             "matched_terms": list(result.matched_terms),
             "selection_basis": result.reason,
-            "base_candidate_count": len(candidates),
+            "base_candidate_count": selection["base_candidate_count"],
+            "situation_selection": selection,
             "instance_count": 0,
             "options": [],
         }

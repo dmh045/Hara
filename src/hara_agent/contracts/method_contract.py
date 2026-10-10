@@ -11,6 +11,7 @@ from .method import RoleBinding, TemplateRole
 
 if TYPE_CHECKING:
     from .risk_calculation import StructuredRiskMethod
+    from .situation_selection import MalfunctionSituationSelectionMethod
 
 
 METHOD_CONTRACT_VERSION = "method-contract-v3"
@@ -606,6 +607,7 @@ class MethodContract:
     compile_status: CompileStatus
     engineering_rules_compiled: bool
     structured_risk_method: StructuredRiskMethod | None = None
+    situation_selection: MalfunctionSituationSelectionMethod | None = None
     contract_version: str = METHOD_CONTRACT_VERSION
     compiler_version: str = TEMPLATE_COMPILER_VERSION
 
@@ -637,6 +639,8 @@ class MethodContract:
         result = _serialize(self)
         if self.structured_risk_method is None:
             result.pop("structured_risk_method", None)
+        if self.situation_selection is None:
+            result.pop("situation_selection", None)
         scenario_method = result.get("scenario_model", {}).get("scenario_method")
         if scenario_method == {
             "fm_template_catalog": None,
@@ -663,6 +667,8 @@ class MethodContract:
         )
         if self.structured_risk_method is not None:
             sections += ("structured_risk_method",)
+        if self.situation_selection is not None:
+            sections += ("situation_selection",)
 
         def digest(value: Any) -> str:
             payload = json.dumps(

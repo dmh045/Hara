@@ -1,0 +1,77 @@
+{
+  "baseline_commit": "d4cf1ce9a37e99a95ceb6d5f7b46c7fddef9677c",
+  "sha256": {
+    "method_assets/fusa_baseline_v1/normalized/scenario_coverage_rules.yaml": "9c755819cb08c09d57a21b5ad5576c296d14f7490af31152fe456002804bd86a",
+    "method_assets/fusa_baseline_v1/normalized/guidewords.yaml": "119b22646b399a9051df13a3933d0f9b13aa32116f78aa89ac27555597590acc",
+    "method_assets/fusa_baseline_v1/normalized/severity_semantics.yaml": "703874d57982189038f0c9720fb0a5acae360e93721dbe80c390ce278f52abf1",
+    "method_assets/fusa_baseline_v1/normalized/scenario_aliases.yaml": "e3cfbac84282bd83e164348807d4bd276b67b6408fcf0aac1958bf63f63c3ef1",
+    "method_assets/fusa_baseline_v1/normalized/fm_template_selector_map.yaml": "e7beb284c2f9e67fcd22383ba87f7b70e41dfa3049fc5f754877909f953afabe",
+    "method_assets/fusa_baseline_v1/normalized/exposure_policy.yaml": "2f2b934de9ce6d7a77cd0c849cce89854b9c2c7a90405681975937ef7bd12635",
+    "method_assets/fusa_baseline_v1/normalized/risk_vocabulary_mappings.yaml": "382397c58b19c908b4709b32d89778f15dfa8e78d77ce647b5fc5e4805fbbb6c",
+    "method_assets/fusa_baseline_v1/normalized/controllability_aliases.yaml": "6bbe01090dfe2659561c8ca2041bfd123adcc7dcd35fb1dec76d7befc11e9022",
+    "method_assets/fusa_baseline_v1/normalized/scenario_constraints.yaml": "556952c245fc77282cd6d2ed0df2663805da7eb4e9ccae5d7d452cb91d9cfa05",
+    "method_assets/fusa_baseline_v1/normalized/derivation_rules.yaml": "4cd54c04f9070f3f808d855c73b1e74a029398e0f3d6c726d90907fbe9a8813a",
+    "method_assets/fusa_baseline_v1/normalized/project_analysis_policy.yaml": "c5451002c79111630acfdb4a66d17f3432743c863a64ea816ab4289d25d3b6c4",
+    "method_assets/fusa_baseline_v1/raw/kb_retrieval.yaml": "6d95d2672924249eb996c73d5e7bd4c1e2f5683eb367685d773345858df02c2b",
+    "method_assets/fusa_baseline_v1/raw/dimension_structure.yaml": "29c6f969701a8be30c2900272d36f5e548fa2b8cd848b031500acc2aee655eef",
+    "method_assets/fusa_baseline_v1/raw/fm_layer_classification.yaml": "a49624ea6d48abbcc9ca1b851adf730e2fc3603d2d7587557b537c38bcc58485",
+    "method_assets/fusa_baseline_v1/raw/infeasible_examples.yaml": "156496e129a0c97490351c6e57abc517de9b2e8c0ce1dc035b74c43b4a09bea6",
+    "method_assets/fusa_baseline_v1/raw/ftti_formulas.yaml": "36dd7e947034d784af929b16b55e0267f3d7c25bdf1d23d5b9ffbb34205c9877",
+    "method_assets/fusa_baseline_v1/raw/atom_spec.yaml": "391ad0433a6f37bb8f1ddc0b7bc004c0c882d4dae364e1420322bb0813331108",
+    "method_assets/fusa_baseline_v1/raw/ftti_budgets.yaml": "47e789fcffc8b4b80a3eecd81480ca529b325239c1d4e0b41a73b7a13b4019c3",
+    "method_assets/fusa_baseline_v1/raw/failure_type_taxonomy.yaml": "e2ba063b035ac7b55a05fa5caa944021c1c3137b928df55d18bac50ecfc6f663",
+    "method_assets/fusa_baseline_v1/raw/fm_scenario_templates.yaml": "df7ddc10578cd41fdc4a53688d6ecd69cd503ae469a37821f0f09e823d3a94de",
+    "method_assets/fusa_baseline_v1/raw/component_taxonomy.yaml": "c472d5b8229909ed31a8d96e3b8701c73433fed4fde7745fdb40dae6e700f479",
+    "method_assets/fusa_baseline_v1/raw/severity_table.yaml": "1494c86e0df453bc3ecd71db6f7e6e5d3026edd598da983cae0df4c3bff61a16",
+    "method_assets/fusa_baseline_v1/raw/vda702_atoms.yaml": "9ecc35bd7bb36161c84aafe33516e59bc01eb0495aa3e65dc929b053a356ba55",
+    "method_assets/fusa_baseline_v1/raw/iso26262_spec.yaml": "009dad63656731efc09ef4eaa76b3a170172506a0b6f9a404bc3b32b944edb20",
+    "method_assets/fusa_baseline_v1/raw/coupling_examples.yaml": "8e216ece0b3da39de334b2fe87914448ba843f7ae0abdc27f421a11701de4c3c",
+    "method_assets/fusa_baseline_v1/raw/c_iso26262.yaml": "5a64ce1fa4f8d133f51d0aec7d88506f8a0bdf01ce4aa1ea90318ab388aeb8b9",
+    "method_assets/fusa_baseline_v1/raw/e_dimension_rules.yaml": "718a408614830d06f808765dc66f395a447a10f984b6124dcf4a6079f6cf7f4f",
+    "method_assets/fusa_baseline_v1/raw/controllability_rules.yaml": "dea0bd6f3133603aadeb282dfa5837550b50b1e549febc3bcee6c7c27a8fc1fe",
+    "method_assets/fusa_baseline_v1/raw/domain_rules/avp_low_speed.yaml": "aea6e742d78eea1a905b67ab4d7c65452ff1c597684904a75869479d1c42ca15",
+    "method_assets/fusa_baseline_v1/raw/c_profiles/iav_avp.yaml": "4d966dfc584ee31c066db17f076818fc65ccd088fd0c579c741d2db4e2363dfb"
+  },
+  "guidewords": [
+    {
+      "id": "GW-NO-LOSS",
+      "name": "No/Loss",
+      "description": "Function or required output is absent or lost."
+    },
+    {
+      "id": "GW-MORE",
+      "name": "More",
+      "description": "Function or output exceeds the intended magnitude, duration, or rate."
+    },
+    {
+      "id": "GW-LESS",
+      "name": "Less",
+      "description": "Function or output is below the intended magnitude, duration, or rate."
+    },
+    {
+      "id": "GW-REVERSE",
+      "name": "Reverse/Opposite",
+      "description": "Function or output occurs in the opposite direction or sense."
+    },
+    {
+      "id": "GW-OTHER",
+      "name": "As well as/Other than",
+      "description": "An additional or different function or output occurs."
+    },
+    {
+      "id": "GW-STUCK",
+      "name": "Stuck",
+      "description": "Function or output remains fixed and cannot transition as intended."
+    },
+    {
+      "id": "GW-EARLY",
+      "name": "Early",
+      "description": "Function or output occurs earlier than intended."
+    },
+    {
+      "id": "GW-LATE",
+      "name": "Late",
+      "description": "Function or output occurs later than intended."
+    }
+  ]
+}

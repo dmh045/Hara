@@ -1392,6 +1392,24 @@ class YamlBaselineCompiler:
             *(item.source_ref for item in overrides),
             *(item.source_ref for item in asil_mappings),
         ]))
+        situation_selection = None
+        if "malfunction_situation_selection" in assets:
+            from .situation_selection_compiler import compile_situation_selection
+
+            situation_selection = compile_situation_selection(
+                assets["malfunction_situation_selection"],
+                asset=source_paths["malfunction_situation_selection"],
+                source_hash=source_hash,
+                atoms={str(item["id"]): item for item in raw_atoms},
+                failure_types={
+                    item.canonical_id for item in
+                    scenario_method.failure_mode_selector_taxonomy.failure_types
+                },
+            )
+            source_refs = (*source_refs, self._source(
+                source_hash, source_paths["malfunction_situation_selection"],
+                "malfunction_situation_selection", assets["malfunction_situation_selection"],
+            ))
         return MethodContract(
             metadata={
                 "template_hash": source_hash,
@@ -1528,6 +1546,7 @@ class YamlBaselineCompiler:
             compile_status=CompileStatus.READY_WITH_WARNINGS,
             engineering_rules_compiled=True,
             structured_risk_method=structured,
+            situation_selection=situation_selection,
             compiler_version=self.compiler_version,
         )
 

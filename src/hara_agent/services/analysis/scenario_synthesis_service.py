@@ -1116,6 +1116,11 @@ class ConstrainedScenarioSynthesisService:
         assessment: dict[str, Any], project_context: dict[str, Any],
         function: dict[str, Any] | None = None,
     ) -> ScenarioSynthesisInput:
+        from .malfunction_situation_selection import MalfunctionSituationSelectionService
+
+        selection_audit = MalfunctionSituationSelectionService(self.method).annotate_synthesis(
+            malfunction, parent, function, project_context,
+        )
         fm_template = self._fm_template_evidence(malfunction, parent)
         query = ScenarioSemanticQueryBuilder.build(
             malfunction=malfunction, parent=parent, assessment=assessment,
@@ -1193,6 +1198,7 @@ class ConstrainedScenarioSynthesisService:
             coverage_plan=coverage_plan,
             fm_scenario_template=fm_template,
             contextual_speed=contextual_speed,
+            situation_selection_audit=selection_audit,
         )
 
     def logical_candidate_registry(

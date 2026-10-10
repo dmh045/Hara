@@ -436,6 +436,8 @@ class HARAApplication:
         self, state: HARAState, candidate_service: MethodScenarioCandidateService,
         method,
     ) -> dict:
+        from hara_agent.services.analysis.malfunction_situation_selection import selection_function
+
         candidates, audit = self.prepare_scenario_candidates(state, candidate_service)
         template_service = ScenarioMethodService(method)
         typed = state.item_definition.get("typed", {})
@@ -453,6 +455,9 @@ class HARAApplication:
             malfunction = MalfunctionCandidate(**payload)
             instances, _ = template_service.instantiate_analytical_candidates(
                 malfunction, candidates, project_facts=project_facts,
+                function=selection_function(next(
+                    (item for item in state.functions if item.get("function_id") == malfunction.function_id), None,
+                )),
             )
             by_malfunction[malfunction.malfunction_id] = len(instances)
         pair_count = sum(by_malfunction.values())

@@ -55,6 +55,23 @@ No manually maintained template configuration is required. Automatic discoveries
 
 Exact ontology-name bindings are automatic. Semantic interpretation is evidence-bounded and stays pending until approved. Human-confirmed mappings are reusable for the same template hash.
 
+In YAML baseline mode, `normalized/malfunction_situation_selection.yaml` compiles
+reference HARA situation guidance into the same `MethodContract`. Selection runs
+once per malfunction and base scenario, before FM physical options and driver
+branches. `INCLUDE` records supported situations; `UNRESOLVED` continues to the
+existing causal assessment. The supplied reference table authorizes no exclusions.
+
+Selection requires approved, source-linked `RiskFact` bindings for
+`FUNCTIONAL_OUTPUT` and `FUNCTION_OPERATING_SCOPE`, scoped by `project_scope`,
+`function_id`, and `malfunction_id`; the output binding also identifies the exact
+`function_output`. Scope values are `WITHIN_FUNCTION` or `OUTSIDE_FUNCTION`.
+Missing bindings remain unresolved without an additional review gate or model
+request. Per-parent reasons, expansion counts, causal counts, and Z/F source
+limitations are recorded in `malfunction_situation_selection.json` under the
+existing review directory. Synthesis records a read-only applicability annotation.
+Reference Z/F trigger definitions and assessment examples do not change the
+active `fusa_v1` exposure policy, component-domain routing, or S/C/ASIL methods.
+
 ## Quality and safety behavior
 
 - No fixed sheet names, coordinates, guideword cardinality, or copied S/E/C thresholds in runtime code.

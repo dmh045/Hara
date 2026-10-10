@@ -748,6 +748,7 @@ class ScenarioSynthesisRunner:
                 "parent_scenario_id": item.parent_scenario_id,
                 "hazardous_event_id": item.hazardous_event_id,
                 "structured_semantic_query": item.structured_semantic_query,
+                "situation_selection_audit": item.situation_selection_audit,
                 "dimension_applicability": {
                     value.dimension: value.applicability.to_dict()
                     for value in item.dimension_candidate_sets

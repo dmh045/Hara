@@ -19,6 +19,7 @@ from hara_agent.services.semantic import (
     ScenarioRiskFactAgent, build_project_evidence_registry,
 )
 from hara_agent.services.analysis import RiskExecutionTraceService, ScenarioMethodService
+from hara_agent.services.analysis.malfunction_situation_selection import selection_function
 from hara_agent.workflow.state import HARAState, WorkflowStage
 
 from .parallel import ordered_parallel_map
@@ -146,6 +147,9 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         else:
             instantiated, audit = template_service.instantiate_analytical_candidates(
                 malfunction, candidates, project_facts=project_facts,
+                function=selection_function(next(
+                    (item for item in state.functions if item.get("function_id") == malfunction.function_id), None,
+                )),
             )
             contextual_candidates[malfunction.malfunction_id] = instantiated
             instantiation_audit[malfunction.malfunction_id] = audit
@@ -164,12 +168,35 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         candidate.scenario_id: candidate for candidate in runtime_candidates
     }
 
-    def persist_review_batch(malfunction, result) -> None:
+    selection_audits = {
+        key: {**value["situation_selection"], "causal_attempted_count": None,
+              "causal_retained_count": None, "causal_status": "NOT_COMPLETED"}
+        for key, value in instantiation_audit.items() if "situation_selection" in value
+    }
+
+    def persist_selection_audit():
+        if selection_audits:
+            payload = {"per_malfunction": list(selection_audits.values()), "provider_calls_added_by_selection": 0}
+            state.item_definition["malfunction_situation_selection"] = payload
+            if review_artifact_writer is not None:
+                review_artifact_writer.write_malfunction_situation_selection(payload)
+
+    persist_selection_audit()
+
+    def persist_review_batch(malfunction, result, *, cached=False) -> None:
         """Persist one canonical malfunction result before other workers finish."""
 
+        batch_assessments, audit = result
+        if malfunction.malfunction_id in selection_audits:
+            selection_audits[malfunction.malfunction_id].update({
+                "causal_attempted_count": 0 if cached else len(batch_assessments),
+                "causal_assessed_count": len(batch_assessments),
+                "causal_retained_count": sum(evaluate_risk_eligibility(x).eligible for x in batch_assessments),
+                "causal_status": "CACHE_REUSED" if cached else "COMPLETED",
+            })
+            persist_selection_audit()
         if review_artifact_writer is None:
             return
-        batch_assessments, audit = result
         for assessment in batch_assessments:
             review_artifact_writer.record_scenario_feasibility(
                 assessment,
@@ -199,7 +226,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
             pending_malfunctions.append(malfunction)
         else:
             batch_by_malfunction[malfunction.malfunction_id] = restored
-            persist_review_batch(malfunction, restored)
+            persist_review_batch(malfunction, restored, cached=True)
     cached_count = len(batch_by_malfunction)
     if cached_count:
         print(

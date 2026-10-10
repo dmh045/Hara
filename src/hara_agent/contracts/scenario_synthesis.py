@@ -220,6 +220,7 @@ class ScenarioSynthesisInput:
     coverage_plan: ScenarioCoveragePlan
     fm_scenario_template: dict[str, Any] = field(default_factory=dict)
     contextual_speed: dict[str, Any] = field(default_factory=dict)
+    situation_selection_audit: dict[str, Any] = field(default_factory=dict)
     contract_version: str = SCENARIO_SYNTHESIS_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
