@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,6 +43,21 @@ class _Client:
         model = "scenario-review-test"
 
     config = Config()
+
+
+@pytest.mark.parametrize("stage,can_publish,expected", [
+    (WorkflowStage.QUALITY_GATE, False, "PENDING_REVIEW"),
+    (WorkflowStage.QUALITY_GATE, True, "IN_PROGRESS"),
+    (WorkflowStage.SCORING, False, "IN_PROGRESS"),
+])
+def test_review_summary_distinguishes_pending_gate_from_running(
+    tmp_path, stage, can_publish, expected,
+):
+    state = SimpleNamespace(run_id="review-gate-status", stage=stage, can_publish=can_publish)
+    writer = ReviewArtifactWriter(state.run_id, tmp_path)
+    writer.write_summary(state)
+    summary = json.loads((tmp_path / state.run_id / "summary.json").read_text())
+    assert summary["status"] == expected
 
 
 def _malfunction(identity: str) -> MalfunctionCandidate:
@@ -302,6 +319,37 @@ def test_cli_does_not_call_zero_coverage_malfunction_completed(review_root):
     assert "MF-NONE: NOT_STARTED (0/3 assessed" in rendered
     assert "MF-PARTIAL: PARTIAL (1/3 assessed" in rendered
     assert "MF-DONE: COMPLETED (3/3 assessed" in rendered
+
+
+@pytest.mark.parametrize("fm_origin", [False, True])
+def test_driver_branches_replace_parent_in_review_progress(tmp_path, fm_origin):
+    writer = ReviewArtifactWriter("driver-progress", tmp_path)
+    parent = _candidates(1)[0]
+    writer.record_malfunction(_malfunction("MF-DRIVER"))
+    writer.record_scenario_candidate(parent, generated_for_malfunction_ids=["MF-DRIVER"])
+    for index, position in enumerate(("in_driver_seat", "outside_driver_seat")):
+        child = replace(
+            parent, scenario_id=f"SCN-DRIVER-{index}",
+            analysis_instance={
+                "malfunction_id": "MF-DRIVER",
+                "instance_id": f"SCN-DRIVER-{index}",
+                "driver_configuration_branch": {
+                    "parent_scenario_id": parent.scenario_id,
+                    "driver_position": position,
+                },
+                **({"origin": "SCENARIO_DEFINED"} if fm_origin else {}),
+            },
+        )
+        writer.record_scenario_candidate(child, generated_for_malfunction_ids=["MF-DRIVER"])
+        writer.record_scenario_feasibility(_assessment("MF-DRIVER", child.scenario_id))
+    writer.write_summary(HARAState(run_id="driver-progress", stage=WorkflowStage.MALFUNCTIONS))
+
+    reader = ReviewArtifactReader("driver-progress", tmp_path)
+    summary = reader.summary()
+    assert summary["scenario_candidate_count"] == 3  # Keep the parent for audit.
+    assert summary["per_malfunction_summary"]["MF-DRIVER"]["expected_scenario_count"] == 2
+    assert summary["scenario_assessment_completed_malfunction_count"] == 1
+    assert "MF-DRIVER: COMPLETED (2/2 assessed" in render_review(reader)
 
 
 def test_candidate_review_projection_compacts_large_shared_method_excerpts(review_root):

@@ -33,6 +33,121 @@ python -m venv .venv
 
 `doctor` is offline for template compilation and separately reports LLM configuration readiness. `analyze` fails closed when the method, facts, or approvals are incomplete. `--allow-draft` permits a visibly watermarked report without bypassing review state.
 
+### P6: ordinary analyze generates method-bound scenarios
+
+The normal `analyze` path now combines Function/Malfunction context, the confirmed
+ODD, the compiled Atom catalog, and the existing bounded coverage planner before
+causal validation. Atom membership and physical constraints are deterministic;
+the Provider validates causality. Selected conditions remain `SCENARIO_DEFINED`,
+and Exposure uses the existing FUSA evaluator.
+
+Identical structured candidates are coalesced with an identity map. Driver
+variants share a causal result only when explicit dependency evidence proves
+noninterference and the child evidence validates again. Each retained branch is
+scored separately. Report grouping requires matching engineering conditions,
+causal evidence, harm and finalized ratings; details retain all risk records.
+
+The P6 review correction preserves source conditions before Atom projection.
+WHERE uses source locations; road/parking-space types remain explicit permitted
+alternatives in the source scope, without being multiplied into site locations.
+Location semantics apply to every Atom dimension. Mechanism variants are covered
+once per physical input, with a representative of each additional source context
+and any novel primary variants retained. Uphill/downhill source boundaries are
+sampled at one location per physical option. Unselected combinations are recorded
+as unevaluated, never as proven equivalent.
+
+The current offline replay in `output/p6_review_bounded/` has 613 representatives
+and 1,226 driver instances. E preview is ready for 1,200; 26 remain pending. The
+old 510-candidate merge proof and the intermediate 7,650-candidate expansion are
+superseded. Geometry equivalence, joint ODD coverage and fresh causal/S/C/ASIL
+validation remain incomplete; see `docs/P6_Review_Correction_Report.md`.
+
+Follow-up validation (`docs/P6_Targeted_Validation_20261012.md`) found and fixed
+missing compiled slope bounds for an existing Atom. The population remains
+613 / 1,226; E is now ready for 1,224 with 2 unresolved traffic contexts.
+The 18-case live sample completed in 19 requests and proved response recovery;
+driver causal reuse was 0/9 groups and all 16 retained records still lacked TTC.
+The new full run is `full-p6-20261012-002`, with its independent log at
+`runtime/agent/full-p6-20261012-002.monitor.log`. It completed a full-scope draft
+on 2026-10-13: 1,270 causal judgments, 964 risk records, 253 exclusions and
+53 cases pending causal evidence. E is finalized for 958 records, S for 396,
+and C/ASIL for 82. The report is `output/HARA_full_p6_20261012_002.xlsx`;
+it is not for release. Driver causal reuse and report grouping saved no further
+calls/rows in this run. A small eligibility-classification fix keeps unresolved
+causal evidence pending instead of displaying it as an exclusion.
+
+After representative causal and coverage validation, use a new run for the Item.
+Resuming an already completed P5-O checkpoint does not regenerate its scenarios.
+
+```bash
+set -o pipefail
+.venv/bin/python -u -m hara_agent analyze \
+  --item ./input/ItemDef.docx \
+  --method-baseline ./method_assets/fusa_baseline_v1/manifest.yaml \
+  --report-template ./references/HARA_Template_AI_20260327.xlsx \
+  --operating-mode "parking vehicle control" \
+  --run-id full-p6-20261012-001 \
+  --output ./output/HARA_full_p6_20261012.xlsx \
+  --allow-draft \
+  2>&1 | tee runtime/agent/full-p6-20261012-001.monitor.log
+```
+
+The offline replay uses production generation and Exposure services without a
+Provider, and distinguishes candidate previews from committed risk results:
+
+```bash
+.venv/bin/python scripts/benchmark_p6_offline.py \
+  --checkpoint runtime/agent/full-p5o-20261010-001.checkpoint.json \
+  --corrected-report output/p5o_review_20261012/HARA_full_p5o_20261010_review_fixed.xlsx \
+  --output output/p6_review_bounded
+```
+
+Audit the new source coverage and the previous merges without a Provider:
+
+```bash
+.venv/bin/python scripts/audit_p6_source_coverage.py --before output/p6 --after output/p6_review_bounded
+```
+
+`scripts/validate_p6_sample.py` prepares an eight-candidate sample offline by
+default; `--live` explicitly enables the existing Provider with a durable request
+cap. The completed attempt ledger for `p6-review-sample-20261012-001` is already
+8/8. Do not reuse or overwrite it as a fresh budget. That initial live sample
+stopped after one schema repair consumed the remaining allowance. The later
+18-case validation and full-run results above supersede that initial outcome.
+
+### macOS: resume the historical parking-control run
+
+Run from the repository root, after the existing analysis process has stopped.
+This command resumes `full-p5o-20261010-001`, using the confirmed parking-control
+scope (0–7 km/h). Its extracted speed-envelope name is `parking vehicle control`.
+The shorter name `parking` is ambiguous: the same Item also defines parking-space
+search at 0–30 km/h. For other runs, use the applicable name in the checkpoint's
+`item_definition.typed.speed_envelopes`; these names are project inputs.
+
+```bash
+set -o pipefail
+.venv/bin/python -u -m hara_agent analyze \
+  --item ./input/ItemDef.docx \
+  --method-baseline ./method_assets/fusa_baseline_v1/manifest.yaml \
+  --report-template ./references/HARA_Template_AI_20260327.xlsx \
+  --operating-mode "parking vehicle control" \
+  --run-id full-p5o-20261010-001 \
+  --output ./output/HARA_full_p5o_20261010.xlsx \
+  --allow-draft --resume \
+  2>&1 | tee -a runtime/agent/full-p5o-20261010-001.monitor.log
+```
+
+The explicit interpreter uses the project's virtual environment. `tee` displays
+progress in the terminal and saves the same output. To watch the already running
+analysis from another terminal:
+
+```bash
+tail -n 25 -F runtime/agent/full-p5o-20261010-001.monitor.log
+```
+
+Ctrl+C in this log-viewing terminal stops only `tail`. For a fresh analysis, omit
+`--resume` and choose a new run ID, output path, and log path.
+
 When `doctor` reports an ambiguous role, confirm only the listed role once; the system saves an auto-generated manifest keyed by the workbook hash:
 
 ```powershell

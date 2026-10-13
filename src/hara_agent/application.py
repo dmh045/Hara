@@ -11,7 +11,6 @@ from hara_agent.infrastructure.llm import LLMClient, create_llm_client
 from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
 from hara_agent.services.analysis import (
     MethodScenarioCandidateService,
-    ScenarioMethodService,
     MethodSafetyGoalService,
     ProjectFactResolver,
     SpeedResolutionResult,
@@ -280,7 +279,10 @@ class HARAApplication:
                         .failure_mode_selector_taxonomy is not None else ()
                     ),
                 ),
-                scenarios=ScenarioFeasibilityAgent(self.llm_client),
+                scenarios=ScenarioFeasibilityAgent(
+                    self.llm_client,
+                    response_checkpoint_dir=self.config.run_dir / f"{self.config.run_id}.scenario-responses",
+                ),
                 risk_facts=ScenarioRiskFactAgent(self.llm_client),
             ),
             RiskWorkflowServices(
@@ -439,7 +441,6 @@ class HARAApplication:
         from hara_agent.services.analysis.malfunction_situation_selection import selection_function
 
         candidates, audit = self.prepare_scenario_candidates(state, candidate_service)
-        template_service = ScenarioMethodService(method)
         typed = state.item_definition.get("typed", {})
         project_facts = ItemDefinitionFacts.from_dict(typed)
         by_malfunction = {}
@@ -453,7 +454,7 @@ class HARAApplication:
                 payload.get("status", ReviewStatus.PENDING.value)
             )
             malfunction = MalfunctionCandidate(**payload)
-            instances, _ = template_service.instantiate_analytical_candidates(
+            instances, _ = candidate_service.generate_for_malfunction(
                 malfunction, candidates, project_facts=project_facts,
                 function=selection_function(next(
                     (item for item in state.functions if item.get("function_id") == malfunction.function_id), None,

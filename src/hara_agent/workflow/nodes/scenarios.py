@@ -18,15 +18,16 @@ from hara_agent.services.semantic import (
     DEFAULT_CAUSAL_EVIDENCE_BUDGET, ScenarioFeasibilityAgent,
     ScenarioRiskFactAgent, build_project_evidence_registry,
 )
-from hara_agent.services.analysis import RiskExecutionTraceService, ScenarioMethodService
+from hara_agent.services.analysis import RiskExecutionTraceService, MethodScenarioCandidateService
 from hara_agent.services.analysis.malfunction_situation_selection import selection_function
 from hara_agent.workflow.state import HARAState, WorkflowStage
 
 from .parallel import ordered_parallel_map
 from ..review_artifacts import ReviewArtifactWriter
+from hara_agent.services.analysis.scenario_equivalence import driver_families, driver_reuse_proof
 
 
-SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v5"
+SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v8-source-axis-coverage"
 
 
 def _scenario_batch_cache_key(
@@ -97,9 +98,69 @@ def _assess_instantiated_scenarios(
     project_registry,
 ) -> tuple[list[ScenarioFeasibilityAssessment], dict]:
     """Assess only the candidate instances selected for one malfunction."""
-    assessments, audit = agent.assess(
-        malfunction, candidates, project_registry=project_registry,
-    )
+    families = driver_families(candidates) if any(
+        candidate.analysis_instance.get("p6_generation") for candidate in candidates
+    ) else [[candidate] for candidate in candidates]
+    representatives = [family[0] for family in families]
+    assessments, audit = agent.assess(malfunction, representatives, project_registry=project_registry)
+    by_id = {item.scenario_id: item for item in assessments}
+    pending, reuse_records = [], []
+    for family in families:
+        parent = family[0]
+        assessed = by_id[parent.scenario_id]
+        for child in family[1:]:
+            proof = driver_reuse_proof(assessed.to_dict(), parent, child)
+            reused = None
+            if proof["reusable"] and evaluate_risk_eligibility(assessed).eligible:
+                payload = {key: value for key, value in assessed.to_dict().items() if key in {
+                    "physically_feasible", "functionally_relevant", "causally_relevant",
+                    "breakpoint", "causal_chain", "risk_dimension_changes", "hazardous_event",
+                    "confidence", "status", "dependency_metadata",
+                }}
+                payload["scenario_id"] = child.scenario_id
+                changed_refs = {"SCN." + field for field in proof["changed_fields"]}
+                payload["risk_dimension_changes"] = [
+                    change for change in payload["risk_dimension_changes"]
+                    if not changed_refs.intersection(change.get("evidence_refs", []))
+                ]
+                # Recompile and revalidate every evidence reference against the
+                # child's registry. No copied graph retains a parent's IDs.
+                try:
+                    reused = ScenarioFeasibilityAgent._parse(
+                        malfunction, payload, scenario=child, project_registry=project_registry,
+                    )
+                except ValueError:
+                    proof = {"reusable": False, "reason": "CHILD_EVIDENCE_REVALIDATION_REQUIRED"}
+            if reused is None:
+                pending.append(child)
+            else:
+                by_id[child.scenario_id] = reused
+            reuse_records.append({"scenario_id": child.scenario_id,
+                                 "representative_scenario_id": parent.scenario_id,
+                                 **proof, "reused": reused is not None})
+    if pending:
+        additional, additional_audit = agent.assess(malfunction, pending, project_registry=project_registry)
+        by_id.update({item.scenario_id: item for item in additional})
+        # Preserve existing Provider accounting across both scheduling waves.
+        for key, value in additional_audit.items():
+            previous = audit.get(key)
+            if isinstance(value, list) and isinstance(previous, list):
+                audit[key] = previous + value
+            elif isinstance(value, (int, float)) and not isinstance(value, bool) and isinstance(previous, (int, float)):
+                audit[key] = max(previous, value) if key.startswith("max_") else previous + value
+        audit["usage"] = {"batches": [
+            *audit.get("usage", {}).get("batches", []),
+            *additional_audit.get("usage", {}).get("batches", []),
+        ]}
+    assessments = [by_id[candidate.scenario_id] for candidate in candidates]
+    audit.update(candidate_count=len(candidates), expected_count=len(candidates),
+                 returned_count=len(assessments), retained_count=sum(item.retain for item in assessments))
+    audit["causal_reuse"] = {
+        "candidate_count": len(candidates), "representative_count": len(representatives),
+        "independently_assessed_count": len(representatives) + len(pending),
+        "reused_count": sum(record["reused"] for record in reuse_records),
+        "records": reuse_records,
+    }
     audit["analytical_scenario_instantiation"] = instantiation
     return assessments, audit
 
@@ -130,7 +191,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         state.item_definition["scenario_assessment_batches"] = cache
     batch_by_malfunction: dict[str, tuple[list, dict]] = {}
     pending_malfunctions = []
-    template_service = ScenarioMethodService(method) if method is not None else None
+    template_service = MethodScenarioCandidateService(method) if method is not None else None
     contextual_candidates: dict[str, list[ScenarioCandidate]] = {}
     instantiation_audit: dict[str, dict] = {}
     for malfunction in malfunctions:
@@ -145,11 +206,14 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                 "options": [],
             }
         else:
-            instantiated, audit = template_service.instantiate_analytical_candidates(
+            instantiated, audit = template_service.generate_for_malfunction(
                 malfunction, candidates, project_facts=project_facts,
                 function=selection_function(next(
                     (item for item in state.functions if item.get("function_id") == malfunction.function_id), None,
                 )),
+                record_generated=(lambda candidate: review_artifact_writer.record_scenario_candidate(
+                    candidate, generated_for_malfunction_ids=[malfunction.malfunction_id],
+                )) if review_artifact_writer is not None else None,
             )
             contextual_candidates[malfunction.malfunction_id] = instantiated
             instantiation_audit[malfunction.malfunction_id] = audit

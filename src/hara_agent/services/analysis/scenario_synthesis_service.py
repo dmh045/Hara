@@ -31,7 +31,7 @@ from hara_agent.models import (
 from .scenario_constraint_service import ScenarioConstraintExecutor, ScenarioConstraintStatus
 from .scenario_method_service import ScenarioMethodService
 from .scenario_selection_quality import (
-    normalize_object_category,
+    explicit_environment, normalize_object_category,
     ScenarioBindingPolicy, ScenarioCandidateRanker, ScenarioCoveragePlanner,
     ScenarioDimensionApplicabilityService, ScenarioSemanticQueryBuilder,
     ScenarioRefinementEvidencePolicy, ScenarioSemanticCompatibilityClassifier,
@@ -51,6 +51,33 @@ class ScenarioSynthesisValidationError(ValueError):
 
 class ConstrainedScenarioSynthesisService:
     """Create bounded candidate sets and materialize validated analytical children."""
+
+    @staticmethod
+    def project_validated_atom_facts(*, facts: dict, provenance: dict, bindings: dict,
+                                     method_hash: str, scope: dict) -> None:
+        """Project already validated Method atoms as scoped analysis conditions.
+
+        Shared by materialization and causal revalidation. An action never
+        replaces the Item's activation state or inherits its project provenance.
+        """
+        for dimension, fact_key in {
+            "WHERE": "operating_scenario", "ROAD": "road_surface_conditions",
+            "EGO_ACTION": "ego_action", "EGO_DYNAMICS": "ego_dynamics",
+            "OBJECT": "scenario_object_atom", "TRAFFIC_PATTERN": "traffic_pattern",
+            "EGO_X_ROAD": "ego_road_relation",
+        }.items():
+            binding = bindings.get(dimension, {})
+            if not isinstance(binding, dict) or binding.get("resolution_status") != "RESOLVED":
+                continue
+            facts[fact_key] = binding.get("atom_label") or str(binding.get("method_value", ""))
+            atom = binding.get("atom_provenance", {})
+            provenance[fact_key] = {
+                "provenance": "SCENARIO_DEFINED", "origin": "SCENARIO_DEFINED", "approval": "FINALIZED",
+                "source_refs": [{"source_type": "method_contract", "source_id": method_hash,
+                                 "location": f"{atom.get('source_asset', '')}:{atom.get('source_rule', '')}",
+                                 "excerpt": str(binding.get("method_value", ""))}],
+                "applicable_scope": dict(scope), "selection_basis": "VALIDATED_ANALYTICAL_SCENARIO_ATOM",
+            }
 
     def __init__(self, method: MethodContract):
         self.method = method
@@ -354,6 +381,12 @@ class ConstrainedScenarioSynthesisService:
         upper_values = [item for item in (envelope[1], atom_range[1]) if item is not None]
         lower = max(lower_values) if lower_values else None
         upper = min(upper_values) if upper_values else None
+        if lower is not None and upper is not None and lower == upper:
+            semantics = atom.get("physical_semantics", {}).get("ego_dynamics", {})
+            if lower == atom_range[0] and semantics.get("min_inclusive") is False:
+                return False
+            if upper == atom_range[1] and semantics.get("max_inclusive") is False:
+                return False
         return lower is None or upper is None or lower <= upper
 
     @staticmethod
@@ -565,6 +598,23 @@ class ConstrainedScenarioSynthesisService:
             "active_option": active_option,
         }
 
+    def _location_legality(self, atom: dict[str, Any], query: dict[str, Any]) -> tuple[bool, str]:
+        """One context check for candidate selection and represented relations."""
+        locations = {value for value in self.ranker.atom_categories(atom)
+                     if value.startswith("LOCATION_")}
+        for key in ("project_location_categories", "parent_location_categories"):
+            allowed = set(query.get(key, []))
+            if locations and allowed and not locations & allowed:
+                return False, f"ODD_LOCATION_INCOMPATIBLE:{key}"
+        parent_environment = set(query.get("parent_environment", []))
+        atom_environment = explicit_environment(str(atom.get("label", "")))
+        if parent_environment and atom_environment and not parent_environment & atom_environment:
+            return False, "PARENT_ENVIRONMENT_INCOMPATIBLE"
+        if ("WHERE" in atom.get("filled_dimensions", [])
+                and query.get("project_location_categories") and not locations):
+            return False, "PROJECT_ODD_LOCATION_UNSUPPORTED"
+        return True, "SOURCE_LOCATION_COMPATIBLE"
+
     def global_compound_legality(
         self, *, atom: dict[str, Any], parent: ScenarioCandidate,
         project_context: dict[str, Any], query: dict[str, Any],
@@ -582,6 +632,21 @@ class ConstrainedScenarioSynthesisService:
             return False, "ODD_SLOPE_INCOMPATIBLE"
         if not self._weather_compatible(atom, project_context):
             return False, "ODD_WEATHER_INCOMPATIBLE"
+        # Location words constrain the entire logical Atom, including traffic
+        # and dynamics Atoms that do not declare a WHERE fill.
+        legal, reason = self._location_legality(atom, query)
+        if not legal:
+            return False, reason
+        slope_point = parent.facts.get("source_slope_pct")
+        slope = atom.get("physical_semantics", {}).get("slope", {})
+        if isinstance(slope_point, (int, float)) and isinstance(slope, dict) and slope:
+            bounds = slope.get("range_pct", [slope.get("pct_min"), slope.get("pct_max")])
+            lower, upper = bounds
+            if ((lower is not None and (slope_point < lower or (
+                    slope_point == lower and not slope.get("min_inclusive", True))))
+                    or (upper is not None and (slope_point > upper or (
+                    slope_point == upper and not slope.get("max_inclusive", True))))):
+                return False, "PARENT_SLOPE_INCOMPATIBLE"
         for dimension in filled:
             applicability = applicability_by_dimension.get(dimension)
             if (
@@ -651,6 +716,8 @@ class ConstrainedScenarioSynthesisService:
             if "TRAFFIC_PATTERN" in dimensions or not dimensions:
                 continue
             if not self._speed_compatible(atom, envelope):
+                continue
+            if not self._location_legality(atom, query)[0]:
                 continue
             categories = self.ranker.atom_categories(atom)
             for relation in sorted(relations & categories):
@@ -1163,6 +1230,7 @@ class ConstrainedScenarioSynthesisService:
             },
             "parent": {
                 "scenario_id": parent.scenario_id,
+                "source_operating_conditions": self.source_operating_conditions(parent),
                 "operating_mode": parent.operating_mode,
                 "semantic_fingerprint": parent.semantic_fingerprint,
                 "object_type": parent.facts.get("object_type", ""),
@@ -1240,8 +1308,10 @@ class ConstrainedScenarioSynthesisService:
                     100.0 * float(candidate.ranking_scores.get("source_evidence_tier", 0))
                     + float(candidate.ranking_scores.get("final_rank_score", 0))
                 )
-                candidate_scores[candidate.atom_id] = max(
-                    candidate_scores.get(candidate.atom_id, float("-inf")), score,
+                # Score the dimensions covered, not the number of separate
+                # atoms. Otherwise one compound atom loses to two weaker ones.
+                candidate_scores[candidate.atom_id] = (
+                    candidate_scores.get(candidate.atom_id, 0.0) + score
                 )
 
         locked_ids = tuple(dict.fromkeys(
@@ -1383,6 +1453,148 @@ class ConstrainedScenarioSynthesisService:
             if len(assignments) >= limit:
                 break
         return tuple(assignments)
+
+    def generate_candidates(
+        self, *, malfunction: dict[str, Any], parent: ScenarioCandidate,
+        project_context: dict[str, Any], function: dict[str, Any] | None = None,
+        include_source_boundaries: bool = True,
+        covered_primary_conditions: dict[str, str] | None = None,
+    ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
+        """Use the existing shortlist, coverage plan and validator before causality.
+
+        The selection is a bounded analysis condition, not a claim that the
+        project operates in every selected condition. The ordinary causal node
+        must validate each resulting world before risk assessment.
+        """
+        # Cover explicit source slope boundaries one axis at a time. This is
+        # not a seven-dimension product or a selection based on Exposure rank.
+        contexts = [parent]
+        if (include_source_boundaries and parent.facts.get("source_slope_pct") is None
+                and not parent.facts.get("road_surface_conditions")):
+            for text in dict.fromkeys(project_context.get("odd_road_surfaces", [])):
+                match = re.search(r"(上坡|下坡)\s*(\d+(?:\.\d+)?)\s*%", str(text))
+                if not match:
+                    continue
+                facts = deepcopy(parent.facts)
+                facts.update(road_surface_conditions=str(text), source_slope_pct=float(match[2]),
+                             source_slope_direction=match[1])
+                provenance = deepcopy(parent.fact_provenance)
+                for field in ("road_surface_conditions", "source_slope_pct", "source_slope_direction"):
+                    provenance[field] = {
+                        "provenance": "PROJECT_INPUT", "approval": "FINALIZED",
+                        "selection_basis": "EXPLICIT_PROJECT_ODD_BOUNDARY",
+                        "source_refs": deepcopy(project_context.get("sources", [])),
+                    }
+                contexts.append(replace(parent, facts=facts, fact_provenance=provenance))
+        children, audits = [], []
+        for context in contexts:
+            selected, audit = self._generate_context_candidates(
+                malfunction=malfunction, parent=context, project_context=project_context,
+                function=function,
+                covered_primary_conditions=covered_primary_conditions,
+            )
+            if not selected and len(contexts) > 1:
+                source_conditions = self.source_operating_conditions(context)
+                identity = hashlib.sha256(self._canonical_json({
+                    "parent": context.scenario_id, "source_conditions": source_conditions,
+                }).encode()).hexdigest()[:16].upper()
+                selected = [replace(context, scenario_id=f"SCN-SOURCE-{identity}",
+                    facts={**context.facts, "source_operating_conditions": source_conditions},
+                    status=ReviewStatus.PENDING, analysis_instance={
+                        **context.analysis_instance, "validation_status": "PENDING",
+                        "source_context_gap": audit["status"],
+                    })]
+            children.extend(selected)
+            audits.append(audit)
+        if len(audits) == 1:
+            return children, audits[0]
+        return children, {**audits[0], "source_contexts": audits,
+                          "status": "CANDIDATES_GENERATED" if children else "NO_VALID_COVERAGE_ASSIGNMENT",
+                          "scenario_ids": [child.scenario_id for child in children]}
+
+    def _generate_context_candidates(
+        self, *, malfunction: dict[str, Any], parent: ScenarioCandidate,
+        project_context: dict[str, Any], function: dict[str, Any] | None = None,
+        covered_primary_conditions: dict[str, str] | None = None,
+    ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
+        synthesis_input = self.build_input(
+            malfunction=malfunction, parent=parent, assessment={},
+            project_context=project_context, function=function,
+        )
+        assignments = self.logical_selection_assignments(synthesis_input, limit=1)
+        audit = {
+            "parent_scenario_id": parent.scenario_id,
+            "semantic_group_id": synthesis_input.semantic_group_id,
+            "provider_calls": 0,
+            "source_operating_conditions": self.source_operating_conditions(parent),
+            "coverage_plan": synthesis_input.coverage_plan.to_dict(),
+            "dimensions": [{
+                "dimension": item.dimension,
+                "applicability": item.applicability.to_dict(),
+                "catalog_size": item.catalog_size,
+                "hard_filtered_pool_size": item.hard_filtered_pool_size,
+                "candidate_atom_ids": [candidate.atom_id for candidate in item.candidates],
+                "generation_status": item.generation_status,
+                "hard_filter_diagnostics": item.hard_filter_diagnostics,
+            } for item in synthesis_input.dimension_candidate_sets],
+        }
+        if not assignments:
+            return [], {**audit, "status": "NO_VALID_COVERAGE_ASSIGNMENT"}
+        # Reuse the exact validation boundary used for bounded semantic
+        # selection; no parallel atom/constraint or scoring implementation.
+        payload = {"variants": [{
+            "coverage_label": intent["coverage_label"],
+            "selected_atom_ids": list(atom_ids),
+            "semantic_rationale": "Deterministic structured shortlist and coverage plan; causal applicability remains to be validated.",
+            "context_refs": ["PROJECT.ODD", "MF.description", "MF.functional_effect", "METHOD.scenario_atom_catalog"],
+        } for intent, atom_ids in zip(synthesis_input.coverage_plan.variant_intents, assignments[0])]}
+        selections = self.validate_provider_payload(synthesis_input, payload)
+        children, deferred = [], []
+        primary = synthesis_input.coverage_plan.primary_variation_dimensions
+        for selection in selections:
+            selection = replace(selection, selection_authority="DETERMINISTIC_COVERAGE_PLAN")
+            child, _ = self.materialize(
+                synthesis_input=synthesis_input, assessment=selection,
+                parent=parent, provider_evidence={
+                    "provider_calls": 0, "selection_authority": selection.selection_authority,
+                },
+            )
+            primary_key = self._canonical_json({
+                dimension: selection.selected_atoms.get(dimension, ()) for dimension in primary
+            })
+            if (covered_primary_conditions is not None and children
+                    and primary_key in covered_primary_conditions):
+                deferred.append({
+                    "scenario_id": child.scenario_id,
+                    "selected_atoms": selection.selected_atoms,
+                    "primary_variant_representative": covered_primary_conditions[primary_key],
+                    "source_context_representative": children[0].scenario_id,
+                    "status": "COMBINATION_NOT_EVALUATED",
+                    "risk_equivalence_proven": False,
+                })
+                continue
+            children.append(child)
+            if covered_primary_conditions is not None:
+                covered_primary_conditions.setdefault(primary_key, child.scenario_id)
+        return children, {**audit, "status": "CANDIDATES_GENERATED",
+                          "planned_pool_candidate_count": len(selections),
+                          "deferred_context_variants": deferred,
+                          "scenario_ids": [c.scenario_id for c in children]}
+
+    @staticmethod
+    def source_operating_conditions(parent: ScenarioCandidate) -> dict[str, Any]:
+        """Preserve source scopes that an Atom label cannot fully express."""
+        existing = parent.facts.get("source_operating_conditions")
+        if isinstance(existing, dict):
+            return deepcopy(existing)
+        return {key: value for key, value in {
+            "operating_scenario": parent.facts.get("operating_scenario") or parent.operating_scenario,
+            "road_surface_conditions": parent.facts.get("road_surface_conditions", ""),
+            "weather_conditions": parent.facts.get("weather_conditions", ""),
+            "source_slope_pct": parent.facts.get("source_slope_pct"),
+            "source_slope_direction": parent.facts.get("source_slope_direction"),
+            "permitted_road_types": parent.facts.get("source_road_type_scope"),
+        }.items() if value is not None and value != ""}
 
     def expand_logical_atom_ids(
         self, synthesis_input: ScenarioSynthesisInput,
@@ -1930,6 +2142,7 @@ class ConstrainedScenarioSynthesisService:
             "method_contract_hash": synthesis_input.method_contract_hash,
             "malfunction_id": synthesis_input.malfunction_id,
             "parent_scenario_id": synthesis_input.parent_scenario_id,
+            "source_operating_conditions": self.source_operating_conditions(parent),
             "hazardous_event_id": synthesis_input.hazardous_event_id,
             "selected_atoms": {
                 key: list(value) for key, value in sorted(assessment.selected_atoms.items())
@@ -1983,6 +2196,7 @@ class ConstrainedScenarioSynthesisService:
                     .get(dimension, {}).get("project_value", "")
                 ),
                 "method_value": f"{candidate.atom_id} | {candidate.label}",
+                "atom_label": candidate.label,
                 "binding_status": (
                     "REFINED" if refined else
                     "EXACT" if not decision.refinable else "ANALYTICAL"
@@ -2040,6 +2254,7 @@ class ConstrainedScenarioSynthesisService:
             "scenario_model.scenario_atom_catalog", "bounded Scenario atom selection",
         )
         facts = deepcopy(parent.facts)
+        facts["source_operating_conditions"] = self.source_operating_conditions(parent)
         facts["method_scenario_dimensions"] = bindings
         contextual_speed = deepcopy(synthesis_input.contextual_speed)
         if contextual_speed:
@@ -2051,22 +2266,10 @@ class ConstrainedScenarioSynthesisService:
                 "unit": "km/h",
             }
         facts["scenario_atom_ids"] = list(dict.fromkeys(
-            selected_candidates[atom_id].canonical_atom_id
+            selected_candidates[atom_id].atom_id
             for dimension in self.dimensions
             for atom_id in assessment.selected_atoms.get(dimension, ())
         ))
-        for dimension, fact_key in {
-            "WHERE": "operating_scenario",
-            "ROAD": "road_surface_conditions",
-            "EGO_ACTION": "vehicle_state",
-            "EGO_DYNAMICS": "ego_dynamics",
-            "OBJECT": "scenario_object_atom",
-            "TRAFFIC_PATTERN": "traffic_pattern",
-            "EGO_X_ROAD": "ego_road_relation",
-        }.items():
-            atom_ids = assessment.selected_atoms.get(dimension, ())
-            if atom_ids:
-                facts[fact_key] = selected_candidates[atom_ids[0]].label
         scope = {
             "malfunction_id": synthesis_input.malfunction_id,
             "scenario_id": child_id,
@@ -2074,6 +2277,21 @@ class ConstrainedScenarioSynthesisService:
             "hazardous_event_id": synthesis_input.hazardous_event_id,
         }
         provenance = deepcopy(parent.fact_provenance)
+        source_metadata = [parent.fact_provenance.get(key, {}) for key in (
+            "operating_scenario", "road_surface_conditions", "weather_conditions", "source_road_type_scope",
+        ) if parent.facts.get(key)]
+        provenance["source_operating_conditions"] = {
+            "provenance": "PROJECT_INPUT",
+            "approval": "FINALIZED" if source_metadata and all(
+                item.get("approval") == "FINALIZED" for item in source_metadata
+            ) else "PENDING",
+            "source_refs": [ref for item in source_metadata for ref in item.get("source_refs", [])],
+            "selection_basis": "PRESERVED_PARENT_OPERATING_CONDITIONS",
+        }
+        self.project_validated_atom_facts(
+            facts=facts, provenance=provenance, bindings=bindings,
+            method_hash=synthesis_input.method_contract_hash, scope=scope,
+        )
         if contextual_speed.get("status") == "RESOLVED":
             provenance["ego_speed_constraint"] = {
                 "provenance": FactProvenance.PROJECT_INPUT.value,

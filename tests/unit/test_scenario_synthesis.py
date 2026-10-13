@@ -1051,10 +1051,10 @@ def test_validated_analytical_atom_facts_are_visible_to_causal_revalidation(meth
         projected,
     )
     assert "SCN.road_surface_conditions" in selection.selected_refs
-    assert "SCN.vehicle_state" in selection.selected_refs
+    assert "SCN.ego_action" in selection.selected_refs
     assert "SCN.ego_road_relation" not in selection.selected_refs
     assert "SCN.operating_scenario" in selection.selected_refs
-    assert "SCN.vehicle_state" in selection.selected_refs
+    assert "SCN.ego_action" in selection.selected_refs
     assert "SCN.ego_dynamics" in selection.selected_refs
     assert "SCN.scenario_object_atom" in selection.selected_refs
 

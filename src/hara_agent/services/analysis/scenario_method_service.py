@@ -392,6 +392,7 @@ class ScenarioMethodService:
         self, malfunction: MalfunctionCandidate, candidates: list[ScenarioCandidate],
         project_facts: ItemDefinitionFacts | None = None,
         *, function: FunctionDefinition | None = None,
+        expand_driver_configurations: bool = True,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         """Create isolated M×template-option scenarios from strong matches only."""
         candidates, selection = MalfunctionSituationSelectionService(self.method).select(
@@ -412,6 +413,8 @@ class ScenarioMethodService:
         }
         if not result.injectable:
             audit["selection_mode"] = "BASE_CANDIDATES_ONLY"
+            if not expand_driver_configurations:
+                return list(candidates), audit
             return self._with_driver_configurations(
                 malfunction, list(candidates), audit, project_facts,
             )
@@ -613,6 +616,8 @@ class ScenarioMethodService:
             for option in audit["options"]
         )
         audit["conflict_count"] = sum(bool(option["conflicts"]) for option in audit["options"])
+        if not expand_driver_configurations:
+            return instances, audit
         return self._with_driver_configurations(
             malfunction, instances, audit, project_facts,
         )

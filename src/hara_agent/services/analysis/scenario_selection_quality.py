@@ -30,8 +30,8 @@ _CATEGORY_MARKERS: dict[str, tuple[str, ...]] = {
         "parking", "park", "slow driving", "parking maneuver", "parking-in",
         "parking-out", "park-in", "park-out", "泊车", "泊入", "泊出",
     ),
-    "LOCATION_PARKING": ("parking", "car park", "garage", "parkhaus", "停车场", "车库"),
-    "LOCATION_MOTORWAY": ("motorway", "autobahn", "高速公路"),
+    "LOCATION_PARKING": ("parking", "car park", "garage", "parkhaus", "parkplatz", "停车场", "车库", "车位"),
+    "LOCATION_MOTORWAY": ("motorway", "highway", "autobahn", "高速公路"),
     "LOCATION_EXPRESSWAY": ("expressway", "快速路"),
     "LOCATION_CITY": ("city road", "city traffic", "innerstädt", "城市道路"),
     "LOCATION_RURAL": ("rural road", "country road", "landstraße", "乡村道路"),
@@ -40,6 +40,7 @@ _CATEGORY_MARKERS: dict[str, tuple[str, ...]] = {
     "ACTION_STOP": ("stopping", "stop", "braking", "deceleration", "制动", "停止", "停滞"),
     "ACTION_ACCELERATE": ("acceleration", "accelerate", "propulsion", "加速", "驱动"),
     "ACTION_TURN": ("steering", "turn", "lateral", "转向", "横向"),
+    "ACTION_OVERTAKE": ("overtaking", "overtake", "超车"),
     "ACTION_ABORT": (
         "abort", "cancel", "cancellation", "takeover", "take-over",
         "control handover", "handover", "hand-over",
@@ -105,6 +106,19 @@ def _operating_action_categories(text: str) -> set[str]:
     )):
         categories.remove("ACTION_PARK")
     return categories
+
+
+def explicit_environment(text: str) -> set[str]:
+    """Read explicit enclosure qualifiers, not an inferred location alias.
+
+    A generic label such as Parkplatz / Parkhaus / Garage stays unqualified.
+    These are language features only; no Atom IDs or scenario rules live here.
+    """
+    folded = text.casefold()
+    return {name for name, terms in {
+        "INDOOR": ("室内", "underground", "multi-story", "multistorey", "parking in garage"),
+        "OUTDOOR": ("室外", "outdoor", "open-air", "open air"),
+    }.items() if any(term in folded for term in terms)}
 
 
 def normalize_object_category(value: Any) -> str:
@@ -316,6 +330,8 @@ class ScenarioSemanticQueryBuilder:
                 "HE.hazardous_event", "CAUSAL.summary",
             )
         }, _ROAD_CATEGORIES)
+        include({"PARENT.facts.road_surface_conditions": facts.get("road_surface_conditions", "")},
+                _ROAD_CATEGORIES)
 
         for field in ("object_type", "road_user_type"):
             raw_object = facts.get(field, "")
@@ -414,6 +430,7 @@ class ScenarioSemanticQueryBuilder:
             # separately as ranking context and must never widen that authority.
             "project_location_categories": sorted(project_location_categories),
             "parent_location_categories": sorted(parent_location_categories),
+            "parent_environment": sorted(explicit_environment(parent_location_text)),
             "location_categories": sorted(
                 project_location_categories | parent_location_categories
             ),
@@ -1060,8 +1077,8 @@ class ScenarioCandidateRanker:
         dynamics = semantics.get("ego_dynamics", {})
         dynamics = dynamics if isinstance(dynamics, dict) else {}
         if str(dynamics.get("direction", "")).strip().casefold() == "reverse":
-            for category in _ACTION_CATEGORIES:
-                sources.pop(category, None)
+            # Direction refines an action; reversing can still be a parking
+            # maneuver. Do not erase the catalog's explicit action context.
             sources["ACTION_REVERSE"] = "physical_semantics.ego_dynamics.direction"
         traffic_value = semantics.get("traffic_relation", "")
         if traffic_value:
@@ -1113,6 +1130,11 @@ class ScenarioCandidateRanker:
             bool(categories & road) if dimension in {"ROAD", "EGO_X_ROAD"} else
             False
         )
+        if dimension == "WHERE":
+            category_context_score += float(bool(
+                explicit_environment(str(atom.get("label", "")))
+                & set(query.get("parent_environment", []))
+            ))
         label = str(atom.get("label", ""))
         failure_tokens = set(_tokens(str(query.get("failure_type", ""))))
         guideword_tokens = set(_tokens(str(query.get("guideword", ""))))

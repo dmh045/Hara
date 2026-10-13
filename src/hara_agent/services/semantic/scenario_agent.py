@@ -20,6 +20,7 @@ from hara_agent.models import (
     ScenarioCandidate,
     ScenarioFeasibilityAssessment,
 )
+from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 
 from .parsing import parse_confidence
 from .scenario_contract import RISK_DIMENSION_VALUES
@@ -61,7 +62,7 @@ class ScenarioRepairBoundaryError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v13"
+    PROMPT_VERSION = "scenario-feasibility-v16-source-scope"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     SYSTEM_PROMPT = """ROLE
@@ -92,6 +93,7 @@ OUTPUT PRINCIPLES
 
 ATOMIC SCENARIO AND FACT PRECEDENCE
 Each Scenario is one atomic, internally consistent world state. Scenario labels and names are descriptive only and MUST NOT override structured facts. Structured explicit facts take precedence over approved derived facts, natural-language summaries, and labels. Do not infer a replacement numeric or state value from a Scenario name; in particular, a label containing "standstill" does not make ego_speed_kph zero when the structured field says otherwise.
+source_operating_conditions preserves the source location and road context. permitted_road_types lists allowed alternatives, not simultaneously selected geometry and not proven equivalent conditions. Check whether their differences change the causal mechanism; do not claim all alternatives are covered by one example. selected_method_conditions refines the source world and must not replace or widen it. These context summaries do not add evidence references beyond the supplied fact registry.
 
 BATCH INDEPENDENCE
 Each assessment is an independent engineering classification. Do NOT compare scenarios with one another. Do NOT use another Scenario in the same batch as evidence. Do NOT normalize one Scenario relative to another, assume a progression or severity ladder from batch order, or carry facts between Scenarios. For each assessment use only the shared Malfunction facts, that Scenario's own explicit facts, and approved project or method facts. The Malfunction baseline is never another Scenario in the current batch; do not fabricate an unavailable baseline.
@@ -126,14 +128,31 @@ The complete EvidenceRegistry is retained by the deterministic validator but is 
 Return exactly one JSON object matching the requested schema. Do not use Markdown. Do not wrap the response in ```json or any code fence. Do not add explanatory text before or after the JSON. The first non-whitespace character must be { and the last non-whitespace character must be }. All strings must be valid JSON strings. Do not include comments or trailing commas. The top-level object must remain {"assessments": [...]}.
 """
 
+    SYSTEM_PROMPT += """
+
+CAUSAL DEPENDENCIES FOR SAFE REUSE
+Return optional dependency_metadata with complete (boolean), causal_evidence_fields,
+physical_feasibility_fields, scenario_identity_fields, noninterference_fields (arrays
+of Scenario fact field names), and child_subset_refinement (a reason).
+Only declare complete=true if all inputs to feasibility, function applicability and
+M→B→I→H are enumerated. Driver position may be noninterfering only if changing it
+does not change activation, triggers, operation, interaction or the existence of the
+hazard; effects confined to downstream C may be evaluated separately. State the
+engineering reason in child_subset_refinement. Absence from evidence_refs alone is
+not proof of irrelevance. If uncertain return complete=false. Do not copy conclusions
+between scenarios; the deterministic scheduler validates reuse separately.
+"""
+
     def __init__(
         self, client: LLMClient, *,
         batch_max_chars: int | None = None,
         batch_max_items: int | None = None,
         max_split_depth: int | None = None,
         causal_evidence_budget: int | None = None,
+        response_checkpoint_dir: Path | None = None,
     ):
         self.client = client
+        self.response_checkpoint = ResponseCheckpoint(response_checkpoint_dir) if response_checkpoint_dir else None
         self.prompt_version = self.PROMPT_VERSION
         self.assessment_contract_version = SCENARIO_ASSESSMENT_CONTRACT_VERSION
         self.schema_name = "ScenarioFeasibilityAssessmentList"
@@ -155,6 +174,10 @@ Return exactly one JSON object matching the requested schema. Do not use Markdow
             else getattr(config, "scenario_max_split_depth", 8)
         )
         self.provider_max_tokens = self._provider_max_tokens()
+
+    def _complete_json(self, request):
+        return (self.response_checkpoint.complete(self.client, request)
+                if self.response_checkpoint else self.client.complete_json(request))
 
     def _provider_max_tokens(self) -> int:
         configured = int(getattr(
@@ -201,6 +224,7 @@ Return exactly one JSON object matching the requested schema. Do not use Markdow
             "adaptive_split_reasons": {},
             "initial_batch_provider_calls": 0,
             "actual_llm_calls": 0,
+            "response_checkpoint_hits": 0,
             "retry_calls": 0,
             "output_limit_count": 0,
             "timeout_count": 0,
@@ -288,6 +312,7 @@ Return exactly one JSON object matching the requested schema. Do not use Markdow
             "leaf_batch_count": len(stats["leaf_items"]),
             "llm_calls": stats["actual_llm_calls"],
             "actual_llm_calls": stats["actual_llm_calls"],
+            "response_checkpoint_hits": stats["response_checkpoint_hits"],
             "provider_calls_total": stats["actual_llm_calls"],
             "initial_batch_provider_calls": stats["initial_batch_provider_calls"],
             "item_repair_calls": stats["item_contract_repair_count"],
@@ -421,7 +446,9 @@ Return exactly one JSON object matching the requested schema. Do not use Markdow
         if split_path == "root":
             stats["initial_batch_provider_calls"] += 1
         try:
-            response = self.client.complete_json(request)
+            response = self._complete_json(request)
+            if response.usage.get("response_checkpoint_hit") and split_path == "root":
+                stats["initial_batch_provider_calls"] -= 1
         except (LLMOutputLimitError, LLMTimeoutError) as exc:
             if isinstance(exc, LLMOutputLimitError):
                 reason = "output_limit"
@@ -632,7 +659,7 @@ Return exactly one JSON object matching the requested schema. Do not use Markdow
         repair_raw_assessment = None
         repair_parsed_assessment = None
         try:
-            response = self.client.complete_json(request)
+            response = self._complete_json(request)
         except RECOVERABLE_REPAIR_PROVIDER_ERRORS as repair_error:
             return self._contain_repair_provider_failure(
                 malfunction=malfunction,
@@ -1443,6 +1470,9 @@ Return exactly one JSON object matching the requested schema. Do not use Markdow
         request_ids: list[str],
     ) -> None:
         usage = response.usage
+        if usage.get("response_checkpoint_hit"):
+            stats["actual_llm_calls"] -= 1
+            stats["response_checkpoint_hits"] = stats.get("response_checkpoint_hits", 0) + 1
         stats["actual_llm_calls"] += int(usage.get("format_retry_calls", 0))
         for metric in (
             "json_contract_errors", "format_retry_calls", "format_retry_successes",
@@ -1650,7 +1680,25 @@ Return exactly one JSON object matching the requested schema. Do not use Markdow
             risk_dimension_changes=list(item.get("risk_dimension_changes", [])),
             evidence_contract_version=SCENARIO_ASSESSMENT_CONTRACT_VERSION,
             causal_assessment=causal_assessment,
+            dependency_metadata=ScenarioFeasibilityAgent._dependencies(item, scenario),
         )
+
+    @staticmethod
+    def _dependencies(item: dict, scenario: ScenarioCandidate) -> dict:
+        """Invalid optional reuse metadata never upgrades or rejects causality."""
+        value = item.get("dependency_metadata", {})
+        fields = ("causal_evidence_fields", "physical_feasibility_fields",
+                  "scenario_identity_fields", "noninterference_fields")
+        allowed = set(scenario.facts) | {"driver_position", "allowed_driver_position", "driver_in_vehicle"}
+        if (not isinstance(value, dict) or value.get("complete") is not True
+                or not isinstance(value.get("child_subset_refinement"), str)
+                or not value["child_subset_refinement"].strip()
+                or any(not isinstance(value.get(key), list) or any(
+                    not isinstance(field, str) or field not in allowed for field in value[key]
+                ) for key in fields)):
+            return {}
+        return {"complete": True, "child_subset_refinement": value["child_subset_refinement"],
+                **{key: sorted(set(value[key])) for key in fields}}
 
     def _validate(self, assessments: list[ScenarioFeasibilityAssessment], expected_ids: list[str]):
         actual = [item.scenario_id for item in assessments]

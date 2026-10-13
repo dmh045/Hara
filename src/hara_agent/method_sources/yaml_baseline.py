@@ -39,10 +39,59 @@ class YamlBaselineCompileError(ValueError):
     pass
 
 
+def _explicit_label_speed_range(label: str) -> dict[str, Any]:
+    """Compile an explicit v inequality when no structured speed spec exists.
+
+    Multiple different expressions are not resolved by precedence. Numeric
+    values come exclusively from the governed atom label, never its ID.
+    """
+    text = label.replace("≤", "<=").replace("≥", ">=")
+    number = r"(\d+(?:\.\d+)?)"
+    expressions = []
+    spans = []
+    for match in re.finditer(number + r"\s*(<=|<)\s*v\s*(<=|<)\s*" + number + r"\s*(?:kph|km/h)", text, re.I):
+        lo, lo_op, hi_op, hi = match.groups()
+        expressions.append((float(lo), float(hi), lo_op == "<=", hi_op == "<="))
+        spans.append(match.span())
+    for match in re.finditer(r"\bv\s*(<=|>=|<|>)\s*" + number + r"\s*(?:kph|km/h)", text, re.I):
+        if any(start <= match.start() < end for start, end in spans):
+            continue
+        op, value = match.groups()
+        expressions.append((float(value), None, op == ">=", True) if op.startswith(">") else (None, float(value), True, op == "<="))
+    unique = set(expressions)
+    if len(unique) != 1:
+        return {}
+    lo, hi, lo_closed, hi_closed = unique.pop()
+    return {"v_range_kph": [lo, hi], "min_inclusive": lo_closed,
+            "max_inclusive": hi_closed, "source": "EXPLICIT_ATOM_LABEL_INEQUALITY"}
+
+
+def _explicit_label_slope_range(label: str) -> dict[str, Any]:
+    """Compile unambiguous percentage bounds from a governed slope label."""
+    if not re.search(r"slope|hang|mountain|坡", label, re.I):
+        return {}
+    text = label.replace("≤", "<=").replace("≥", ">=")
+    number = r"(\d+(?:\.\d+)?)"
+    ranges = re.findall(number + r"\s*[-–]\s*" + number + r"\s*%", text)
+    inequalities = re.findall(r"(?:slope|hang|mountain)\s*(<=|>=|<|>)\s*" + number + r"\s*%", text, re.I)
+    if len(ranges) + len(inequalities) != 1:
+        return {}
+    if ranges:
+        lo, hi = map(float, ranges[0])
+        if lo > hi:
+            return {}
+        bounds = {"range_pct": [lo, hi]}
+    else:
+        op, value = inequalities[0]
+        bounds = ({"pct_min": float(value), "min_inclusive": op == ">="} if op.startswith(">")
+                  else {"pct_max": float(value), "max_inclusive": op == "<="})
+    return {**bounds, "unit": "percent", "source": "EXPLICIT_ATOM_LABEL_RANGE"}
+
+
 class YamlBaselineCompiler:
     """Compile a governed YAML bundle into the production MethodContract."""
 
-    compiler_version = "yaml-baseline-compiler-v1"
+    compiler_version = "yaml-baseline-compiler-v3"
 
     @staticmethod
     def _binding(role: TemplateRole, source_hash: str, location: str) -> RoleBinding:
@@ -597,6 +646,8 @@ class YamlBaselineCompiler:
                 spec.get("ego_dynamics", {})
                 if isinstance(spec.get("ego_dynamics", {}), dict) else {}
             )
+            if not any(key in dynamics for key in ("v_range_kph", "v_min_kph", "v_max_kph")):
+                dynamics = {**dynamics, **_explicit_label_speed_range(str(item.get("label", "")))}
             slope = compound.get("slope", {})
             slope = slope if isinstance(slope, dict) else {}
             slope = slope or (
@@ -604,6 +655,8 @@ class YamlBaselineCompiler:
                 if isinstance(spec.get("slope", {}), dict) else {}
             )
             slope = dict(slope)
+            if not slope:
+                slope = _explicit_label_slope_range(str(item.get("label", "")))
             if "pct_min" in slope and "min_inclusive" not in slope:
                 minimum = str(slope["pct_min"])
                 label = str(item.get("label", ""))

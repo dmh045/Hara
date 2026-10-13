@@ -11,7 +11,7 @@ from hara_agent.contracts import (
     FactOrigin, FactType, RequiredFactSpec, RiskFactResolution,
     RiskFactResolutionStatus,
 )
-from hara_agent.infrastructure.llm import LLMClient, LLMRequest
+from hara_agent.infrastructure.llm import LLMClient, LLMRequest, LLMSchemaContractError
 from hara_agent.models import (
     FactProvenance, MalfunctionCandidate, ReviewStatus, RiskFact,
     ScenarioCandidate, SourceRef, evaluate_risk_eligibility_payload,
@@ -439,11 +439,19 @@ class ScenarioRiskFactAgent:
                     "constraints": list(spec.constraints),
                 })
         request = self._request(fact_requests, evidence, coverage_repair=False)
-        response = self.client.complete_json(request)
-        facts, seen, not_found, validation_failures = self._parse_results(
-            response.data, expected, spec_by_type, registry,
-            allowed_evidence_ids,
-        )
+        response = None
+        try:
+            response = self.client.complete_json(request)
+        except LLMSchemaContractError as error:
+            # An invalid envelope has no validated results. Use the same single
+            # coverage repair as missing/invalid result entries.
+            facts, seen, not_found = [], set(), set()
+            validation_failures = [f"primary response envelope: {error}"]
+        else:
+            facts, seen, not_found, validation_failures = self._parse_results(
+                response.data, expected, spec_by_type, registry,
+                allowed_evidence_ids,
+            )
         missing = sorted(expected - seen)
         repair_response = None
         if missing:
@@ -459,25 +467,30 @@ class ScenarioRiskFactAgent:
             repair_request = self._request(
                 repair_requests, evidence, coverage_repair=True,
             )
-            repair_response = self.client.complete_json(repair_request)
-            repaired, repair_seen, repair_not_found, repair_failures = self._parse_results(
-                repair_response.data, missing_set, spec_by_type, registry,
-                allowed_evidence_ids,
-            )
-            facts.extend(repaired)
-            seen.update(repair_seen)
-            not_found.update(repair_not_found)
-            validation_failures.extend(repair_failures)
+            try:
+                repair_response = self.client.complete_json(repair_request)
+            except LLMSchemaContractError as error:
+                validation_failures.append(f"repair response envelope: {error}")
+            else:
+                repaired, repair_seen, repair_not_found, repair_failures = self._parse_results(
+                    repair_response.data, missing_set, spec_by_type, registry,
+                    allowed_evidence_ids,
+                )
+                facts.extend(repaired)
+                seen.update(repair_seen)
+                not_found.update(repair_not_found)
+                validation_failures.extend(repair_failures)
         unresolved = sorted(expected - seen)
+        audit_response = response or repair_response
         return facts, {
-            "model": response.model,
-            "request_id": response.request_id,
+            "model": audit_response.model if audit_response else "",
+            "request_id": audit_response.request_id if audit_response else "",
             "usage": {
-                "primary": response.usage,
+                "primary": response.usage if response else {},
                 "repair": repair_response.usage if repair_response else {},
             },
-            "coverage_repair_count": int(repair_response is not None),
-            "llm_call_count": 1 + int(repair_response is not None),
+            "coverage_repair_count": int(bool(missing)),
+            "llm_call_count": 1 + int(bool(missing)),
             "validation_failure_count": len(validation_failures),
             "validation_failures": validation_failures,
             "unresolved_contract_count": len(unresolved),

@@ -35,6 +35,10 @@ _SCENARIO_FACT_KEYS = (
     "road_user_type", "collision_type", "relative_distance_m", "WHERE", "ROAD", "EGO_ACTION",
     "EGO_X_ROAD", "TRAFFIC_PATTERN", "EGO_DYNAMICS", "OBJECT",
     "method_scenario_dimensions", "scenario_atom_ids",
+    "ego_action", "ego_dynamics", "ego_road_relation", "traffic_pattern", "scenario_object_atom",
+    "ego_longitudinal_direction", "object_longitudinal_direction", "relative_distance", "relative_speed_kph",
+    "driver_position", "allowed_driver_position", "driver_in_vehicle", "harm_mechanism",
+    "source_operating_conditions", "source_road_type_scope", "source_slope_pct", "source_slope_direction",
 )
 _SCENARIO_CONTEXT_KEYS = (
     "ego_speed_kph", "speed_resolution", "speed_constraint",
@@ -143,7 +147,7 @@ def _scenario_candidate_projection(
                 _compact_source_refs(item[name])
                 if name == "source_refs" else _compact_review_value(item[name])
             )
-            for name in ("provenance", "approval", "resolution_status", "source_refs")
+            for name in ("provenance", "origin", "approval", "resolution_status", "source_refs", "selection_basis", "applicable_scope")
             if name in item
         }
         if "sources" in item and "source_refs" not in compact_provenance[key]:
@@ -154,7 +158,7 @@ def _scenario_candidate_projection(
         if item.get("source_type") == "method_contract" and item.get("source_id")
     })
     return {
-        "projection_version": "scenario-review-v3",
+        "projection_version": "scenario-review-v4",
         "scenario_id": raw.get("scenario_id", ""),
         "semantic_fingerprint": raw.get("semantic_fingerprint", ""),
         "operating_scenario": raw.get("operating_scenario", ""),
@@ -192,10 +196,17 @@ def _expected_candidate_count(
         item for item in candidates
         if malfunction_id in item.get("generated_for_malfunction_ids", [])
     ]
+    p6_instances = [item for item in scoped if item.get("analysis_instance", {}).get("p6_generation")]
+    if p6_instances:
+        return len(p6_instances)
     analytical = [
         item for item in scoped
         if isinstance(item.get("analysis_instance"), dict)
-        and item["analysis_instance"].get("origin") == "SCENARIO_DEFINED"
+        and (
+            item["analysis_instance"].get("origin") == "SCENARIO_DEFINED"
+            # Driver-only branches have no FM-template origin marker.
+            or item["analysis_instance"].get("driver_configuration_branch")
+        )
     ]
     return len(analytical or scoped or candidates)
 
@@ -627,11 +638,13 @@ class ReviewArtifactWriter:
                     "COMPLETED" if expected > 0 and observed >= expected else
                     "PARTIAL"
                 )
+            stage = getattr(getattr(state, "stage", None), "value", "")
             payload = {
                 "run_id": self.run_id,
-                "stage": getattr(getattr(state, "stage", None), "value", ""),
+                "stage": stage,
                 "status": status or (
-                    "COMPLETED" if getattr(getattr(state, "stage", None), "value", "") == "complete"
+                    "COMPLETED" if stage == "complete"
+                    else "PENDING_REVIEW" if stage == "quality_gate" and not state.can_publish
                     else "IN_PROGRESS"
                 ),
                 "function_count": len(functions),

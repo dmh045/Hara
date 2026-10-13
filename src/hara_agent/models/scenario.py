@@ -59,6 +59,7 @@ class ScenarioFeasibilityAssessment:
     risk_dimension_changes: list[dict[str, Any]] = field(default_factory=list)
     evidence_contract_version: str = ""
     causal_assessment: "ScenarioCausalAssessment | None" = None
+    dependency_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def retain(self) -> bool:
@@ -137,6 +138,7 @@ class ScenarioFeasibilityAssessment:
                 value.get("evidence_contract_version", "")
             ),
             causal_assessment=causal_assessment,
+            dependency_metadata=dict(value.get("dependency_metadata", {})),
         )
 
     @classmethod
@@ -197,6 +199,10 @@ def evaluate_risk_eligibility(
     elif assessment.status is not ReviewStatus.FINALIZED or causal.review_status is not ReviewStatus.FINALIZED:
         status = RiskEligibilityStatus.NOT_FINALIZED
         reasons = ("ASSESSMENT_OR_CAUSAL_REVIEW_NOT_FINALIZED",)
+    elif causal.status.value in {"PENDING_CAUSAL_EVIDENCE", "PENDING_BREAKPOINT"}:
+        # An unresolved causal contract cannot establish an exclusion.
+        status = RiskEligibilityStatus.PENDING_FEASIBILITY
+        reasons = ("CAUSAL_ASSESSMENT_PENDING", causal.status.value)
     elif not causal.is_validated:
         status = RiskEligibilityStatus.INELIGIBLE_CAUSAL
         reasons = ("CAUSAL_NOT_VALIDATED", causal.status.value)

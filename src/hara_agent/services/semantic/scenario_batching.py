@@ -65,6 +65,17 @@ def _scenario_json(
             # Compatibility field: this is only the selected causal subset,
             # never the complete Scenario facts map.
             "facts": selected_facts,
+            "driver_configuration_for_reuse": {
+                field: scenario.facts[field]
+                for field in ("driver_position", "allowed_driver_position", "driver_in_vehicle")
+                if field in scenario.facts
+            },
+            "source_operating_conditions": scenario.facts.get("source_operating_conditions", {}),
+            "selected_method_conditions": {
+                dimension: binding.get("atom_label") or binding.get("method_value", "")
+                for dimension, binding in scenario.facts.get("method_scenario_dimensions", {}).items()
+                if isinstance(binding, dict) and binding.get("resolution_status") == "RESOLVED"
+            },
             "causal_evidence_view": selection.compact_view,
             **(
                 {
@@ -122,6 +133,7 @@ def _prompt_parts(
         "confidence必须为0.0到1.0范围内的JSON number；禁止使用high、medium、low等文字等级，"
         "禁止字符串数字、百分数、null或缺失。"
         "不要返回rationale；可读说明由Python根据已验证的结构化因果字段确定性生成。"
+        "允许附加dependency_metadata，按系统提示说明因果/适用性依赖和已证明无关的字段；无法证明时complete=false。"
     )
     return prefix, suffix
 

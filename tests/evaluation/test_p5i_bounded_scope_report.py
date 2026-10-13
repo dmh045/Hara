@@ -77,7 +77,7 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
         assert len(inventory) == 24
         assert len({row[headers["Scenario ID"]] for row in inventory}) == 24
         assert Counter(row[headers["Causal Disposition"]] for row in inventory) == {
-            "RETAINED_FOR_RISK": 13, "CAUSAL_GAP": 11,
+            "RETAINED_FOR_RISK": 13, "EXCLUDED_FROM_RISK": 11,
         }
         assert Counter(row[headers["Risk Scoring Invoked"]] for row in inventory) == {
             True: 13, False: 11,

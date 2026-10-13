@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from itertools import islice, product
 from typing import Any
 
 from hara_agent.contracts import CalculationStatus, MethodContract
@@ -71,8 +72,10 @@ class ExposureInputReadinessService:
 
     @staticmethod
     def _binding_atom_id(binding: Mapping[str, Any]) -> str:
+        # The selected catalog record is the scoring identity. A V1/V2
+        # cross-reference does not replace that record in scenario_atom_ids.
         return str(
-            binding.get("canonical_atom_id") or binding.get("atom_id") or ""
+            binding.get("atom_id") or binding.get("canonical_atom_id") or ""
         ).strip()
 
     @staticmethod
@@ -107,6 +110,16 @@ class ExposureInputReadinessService:
             atom_id for atom_id in candidates
             if atom_id in self.by_id and dimension in self.by_id[atom_id].dimensions
         ))
+
+    def _compatible_completion(self, atom_ids: list[str]) -> bool:
+        """A compound atom cannot overwrite a different selected dimension."""
+        dimensions: dict[str, str] = {}
+        for atom_id in dict.fromkeys(atom_ids):
+            for dimension in self.by_id[atom_id].dimensions:
+                if dimension in dimensions and dimensions[dimension] != atom_id:
+                    return False
+                dimensions[dimension] = atom_id
+        return True
 
     @staticmethod
     def _explicit_candidate_ids(binding: Mapping[str, Any]) -> list[str]:
@@ -181,7 +194,7 @@ class ExposureInputReadinessService:
         _, domain_error = self._domain(scenario)
         if domain_error:
             return self._result(
-                status="SOURCE_CONFLICT", reason_code=domain_error,
+                status="PENDING_DOMAIN", reason_code=domain_error,
                 baseline=baseline, bindings=bindings, atom_ids=atom_ids,
                 dimensions=dimensions, binding_issues=binding_issues,
                 unresolved_relevant=unresolved_relevant,
@@ -267,7 +280,9 @@ class ExposureInputReadinessService:
                     "applicability_status": "NOT_APPLICABLE",
                 })
                 continue
-            candidate_ids = self._candidate_ids(dimension, binding)
+            all_candidates = self._candidate_ids(dimension, binding)
+            candidate_ids = [candidate_id for candidate_id in all_candidates
+                             if self._compatible_completion([*atom_ids, candidate_id])]
             explicit_ambiguous = (
                 self._contains(binding, "AMBIGUOUS")
                 and len(self._explicit_candidate_ids(binding)) > 1
@@ -280,6 +295,7 @@ class ExposureInputReadinessService:
                 "unresolved_reason": str(binding.get("unresolved_reason", "")),
                 "candidate_atom_ids": candidate_ids,
                 "candidate_atom_count": len(candidate_ids),
+                "incompatible_compound_candidates": [value for value in all_candidates if value not in candidate_ids],
                 "could_change_exposure": False,
                 "change_witnesses": [],
             }
@@ -299,7 +315,7 @@ class ExposureInputReadinessService:
                     # final E would be premature; keep audit artifacts compact.
                     break
             dimensions.append(assessment)
-            if explicit_ambiguous:
+            if explicit_ambiguous and assessment["could_change_exposure"]:
                 return self._result(
                     status="PENDING_AMBIGUOUS_ATOM_SET",
                     reason_code="EXPOSURE_ATOM_SET_AMBIGUOUS",
@@ -313,7 +329,30 @@ class ExposureInputReadinessService:
             else:
                 unresolved_irrelevant.append(dimension)
 
+        # Single-dimension previews do not prove joint invariance: two atoms
+        # together can select a different native aggregation branch. Evaluate
+        # the bounded product using the same executor, including omission.
+        pools = [(item["dimension"], item["candidate_atom_ids"]) for item in dimensions
+                 if item["candidate_atom_ids"] and not item["could_change_exposure"]]
+        if not unresolved_relevant and len(pools) > 1:
+            combinations = product(*[(None, *ids) for _, ids in pools])
+            for index, combination in enumerate(islice(combinations, 257)):
+                if index == 256:
+                    unresolved_relevant.extend(dimension for dimension, _ in pools)
+                    dimensions.append({"joint_preview": "PROOF_BUDGET_EXCEEDED", "preview_limit": 256})
+                    break
+                selected = list(dict.fromkeys([*atom_ids, *(value for value in combination if value)]))
+                if not self._compatible_completion(selected):
+                    continue
+                result = self.executor.preview({**scenario, "scenario_atom_ids": selected}, self.exposure)
+                if self._signature(result) != baseline_signature:
+                    unresolved_relevant.extend(dimension for (dimension, _), value in zip(pools, combination) if value)
+                    dimensions.append({"joint_preview": "EXPOSURE_CAN_CHANGE", "atom_ids": selected,
+                                       "result": self._preview(result)})
+                    break
+
         if unresolved_relevant:
+            unresolved_irrelevant = [dimension for dimension in unresolved_irrelevant if dimension not in unresolved_relevant]
             return self._result(
                 status="PENDING_RELEVANT_DIMENSION",
                 reason_code="EXPOSURE_RELEVANT_DIMENSION_UNRESOLVED",

@@ -84,6 +84,73 @@ def _method() -> SimpleNamespace:
     )
 
 
+def test_run_scope_counts_latest_instantiation_per_malfunction_after_resume():
+    state = _state(("collision",) * 3)
+    def event(identity, count):
+        return {"event": "scenario_feasibility_assessed", "malfunction_id": identity,
+                "analytical_scenario_instantiation": {"driver_configuration": {
+                    "pre_branch_count": count, "post_branch_count": count * 2,
+                }}}
+    state.audit_trail = [event("MF-1", 1), event("MF-2", 3), event("MF-1", 2), event("MF-2", 3)]
+    scope = HARAReportProjectionService._run_scope(state, [], 0)
+    assert scope["analytical_child_count_before_driver_branch"] == 5
+    assert scope["analytical_child_count_after_driver_branch"] == 10
+    assert len(state.audit_trail) == 4
+
+
+@pytest.mark.parametrize("facts,expected", [
+    ({"scenario_atom_ids": ["FACT-A", "FACT-A", "FACT-B"]}, "FACT-A; FACT-B"),
+    ({"scenario_atom_ids": []}, ""),
+    ({}, "FA001"),
+])
+def test_report_atom_ids_follow_scoring_facts_when_present(facts, expected):
+    scenario = replace(_scenario(1), facts=facts)
+    assert HARAReportProjectionService._selected_atom_ids(scenario) == expected
+
+
+def test_audit_and_malfunction_inventory_include_excluded_and_pending_pairs(tmp_path):
+    from hara_agent.services.reporting.canonical_renderer import HARAReportWorkbookRenderer
+    state = _state(("collision",) * 3)
+    state.scenarios = state.scenarios[:1]
+    state.risk_results = state.risk_results[:1]
+    state.malfunctions.append({
+        "malfunction_id": "MF-2", "function_id": "F-1", "guideword": "More",
+        "description": "Excluded malfunction", "vehicle_level_hazard": "candidate hazard",
+    })
+    trace = [
+        {"malfunction_id": "MF-1", "scenario_id": "SCN-1", "risk_eligibility": {"status": "ELIGIBLE"}},
+        {"malfunction_id": "MF-2", "scenario_id": "SCN-X", "risk_eligibility": {"status": "INELIGIBLE_CAUSAL"},
+         "feasibility": {"causal_status": "NOT_CAUSAL"}},
+        {"malfunction_id": "MF-2", "scenario_id": "SCN-P", "risk_eligibility": {"status": "PENDING_FEASIBILITY"}},
+    ]
+    schema = load_report_schema()
+    view = HARAReportProjectionService(schema).project(
+        state, _method(), risk_trace={"assessments": trace},
+        generated_scenarios=[{"scenario_id": "SCN-X", "facts": {"scenario_atom_ids": ["ATOM-X"]}}],
+    )
+    assert [c.causal_disposition for c in view.generated_children] == [
+        "RETAINED_FOR_RISK", "EXCLUDED_FROM_RISK", "PENDING_CAUSAL",
+    ]
+    output = tmp_path / "inventory.xlsx"
+    HARAReportWorkbookRenderer().render(view, ROOT / "references/HARA_Template_AI_20260327.xlsx", output, schema)
+    workbook = load_workbook(output)
+    try:
+        sheet = workbook["03_Malfunctions"]
+        headers = {sheet.cell(4, col).value: col for col in range(1, sheet.max_column + 1)}
+        rows = {sheet.cell(row, headers["Malfunction ID"]).value: row for row in range(5, sheet.max_row + 1)}
+        assert set(rows) == {"MF-1", "MF-2"}
+        row = rows["MF-2"]
+        assert sheet.cell(row, headers["Retained"]).value == 0
+        assert sheet.cell(row, headers["Excluded"]).value == 1
+        assert sheet.cell(row, headers["Pending"]).value == 1
+        audit = workbook["99_Audit"]
+        headers = {audit.cell(4, col).value: col for col in range(1, audit.max_column + 1)}
+        rows = {audit.cell(row, headers["Scenario ID"]).value: row for row in range(5, audit.max_row + 1)}
+        assert audit.cell(rows["SCN-X"], headers["Selected Atom IDs"]).value == "ATOM-X"
+    finally:
+        workbook.close()
+
+
 def test_three_siblings_project_to_one_main_row_and_three_detail_rows_without_state_mutation():
     state = _state(("车辆可能与行人碰撞",) * 3)
     before = deepcopy(state)
@@ -115,6 +182,56 @@ def test_hazardous_event_text_divergence_prevents_false_merge():
     assert view.projection_metrics[
         "groups_not_merged_due_hazardous_event_divergence"
     ] == 1
+
+
+def _p6_report_state():
+    state = _state(("车辆可能与行人碰撞",) * 3)
+    for scenario in state.scenarios:
+        scenario.analysis_instance["p6_generation"] = True
+        scenario.facts.update(scenario_atom_ids=["SO010", "PH005"], ego_longitudinal_direction="FORWARD")
+    for risk in state.risk_results:
+        for field, value in (("severity", "S1"), ("exposure", "E3"), ("controllability", "C2"), ("asil", "A")):
+            setattr(risk, field, EvidenceValue(value, ReviewStatus.FINALIZED, rule_version="p6-fixture"))
+    state.item_definition["scenario_assessments"] = [
+        {"malfunction_id": "MF-1", "scenario_id": scenario.scenario_id,
+         "causal_assessment": {"status": "VALIDATED"},
+         "causal_chain": {"m_to_b": {"claim": "loss causes motion", "evidence_refs": ["MF.functional_effect"]}}}
+        for scenario in state.scenarios
+    ]
+    return state
+
+
+def test_p6_j_k_proven_report_group_retains_all_detail_and_identity_mapping():
+    state = _p6_report_state()
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, _method())
+    assert len(view.rows) == 1
+    assert len(view.scenario_details) == len(view.audit_references) == 3
+    mapping = view.projection_metrics["grouping_map"]
+    assert mapping[0]["hara_id"] == view.rows[0].hara_id
+    assert mapping[0]["basis"] == "risk_equivalent"
+    assert set(mapping[0]["scenario_ids"]) == {"SCN-1", "SCN-2", "SCN-3"}
+    assert set(mapping[0]["assessment_ids"]) == {"RA-1", "RA-2", "RA-3"}
+    assert state == before
+
+
+@pytest.mark.parametrize("difference", ["direction", "driver", "harm", "causal_path", "pending"])
+def test_p6_j_different_risk_conditions_do_not_merge_despite_equal_ratings(difference):
+    state = _p6_report_state()
+    if difference == "direction":
+        state.scenarios[2].facts["ego_longitudinal_direction"] = "REVERSE"
+    elif difference == "driver":
+        state.scenarios[2].facts["driver_position"] = "outside_driver_seat"
+        state.risk_results[2].controllability = EvidenceValue("C3", ReviewStatus.FINALIZED, rule_version="p6-fixture")
+    elif difference == "harm":
+        state.risk_results[2].potential_harm = "different harm mechanism"
+    elif difference == "causal_path":
+        state.item_definition["scenario_assessments"][2]["causal_chain"]["m_to_b"]["claim"] = "a different mechanism"
+    else:
+        state.risk_results[2].exposure = _pending()
+    view = HARAReportProjectionService(load_report_schema()).project(state, _method())
+    assert len(view.rows) == 2
+    assert len(view.scenario_details) == 3
 
 
 def test_text_mapper_preserves_range_and_uses_only_finalized_point_speed():

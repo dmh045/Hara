@@ -99,10 +99,9 @@ def test_baseline_uses_primary_dimension_anchor_not_unconstrained_cartesian_prod
         assert bindings["TRAFFIC_PATTERN"]["unresolved_reason"] == "NO_ITEM_FACT"
         assert bindings["OBJECT"]["unresolved_reason"] == "NO_ITEM_FACT"
         assert bindings["ROAD"]["unresolved_reason"] == "AMBIGUOUS_BINDING"
-        assert bindings["EGO_DYNAMICS"]["resolution_status"] == "RESOLVED"
-        assert bindings["EGO_DYNAMICS"]["atom_id"] == "FA001"
-        assert bindings["EGO_DYNAMICS"]["speed_constraint"]["resolved_by"] == "RANGE_CONTAINMENT"
-        assert "FA001" in candidate.facts["scenario_atom_ids"]
+        assert bindings["EGO_DYNAMICS"]["resolution_status"] == "AMBIGUOUS"
+        assert bindings["EGO_DYNAMICS"]["unresolved_reason"] == "MULTI_ATOM_RANGE_AMBIGUITY"
+        assert not bindings["EGO_DYNAMICS"]["atom_id"]
 
 
 def test_function_context_is_bound_without_turning_it_into_method_dimensions():

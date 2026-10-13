@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import asdict, replace
+from collections.abc import Callable
 from typing import Any
 
 from hara_agent.contracts import MethodContract, ScenarioDimension
 from hara_agent.models import (
     FactProvenance,
     FunctionDefinition,
+    MalfunctionCandidate,
     ItemDefinitionFacts,
     ReviewStatus,
     ScenarioCandidate,
@@ -210,9 +213,9 @@ class MethodScenarioCandidateService:
         name = dimension.canonical_name
         if dimension.semantics == "VDA702_ATOM_ID_LABEL":
             if name == "WHERE":
-                values = self._unique([
-                    *facts.odd_locations, *facts.odd_road_types,
-                ])
+                # Road/parking-space types qualify the source scope; they
+                # are not additional site locations when locations exist.
+                values = self._unique(facts.odd_locations or facts.odd_road_types)
             elif name == "ROAD":
                 values = self._unique([
                     *facts.odd_weather_conditions, *facts.odd_road_surfaces,
@@ -497,6 +500,79 @@ class MethodScenarioCandidateService:
             }
         return {"dimensions": coverage, "functions": function_coverage}, gaps
 
+    def generate_for_malfunction(
+        self, malfunction: MalfunctionCandidate, parents: list[ScenarioCandidate],
+        *, project_facts: ItemDefinitionFacts | None,
+        function: FunctionDefinition | None = None,
+        record_generated: Callable[[ScenarioCandidate], None] | None = None,
+    ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
+        """Ordinary analyze: physical options → governed atoms → driver subsets."""
+        from .scenario_method_service import ScenarioMethodService
+        from .scenario_synthesis_service import ConstrainedScenarioSynthesisService
+        from .scenario_equivalence import coalesce_candidates, scenario_conditions, signature
+
+        templates = ScenarioMethodService(self.method)
+        if not self.atom_resolver.catalog or project_facts is None:
+            return templates.instantiate_analytical_candidates(
+                malfunction, parents, project_facts=project_facts, function=function,
+            )
+        options, audit = templates.instantiate_analytical_candidates(
+            malfunction, parents, project_facts=project_facts, function=function,
+            expand_driver_configurations=False,
+        )
+        synthesis = ConstrainedScenarioSynthesisService(self.method)
+        project = asdict(project_facts)
+        generated, generation_audit = [], []
+        # Cover mechanism variation once per distinct physical input. Other
+        # source contexts retain a representative plus any novel primary
+        # variants. This is bounded coverage, not a risk-equivalence claim.
+        primary_coverage: dict[str, dict[str, str]] = {}
+        boundary_parent_id = parents[0].scenario_id if parents else ""
+        for option in options:
+            physical = scenario_conditions(option)
+            physical["facts"].pop("operating_scenario", None)
+            physical["fact_authority"].pop("operating_scenario", None)
+            physical["facts"].get("method_scenario_dimensions", {}).pop("WHERE", None)
+            coverage_key = signature({"conditions": physical,
+                                      "option": option.analysis_instance.get("source_option_id")})
+            children, result = synthesis.generate_candidates(
+                malfunction=asdict(malfunction), parent=option,
+                project_context=project, function=asdict(function) if function else None,
+                include_source_boundaries=(
+                    option.scenario_id == boundary_parent_id or option.source_scenario_id == boundary_parent_id
+                ),
+                covered_primary_conditions=primary_coverage.setdefault(coverage_key, {}),
+            )
+            # Keep an unresolved case visible for causal/review diagnostics;
+            # never replace an empty pool with an arbitrary default atom.
+            generated.extend(children or [option])
+            generation_audit.append(result)
+        representatives, mapping = coalesce_candidates(generated)
+        audit["atom_generation"] = {
+            "version": "ordinary-analyze-atoms-v3-source-axis-coverage", "provider_calls": 0,
+            "raw_candidate_count": len(generated),
+            "unique_condition_count": len(representatives),
+            "coalesced_candidate_count": len(generated) - len(representatives),
+            "equivalence_mapping": mapping, "parents": generation_audit,
+            "source_boundary_policy": "ONE_SOURCE_ANCHOR_PER_PHYSICAL_OPTION",
+            "source_boundary_parent_id": boundary_parent_id,
+            "coverage_policy": "PRIMARY_VARIANTS_PLUS_SOURCE_CONTEXT_REPRESENTATIVES",
+            "coverage_limit": "Unselected context/variant combinations are not evaluated or proven equivalent.",
+        }
+        children, audit = templates._with_driver_configurations(
+            malfunction, representatives, audit, project_facts,
+        )
+        if record_generated is not None:
+            final_ids = {child.scenario_id for child in children}
+            for candidate in generated:
+                # The caller persists final instances. Do not consume their
+                # append-only identity before the equivalence proof is attached.
+                if candidate.scenario_id not in final_ids:
+                    record_generated(replace(candidate, analysis_instance={
+                        **candidate.analysis_instance, "generation_role": "BEFORE_EQUIVALENCE",
+                    }))
+        return children, audit
+
     @staticmethod
     def _source_dict(source: SourceRef) -> dict[str, str]:
         return {
@@ -580,6 +656,7 @@ class MethodScenarioCandidateService:
             facts: dict[str, Any] = {
                 "method_scenario_dimensions": bindings,
                 "operating_mode": operating_mode,
+                "source_road_type_scope": self._unique(project_facts.odd_road_types),
             }
             if speed_resolution.resolution_source == "ExplicitProjectInput":
                 facts["ego_speed_kph"] = speed_resolution.resolved_value
@@ -654,6 +731,9 @@ class MethodScenarioCandidateService:
                 binding = bindings.get(dimension_name, {})
                 facts[key] = binding.get("method_value") or binding.get("project_value", "")
             fact_provenance: dict[str, Any] = {}
+            fact_provenance["source_road_type_scope"] = self._fact_metadata(
+                FactProvenance.PROJECT_INPUT, project_facts.status, project_sources,
+            )
             for dimension_name, key in canonical_keys.items():
                 dimension = next((
                     item for item in dimensions

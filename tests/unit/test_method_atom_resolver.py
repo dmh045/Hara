@@ -98,7 +98,14 @@ def test_compound_atom_fills_its_dimensions_and_intersects_speed_range():
 def test_speed_interval_requires_one_governed_atom_to_contain_the_full_range():
     resolver = MethodAtomResolver(_method())
 
-    contained = resolver.resolve_speed_range(minimum_kph=0, maximum_kph=20)
+    ambiguous = resolver.resolve_speed_range(minimum_kph=0, maximum_kph=20)
+    # Explicit speed inequalities in catalog labels are now compiled too;
+    # the project interval alone no longer uniquely implies acceleration.
+    assert ambiguous.status == "AMBIGUOUS"
+    assert len(ambiguous.candidate_atom_ids) > 1
+    contained = MethodAtomResolver(SimpleNamespace(metadata={
+        "scenario_atom_catalog": [resolver.by_id["FA001"]],
+    })).resolve_speed_range(minimum_kph=0, maximum_kph=20)
     assert contained.status == "RESOLVED"
     assert contained.reason == "RANGE_CONTAINMENT"
     assert contained.atom_id == "FA001"

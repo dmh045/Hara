@@ -13,8 +13,9 @@ from .engineering_text_mapper import EngineeringReportTextMapper
 from .report_schema import ReportSchema
 from .view_model import (
     AuditReferenceView, GeneratedChildView, HARAReportRowView, HARAReportViewModel,
-    MethodBasisView, SafetyGoalView, ScenarioDetailView, SummaryView,
+    MalfunctionView, MethodBasisView, SafetyGoalView, ScenarioDetailView, SummaryView,
 )
+from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
 
 
 def _value(evidence: Any) -> str:
@@ -63,10 +64,14 @@ class HARAReportProjectionService:
         preview = event("bounded_sample_scope_preview")
         prepared = event("scenario_candidates_prepared")
         feasibility = event("scenario_feasibility_summary")
+        latest_assessments = {
+            item.get("malfunction_id") or index: item
+            for index, item in enumerate(state.audit_trail)
+            if item.get("event") == "scenario_feasibility_assessed"
+        }
         branches = [
             item.get("analytical_scenario_instantiation", {}).get("driver_configuration", {})
-            for item in state.audit_trail
-            if item.get("event") == "scenario_feasibility_assessed"
+            for item in latest_assessments.values()
         ]
         before_branch = (
             sum(int(item["pre_branch_count"]) for item in branches)
@@ -162,8 +167,9 @@ class HARAReportProjectionService:
             "complete_risk_chain_count": complete_risk_chain_count,
         }
 
-    @staticmethod
+    @classmethod
     def _generated_children(
+        cls,
         trace_rows: list[Mapping[str, Any]],
         generated_scenarios: list[Mapping[str, Any]],
     ) -> tuple[GeneratedChildView, ...]:
@@ -186,10 +192,10 @@ class HARAReportProjectionService:
             synthesis = synthesis if isinstance(synthesis, Mapping) else {}
             eligibility = row.get("risk_eligibility", {})
             eligibility = eligibility if isinstance(eligibility, Mapping) else {}
-            causal_status = str(row.get("feasibility", {}).get("causal_status", ""))
+            eligibility_status = str(eligibility.get("status", ""))
             disposition = (
-                "RETAINED_FOR_RISK" if eligibility.get("status") == "ELIGIBLE"
-                else "CAUSAL_GAP" if causal_status == "CAUSAL_GAP"
+                "RETAINED_FOR_RISK" if eligibility_status == "ELIGIBLE"
+                else "EXCLUDED_FROM_RISK" if eligibility_status.startswith("INELIGIBLE")
                 else "PENDING_CAUSAL"
             )
             children.append(GeneratedChildView(
@@ -202,6 +208,7 @@ class HARAReportProjectionService:
                 semantic_group_id=str(instance.get("semantic_group_id") or synthesis.get("semantic_group_id", "")),
                 causal_disposition=disposition,
                 risk_scoring_invoked=bool(row.get("risk_scoring_invoked")),
+                selected_atom_ids=cls._selected_atom_ids(candidate),
             ))
         return tuple(children)
 
@@ -427,8 +434,12 @@ class HARAReportProjectionService:
 
     @staticmethod
     def _selected_atom_ids(scenario: Any) -> str:
-        instance = getattr(scenario, "analysis_instance", {}) or {}
-        selected = instance.get("selected_atoms", []) if isinstance(instance, Mapping) else []
+        facts = scenario.get("facts", {}) if isinstance(scenario, Mapping) else getattr(scenario, "facts", {})
+        instance = scenario.get("analysis_instance", {}) if isinstance(scenario, Mapping) else getattr(scenario, "analysis_instance", {})
+        if isinstance(facts, Mapping) and "scenario_atom_ids" in facts:
+            selected = facts["scenario_atom_ids"]
+        else:
+            selected = instance.get("selected_atoms", []) if isinstance(instance, Mapping) else []
         if isinstance(selected, Mapping):
             selected = [atom for atoms in selected.values() for atom in atoms]
         if not isinstance(selected, (list, tuple)):
@@ -558,6 +569,10 @@ class HARAReportProjectionService:
         entries: list[dict[str, Any]] = []
         base_events: dict[tuple[str, str, str], set[str]] = defaultdict(set)
         group_source_counts: Counter[str] = Counter()
+        causal_by_pair = {
+            (str(item.get("malfunction_id", "")), str(item.get("scenario_id", ""))): item
+            for item in state.item_definition.get("scenario_assessments", [])
+        }
         for risk in state.risk_results:
             scenario = scenarios.get(risk.scenario_id)
             if scenario is None:
@@ -605,6 +620,30 @@ class HARAReportProjectionService:
                     for field in ("severity", "exposure", "controllability", "asil")
                 ),
             )
+            if instance.get("p6_generation"):
+                causal = causal_by_pair.get((risk.malfunction_id, risk.scenario_id), {})
+                complete = all(
+                    getattr(risk, field).status.value == "FINALIZED"
+                    for field in ("severity", "exposure", "controllability", "asil")
+                )
+                if (complete and causal.get("causal_assessment", {}).get("status") == "VALIDATED"
+                        and causal.get("causal_chain")):
+                    proof = signature({
+                        "conditions": scenario_conditions(scenario),
+                        "causal_chain": causal["causal_chain"],
+                        "hazardous_event": normalized_event,
+                        "potential_harm": risk.potential_harm,
+                        "ratings": group_key[-1],
+                        "exposure_domain": risk.exposure_tf,
+                        "safety_goal_id": risk.safety_goal_id,
+                    })
+                    base_key = ("risk_equivalent", str(risk.malfunction_id), proof)
+                    causal_identity = proof
+                    group_key = base_key
+                else:
+                    # Unknown inputs and partial scores cannot prove equality.
+                    base_key = ("unproven_risk_equivalence", str(risk.malfunction_id), str(risk.scenario_id))
+                    group_key = base_key
             entries.append({
                 "risk": risk, "scenario": scenario, "trace": trace,
                 "hazardous_event_id": hazardous_event_id, "base_key": base_key,
@@ -723,7 +762,8 @@ class HARAReportProjectionService:
                         ("severity", "S"), ("exposure", "E"),
                         ("controllability", "C"), ("asil", "ASIL"),
                     )
-                ),
+                ) + ("；归并依据：相同结构化场景条件、因果链、伤害机制及完整评分；原始记录见场景明细"
+                     if representative["base_key"][0] == "risk_equivalent" and len(siblings) > 1 else ""),
             )
             rows.append(row)
             group_source_counts[str(representative["base_key"][0])] += 1
@@ -871,6 +911,12 @@ class HARAReportProjectionService:
             "grouping_reduction": len(details) - len(rows),
             "groups_not_merged_due_hazardous_event_divergence": divergence_groups,
             "group_source_counts": dict(sorted(group_source_counts.items())),
+            "grouping_map": [{
+                "hara_id": f"HARA_{index:03d}",
+                "basis": siblings[0]["base_key"][0],
+                "assessment_ids": [entry["risk"].assessment_id for entry in siblings],
+                "scenario_ids": [entry["scenario"].scenario_id for entry in siblings],
+            } for index, siblings in enumerate(ordered_groups, start=1)],
             "variant_distribution": dict(sorted(variant_counts.items())),
             "distinct_visible_speed_expressions": len(set(speed_values)),
             "broad_0_20_speed_rows": sum("0–20 km/h" in value for value in speed_values),
@@ -898,10 +944,28 @@ class HARAReportProjectionService:
                 for field in score_counts
             },
         }
+        children = self._generated_children(trace_rows, generated_scenarios or [])
+        disposition_counts: dict[str, Counter] = defaultdict(Counter)
+        for child in children:
+            disposition_counts[child.malfunction_id][child.causal_disposition] += 1
+        inventory = []
+        for item in state.malfunctions:
+            identity = str(item.get("malfunction_id", ""))
+            counts = disposition_counts[identity]
+            retained = counts["RETAINED_FOR_RISK"]
+            excluded = counts["EXCLUDED_FROM_RISK"]
+            pending = counts["PENDING_CAUSAL"]
+            inventory.append(MalfunctionView(
+                identity, str(item.get("function_id", "")), str(item.get("guideword", "")),
+                str(item.get("description", "")), str(item.get("vehicle_level_hazard", "")),
+                retained, excluded, pending,
+                "RETAINED_FOR_RISK" if retained else "PENDING_CAUSAL" if pending
+                else "EXCLUDED_FROM_RISK" if excluded else "NOT_ASSESSED",
+            ))
         return HARAReportViewModel(
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,
             method_hash, style_template_hash, tuple(details), projection_metrics,
-            self._generated_children(trace_rows, generated_scenarios or []),
+            children, tuple(inventory),
         )
 
 

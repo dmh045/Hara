@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import json
 from copy import deepcopy
+from dataclasses import replace
 
 from hara_agent.contracts import (
     CausalBreakpoint, CausalEdge, CausalGraph, CausalNode, CausalNodeType,
@@ -348,6 +349,33 @@ def test_completed_feasibility_with_causal_gap_is_ineligible():
         run_id="trace", assessments=[_assessment(causal=False)], candidates=[], committed=True,
     )
     assert trace["assessments"][0]["risk_eligibility"]["status"] == "INELIGIBLE_CAUSAL"
+
+
+def test_missing_causal_evidence_is_reported_pending_not_excluded():
+    from hara_agent.services.reporting.projection import HARAReportProjectionService
+
+    causal = _causal_assessment(finalized=True)
+    edges = (*causal.causal_graph.edges[:-1], replace(
+        causal.causal_graph.edges[-1], evidence_refs=(),
+    ))
+    causal = replace(causal, causal_graph=replace(causal.causal_graph, edges=edges))
+    payload = _assessment(causal=False)
+    payload["causal_assessment"] = causal.to_dict()
+    trace = RiskExecutionTraceService().project(
+        run_id="pending-causal", assessments=[payload], candidates=[], committed=True,
+    )
+    row = trace["assessments"][0]
+    assert row["risk_eligibility"]["status"] == "PENDING_FEASIBILITY"
+    assert row["risk_scoring_invoked"] is False
+    assert trace["scenario_eligibility_summary"]["ineligible"] == 0
+    assert trace["scenario_eligibility_summary"]["pending_feasibility"] == 1
+    scope = HARAReportProjectionService._run_scope(
+        HARAState(run_id="pending-causal"), trace["assessments"], 0,
+    )
+    assert scope["causal_excluded_count"] == 0
+    assert scope["causal_pending_count"] == 1
+    children = HARAReportProjectionService._generated_children(trace["assessments"], [])
+    assert children[0].causal_disposition == "PENDING_CAUSAL"
 
 
 def test_final_retain_is_a_derived_projection_not_an_independent_input():

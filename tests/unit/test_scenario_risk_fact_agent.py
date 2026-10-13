@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from hara_agent.contracts import FactOrigin, FactType, RequiredFactSpec
 from hara_agent.config import LLMConfig
 from hara_agent.infrastructure.llm import LLMResponse
@@ -19,6 +23,69 @@ def _spec(fact_type, origin, constraints=(), unit=""):
         source_rule_ids=(),
         source_refs=(),
     )
+
+
+@pytest.mark.parametrize("primary_valid,repair_valid", [
+    (False, True), (False, False), (True, False),
+])
+def test_schema_envelope_error_uses_existing_bounded_coverage_repair(
+    primary_valid, repair_valid,
+):
+    calls = []
+    invalid = {"fact_type": "COLLISION_TYPE", "malfunction_id": "MF-1"}
+    found = {"results": [{
+        "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+        "fact_type": "COLLISION_TYPE", "status": "FOUND",
+        "value": "FRONTAL", "unit": "", "evidence_ids": ["E0001"],
+    }]}
+    contents = [
+        {"results": []} if primary_valid else invalid,
+        found if repair_valid else invalid,
+    ]
+
+    def transport(_url, _headers, body, _timeout):
+        calls.append(json.loads(body))
+        return {
+            "id": f"response-{len(calls)}", "model": "fake",
+            "choices": [{"message": {"content": json.dumps(contents[len(calls) - 1])},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    client = OpenAICompatibleClient(LLMConfig(
+        provider="openai-compatible", base_url="https://example.invalid/v1",
+        model="fake", api_key="fake", max_retries=0,
+    ), transport=transport)
+    source = SourceRef("item_definition", "item.docx", "p1", "frontal collision")
+    facts, audit = ScenarioRiskFactAgent(client).interpret(
+        [{
+            "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+            "physically_feasible": True, "functionally_relevant": True,
+            "causally_relevant": True, "risk_dimensions_changed": ["severity"],
+            "status": "FINALIZED",
+        }],
+        [ScenarioCandidate("SCN-1", "road", "collision", "detail", sources=[source])],
+        [MalfunctionCandidate(
+            "MF-1", "FUN-1", "loss", "lost", "absent", "collision",
+            ["lost", "collision"], sources=[source],
+        )],
+        [_spec(FactType.COLLISION_TYPE, FactOrigin.SCENARIO_FACT,
+               ("COLLISION_TYPE IN ('FRONTAL',)",))],
+    )
+
+    assert len(calls) == audit["llm_call_count"] == 2
+    assert "single bounded coverage repair" in calls[1]["messages"][1]["content"]
+    assert audit["coverage_repair_count"] == 1
+    assert audit["validation_failure_count"] == int(not primary_valid) + int(not repair_valid)
+    assert audit["unresolved_contract_count"] == int(not repair_valid)
+    assert audit["resolution_counts"]["ABSENT_IN_EVIDENCE"] == 0
+    if repair_valid:
+        assert len(facts) == 1
+        assert facts[0].value == "FRONTAL"
+        assert facts[0].source_refs == [source]
+    else:
+        assert facts == []
+        assert audit["resolution_counts"]["EXTRACTION_FAILED"] == 1
 
 
 def test_scenario_risk_facts_are_validated_neutral_and_evidence_grounded():

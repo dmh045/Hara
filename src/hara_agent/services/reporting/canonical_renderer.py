@@ -235,7 +235,8 @@ class HARAReportWorkbookRenderer:
             )
             self._render_records(
                 sheets["03_Malfunctions"], "Malfunctions", registry,
-                ("Malfunction ID", "Function ID", "Guideword", "Malfunction", "Hazard"),
+                ("Malfunction ID", "Function ID", "Guideword", "Malfunction", "Hazard",
+                 "Retained", "Excluded", "Pending", "Risk Disposition"),
                 self._malfunctions(view_model),
             )
             layout = self._render_main_hara(sheets[MAIN_SHEET], view_model, schema, registry)
@@ -664,7 +665,7 @@ class HARAReportWorkbookRenderer:
                     child.semantic_group_id or (item.semantic_group_id if item else ""),
                     child.parent_scenario_id or (item.parent_scenario_id if item else ""),
                     item.variant if item else "",
-                    item.selected_atom_ids if item else "",
+                    item.selected_atom_ids if item else child.selected_atom_ids,
                     item.source_references if item else "",
                     view_model.method_contract_hash,
                     view_model.schema_hash,
@@ -731,10 +732,7 @@ class HARAReportWorkbookRenderer:
 
     @staticmethod
     def _malfunctions(view_model: HARAReportViewModel) -> list[tuple[Any, ...]]:
-        seen: dict[str, tuple[Any, ...]] = {}
-        for row in view_model.rows:
-            seen.setdefault(row.malfunction_id, (row.malfunction_id, row.function_id, row.guideword, row.malfunction, row.hazard))
-        return list(seen.values())
+        return [tuple(item.to_dict().values()) for item in view_model.malfunction_inventory]
 
     @staticmethod
     def _save_atomically(workbook: Any, output: Path) -> None:

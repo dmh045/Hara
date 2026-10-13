@@ -37,7 +37,7 @@ def _candidate() -> dict:
     }
 
 
-def test_audit_previews_range_containment_without_changing_current_candidate():
+def test_audit_keeps_range_ambiguity_without_changing_current_candidate():
     payload = ExposureBindingAuditService(_method()).generate({
         "scenario_candidate": [_candidate()],
         "malfunction": [{"malfunction_id": "MF-1", "component_category": "computing"}],
@@ -49,10 +49,10 @@ def test_audit_previews_range_containment_without_changing_current_candidate():
     }}})
 
     speed = next(item for item in payload["scenario_term_inventory"] if item["scenario_id"] == "SC-1")
-    assert speed["range_resolution_preview"]["reason"] == "RANGE_CONTAINMENT"
-    assert speed["range_resolution_preview"]["atom_id"] == "FA001"
+    assert speed["range_resolution_preview"]["reason"] == "MULTI_ATOM_RANGE_AMBIGUITY"
+    assert speed["range_resolution_preview"]["atom_id"] == ""
     assert payload["scenario_readiness"][0]["scenario_atom_ids"] == []
-    assert payload["scenario_readiness"][0]["after_range_preview_atom_ids"] == ["FA001"]
+    assert payload["scenario_readiness"][0]["after_range_preview_atom_ids"] == []
     assert payload["scenario_readiness"][0]["coverage_status"] == "PENDING"
     assert payload["scenario_readiness"][0]["exposure_input_status"] == "NOT_EVALUABLE"
     assert payload["component_domain_summary"]["resolved_malfunctions"] == 1

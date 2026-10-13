@@ -20,6 +20,7 @@ from hara_agent.models import (
 from hara_agent.services.analysis import (
     AnalyticalPhysicsInstantiationService, ExposureInputReadinessService,
     RiskExecutionTraceService,
+    ConstrainedScenarioSynthesisService,
 )
 from hara_agent.services.semantic import (
     ScenarioFeasibilityAgent, build_project_evidence_registry,
@@ -150,37 +151,10 @@ class ScenarioCausalRevalidationRunner:
             "scenario_id": scenario.scenario_id,
             "parent_scenario_id": scenario.source_scenario_id,
         }
-        fact_keys = {
-            "WHERE": "operating_scenario",
-            "ROAD": "road_surface_conditions",
-            "EGO_ACTION": "vehicle_state",
-            "EGO_DYNAMICS": "ego_dynamics",
-            "OBJECT": "scenario_object_atom",
-            "TRAFFIC_PATTERN": "traffic_pattern",
-            "EGO_X_ROAD": "ego_road_relation",
-        }
-        for dimension, fact_key in fact_keys.items():
-            binding = bindings.get(dimension, {}) if isinstance(bindings, dict) else {}
-            if not isinstance(binding, dict) or binding.get("resolution_status") != "RESOLVED":
-                continue
-            facts.setdefault(fact_key, str(binding.get("method_value", "")))
-            atom = binding.get("atom_provenance", {})
-            atom = atom if isinstance(atom, dict) else {}
-            provenance[fact_key] = {
-                "provenance": "SCENARIO_DEFINED",
-                "origin": "SCENARIO_DEFINED",
-                "approval": "FINALIZED",
-                "source_refs": [{
-                    "source_type": "method_contract",
-                    "source_id": str(self.method.metadata.get("method_source_hash", "")),
-                    "location": (
-                        f"{atom.get('source_asset', '')}:{atom.get('source_rule', '')}"
-                    ),
-                    "excerpt": str(binding.get("method_value", "")),
-                }],
-                "applicable_scope": scope,
-                "selection_basis": "VALIDATED_ANALYTICAL_SCENARIO_ATOM",
-            }
+        ConstrainedScenarioSynthesisService.project_validated_atom_facts(
+            facts=facts, provenance=provenance, bindings=bindings,
+            method_hash=str(self.method.metadata.get("method_source_hash", "")), scope=scope,
+        )
         compact_instance = {
             key: deepcopy(scenario.analysis_instance.get(key))
             for key in (
