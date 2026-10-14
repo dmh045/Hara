@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +77,7 @@ class OfflineReportRebuilder:
             causal_trace=causal_trace,
             run_summary=summary,
             style_template_hash=template_hash,
-            risk_trace_reference=str(trace_path) if trace is not None else "",
+            risk_trace_reference=os.path.relpath(trace_path, Path(output_path).resolve().parent) if trace is not None else "",
             generated_scenarios=artifacts.get("scenario_candidate", []),
             scenario_projection_contexts=scenario_projection_contexts,
         )

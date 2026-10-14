@@ -231,6 +231,8 @@ class CausalEvidenceSelector:
     """Select bounded causal context without changing evidence authority."""
 
     _P1_TERMS = (
+        "object_position", "object_speed", "object_type", "longitudinal_direction",
+        "closing_speed", "initial_speed", "impact_time", "speed_value_semantic",
         "relative_distance", "relative_speed", "ttc", "delta_v",
         "impact_speed", "ego_speed", "collision", "traffic_object", "road_user",
         "scenario_object", "stopping_margin", "geometry", "braking_distance",

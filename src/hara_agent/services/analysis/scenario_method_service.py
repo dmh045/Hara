@@ -60,6 +60,7 @@ class ScenarioMethodService:
         decisions = decisions if isinstance(decisions, dict) else {}
         a5 = decisions.get("A5", {})
         self.driver_brancher = DriverConfigurationBrancher(
+            policy=policy,
             policy_id=(
                 str(policy.get("policy_id", ""))
                 if isinstance(a5, dict)
@@ -438,6 +439,8 @@ class ScenarioMethodService:
                     "object_speed_kph": option.obj_v_kph,
                 }
                 diagnostics: list[dict[str, Any]] = []
+                if option.ego_longitudinal_direction:
+                    values["ego_longitudinal_direction"] = option.ego_longitudinal_direction
                 if not option.obj_type.strip() or not option.obj_position.strip():
                     diagnostics.append({"code": "INVALID_TEMPLATE_OPTION", "field": "object"})
                 for field in ("relative_distance_m", "object_speed_kph"):
@@ -572,6 +575,7 @@ class ScenarioMethodService:
                         "obj_position": option.obj_position,
                         "obj_distance_m": option.obj_distance_m,
                         "obj_v_kph": option.obj_v_kph,
+                        "ego_longitudinal_direction": option.ego_longitudinal_direction,
                         "collision_type": option.collision_type,
                     },
                     "method_contract_hash": method_hash,

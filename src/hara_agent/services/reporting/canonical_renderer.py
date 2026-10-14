@@ -227,7 +227,8 @@ class HARAReportWorkbookRenderer:
                 sheets["01_Item Definition"], "Item Definition", registry,
                 (("Source ID", view_model.summary.run_id),
                  ("Status", "SOURCE-LINKED"),
-                 ("Note", "Facts are projected from the committed runtime state.")),
+                 ("Note", "Facts are projected from the committed runtime state."),
+                 *view_model.item_facts),
             )
             self._render_records(
                 sheets["02_Functions"], "Functions", registry,
@@ -715,13 +716,17 @@ class HARAReportWorkbookRenderer:
 
     @staticmethod
     def _estimated_height(values: Iterable[Any], widths: Iterable[float], registry: TemplateStyleRegistry) -> float:
+        import unicodedata
         baseline = registry._source_heights.get(DATA_START_ROW) or 18
         lines = 1
         for value, width in zip(values, widths):
             text = str(value or "")
-            capacity = max(10, int(float(width or 14) * 1.15))
-            lines = max(lines, min(8, (len(text) + capacity - 1) // capacity))
-        return max(baseline, min(180, 15 * lines + 3))
+            capacity = max(3, int(float(width or 14)))
+            wrapped = sum(max(1, (sum(2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1
+                                     for ch in paragraph) + capacity - 1) // capacity)
+                          for paragraph in text.split("\n"))
+            lines = max(lines, wrapped)
+        return max(baseline, min(409, 15 * lines + 6))
 
     @staticmethod
     def _functions(view_model: HARAReportViewModel) -> list[tuple[Any, ...]]:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 from typing import Any
+import math
+from hara_agent.services.analysis.scenario_physics import source_is_accepted_for
 
 from hara_agent.contracts import (
     MethodContract, SeverityInputAuthority, SeverityInputAuthorityStatus,
@@ -38,7 +40,7 @@ class SeverityDeltaVSemanticAuditService:
     def _number(value: Any) -> float | None:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        return float(value) if value >= 0 else None
+        return float(value) if math.isfinite(value) and value >= 0 else None
 
     @staticmethod
     def _fact_provenance(candidate: dict[str, Any], key: str) -> dict[str, Any]:
@@ -81,11 +83,16 @@ class SeverityDeltaVSemanticAuditService:
             if isinstance(first, dict):
                 source_ref = str(first.get("location", ""))
         source_name = str(fact.get("provenance", "")).upper()
-        if value is not None and source_ref:
+        if value is not None and source_ref and source_is_accepted_for(
+            fact, malfunction_id=str(facts.get("malfunction_id", candidate.get("malfunction_id", ""))),
+            scenario_id=str(facts.get("scenario_id", candidate.get("scenario_id", ""))),
+        ):
             source_type = (
                 SeverityInputSource.DERIVED_PHYSICS
-                if source_name == "DERIVED" else SeverityInputSource.DIRECT_PROJECT_FACT
+                if source_name == "DERIVED" and fact.get("source_binding_kind") != "METHOD_RISK_FACT_BINDING"
+                else SeverityInputSource.DIRECT_PROJECT_FACT
                 if source_name in {"PROJECT_INPUT", "HUMAN_CONFIRMATION"}
+                or fact.get("source_binding_kind") == "METHOD_RISK_FACT_BINDING"
                 else SeverityInputSource.DIRECT_SCENARIO_FACT
             )
             derivation_rule_id = str(fact.get("derivation_rule_id", ""))

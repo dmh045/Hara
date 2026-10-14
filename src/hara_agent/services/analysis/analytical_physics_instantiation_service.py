@@ -3,13 +3,15 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 import hashlib
 import json
+import math
+from dataclasses import replace
 from typing import Any
 
 from hara_agent.contracts import AnalyticalPhysicalInput, MethodContract, PhysicalValueAuthority
 from hara_agent.models import ScenarioCandidate
 
 from .scenario_physics import (
-    TTC_CLOSING_FORMULA_IDENTITY, closing_relative_speed_kph,
+    derive_scenario_physics,
     derive_stationary_object_speed, longitudinal_closing_speed_kph,
     select_ego_speed_from_policy,
     time_to_collision_s,
@@ -53,7 +55,7 @@ class AnalyticalPhysicsInstantiationService:
 
     @staticmethod
     def _point(value: Any) -> bool:
-        return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
     def _direct_input(
         self, scenario: ScenarioCandidate, field: str, malfunction_id: str,
@@ -165,57 +167,22 @@ class AnalyticalPhysicsInstantiationService:
                 for item in inputs
             ]
             by_field["object_speed_kph"] = replacement
-        derived: list[dict[str, Any]] = []
-        ego = by_field["ego_speed_kph"]
-        obj = by_field["object_speed_kph"]
-        distance = by_field["relative_distance_m"]
-        ego_direction = by_field["ego_longitudinal_direction"]
-        object_direction = by_field["object_longitudinal_direction"]
-        collision = by_field["collision_type"]
-        relative = closing_relative_speed_kph(
-            ego.value, obj.value,
-            ego_direction=ego_direction.value,
-            object_direction=object_direction.value,
-            collision_type=collision.value,
-        )
-        if relative is not None:
-            opposing = (
-                obj.value != 0
-                and object_direction.value != "STATIONARY"
-                and ego_direction.value != object_direction.value
-            )
-            relative_inputs = (
-                ["ego_speed_kph", "object_speed_kph", "collision_type"]
-                if obj.value == 0 else
-                ["ego_speed_kph", "object_speed_kph",
-                 "ego_longitudinal_direction", "object_longitudinal_direction",
-                 "collision_type"]
-            )
-            derived.append({
-                "field": "relative_speed_kph", "value": round(relative, 6),
-                "unit": "km/h", "authority": "DERIVED",
-                "derivation": "OPPOSING_SUM" if opposing else "SAME_OR_STATIONARY_ABS_DIFF",
-                "inputs": relative_inputs,
-            })
-            closing = longitudinal_closing_speed_kph(
-                ego.value, obj.value,
-                ego_direction=ego_direction.value,
-                object_direction=object_direction.value,
-                object_position=by_field["object_position"].value,
-                collision_type=collision.value,
-            )
-            ttc = time_to_collision_s(distance.value, closing)
-            if ttc is not None:
-                derived.append({
-                    "field": "ttc_s",
-                    "value": ttc,
-                    "unit": "s", "authority": "DERIVED",
-                    "derivation": TTC_CLOSING_FORMULA_IDENTITY,
-                    "closing_speed_kph": closing,
-                    "inputs": ["relative_distance_m", "ego_speed_kph", "object_speed_kph",
-                               "ego_longitudinal_direction", "object_longitudinal_direction",
-                               "object_position"],
-                })
+        physics_facts = dict(scenario.facts)
+        physics_provenance = dict(scenario.fact_provenance)
+        selected = select_ego_speed_from_policy(scenario, policy=self.project_policy, malfunction_id=malfunction_id)
+        if selected is not None and "ego_speed_kph" not in physics_facts:
+            physics_facts["ego_speed_kph"], physics_provenance["ego_speed_kph"] = selected
+        if stationary is not None and "object_speed_kph" not in physics_facts:
+            physics_facts["object_speed_kph"], physics_provenance["object_speed_kph"] = stationary
+        physics = replace(scenario, facts=physics_facts, fact_provenance=physics_provenance)
+        derived = [{
+            "field": record.evidence_ref.split(".", 1)[1], "value": record.value,
+            "unit": "s" if record.evidence_ref == "DERIVED.ttc_s" else "km/h",
+            "authority": "DERIVED", "review_status": record.approval_status.value,
+            "derivation": record.metadata.get("formula_identity", record.metadata.get("derivation_type", "")),
+            "inputs": record.metadata.get("inputs", []),
+        } for record in derive_scenario_physics(physics)
+            if record.metadata.get("derivation_type") != "CANONICAL_INPUT_NORMALIZATION"]
         assumption_blocked = any(
             item.authority is PhysicalValueAuthority.ENGINEERING_ANALYSIS_ASSUMPTION
             and item.value is None for item in inputs

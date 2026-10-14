@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import math
 
 from hara_agent.contracts import (
     CalculationStatus, ControllabilityAssessmentInput, ExposureAssessment,
@@ -14,7 +15,8 @@ class RiskCalculationInputService:
 
     @staticmethod
     def _number(value: Any) -> float | None:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0):
             return None
         return float(value)
 

@@ -33,6 +33,21 @@ python -m venv .venv
 
 `doctor` is offline for template compilation and separately reports LLM configuration readiness. `analyze` fails closed when the method, facts, or approvals are incomplete. `--allow-draft` permits a visibly watermarked report without bypassing review state.
 
+### P7: physical input and bounded validation closure
+
+P7 code and evidence are documented in [the unified issue ledger](docs/P7_Closure_20261014.md).
+Normal operating speed, stationary initial speed and impact speed are separate.
+Explicit template maneuvers now supply missing direction; fact binding precedes
+physics derivation. Driver pairs share requests while retaining independent
+judgments. Approved zero ratings can establish QM through the active matrix.
+
+The fixed historical population produces `output/p7_closure/HARA_P7_Revised_Draft_20261014.xlsx`:
+928 risk records, E finalized for 922 and C for 180. S/ASIL remain pending because
+the historical 7 km/h operating limit does not establish impact speed. The old
+report is preserved. Two live samples used 15 of 20 approved requests, with
+response recovery verified. This is a revised engineering draft, not release
+approval or authorization for another full Provider run.
+
 ### P6: ordinary analyze generates method-bound scenarios
 
 The normal `analyze` path now combines Function/Malfunction context, the confirmed

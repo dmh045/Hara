@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from hara_agent.models import (
     ScenarioFeasibilityAssessment,
 )
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
+from hara_agent.services.analysis.scenario_physics import causal_physics_conflicts
 
 from .parsing import parse_confidence
 from .scenario_contract import RISK_DIMENSION_VALUES
@@ -59,88 +61,45 @@ class ScenarioRepairBoundaryError(ScenarioSchemaContractError):
     """A repair tried to downgrade an already-supported causal hop."""
 
 
+class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
+    """Parseable evidence contradicts the supplied physical world."""
+
+
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v16-source-scope"
+    PROMPT_VERSION = "scenario-feasibility-v17-physical-context"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
-    SYSTEM_PROMPT = """ROLE
-你是汽车功能安全HARA工程因果相关性分类器，不是事故故事生成器。输入候选已通过确定性ODD过滤。你的任务是独立判断给定Malfunction在每个明确Scenario中，是否存在由已提供工程事实支持的可信因果链；不是先假设每个Scenario都有危险再寻找解释。负面结论是正常且预期的输出，不得按固定数量保留场景，也不得为了提高覆盖率强行生成Hazard。
+    paired_driver_requests = True
+    SYSTEM_PROMPT = """ROLE AND EVIDENCE
+你是 HARA 工程因果分类器。独立判断每个明确场景的 physical feasibility、functional relevance、causal relevance。
+只能使用当前场景 causal_evidence_view 的精确 evidence_ref、固定 Malfunction 字段及共享上下文；共享上下文仅表示相同输入，不能复制其他分支的结论。
+不得发明额外故障、道路参与者、恐慌、方向改变、道路条件、干预能力、碰撞参数或概率。场景名称不能替代结构化事实。source_operating_conditions 是来源范围；permitted_road_types 是允许的替代条件，不证明所有几何条件已被覆盖。selected_method_conditions 不得扩大项目 ODD。
 
-STRICT FACT BOUNDARY
-只能使用请求中明确提供的：1) Malfunction description、FunctionalEffect与VehicleLevelHazard；2) Scenario facts；3) 请求中明确给出的Item facts；4) 请求中明确给出的approved engineering rules；以及由这些事实直接支持的一阶工程后果。未知事实不得默认存在。不得为了建立危险链新增独立世界状态，包括未提供的特定交通参与者、后车、突然出现的行人或障碍物、天气、湿滑/低附着路面、坡道、驾驶员恐慌或误操作、远程操作员失误、通信/传感器/执行器/转向等新增故障、机械滑移、车辆前窜或侧滑。若这些事实明确存在于输入中才可使用。允许把输入已明确给出的VehicleLevelHazard作为危险状态依据，但不得擅自把泛化的碰撞可能性具体化为某个未提供的对象或事故类型。
+CAUSAL CHAIN AND STAGE BOUNDARY
+只分析 M→B→I→H，到 Hazardous Event 结束，不输出 Potential Harm、S/E/C、ASIL、FTTI 或安全目标。
+Hazardous Event 是危险车辆状态与运行场景的组合，事故无须已经发生；缺少具体碰撞对象本身不能作为B_TO_I或I_TO_H断裂的唯一理由。已有运行条件下失去横纵向控制可构成危险状态，但不得写成与特定行人、车辆或设施必然碰撞。
+M_TO_B 用 FINALIZED MF.description 和 MF.functional_effect 的 DIRECT_FACT 说明已有失效的直接行为。缺少当前场景触发条件应在 B_TO_I 检查，不得改写失效定义或将其改成 M_TO_B 缺口。
+MF.vehicle_level_hazard 是上游因果主张，不能单独证明 I_TO_H。每个 claim 必须解释所引证据怎样支持这一跳。
+DIRECT_FACT 只能引用 [kind=DIRECT_FACT]；DERIVED_PHYSICS 只能引用 [kind=DERIVED_PHYSICS] 的已有计算，不能把速度/距离原始事实伪装成已计算物理结论；APPROVED_RULE 只能引用 [kind=APPROVED_RULE]。一跳中不要混用不同 kind。
+已验证且限于当前场景的分析事实可引用；未验证 SCENARIO_DEFINED 假设不能支持正向因果链。
+只有三跳均有支持时 causally_relevant=true、breakpoint=NONE。否则在第一跳证据不足处停止，breakpoint 为 M_TO_B/B_TO_I/I_TO_H，该跳 basis_type=ASSUMPTION，claim 指明缺少的必要条件，evidence_refs 可为 []，省略后续跳。保留前面已成立的跳，不得为了格式修复而降低已有证据结论。
+false 时 hazardous_event=""、risk_dimension_changes=[]。没有证据不等于证明不可能。positive 时 hazardous_event 非空，risk_dimension_changes 仍可为 []。
 
-CAUSAL CHAIN TEST
-仅当以下链条每一跳连续且有输入依据时，causally_relevant才可为true：Malfunction(M) → direct system/vehicle behavior(B) → interaction with explicit Scenario facts(I) → Hazardous Event(H) → direct Potential Harm。M→B必须来自给定失效语义；B→I表示失效行为在当前运行场景、车辆状态、速度或其他明确条件下实际发生或受到实质影响，不要求场景预先列出碰撞对象；I→H不得依赖新发明的initiating event，但输入已给出的VehicleLevelHazard与当前运行条件共同形成危险车辆状态时，该状态本身即可构成Hazardous Event；H→Harm允许一阶、通用的工程伤害推理，但不得增加第二条新故障链或声称存在某个未提供的具体碰撞对象。可信因果可能性不要求事故100%必然发生，也不要求碰撞已经发生；必须有完整、工程上可信且由已知条件支持的路径。physical feasibility、functional relevance与causal relevance必须分别判断；physical=true或functional=true不推出causal=true。
+PHYSICAL CONSISTENCY
+前后左右以本车坐标为准；倒车时不要把后方对象改成前方，不要声称远离对象时距离正在缩小。
+对象类别与运动状态分开：静止电车仍是电车。初始/正常车速不等于故障可达速度或碰撞速度。静止后溜车需要独立运动依据，不能直接用正常上限；静止 EPB 夹紧损坏不能直接当成外部碰撞伤害。
 
-HAZARD VERSUS HARM BOUNDARY
-Hazardous Event是“危险车辆状态与运行场景的组合”，不是已经发生的事故或伤害。例如，在明确的Active运行状态和车速下发生非预期横纵向控制、无法退出车辆控制、制动/转向能力丧失或轨迹显著偏离，可在无需假设具体障碍物的情况下形成Hazardous Event。Potential Harm才描述该危险状态可直接导致的通用伤害类型。若输入没有具体对象，只能使用“可能发生碰撞/冲击并造成伤害”等通用表述，不得写成与特定行人、车辆或设施必然碰撞。缺少具体碰撞对象本身不能作为B_TO_I或I_TO_H断裂的唯一理由；只有当VehicleLevelHazard必须依赖某个未提供条件才存在时，才标记ASSUMPTION。
-
-COUNTERFACTUAL TEST
-设置causally_relevant=true前，内部检查：禁止加入任何输入未提供的新事件时，仅依靠当前明确事实，危险车辆状态是否仍能由Malfunction在该Scenario中合理产生？不要把“是否已存在具体碰撞对象”误作“危险状态是否存在”。若危险状态本身仍需一个未提供的独立条件才成立，必须返回causally_relevant=false、risk_dimensions_changed=[]、hazardous_event=""，并通过breakpoint及结构化hop说明M→B、B→I或I→H在哪一跳断裂。
-
-RISK DIMENSION TEST
-risk_dimensions_changed表示“当前Scenario中哪些明确事实需要下游重新评估风险维度”，不是相对于一个未提供的虚构基准，也不是列出所有涉及或理论上可能相关的维度。每个选择的dimension都必须在risk_dimension_changes中对应一个明确Scenario fact及因果解释；无法指出支持事实就不得选择。禁止blanket selection。因果链成立但当前事实不能证明某个canonical dimension需要变化时允许返回[]；这不会否定因果链，缺失的评分事实由后续评分质量门处理。severity只有在可信H→Harm链成立后才可因明确对象/条件改变；exposure可由明确的运行场景或暴露条件触发重新评估，具体E等级由后续MethodContract计算；controllability可由明确车速、车辆状态、driver position、direct control、remote monitoring或intervention channel等事实触发重新评估，不得假设恐慌；ftti/safe_state只可依据明确时间、距离、速度、干预通道或safe-state reachability事实。
-
-CONTRACT ILLUSTRATIONS
-无rear vehicle事实时，“unexpected braking→rear vehicle collision”无效。无driver panic/steering error事实时，“unexpected braking→driver panics→steering error→pedestrian collision”无效。相反，“active状态下的非预期横纵向控制→车辆轨迹不受预期控制”可构成危险车辆状态，通用Potential Harm可描述其可能造成碰撞/冲击伤害，但不得虚构具体碰撞对象；“failure to brake + explicit obstacle ahead + closing speed→distance continues decreasing→collision”则是对象和碰撞机制均明确的完整链。这些仅说明证据规则，不预设当前输入结论。
-
-OUTPUT PRINCIPLES
-不要返回rationale。可读说明由Python根据已验证的causal_chain、breakpoint和risk_dimension_changes确定性生成。confidence表示“当前分类判断由给定证据支持”的置信度，不是对生成故事详细程度的信心。不要生成无输入依据的概率、频率或可能性等级。此步骤只筛选候选，不直接计算S/E/C/ASIL。"""
-
-    SYSTEM_PROMPT += """
-
-ATOMIC SCENARIO AND FACT PRECEDENCE
-Each Scenario is one atomic, internally consistent world state. Scenario labels and names are descriptive only and MUST NOT override structured facts. Structured explicit facts take precedence over approved derived facts, natural-language summaries, and labels. Do not infer a replacement numeric or state value from a Scenario name; in particular, a label containing "standstill" does not make ego_speed_kph zero when the structured field says otherwise.
-source_operating_conditions preserves the source location and road context. permitted_road_types lists allowed alternatives, not simultaneously selected geometry and not proven equivalent conditions. Check whether their differences change the causal mechanism; do not claim all alternatives are covered by one example. selected_method_conditions refines the source world and must not replace or widen it. These context summaries do not add evidence references beyond the supplied fact registry.
-
-BATCH INDEPENDENCE
-Each assessment is an independent engineering classification. Do NOT compare scenarios with one another. Do NOT use another Scenario in the same batch as evidence. Do NOT normalize one Scenario relative to another, assume a progression or severity ladder from batch order, or carry facts between Scenarios. For each assessment use only the shared Malfunction facts, that Scenario's own explicit facts, and approved project or method facts. The Malfunction baseline is never another Scenario in the current batch; do not fabricate an unavailable baseline.
-"""
-
-    SYSTEM_PROMPT += """
-
-STRUCTURED CAUSAL EVIDENCE CONTRACT
-Readable rationale is not part of the Provider contract. Python renders it later from validated structured fields. Return breakpoint, a structured causal_chain with m_to_b, b_to_i, and i_to_h hops, and structured risk_dimension_changes. Every hop contains claim, basis_type, and evidence_refs. Cite only exact keys in that Scenario's read-only fact_registry. A fact's existence does not automatically prove a causal hop: the claim must explain how those cited facts support that exact transition. A causal claim without resolvable evidence cannot support causally_relevant=true.
-
-DIRECT_FACT cites explicit facts. DERIVED_PHYSICS cites only a precomputed DERIVED fact in the registry; raw speed, distance, or actor facts do not license arbitrary vehicle dynamics or human behavior. APPROVED_RULE cites only a registry entry explicitly marked approved. ASSUMPTION identifies a necessary unsupported condition. If any hop needed for a true chain is an ASSUMPTION, return causally_relevant=false at the appropriate breakpoint. Do not reduce confidence to preserve an unsupported chain.
-
-M_TO_B MALFUNCTION ANCHOR BOUNDARY
-For m_to_b, use the finalized MF.description and MF.functional_effect evidence records when they are present in the causal_evidence_view. This hop explains what the already-defined Malfunction does; it does not re-evaluate whether the current Scenario satisfies a trigger, operating condition, location, weather, or other applicability context embedded in the Malfunction wording. Missing Scenario applicability context must not be converted into an M_TO_B breakpoint. If the malfunction anchors support M→B but downstream interaction evidence is insufficient, preserve m_to_b and stop at B_TO_I. MF.vehicle_level_hazard is an upstream causal claim and is not a mandatory m_to_b anchor.
-
-For causally_relevant=true, all three hops are complete and breakpoint=NONE. For false, breakpoint identifies the first unsupported transition; do not fabricate negative facts or a completed hazard chain. risk_dimension_changes identifies only dimensions requiring downstream re-evaluation and supplies exact evidence_refs and a reason; do not calculate S/E/C/FTTI levels here. risk_dimensions_changed is not returned because Python derives it from validated risk_dimension_changes.
-
-Every returned causal_chain hop object MUST contain a non-empty claim. At the false-case breakpoint, an ASSUMPTION claim must explicitly name the necessary unsupported condition; never return an empty claim as a placeholder. Omit hop objects after the breakpoint instead of returning blank hop objects.
-
-MF.vehicle_level_hazard is an upstream causal claim, not independent proof of itself. It may provide context, but it MUST NOT be the sole evidence for i_to_h. The transition requires scenario evidence, bounded derived physics, or an approved rule that independently supports the transition. If no such evidence exists, stop at the first unsupported hop.
-
-    causal_chain MUST be a JSON object, never an array, string, or null. Its exact container shape is {"m_to_b":{"claim":"...","basis_type":"...","evidence_refs":[]},"b_to_i":{"claim":"...","basis_type":"...","evidence_refs":[]},"i_to_h":{"claim":"...","basis_type":"...","evidence_refs":[]}}. The downstream harm result is not part of this response. This illustrates structure only; claims and evidence must still be derived solely from the supplied facts. For a false result, include every hop through the declared breakpoint and omit later hops.
-"""
-
-    SYSTEM_PROMPT += """
-
-CAUSAL CONTEXT VIEW AND STAGE BOUNDARY
-The complete EvidenceRegistry is retained by the deterministic validator but is not injected into this prompt. For each Scenario, use only the compact causal_evidence_view and the fixed Malfunction fields. The view is selected deterministically from P1 physical/interaction facts, P2 intervention/control facts, and P3 operating context; downstream P4 risk metadata is omitted unless explicitly marked causal. A validated analytical Scenario atom fact included in the view is a bounded Method-instantiated condition for that Scenario and may be cited only for that Scenario; it is not a Project Fact. Unvalidated analysis assumptions remain prohibited as positive causal evidence. Return exact evidence_refs from that compact view. This stage ends at Hazardous Event: do not return or calculate a harm result, S/E/C, ASIL, FTTI, or exposure combination.
-"""
+OUTPUT CONTRACT
+输出 assessments 数组，每个请求 scenario_id 恰好一项。每项包含 scenario_id、physically_feasible、functionally_relevant、causally_relevant (JSON boolean)、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、confidence (0..1)、status (PENDING/FINALIZED)。
+causal_chain 是对象而非数组，结构 {"m_to_b":{"claim":"...","basis_type":"DIRECT_FACT","evidence_refs":[]},"b_to_i":{...},"i_to_h":{...}}。所有返回的 hop 必须有非空 claim；示例只说明结构，不构成证据。
+risk_dimension_changes 每项含 dimension、evidence_refs、reason；只选择当前事实明确需要重评的维度，使用用户提示中的枚举，不输出 risk_dimensions_changed 或 rationale。
+若不能证明跨驾驶员分支的无关性，dependency_metadata 只返回 {"complete":false}。
+只有完整枚举所有适用性与 M→B→I→H 输入时才可 complete=true，并给出 causal_evidence_fields、physical_feasibility_fields、scenario_identity_fields、noninterference_fields（场景字段名数组）及 child_subset_refinement（证明理由）。缺少引用不等于无关；驾驶员会影响使能、触发或危险形成时必须各自分析。"""
 
     MACHINE_OUTPUT_RULE = """MACHINE OUTPUT RULE
-Return exactly one JSON object matching the requested schema. Do not use Markdown. Do not wrap the response in ```json or any code fence. Do not add explanatory text before or after the JSON. The first non-whitespace character must be { and the last non-whitespace character must be }. All strings must be valid JSON strings. Do not include comments or trailing commas. The top-level object must remain {"assessments": [...]}.
-"""
-
-    SYSTEM_PROMPT += """
-
-CAUSAL DEPENDENCIES FOR SAFE REUSE
-Return optional dependency_metadata with complete (boolean), causal_evidence_fields,
-physical_feasibility_fields, scenario_identity_fields, noninterference_fields (arrays
-of Scenario fact field names), and child_subset_refinement (a reason).
-Only declare complete=true if all inputs to feasibility, function applicability and
-M→B→I→H are enumerated. Driver position may be noninterfering only if changing it
-does not change activation, triggers, operation, interaction or the existence of the
-hazard; effects confined to downstream C may be evaluated separately. State the
-engineering reason in child_subset_refinement. Absence from evidence_refs alone is
-not proof of irrelevance. If uncertain return complete=false. Do not copy conclusions
-between scenarios; the deterministic scheduler validates reuse separately.
+Return exactly one JSON object {"assessments": [...]} with valid JSON strings, no markdown, comments, trailing commas or explanation outside JSON.
 """
 
     def __init__(
@@ -176,6 +135,8 @@ between scenarios; the deterministic scheduler validates reuse separately.
         self.provider_max_tokens = self._provider_max_tokens()
 
     def _complete_json(self, request):
+        request = replace(request, metadata={**request.metadata,
+            "method_execution_identity": getattr(self, "method_execution_identity", {})})
         return (self.response_checkpoint.complete(self.client, request)
                 if self.response_checkpoint else self.client.complete_json(request))
 
@@ -1222,6 +1183,8 @@ between scenarios; the deterministic scheduler validates reuse separately.
             return error.code.value
         if isinstance(error, ScenarioRepairBoundaryError):
             return "REPAIR_BREAKPOINT_DOWNGRADE"
+        if isinstance(error, ScenarioSemanticConsistencyError):
+            return "PHYSICAL_SEMANTIC_CONFLICT"
         return {
             LLMEmptyOutputError: "LLM_EMPTY_OUTPUT_ERROR",
             LLMJSONContractError: "LLM_JSON_CONTRACT_ERROR",
@@ -1643,6 +1606,10 @@ between scenarios; the deterministic scheduler validates reuse separately.
                     f"expected={expected} batch={batch} split_path={split_path} "
                     f"split_depth={split_depth}"
                 )
+        if causal:
+            conflicts = causal_physics_conflicts(scenario, item)
+            if conflicts:
+                raise ScenarioSemanticConsistencyError("PHYSICAL_SEMANTIC_CONFLICT: " + ",".join(conflicts))
         causal_assessment = compile_causal_assessment(
             malfunction=malfunction,
             scenario=scenario,

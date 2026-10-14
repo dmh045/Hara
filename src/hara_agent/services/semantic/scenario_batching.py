@@ -145,11 +145,26 @@ def build_scenario_user_prompt(
     causal_evidence_budget: int = DEFAULT_CAUSAL_EVIDENCE_BUDGET,
 ) -> str:
     prefix, suffix = _prompt_parts(malfunction)
-    payload = "[" + ",".join(
+    serialized = [json.loads(
         _scenario_json(
             malfunction, item, project_registry, causal_evidence_budget,
-        ) for item in scenarios
-    ) + "]"
+        )) for item in scenarios]
+    shared = {}
+    if len(serialized) == 2:
+        for key in ("source_operating_conditions", "selected_method_conditions", "facts"):
+            left, right = (item.get(key, {}) for item in serialized)
+            common = {field: value for field, value in left.items() if field in right and right[field] == value}
+            if common:
+                shared[key] = common
+                for item in serialized:
+                    item[key] = {field: value for field, value in item[key].items() if field not in common}
+        lines = [item["causal_evidence_view"].splitlines() for item in serialized]
+        common_lines = [line for line in lines[0] if line in set(lines[1])]
+        shared["causal_evidence_view"] = "\n".join(common_lines)
+        for item, individual in zip(serialized, lines):
+            item["causal_evidence_view"] = "\n".join(line for line in individual if line not in common_lines)
+    payload = json.dumps({"shared_context": shared, "scenarios": serialized}, ensure_ascii=False,
+                         separators=(",", ":")) if shared else json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
     return prefix + payload + suffix
 
 
@@ -205,7 +220,9 @@ def build_scenario_batches(
             batches.append([scenario])
             continue
         next_payload_chars = current_payload_chars + serialized_chars + (1 if current else 0)
-        exceeds_chars = fixed_chars + next_payload_chars > max_chars
+        exceeds_chars = estimate_scenario_prompt_chars(malfunction, [*current, scenario],
+            system_prompt=system_prompt, project_registry=project_registry,
+            causal_evidence_budget=causal_evidence_budget) > max_chars
         exceeds_items = max_items is not None and len(current) >= max_items
         if current and (exceeds_chars or exceeds_items):
             batches.append(current)

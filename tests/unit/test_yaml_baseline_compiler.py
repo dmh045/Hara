@@ -31,7 +31,7 @@ def test_yaml_baseline_compiles_to_one_method_contract():
     assert len(method.asil.mappings) == 80
     assert isinstance(method.structured_risk_method, StructuredRiskMethod)
     assert len(method.structured_risk_method.exposure.atoms) == 197
-    assert method.compiler_version == "yaml-baseline-compiler-v3"
+    assert method.compiler_version == "yaml-baseline-compiler-v4"
 
 
 def test_yaml_baseline_rejects_duplicate_canonical_role():

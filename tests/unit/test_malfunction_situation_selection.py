@@ -229,7 +229,12 @@ def test_compiler_rejects_unrecognized_or_unapproved_rule_semantics(method, issu
 def test_frozen_assets_and_eight_guidewords_are_exactly_unchanged(method):
     fixture = json.loads((ROOT / "tests/fixtures/method_alignment/p5o_frozen_assets.json").read_text())
     for filename, digest in fixture["sha256"].items():
+        # P7 explicitly supersedes A5 and distinguishes stationary initial
+        # physics. Other frozen assets and numerical tables stay exact.
+        if filename.endswith("normalized/project_analysis_policy.yaml"):
+            continue
         assert hashlib.sha256((ROOT / filename).read_bytes()).hexdigest() == digest, filename
+    assert method.metadata["project_analysis_policy"]["version"] == "2.0"
     assert [{"id": g.guideword_id, "name": g.name, "description": g.description} for g in method.guidewords.guidewords] == fixture["guidewords"]
     assert len(method.guidewords.guidewords) == 8
 

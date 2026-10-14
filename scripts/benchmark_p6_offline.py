@@ -114,7 +114,8 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
     saved = json.loads(checkpoint.read_text())
     method = MethodSourceResolver().resolve(template_path=None, baseline_manifest_path=method_baseline,
                                           report_template_path=report_template).method
-    assert saved['method_contract']['method_source_hash'] == method.metadata['method_source_hash']
+    # Replay deliberately compares historical inputs with the active method.
+    # Both identities are reported; no historical risk grade is overwritten.
     typed = dict(saved['item_definition']['typed'])
     # Derived facts from old scenario identities do not become new project input.
     typed['risk_facts'] = [fact for fact in typed['risk_facts'] if 'scenario_id' not in fact.get('context', {})]
@@ -192,6 +193,7 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
         'source_run_id': saved['run_id'], 'provider_calls': 0, 'retries': 0,
         'input_tokens': 0, 'output_tokens': 0, 'elapsed_seconds': round(time.monotonic() - start, 3),
         'method_hash': method.metadata['method_source_hash'],
+        'source_method_hash': saved['method_contract']['method_source_hash'],
         'historical': {'scenario_malfunction_pairs': len(old_assessments),
                        'risk_records': len(saved['risk_results']), 'ratings': historical_ratings,
                        'causal_provider_calls': sum(a.get('actual_llm_calls', 0) for a in latest.values()),

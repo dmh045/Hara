@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from typing import Any
+import math
 
 from hara_agent.contracts import (
     ControllabilityFactState, HazardousEventRiskContext, HazardousEventRiskFact,
@@ -14,6 +15,7 @@ from hara_agent.models import ReviewStatus, ScenarioCandidate
 from hara_agent.services.analysis.scenario_physics import (
     derive_scenario_physics, has_analysis_assumption_lineage,
     source_has_provenance, source_is_accepted_for, source_origin, source_reference,
+    is_lateral_collision,
 )
 from hara_agent.services.analysis.risk_vocabulary_adapter import RiskVocabularyAdapter
 
@@ -55,7 +57,8 @@ class HazardousEventRiskContextService:
 
     @staticmethod
     def _number(value: Any) -> float | None:
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0):
             return None
         return float(value)
 
@@ -147,19 +150,25 @@ class HazardousEventRiskContextService:
             )
             for field in self._FIELDS
         }
-        relative_speed = values["relative_speed_kph"]
-        if (
-            relative_speed.status is RiskContextFactStatus.AVAILABLE
-            and (
-                float(relative_speed.value) <= 0
-                or scenario.get("closing_speed_kph") == 0
-            )
-            and values["ttc_s"].status is not RiskContextFactStatus.AVAILABLE
-        ):
-            values["ttc_s"] = HazardousEventRiskFact(
-                status=RiskContextFactStatus.TTC_NOT_CLOSING,
-                reason="TTC_NOT_CLOSING",
-            )
+        if values["ttc_s"].status is not RiskContextFactStatus.AVAILABLE:
+            closing_source = scenario.get("_fact_provenance", {}).get("closing_speed_kph", {})
+            accepted_closing = source_is_accepted_for(closing_source,
+                malfunction_id=malfunction_id, scenario_id=scenario_id)
+            zero_relative = (values["relative_speed_kph"].status is RiskContextFactStatus.AVAILABLE
+                             and values["relative_speed_kph"].value == 0)
+            if (accepted_closing and scenario.get("closing_speed_kph") == 0) or zero_relative:
+                status, reason = RiskContextFactStatus.TTC_NOT_CLOSING, "TTC_NOT_CLOSING"
+            else:
+                status = RiskContextFactStatus.UNAVAILABLE
+                if scenario.get("ttc_s") is not None:
+                    reason = values["ttc_s"].reason
+                elif is_lateral_collision(scenario.get("collision_type")) or str(scenario.get("object_position", "")).upper() in {"LEFT", "RIGHT"}:
+                    reason = "MODEL_NOT_APPLICABLE"
+                elif values["relative_distance_m"].status is not RiskContextFactStatus.AVAILABLE:
+                    reason = "MISSING_DISTANCE"
+                else:
+                    reason = "MISSING_GEOMETRY"
+            values["ttc_s"] = HazardousEventRiskFact(status=status, reason=reason)
         return HazardousEventRiskContext(
             malfunction_id=malfunction_id,
             scenario_id=scenario_id,
@@ -167,13 +176,23 @@ class HazardousEventRiskContextService:
             **values,
         )
 
-    @classmethod
+    def compatible_refinement(self, field: str, current: Any, incoming: Any, scenario: dict) -> bool:
+        """A method's configuration-independent category is not a new direction."""
+        if field != "collision_type":
+            return False
+        method = self.structured.severity
+        group = dict(method.road_user_groups).get(str(scenario.get("road_user_type", "")).upper())
+        mapping = dict(method.collision_types)
+        return (mapping.get(str(incoming).upper()) == "any"
+                and mapping.get(str(current).upper()) not in {None, "any"}
+                and any(band.collision_group == group and band.collision_type == "any" for band in method.bands))
+
     def validate_source_conflicts(
-        cls, scenario: dict[str, Any], incoming_values: dict[str, Any],
+        self, scenario: dict[str, Any], incoming_values: dict[str, Any],
     ) -> None:
         """Reject conflicting Scenario and ProjectFact values before merge."""
         for field, incoming in incoming_values.items():
-            if field not in cls._FIELDS or field not in scenario:
+            if field not in self._FIELDS or field not in scenario:
                 continue
             current = scenario[field]
             equal = (
@@ -181,7 +200,7 @@ class HazardousEventRiskContextService:
                 if isinstance(current, str) and isinstance(incoming, str)
                 else current == incoming
             )
-            if not equal:
+            if not equal and not self.compatible_refinement(field, current, incoming, scenario):
                 raise ValueError(
                     "FACT_SOURCE_CONFLICT: "
                     f"field={field!r} scenario_value={current!r} "
@@ -281,7 +300,7 @@ class HazardousEventRiskContextService:
             "status": "PENDING_INPUT", "branch": "TTC", "rule_id": "",
             "missing_reasons": [
                 "TTC_NOT_CLOSING" if ttc.status is RiskContextFactStatus.TTC_NOT_CLOSING
-                else "MISSING_RELATIVE_DISTANCE_OR_CLOSING_SPEED"
+                else ttc.reason or "MISSING_RELATIVE_DISTANCE_OR_CLOSING_SPEED"
             ],
         }
 

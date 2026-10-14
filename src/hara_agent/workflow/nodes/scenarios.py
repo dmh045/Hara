@@ -27,7 +27,7 @@ from ..review_artifacts import ReviewArtifactWriter
 from hara_agent.services.analysis.scenario_equivalence import driver_families, driver_reuse_proof
 
 
-SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v8-source-axis-coverage"
+SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v9-p7-physical-context"
 
 
 def _scenario_batch_cache_key(
@@ -40,6 +40,7 @@ def _scenario_batch_cache_key(
         "cache_version": SCENARIO_BATCH_CHECKPOINT_VERSION,
         "prompt_version": agent.prompt_version,
         "assessment_contract_version": agent.assessment_contract_version,
+        "method_execution_identity": getattr(agent, "method_execution_identity", {}),
         "causal_evidence_budget": getattr(
             agent, "causal_evidence_budget", DEFAULT_CAUSAL_EVIDENCE_BUDGET,
         ),
@@ -101,6 +102,23 @@ def _assess_instantiated_scenarios(
     families = driver_families(candidates) if any(
         candidate.analysis_instance.get("p6_generation") for candidate in candidates
     ) else [[candidate] for candidate in candidates]
+    if getattr(agent, "paired_driver_requests", False):
+        ordered = [candidate for family in families for candidate in family]
+        previous_max_items = agent.batch_max_items
+        try:
+            agent.batch_max_items = min(previous_max_items, 2)
+            assessments, audit = agent.assess(malfunction, ordered, project_registry=project_registry)
+        finally:
+            agent.batch_max_items = previous_max_items
+        by_id = {item.scenario_id: item for item in assessments}
+        audit["causal_reuse"] = {
+            "mode": "SHARED_REQUEST_INDEPENDENT_JUDGEMENTS",
+            "candidate_count": len(candidates), "representative_count": len(families),
+            "independently_assessed_count": len(candidates), "reused_count": 0,
+            "records": [],
+        }
+        audit["analytical_scenario_instantiation"] = instantiation
+        return [by_id[c.scenario_id] for c in candidates], audit
     representatives = [family[0] for family in families]
     assessments, audit = agent.assess(malfunction, representatives, project_registry=project_registry)
     by_id = {item.scenario_id: item for item in assessments}
@@ -176,6 +194,12 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                      checkpoint: Callable[[HARAState], object] | None = None,
                      review_artifact_writer: ReviewArtifactWriter | None = None) -> HARAState:
     assessments = []
+    agent.method_execution_identity = ({
+        "compiler_version": method.compiler_version,
+        "contract_version": method.contract_version,
+        "method_hash": method.metadata.get("method_source_hash"),
+        "policy": method.metadata.get("project_analysis_policy", {}),
+    } if method is not None else {})
     typed = state.item_definition.get("typed", {})
     project_facts = (
         ItemDefinitionFacts.from_dict(typed)

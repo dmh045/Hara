@@ -298,6 +298,7 @@ class ExposureMethodExecutor:
                 continue
             level = cls._level(atom, domain)
             usable = level in cls._VALID_LEVELS
+            raw = atom.raw_duration_value if domain is ExposureMethodDomain.TIME else atom.raw_frequency_value
             details.append({
                 "atom_id": atom_id,
                 "requested_domain": domain.value,
@@ -307,6 +308,12 @@ class ExposureMethodExecutor:
                 "skipped": not usable,
                 "skip_reason": "" if usable else "NO_VALUE_IN_SELECTED_DOMAIN",
                 "dimensions": list(atom.dimensions),
+                "raw_value": raw,
+                "value_state": "KNOWN" if usable else "UNKNOWN_TBD" if raw.casefold() == "tbd"
+                               else "SOURCE_DASH" if raw.casefold() in {"-", "dash", "—"}
+                               else "SOURCE_NULL" if raw.casefold() in {"none", "null"} else "MISSING",
+                "source_ref": f"{atom.source_ref.sheet}!{atom.source_ref.range}",
+                "participation_rule": "FUSA_V1_VALID_LEVELS_ONLY",
             })
             if usable:
                 values.append(level)

@@ -1,5 +1,6 @@
-policy_id: AVP_SEC_2026_09_V1
-version: "1.0"
+policy_id: AVP_SEC_2026_10_P7
+version: "2.0"
+supersedes: AVP_SEC_2026_09_V1
 project_scope: current_avp_item_definition
 source_kind: USER_RELAYED_HARA_ENGINEERING_OPINION
 source_note: >-
@@ -21,6 +22,32 @@ ego_speed_point_selection:
   status: CONFIRMED_FOR_CURRENT_PROJECT
   require_finite_closed_upper_bound: true
   require_source_and_scope: true
+  value_semantic: PRE_FAULT_OPERATING_SPEED
+  stationary_initial_speed_kph: 0
+  impact_speed_requires_separate_source: true
+severity_evaluation:
+  rule_id: P7_SAME_MECHANISM_FINITE_MAX_AND_INVARIANCE
+  status: CONFIRMED_FOR_CURRENT_PROJECT
+  source: HARA_P7_综合改进_整合开发提示词_20261014.md#S-1-S-4
+  aggregation: MAXIMUM_PHYSICALLY_POSSIBLE_BRANCH
+  invariance: ALL_FEASIBLE_BRANCHES_AND_TABLE_INTERVALS
+  require_same_mechanism_and_impact_time: true
+driver_location_convention:
+  rule_id: P7_C4_OUTSIDE_SEAT_AS_OUTSIDE_VEHICLE
+  status: CONFIRMED_FOR_CURRENT_PROJECT
+  project_scope: current_avp_item_definition
+  operating_modes: [parking_vehicle_control]
+  source: HARA_P7_综合改进_整合开发提示词_20261014.md#C-4
+  outside_driver_seat_is_outside_vehicle: true
+  display_label: 不在驾驶位
+atom_semantic_refinements:
+  Audi_state_standing:
+    source: raw/vda702_atoms.yaml#Audi_state_standing
+    source_label: Vehicle stands
+    ego_dynamics:
+      motion_state: STATIONARY
+      v_range_kph: [0, 0]
+      unit: kph
 controllability:
   unknown_override_policy: SKIP_TO_TTC
   basis: POSITIVE_OVERRIDE_ONLY_THEN_TTC_FALLBACK
@@ -40,7 +67,7 @@ decisions:
     scope: Use explicit scoped facts and deterministic scenario derivation; numeric and C defaults remain candidates until confirmed.
   A5:
     status: CONFIRMED_FOR_CURRENT_PROJECT
-    scope: Analyze each allowed driver-seat configuration; outside driver seat does not imply outside vehicle.
+    scope: Analyze each allowed driver-seat configuration. For the current AVP parking control project only, outside driver seat is analyzed as outside vehicle under P7 C-4; preserve original source wording.
 engineering_decisions:
   D1_BRAKING_OVERCOMMAND_TEMPLATE_APPLICABILITY:
     status: CONFIRMED_FOR_CURRENT_PROJECT

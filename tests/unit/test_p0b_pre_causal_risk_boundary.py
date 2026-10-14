@@ -165,6 +165,7 @@ def test_potential_harm_is_resolved_from_method_severity_semantics():
         "collision_type": "FRONTAL", "road_user_type": "VEHICLE",
         "_fact_provenance": {"relative_speed_kph": {
             "provenance": "PROJECT_INPUT",
+            "approval": "FINALIZED",
             "source_refs": [{"location": "tests/test_p0b_pre_causal_risk_boundary.py"}],
         }},
     }

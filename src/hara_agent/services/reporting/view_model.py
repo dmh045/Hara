@@ -186,6 +186,7 @@ class HARAReportViewModel:
     projection_metrics: dict[str, Any] | None = None
     generated_children: tuple[GeneratedChildView, ...] = ()
     malfunction_inventory: tuple[MalfunctionView, ...] = ()
+    item_facts: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -198,6 +199,7 @@ class HARAReportViewModel:
             "projection_metrics": dict(self.projection_metrics or {}),
             "generated_children": [item.to_dict() for item in self.generated_children],
             "malfunction_inventory": [item.to_dict() for item in self.malfunction_inventory],
+            "item_facts": list(self.item_facts),
             "schema_hash": self.schema_hash,
             "method_contract_hash": self.method_contract_hash,
             "style_template_hash": self.style_template_hash,

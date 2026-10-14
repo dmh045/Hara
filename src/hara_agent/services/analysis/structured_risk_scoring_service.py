@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from .scenario_physics import source_is_accepted_for
 
 from hara_agent.contracts import (
     CalculationStatus, ExposureDimensionCoverageDecision,
@@ -147,6 +148,8 @@ class StructuredRiskScoringService:
         return None
 
     def score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
+        if "collision_branches" in scenario:
+            return self._score_collision_branches(scenario, hazard_event)
         malfunction_id = str(scenario.get("malfunction_id", "UNKNOWN"))
         scenario_id = str(scenario.get("scenario_id", "UNKNOWN"))
         severity_method = self.structured.severity
@@ -192,33 +195,6 @@ class StructuredRiskScoringService:
             pending_reason=s.get("pending_reason", ""),
         )
         coverage_decision = self._coverage_decision(scenario)
-        if s["status"] is CalculationStatus.FINALIZED and s["value"] == "S0":
-            source = s["source_ref"]
-            exposure = self._result(
-                value_key="exposure_score", value="E0",
-                status=CalculationStatus.FINALIZED,
-                reason="S0 activated the approved risk short-circuit.",
-                rule_id="ASIL-ZERO-SHORT-CIRCUIT", source_ref=source,
-                inputs_used=("severity_score",), exposure_method="SHORT_CIRCUIT",
-                coverage_status=coverage_decision.coverage_status.value,
-                coverage_rule_ids=list(coverage_decision.coverage_rule_ids),
-                coverage_granularity=coverage_decision.granularity,
-                coverage_gate_applied=False,
-                executor_invoked=False,
-            )
-            controllability = self._result(
-                value_key="controllability_score", value="C0",
-                status=CalculationStatus.FINALIZED,
-                reason="S0 activated the approved risk short-circuit.",
-                rule_id="ASIL-ZERO-SHORT-CIRCUIT", source_ref=source,
-                inputs_used=("severity_score",),
-                decision_status="SHORT_CIRCUIT",
-                unknown_override_policy=self.structured.controllability_branch_policy.unknown_override_policy.value,
-                unknown_policy_action="NOT_INVOKED",
-                rule_match_states=[], executor_invoked=False,
-            )
-            return {"severity": severity, "exposure": exposure, "controllability": controllability}
-
         gated_exposure = self._coverage_gated_exposure(scenario, coverage_decision)
         if gated_exposure is not None:
             c_input = self.inputs.controllability(malfunction_id, scenario_id, scenario)
@@ -311,4 +287,90 @@ class StructuredRiskScoringService:
             inputs_used=c.inputs_used, selected_profile_id=c.profile_id,
             **self._controllability_extra(c),
         )
+        controllability["avoidance_paths"] = {
+            "braking": {"profile_id": c.profile_id, "status": c.status.value, "result": c.value},
+            "steering": {
+                "status": "UNAVAILABLE_FAILED_CONTROL" if scenario.get("steering_control_available") is False
+                          else "PENDING_METHOD_SEMANTICS",
+                "reason": "Failed steering cannot be an avoidance means." if scenario.get("steering_control_available") is False
+                          else "Active MethodContract has no approved steering avoidance rule; no lateral TTC bands inferred.",
+            },
+        }
         return {"severity": severity, "exposure": exposure, "controllability": controllability}
+
+    def _score_collision_branches(self, scenario: dict, hazard_event: str) -> dict:
+        """Evaluate a finite, evidenced set through this same S/E/C chain.
+
+        Breakpoints partition a bounded speed interval into constant table
+        regions. Evaluate each boundary and each open region, including gaps;
+        endpoints alone do not prove invariance for a nonmonotone table.
+        """
+        branches = scenario["collision_branches"]
+        base = {key: value for key, value in scenario.items() if key != "collision_branches"}
+        policy = self.method.metadata.get("project_analysis_policy", {}).get("severity_evaluation", {})
+        metadata = scenario.get("_fact_provenance", {}).get("collision_branches", {})
+        accepted = source_is_accepted_for(metadata,
+            malfunction_id=str(scenario.get("malfunction_id", "")), scenario_id=str(scenario.get("scenario_id", "")))
+        rows, failures = [], []
+        if policy.get("status") != "CONFIRMED_FOR_CURRENT_PROJECT" or not accepted or not isinstance(branches, list) or not branches:
+            failures.append("EMPTY_OR_UNAPPROVED_COLLISION_BRANCH_SET")
+        else:
+            for branch in branches:
+                if isinstance(branch, dict) and branch.get("physically_possible") is False:
+                    continue
+                if (not isinstance(branch, dict) or not branch.get("branch_id")
+                        or branch.get("mechanism_id") != scenario.get("harm_mechanism_id")
+                        or not branch.get("mechanism_id") or not branch.get("impact_time_id")
+                        or branch.get("physically_possible") is not True):
+                    failures.append("BRANCH_MECHANISM_OR_PHYSICS_UNRESOLVED")
+                    continue
+                view = {**base, **branch}
+                view["_fact_provenance"] = {**base.get("_fact_provenance", {}), **branch.get("_fact_provenance", {})}
+                interval = branch.get("relative_speed_range_kph")
+                points = [branch.get("relative_speed_kph")]
+                if interval is not None:
+                    if (not isinstance(interval, (list, tuple)) or len(interval) != 2
+                            or any(self.inputs._number(value) is None for value in interval)
+                            or interval[0] > interval[1]):
+                        failures.append("INVALID_FINITE_SPEED_INTERVAL")
+                        continue
+                    low, high = map(float, interval)
+                    cuts = sorted({low, high, *(float(bound) for band in self.structured.severity.bands
+                        for bound in (band.lower_kph, band.upper_kph)
+                        if bound is not None and low <= bound <= high)})
+                    points = sorted(set(cuts + [(left + right) / 2 for left, right in zip(cuts, cuts[1:])]))
+                    view["_fact_provenance"]["relative_speed_kph"] = view["_fact_provenance"].get("relative_speed_range_kph", {})
+                for point in points:
+                    result = self.score({**view, "relative_speed_kph": point}, hazard_event)
+                    rows.append({"branch_id": branch["branch_id"], "impact_time_id": branch["impact_time_id"],
+                                 "relative_speed_kph": point, "scores": result})
+                    if result["severity"]["engineering_status"] != "FINALIZED":
+                        failures.append("BRANCH_SEVERITY_UNRESOLVED")
+        if failures or not rows:
+            result = self.score(base, hazard_event)
+            result["severity"].update(severity_score="", engineering_status="PENDING",
+                calculation_status="PENDING_INPUT", pending_reason="COLLISION_BRANCH_SET_UNRESOLVED",
+                reasoning="; ".join(sorted(set(failures))), executor_invoked=False)
+        else:
+            levels = list(self.method.asil.severity_levels)
+            deciding = max(rows, key=lambda row: levels.index(row["scores"]["severity"]["severity_score"]))
+            result = deciding["scores"]
+            # E/C belong to the same selected physical branch; retain all tied
+            # cases in the trace rather than borrowing a C from another object.
+            result["severity"]["deciding_branch_id"] = deciding["branch_id"]
+            result["severity"]["invariant"] = len({row["scores"]["severity"]["severity_score"] for row in rows}) == 1
+            tied = [row for row in rows if row["scores"]["severity"]["severity_score"] == result["severity"]["severity_score"]]
+            for dimension in ("exposure", "controllability"):
+                score_key = dimension + "_score"
+                if len({(row["scores"][dimension][score_key], row["scores"][dimension]["engineering_status"]) for row in tied}) > 1:
+                    result[dimension] = {**result[dimension], score_key: "", "engineering_status": "PENDING",
+                        "calculation_status": "PENDING_INPUT", "pending_reason": "DISTINCT_BRANCH_RISK_CONDITIONS",
+                        "reasoning": "Equal maximum S branches have different E/C; retain separate branch evaluations."}
+        result["severity"]["branch_evaluations"] = [
+            {"branch_id": row["branch_id"], "impact_time_id": row["impact_time_id"],
+             "relative_speed_kph": row["relative_speed_kph"],
+             "S": row["scores"]["severity"]["severity_score"],
+             "E": row["scores"]["exposure"]["exposure_score"],
+             "C": row["scores"]["controllability"]["controllability_score"],
+             "status": row["scores"]["severity"]["calculation_status"]} for row in rows]
+        return result

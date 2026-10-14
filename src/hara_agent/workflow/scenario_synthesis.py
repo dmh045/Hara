@@ -95,6 +95,7 @@ class ScenarioSynthesisRunner:
         policy = method.metadata.get("project_analysis_policy", {})
         policy = policy if isinstance(policy, dict) else {}
         self.driver_brancher = DriverConfigurationBrancher(
+            policy=policy,
             policy_id=str(policy.get("policy_id", "")),
         )
 

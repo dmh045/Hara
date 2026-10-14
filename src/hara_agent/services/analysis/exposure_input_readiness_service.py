@@ -310,6 +310,8 @@ class ExposureInputReadinessService:
                     assessment["change_witnesses"].append({
                         "atom_id": candidate_id,
                         "result": self._preview(result),
+                        "applicability_proof": ("NOT_ESTABLISHED_OPTIONAL_DIMENSION"
+                            if binding.get("applicability_status") == "OPTIONAL" else "SOURCE_CANDIDATE_CONSTRAINTS"),
                     })
                     # One source-backed witness is enough to prove that a
                     # final E would be premature; keep audit artifacts compact.
@@ -338,9 +340,13 @@ class ExposureInputReadinessService:
             combinations = product(*[(None, *ids) for _, ids in pools])
             for index, combination in enumerate(islice(combinations, 257)):
                 if index == 256:
-                    unresolved_relevant.extend(dimension for dimension, _ in pools)
-                    dimensions.append({"joint_preview": "PROOF_BUDGET_EXCEEDED", "preview_limit": 256})
-                    break
+                    return self._result(
+                        status="PENDING_PROOF_BUDGET", reason_code="EXPOSURE_PROOF_BUDGET_EXCEEDED",
+                        baseline=baseline, bindings=bindings, atom_ids=atom_ids,
+                        dimensions=[*dimensions, {"joint_preview": "PROOF_BUDGET_EXCEEDED", "preview_limit": 256}],
+                        binding_issues=binding_issues, unresolved_relevant=[],
+                        unresolved_irrelevant=unresolved_irrelevant,
+                    )
                 selected = list(dict.fromkeys([*atom_ids, *(value for value in combination if value)]))
                 if not self._compatible_completion(selected):
                     continue
@@ -353,9 +359,11 @@ class ExposureInputReadinessService:
 
         if unresolved_relevant:
             unresolved_irrelevant = [dimension for dimension in unresolved_irrelevant if dimension not in unresolved_relevant]
+            applicability_unresolved = all(bindings.get(dimension, {}).get("applicability_status") == "OPTIONAL"
+                                           for dimension in unresolved_relevant)
             return self._result(
-                status="PENDING_RELEVANT_DIMENSION",
-                reason_code="EXPOSURE_RELEVANT_DIMENSION_UNRESOLVED",
+                status="PENDING_DIMENSION_APPLICABILITY" if applicability_unresolved else "PENDING_RELEVANT_DIMENSION",
+                reason_code="EXPOSURE_DIMENSION_APPLICABILITY_UNPROVEN" if applicability_unresolved else "EXPOSURE_RELEVANT_DIMENSION_UNRESOLVED",
                 baseline=baseline, bindings=bindings, atom_ids=atom_ids,
                 dimensions=dimensions, binding_issues=binding_issues,
                 unresolved_relevant=unresolved_relevant,

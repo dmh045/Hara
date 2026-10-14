@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import math
+from dataclasses import replace
 from enum import Enum
 from typing import Any
 
@@ -15,6 +16,7 @@ class DerivedPhysicsType(str, Enum):
     TTC = "TTC"
     RELATIVE_MOTION = "RELATIVE_MOTION"
     CANONICAL_INPUT_NORMALIZATION = "CANONICAL_INPUT_NORMALIZATION"
+    KINEMATIC_IMPACT_SPEED = "KINEMATIC_IMPACT_SPEED"
 
 
 _ANALYSIS_ORIGIN = FactProvenance.SCENARIO_DEFINED.value
@@ -22,8 +24,31 @@ _FINAL_APPROVALS = {ReviewStatus.FINALIZED.value, "APPROVED"}
 TTC_CLOSING_FORMULA_IDENTITY = "relative_distance_m / (closing_speed_kph / 3.6)"
 
 
+def restore_template_ego_direction(scenario: ScenarioCandidate, templates) -> tuple[str, dict] | None:
+    """Recover a compiled explicit maneuver from this candidate's exact option.
+
+    This also repairs historical children without guessing direction from the
+    object's position. Existing direction is retained for conflict review.
+    """
+    if scenario.facts.get("ego_longitudinal_direction"):
+        return None
+    for metadata in scenario.fact_provenance.values():
+        if not isinstance(metadata, dict) or metadata.get("selection_basis") != "EXACT_ACTIVE_OPTION":
+            continue
+        option_id = metadata.get("source_option_id", "")
+        for template in templates:
+            for index, option in enumerate(template.required_scenarios, 1):
+                if option_id == f"{template.template_id}:OPTION:{index}" and option.ego_longitudinal_direction:
+                    return option.ego_longitudinal_direction, {**metadata,
+                        "source_refs": [{"source_type": "method_contract", "source_id": option.source_ref.source_hash,
+                                         "location": f"{option.source_ref.sheet}!{option.source_ref.range}", "excerpt": option.label}],
+                        "selection_basis": "COMPILED_EXPLICIT_TEMPLATE_MANEUVER"}
+    return None
+
+
 def _nonnegative_number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value < 0):
         return None
     return float(value)
 
@@ -133,7 +158,16 @@ def select_ego_speed_from_policy(
         "location": f"{policy_source.get('location', '')}:ego_speed_point_selection",
         "excerpt": str(rule["rule_id"]),
     })
-    return float(upper), {
+    bindings = scenario.facts.get("method_scenario_dimensions", {})
+    stationary_bindings = [binding for binding in bindings.values()
+                          if isinstance(binding, dict) and binding.get("resolution_status") == "RESOLVED"
+                          and binding.get("method_semantics", {}).get("ego_dynamics", {}).get("motion_state") == "STATIONARY"]
+    stationary = bool(stationary_bindings) and rule.get("stationary_initial_speed_kph") == 0
+    if stationary:
+        refs.extend({"source_type": "method_contract", "source_id": str(binding.get("atom_id", "")),
+                     "location": str(binding.get("atom_provenance", {}).get("source_rule", "")),
+                     "excerpt": str(binding.get("atom_label", ""))} for binding in stationary_bindings)
+    return (float(rule["stationary_initial_speed_kph"]) if stationary else float(upper)), {
         "provenance": FactProvenance.SCENARIO_DEFINED.value,
         "origin": FactProvenance.SCENARIO_DEFINED.value,
         "approval": ReviewStatus.FINALIZED.value,
@@ -146,8 +180,8 @@ def select_ego_speed_from_policy(
             "ego_speed_constraint", ReviewStatus.FINALIZED,
             _input_metadata(scenario, "ego_speed_constraint")[1], metadata,
         )],
-        "selection_basis": "GOVERNED_CLOSED_UPPER_BOUND",
-        "analysis_value_semantic": "CURRENT_OPERATION_EGO_SPEED",
+        "selection_basis": "EXPLICIT_STATIONARY_INITIAL_STATE" if stationary else "GOVERNED_CLOSED_UPPER_BOUND",
+        "analysis_value_semantic": rule.get("value_semantic", "CURRENT_OPERATION_EGO_SPEED"),
         "effective_range_kph": [float(lower), float(upper)],
         "project_policy_id": str(policy.get("policy_id", "")),
         "project_policy_version": str(policy.get("version", "")),
@@ -257,11 +291,39 @@ def time_to_collision_s(distance_m: Any, relative_speed_kph: Any) -> float | Non
     return round(distance / (speed / 3.6), 6)
 
 
+def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any]) -> list[str]:
+    """Find explicit coordinate contradictions, without inferring a new hazard."""
+    facts = scenario.facts
+    claims = [str(payload.get("hazardous_event", ""))]
+    claims.extend(str(hop.get("claim", "")) for hop in
+                  payload.get("causal_chain", {}).values() if isinstance(hop, dict))
+    text = " ".join(claims).casefold()
+    terms = {"FRONT": ("前方", "前车", "in front"),
+             "REAR": ("后方", "后车", "behind"),
+             "LEFT": ("左侧", "left side"), "RIGHT": ("右侧", "right side")}
+    opposite = {"FRONT": "REAR", "REAR": "FRONT", "LEFT": "RIGHT", "RIGHT": "LEFT"}
+    position = str(facts.get("object_position", "")).upper()
+    conflicts = []
+    if position in terms and not any(word in text for word in terms[position]) and any(
+        word in text for word in terms[opposite[position]]
+    ):
+        conflicts.append("OBJECT_POSITION_CONTRADICTS_CAUSAL_CLAIM")
+    closing = longitudinal_closing_speed_kph(
+        facts.get("ego_speed_kph"), facts.get("object_speed_kph"),
+        ego_direction=facts.get("ego_longitudinal_direction"),
+        object_direction=facts.get("object_longitudinal_direction"),
+        object_position=position, collision_type=facts.get("collision_type"),
+    )
+    if closing == 0 and any(word in text for word in ("距离快速缩小", "距离进一步缩小", "距离将快速缩小")):
+        conflicts.append("NOT_CLOSING_CONTRADICTS_CAUSAL_CLAIM")
+    return conflicts
+
+
 def _distance_m(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value) if value >= 0 else None
+        return _nonnegative_number(value)
     match = re.fullmatch(
         r"\s*(\d+(?:\.\d+)?)\s*m\s*", str(value or ""), re.IGNORECASE,
     )
@@ -382,6 +444,12 @@ def source_is_accepted_for(
         ) and all(isinstance(item, dict) for item in inputs)
     if not source_has_provenance(metadata):
         return False
+    scope = metadata.get("applicable_scope", {})
+    if isinstance(scope, dict) and any(
+        scope.get(key) and str(scope[key]) != expected
+        for key, expected in (("malfunction_id", malfunction_id), ("scenario_id", scenario_id))
+    ):
+        return False
     if (
         str(metadata.get("provenance", "")).upper() == FactProvenance.DERIVED.value
         and metadata.get("inputs")
@@ -469,7 +537,7 @@ def derive_scenario_physics(
         "impact_speed_kph", "delta_v_kph",
     ):
         value = scenario.facts.get(key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        if _nonnegative_number(value) is None:
             continue
         normalized[key] = (float(value), key)
     distance_input_key = (
@@ -544,6 +612,32 @@ def derive_scenario_physics(
             approval, refs, metadata,
         )
 
+    # This small model is opt-in through a sourced scenario applicability fact.
+    # A capability, Atom envelope, slope label or target speed cannot activate it.
+    if ("ego_impact_speed_kph" not in scenario.facts
+            and scenario.facts.get("fault_motion_model") == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"
+            and scenario.facts.get("impact_time_id")):
+        initial = _nonnegative_number(scenario.facts.get("ego_speed_kph"))
+        travel = _nonnegative_number(scenario.facts.get("travel_to_impact_m"))
+        acceleration = scenario.facts.get("longitudinal_acceleration_mps2")
+        if (initial is not None and travel is not None
+                and isinstance(acceleration, (int, float)) and not isinstance(acceleration, bool)
+                and math.isfinite(acceleration)):
+            squared = (initial / 3.6) ** 2 + 2 * acceleration * travel
+            # Negative means the assumed trajectory stops before the target.
+            # It does not establish S0 or C0 for the hazardous event.
+            if squared >= 0:
+                impact = derived_record("ego_impact_speed_kph", round(math.sqrt(squared) * 3.6, 6),
+                    ("ego_speed_kph", "longitudinal_acceleration_mps2", "travel_to_impact_m",
+                     "fault_motion_model", "impact_time_id"),
+                    DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
+                    formula="3.6 * sqrt((ego_speed_kph / 3.6)^2 + 2 * longitudinal_acceleration_mps2 * travel_to_impact_m)")
+                records.append(impact)
+                scenario = replace(scenario, facts={**scenario.facts, "ego_impact_speed_kph": impact.value},
+                    fact_provenance={**scenario.fact_provenance, "ego_impact_speed_kph": {
+                        **impact.metadata, "provenance": "DERIVED", "approval": impact.approval_status.value,
+                        "source_refs": [_source_dict(ref) for ref in impact.source_refs]}})
+
     ego = scenario.facts.get("ego_speed_kph")
     obj = scenario.facts.get("object_speed_kph")
     ego_direction = scenario.facts.get("ego_longitudinal_direction")
@@ -551,18 +645,29 @@ def derive_scenario_physics(
     collision = scenario.facts.get("collision_type")
     position = scenario.facts.get("object_position")
     relative_speed = scenario.facts.get("relative_speed_kph")
+    speed_semantic = scenario.fact_provenance.get("ego_speed_kph", {}).get("analysis_value_semantic", "")
+    impact_ego = scenario.facts.get("ego_impact_speed_kph")
+    impact_object = scenario.facts.get("object_impact_speed_kph")
+    impact_time = scenario.facts.get("impact_time_id")
+    same_impact_time = bool(impact_time) and impact_ego is not None and impact_object is not None
+    relative_ego = impact_ego if same_impact_time else ego if speed_semantic != "PRE_FAULT_OPERATING_SPEED" else None
+    relative_object = impact_object if same_impact_time else obj
     calculated_relative = closing_relative_speed_kph(
-        ego, obj, ego_direction=ego_direction,
+        relative_ego, relative_object, ego_direction=ego_direction,
         object_direction=object_direction, collision_type=collision,
     )
     if relative_speed is None and calculated_relative is not None:
         relative_speed = calculated_relative
         relative_inputs = (
-            ("ego_speed_kph", "object_speed_kph", "collision_type")
-            if obj == 0 else
+            ("ego_speed_kph", "object_speed_kph")
+            if relative_object == 0 else
             ("ego_speed_kph", "object_speed_kph", "ego_longitudinal_direction",
              "object_longitudinal_direction", "collision_type")
         )
+        if same_impact_time:
+            relative_inputs = tuple({"ego_speed_kph": "ego_impact_speed_kph",
+                                    "object_speed_kph": "object_impact_speed_kph"}.get(key, key)
+                                    for key in relative_inputs) + ("impact_time_id",)
         records.append(derived_record(
             "relative_speed_kph", calculated_relative,
             relative_inputs,
@@ -574,12 +679,14 @@ def derive_scenario_physics(
             "ego_longitudinal_direction", "object_longitudinal_direction",
         )
     )
-    if directional_geometry_supplied:
-        closing_speed = longitudinal_closing_speed_kph(
+    direct_closing = _nonnegative_number(scenario.facts.get("closing_speed_kph"))
+    calculated_closing = longitudinal_closing_speed_kph(
             ego, obj, ego_direction=ego_direction,
             object_direction=object_direction, object_position=position,
             collision_type=collision,
-        )
+    )
+    if directional_geometry_supplied and calculated_closing is not None:
+        closing_speed = calculated_closing
         ttc_input_keys = (
             distance_input_key, "ego_speed_kph", "object_speed_kph",
             "ego_longitudinal_direction", "object_longitudinal_direction",
@@ -595,7 +702,7 @@ def derive_scenario_physics(
         # Relative-speed magnitude alone does not establish approach geometry.
         # A separately supplied closing speed can be consumed with its own
         # source chain; downstream validation rejects unapproved inputs.
-        closing_speed = _nonnegative_number(scenario.facts.get("closing_speed_kph"))
+        closing_speed = direct_closing
         ttc_input_keys = (distance_input_key, "closing_speed_kph")
         formula = TTC_CLOSING_FORMULA_IDENTITY
     ttc = time_to_collision_s(distance_m, closing_speed)

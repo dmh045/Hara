@@ -34,6 +34,7 @@ class EngineeringReportTextMapper:
         "OBJECT_CYCLIST": "骑行者",
         "OBJECT_VEHICLE": "其他车辆",
         "OBJECT_STATIC": "静态障碍物",
+        "OBJECT_TRAM": "有轨电车",
         "OBJECT_OCCUPANT": "车辆乘员",
         "TRAFFIC_FOLLOWING": "后方跟随车辆",
         "TRAFFIC_ONCOMING": "对向交通参与者",
@@ -116,6 +117,10 @@ class EngineeringReportTextMapper:
             and isinstance(point_provenance, Mapping)
             and str(point_provenance.get("approval", "")).upper() == "FINALIZED"
         ):
+            if point_provenance.get("analysis_value_semantic") == "PRE_FAULT_OPERATING_SPEED":
+                impact = facts.get("ego_impact_speed_kph")
+                suffix = f"；碰撞时本车速度：{cls._number(impact)} km/h" if isinstance(impact, (int, float)) and not isinstance(impact, bool) else "；碰撞速度另行确定"
+                return f"故障前/初始车速：{cls._number(point)} km/h" + suffix
             return f"分析车速：{cls._number(point)} km/h"
 
         constraint = facts.get("ego_speed_constraint")
@@ -158,9 +163,12 @@ class EngineeringReportTextMapper:
         }
         facts = getattr(scenario, "facts", {}) or {}
         object_value = str(
-            facts.get("object_type", facts.get("road_user_type", "")) or ""
+            facts.get("object_type") or facts.get("scenario_object_atom") or facts.get("road_user_type", "") or ""
         ).casefold()
-        if any(token in object_value for token in ("pedestrian", "person", "行人")):
+        if any(token in object_value for token in ("tram", "有轨电车")):
+            categories.discard("OBJECT_STATIC")
+            categories.add("OBJECT_TRAM")
+        elif any(token in object_value for token in ("pedestrian", "person", "行人")):
             categories.add("OBJECT_PEDESTRIAN")
         elif any(token in object_value for token in ("cycl", "bicycle", "骑行", "自行车")):
             categories.add("OBJECT_CYCLIST")
@@ -225,7 +233,7 @@ class EngineeringReportTextMapper:
         """Render only structured object and interaction facts."""
         categories = self._categories(scenario)
         object_value = self._first_category(categories, (
-            "OBJECT_PEDESTRIAN", "OBJECT_CYCLIST", "OBJECT_VEHICLE",
+            "OBJECT_TRAM", "OBJECT_PEDESTRIAN", "OBJECT_CYCLIST", "OBJECT_VEHICLE",
             "OBJECT_STATIC", "OBJECT_OCCUPANT",
         ))
         traffic = self._first_category(categories, (
@@ -326,6 +334,10 @@ class EngineeringReportTextMapper:
         else:
             in_vehicle = None
         parts = [f"驾驶员：{label}"] if label else []
+        provenance = getattr(scenario, "fact_provenance", {}) or {}
+        convention = provenance.get("driver_in_vehicle", {})
+        if convention.get("project_rule_id") == "P7_C4_OUTSIDE_SEAT_AS_OUTSIDE_VEHICLE":
+            return "；".join(parts)
         if in_vehicle is True:
             parts.append("车内状态：在车内")
         elif in_vehicle is False:
@@ -394,7 +406,8 @@ class EngineeringReportTextMapper:
         """Render validated structured facts without exposing Method vocabulary."""
         facts = getattr(scenario, "facts", {}) or {}
         categories = self._categories(scenario)
-        location = self._chinese_source(
+        source_conditions = facts.get("source_operating_conditions", {})
+        location = self._chinese_source(source_conditions.get("operating_scenario", "")) or self._chinese_source(
             getattr(scenario, "operating_scenario", "")
         ) or self._first_category(categories, (
             "LOCATION_PARKING", "LOCATION_CITY", "LOCATION_EXPRESSWAY",
@@ -415,7 +428,7 @@ class EngineeringReportTextMapper:
             "TRAFFIC_CUT_IN", "TRAFFIC_REVERSE", "TRAFFIC_PARKING",
         ))
         object_value = self._first_category(categories, (
-            "OBJECT_PEDESTRIAN", "OBJECT_CYCLIST", "OBJECT_VEHICLE",
+            "OBJECT_TRAM", "OBJECT_PEDESTRIAN", "OBJECT_CYCLIST", "OBJECT_VEHICLE",
             "OBJECT_STATIC", "OBJECT_OCCUPANT",
         ))
         speed = self.speed_text(scenario)
@@ -444,6 +457,13 @@ class EngineeringReportTextMapper:
         operational = "，".join(clauses) + "。"
 
         details = []
+        slope_direction = facts.get("source_slope_direction", source_conditions.get("source_slope_direction", ""))
+        slope_pct = facts.get("source_slope_pct", source_conditions.get("source_slope_pct"))
+        if slope_direction and isinstance(slope_pct, (int, float)):
+            details.append(f"道路坡度：{slope_direction}{self._number(slope_pct)}%")
+        allowed_roads = source_conditions.get("permitted_road_types", [])
+        if allowed_roads:
+            details.append("允许道路/车位范围见 Item Definition；本行未逐项验证几何覆盖")
         road = self._first_category(categories, ("ROAD_LOW_FRICTION", "ROAD_SLOPE"))
         if road:
             details.append(f"道路条件：{road}")
@@ -455,7 +475,15 @@ class EngineeringReportTextMapper:
             details.append(f"交通关系：{traffic}")
         if speed:
             details.append(speed)
-        details.append(f"分析变体：{self.variant_text(scenario)}")
+        dimensions = self._dimensions(scenario)
+        selected_conditions = [self._chinese_source(binding.get("label") or binding.get("atom_label"))
+            for binding in dimensions.values() if isinstance(binding, Mapping)
+            and binding.get("resolution_status") == "RESOLVED"]
+        selected_conditions = [label for label in selected_conditions if label]
+        variant = self.variant_text(scenario)
+        details.append(f"分析变体：{variant}" + ("（标签不单独证明新增风险边界）" if variant != "受控分析场景" else ""))
+        if selected_conditions:
+            details.append("方法条件：" + " / ".join(selected_conditions))
         if variant_count > 1:
             details.append(
                 f"本逻辑组计划覆盖{variant_count}个分析变体；当前为综合前审阅投影"

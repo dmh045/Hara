@@ -215,6 +215,8 @@ class ExposureAtom:
     duration_level: str
     frequency_level: str
     source_ref: SourceRef
+    raw_duration_value: str = ""
+    raw_frequency_value: str = ""
 
     def __post_init__(self) -> None:
         if not self.atom_id or not self.dimensions or not self.label:

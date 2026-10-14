@@ -56,6 +56,7 @@ class HARAReportProjectionService:
             ), {})
 
         configured = event("bounded_sample_configured")
+        replay = event("p7_fixed_population_replay")
         bounded = bool(configured)
         limits = configured.get("scope", {}) if bounded else {}
         inventory = state.item_definition.get("bounded_sample_inventory", {})
@@ -101,18 +102,18 @@ class HARAReportProjectionService:
             for item in trace_rows
         )
         return {
-            "run_scope": "BOUNDED ENGINEERING SAMPLE" if bounded else "FULL PROJECT HARA",
+            "run_scope": "OFFLINE FIXED-POPULATION REPLAY" if replay else "BOUNDED ENGINEERING SAMPLE" if bounded else "FULL PROJECT HARA",
             "report_class": (
                 str(configured.get("report_class", "ENGINEERING_SAMPLE_ONLY")).replace("_", " ")
-                if bounded else "PROJECT HARA"
+                if bounded else "REVISED ENGINEERING DRAFT" if replay else "PROJECT HARA"
             ),
             "full_project_population": (
-                "NOT MEASURED IN THIS RUN"
+                f"{len(state.risk_results)} retained historical records; no new full causal validation" if replay else "NOT MEASURED IN THIS RUN"
                 if bounded or not trace_rows else
                 f"{len(state.risk_results)} risk-eligible records in this full-scope run"
             ),
             "scope_note": (
-                "This workbook is not a full-project HARA population report."
+                f"Offline replay of {replay.get('source_run_id')}; 0 new Provider calls; historical results preserved." if replay else "This workbook is not a full-project HARA population report."
                 if bounded else ""
             ),
             "hara_row_meaning": (
@@ -751,9 +752,9 @@ class HARAReportProjectionService:
                 ),
                 ftti="Pending",
                 ftti_rationale=self.text.ftti_rationale(),
-                sg_id="",
-                safety_goal="",
-                safe_state="",
+                sg_id=risk.safety_goal_id,
+                safety_goal=next((goal.text for goal in state.safety_goals if goal.sg_id == risk.safety_goal_id), ""),
+                safe_state=next((goal.safe_state for goal in state.safety_goals if goal.sg_id == risk.safety_goal_id), ""),
                 assessment_status=assessment_status,
                 clarification_ids=self._clarifications(risk),
                 remark="；".join(
@@ -763,7 +764,9 @@ class HARAReportProjectionService:
                         ("controllability", "C"), ("asil", "ASIL"),
                     )
                 ) + ("；归并依据：相同结构化场景条件、因果链、伤害机制及完整评分；原始记录见场景明细"
-                     if representative["base_key"][0] == "risk_equivalent" and len(siblings) > 1 else ""),
+                     if representative["base_key"][0] == "risk_equivalent" and len(siblings) > 1 else "")
+                  + ("；SG为历史草稿关联，本轮未重评" if risk.safety_goal_id and any(
+                      event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail) else ""),
             )
             rows.append(row)
             group_source_counts[str(representative["base_key"][0])] += 1
@@ -894,13 +897,15 @@ class HARAReportProjectionService:
             method_source=summary_view.method_source,
             guidewords=f"{len(method.guidewords.guidewords)} 个启用的引导词",
             severity="基于相对速度；依赖交通参与者与碰撞配置",
-            exposure="基于 MethodContract 场景维度的确定性评定",
+            exposure=("基于活动项目方法；E 聚合政策与未定源值参与性见风险轨迹，不等同通用标准规定"),
             controllability="基于 MethodContract 的可控性模型；TTC 证据保持可追溯",
             asil="当前 MethodContract 矩阵",
             ftti="方法源已提供；运行时未启用",
         )
         goals = tuple(
-            SafetyGoalView(goal.sg_id, goal.text, goal.safe_state, goal.max_asil, "")
+            SafetyGoalView(goal.sg_id, goal.text, goal.safe_state,
+                ("历史草稿 " + goal.max_asil) if any(event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail) else goal.max_asil,
+                "；".join(dict.fromkeys(risk.hazardous_event for risk in state.risk_results if risk.safety_goal_id == goal.sg_id)))
             for goal in state.safety_goals
         )
         divergence_groups = sum(max(0, len(events) - 1) for events in base_events.values())
@@ -966,6 +971,12 @@ class HARAReportProjectionService:
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,
             method_hash, style_template_hash, tuple(details), projection_metrics,
             children, tuple(inventory),
+            tuple((label, "、".join(value) if isinstance(value, list) else str(value))
+                  for field, label in (("system_description", "系统"), ("item_boundary", "边界"),
+                      ("operating_modes", "运行模式"), ("odd_locations", "允许位置"),
+                      ("odd_road_types", "允许道路/车位"), ("odd_weather_conditions", "天气"),
+                      ("odd_road_surfaces", "路面"))
+                  if (value := state.item_definition.get("typed", {}).get(field))),
         )
 
 

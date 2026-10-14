@@ -344,6 +344,7 @@ class FMTemplateScenario:
     obj_v_kph: float | None
     collision_type: str
     source_ref: SourceRef
+    ego_longitudinal_direction: str = ""
 
 
 @dataclass(frozen=True)

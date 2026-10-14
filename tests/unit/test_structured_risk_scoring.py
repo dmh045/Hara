@@ -63,7 +63,8 @@ def _scenario(service: StructuredRiskScoringService, relative_speed: float) -> d
         "road_user_type": "VEHICLE", "component_category": "sensor_camera",
         "_fact_provenance": {"relative_speed_kph": {
             "provenance": "PROJECT_INPUT",
-            "source_refs": [{"location": "tests/test_structured_risk_scoring.py"}],
+            "approval": "FINALIZED",
+            "source_refs": [{"source_id": "golden-speed", "location": "tests/test_structured_risk_scoring.py"}],
         }},
         "scenario_atom_ids": ["SO010", "PH005"],
         "method_scenario_dimensions": {
@@ -226,7 +227,7 @@ def test_pending_coverage_still_blocks_a_future_method_that_requires_it(monkeypa
     assert scored["exposure"]["missing_method_semantics"] == "EXPOSURE_DIMENSION_COVERAGE"
 
 
-def test_s0_short_circuits_before_the_diagnostic_coverage_decision():
+def test_s0_does_not_fabricate_other_dimension_zero_values():
     service = _service()
     scenario = _scenario(service, 3.9)
     scenario["_exposure_dimension_coverage_decision"] = (
@@ -238,8 +239,8 @@ def test_s0_short_circuits_before_the_diagnostic_coverage_decision():
     scored = service.score(scenario, "hazard")
 
     assert scored["severity"]["severity_score"] == "S0"
-    assert scored["exposure"]["exposure_score"] == "E0"
-    assert scored["exposure"]["engineering_rule_id"] == "ASIL-ZERO-SHORT-CIRCUIT"
+    assert scored["exposure"]["exposure_score"] != "E0"
+    assert scored["controllability"]["controllability_score"] == "C1"
 
 
 def test_structured_scoring_requires_typed_coverage_decision():

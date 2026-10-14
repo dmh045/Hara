@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 from hara_agent.contracts import (
@@ -14,6 +15,11 @@ from hara_agent.models import (
 
 METHOD_FACT_KEYS = {item: item.value.casefold() for item in FactType}
 METHOD_FACT_KEYS.update({
+    FactType.VEHICLE_SPEED: "ego_speed_kph",
+    FactType.RELATIVE_SPEED: "relative_speed_kph",
+    FactType.IMPACT_SPEED: "impact_speed_kph",
+    FactType.DELTA_V: "delta_v_kph",
+    FactType.TTC: "ttc_s",
     FactType.SPEED_UNSPECIFIED: "speed_unspecified_kph",
     # EXPOSURE stores the method selector, not an E-level result.
     FactType.EXPOSURE: "exposure_method",
@@ -45,6 +51,7 @@ class MethodRiskFactBindingCompiler:
         for fact_type, key in METHOD_FACT_KEYS.items():
             self.names[fact_type.value.casefold()] = fact_type
             self.names[key.casefold()] = fact_type
+        self.names["ego_speed"] = FactType.VEHICLE_SPEED
 
     def _sources(self, fact_type: FactType) -> list[SourceRef]:
         contract_sources = [
@@ -120,6 +127,9 @@ class MethodRiskFactBindingService:
         }
         structured = method.structured_risk_method
         if structured is not None:
+            # RequiredFactSpec is compiled from the selected structured method.
+            # Predicate-only discovery omits its S tables and TTC profile.
+            rule_fact_types.update(item.fact_type for item in method.required_fact_specs)
             for rule in structured.controllability_overrides:
                 for condition in (*rule.all_of, *rule.any_of):
                     try:
@@ -214,7 +224,10 @@ class MethodRiskFactBindingService:
                 return False
             return None
         if fact_type in self.numeric_fact_types:
-            if not isinstance(fact.value, (int, float)) or isinstance(fact.value, bool):
+            if (
+                not isinstance(fact.value, (int, float)) or isinstance(fact.value, bool)
+                or not math.isfinite(fact.value) or fact.value < 0
+            ):
                 return None
             required = self.required.get(fact_type)
             expected_unit = required.unit if required is not None else ""

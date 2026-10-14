@@ -21,8 +21,39 @@ _SOURCE_SEAT_TERMS = {
 class DriverConfigurationBrancher:
     """Expand only the driver positions allowed by applicable project facts."""
 
-    def __init__(self, *, policy_id: str = ""):
+    def __init__(self, *, policy_id: str = "", policy: dict | None = None):
         self.policy_id = policy_id
+        self.policy = policy or {}
+
+    def apply_location_convention(self, scenario: ScenarioCandidate) -> ScenarioCandidate:
+        rule = self.policy.get("driver_location_convention", {})
+        if not (
+            rule.get("status") == "CONFIRMED_FOR_CURRENT_PROJECT"
+            and rule.get("project_scope") == self.policy.get("project_scope")
+            and scenario.facts.get("project_scope", rule.get("project_scope")) == rule.get("project_scope")
+            and scenario.operating_mode in rule.get("operating_modes", [])
+            and rule.get("outside_driver_seat_is_outside_vehicle") is True
+            and scenario.facts.get("driver_position") == "outside_driver_seat"
+        ):
+            return scenario
+        source = self.policy.get("source_ref", {})
+        original = scenario.fact_provenance.get("driver_position", {})
+        if not source or not original.get("source_refs"):
+            return scenario
+        scope = {"malfunction_id": scenario.analysis_instance.get("malfunction_id", ""),
+                 "scenario_id": scenario.scenario_id}
+        metadata = {
+            "provenance": "SCENARIO_DEFINED", "origin": "SCENARIO_DEFINED",
+            "approval": "FINALIZED", "validation_status": "VALIDATED",
+            "applicable_scope": scope, "analysis_assumption_scope": scope,
+            "source_refs": [*original["source_refs"], source],
+            "policy_id": self.policy_id, "policy_version": self.policy.get("version"),
+            "selection_basis": rule["rule_id"],
+            "project_rule_id": rule["rule_id"],
+            "original_driver_position": "outside_driver_seat",
+        }
+        return replace(scenario, facts={**scenario.facts, "driver_in_vehicle": False},
+                       fact_provenance={**scenario.fact_provenance, "driver_in_vehicle": metadata})
 
     @staticmethod
     def _source_refs(fact: dict[str, Any]) -> tuple[SourceRef, ...]:
@@ -220,10 +251,10 @@ class DriverConfigurationBrancher:
             elif not independent:
                 facts.pop("driver_in_vehicle", None)
                 provenance.pop("driver_in_vehicle", None)
-            return (replace(
+            return (self.apply_location_convention(replace(
                 scenario, facts=facts, fact_provenance=provenance,
                 context_resolution=context,
-            ),)
+            )),)
 
         branches = []
         for position in _POSITIONS:
@@ -362,7 +393,7 @@ class DriverConfigurationBrancher:
                 scenario, facts=facts, fact_provenance=provenance,
                 context_resolution=context,
             ),)
-        return tuple(branches)
+        return tuple(self.apply_location_convention(branch) for branch in branches)
 
 
 __all__ = ["DriverConfigurationBrancher"]

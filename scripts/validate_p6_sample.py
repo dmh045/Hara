@@ -108,6 +108,11 @@ def run_plan(args):
     start_attempts = budget.attempts
     client = RecordingClient(create_llm_client(config, attempt_budget=budget), args.output, args.stop_after_responses)
     agent = RecordingAgent(client, args.output)
+    agent.method_execution_identity = {
+        'compiler_version': method.compiler_version,
+        'method_hash': method.metadata['method_source_hash'],
+        'project_policy': method.metadata.get('project_analysis_policy', {}),
+    }
     project = ItemDefinitionFacts.from_dict(plan['project'])
     registry = build_project_evidence_registry(project, method)
     try:

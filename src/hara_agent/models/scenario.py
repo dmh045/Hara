@@ -84,7 +84,7 @@ class ScenarioFeasibilityAssessment:
                 raise ValueError("Scenario causal assessment ID不一致")
             if self.causally_relevant and not self.causal_assessment.is_validated:
                 raise ValueError("正向因果结论必须具有VALIDATED causal assessment")
-            if self.breakpoint != self.causal_assessment.breakpoint.value:
+            if self.breakpoint != (self.causal_assessment.breakpoint.value if self.causal_assessment.breakpoint else ""):
                 raise ValueError("Scenario breakpoint与typed causal assessment不一致")
 
     def to_dict(self) -> dict[str, Any]:

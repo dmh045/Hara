@@ -153,5 +153,5 @@ def test_s0_short_circuit_matches_legacy_before_coverage_or_atoms():
     }, "hazard")
 
     assert result["severity"]["severity_score"] == "S0"
-    assert result["exposure"]["exposure_score"] == "E0"
-    assert result["exposure"]["engineering_rule_id"] == "ASIL-ZERO-SHORT-CIRCUIT"
+    assert result["exposure"]["exposure_score"] == ""
+    assert result["controllability"]["controllability_score"] == ""

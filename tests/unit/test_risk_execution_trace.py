@@ -82,6 +82,7 @@ def _facts() -> dict:
         "relative_distance_m": 10.0, "relative_speed_kph": 9.0, "ttc_s": 4.0,
         "_fact_provenance": {"relative_speed_kph": {
             "provenance": "PROJECT_INPUT",
+            "approval": "FINALIZED",
             "source_refs": [{"location": "tests/test_risk_execution_trace.py"}],
         }},
         "driver_in_vehicle": True, "remote_intervention_available": False,
@@ -299,16 +300,16 @@ def test_governed_speed_enters_production_risk_context_and_trace(tmp_path):
     assert state.scenarios[0].facts["ego_speed_kph"] == 7.0
     selected = state.scenarios[0].fact_provenance["ego_speed_kph"]
     assert selected["project_rule_id"] == "AVP_EGO_SPEED_CLOSED_UPPER_BOUND_V1"
-    assert selected["analysis_value_semantic"] == "CURRENT_OPERATION_EGO_SPEED"
+    assert selected["analysis_value_semantic"] == "PRE_FAULT_OPERATING_SPEED"
     calculation = next(
         item for item in state.audit_trail
         if item["event"] == "structured_risk_scoring_completed"
     )["risk_calculation_inputs"][0]
     context = calculation["hazardous_event_risk_context"]
     assert context["ego_speed_kph"]["value"] == 7.0
-    assert context["relative_speed_kph"]["value"] == 7.0
+    assert context["relative_speed_kph"]["value"] is None
     assert context["ttc_s"]["value"] == 3.6
-    assert state.risk_results[0].severity.value.startswith("S")
+    assert state.risk_results[0].severity.value == ""  # normal speed is not impact speed
     assert state.risk_results[0].exposure.value.startswith("E")
     trace = json.loads((tmp_path / state.run_id / "risk_execution_trace.json").read_text())
     assert trace["scenario_eligibility_summary"]["risk_scoring_invoked"] == 1
@@ -323,8 +324,8 @@ def test_governed_speed_enters_production_risk_context_and_trace(tmp_path):
         MethodContractASILService(method),
     )
     audit = conflicted.audit_trail[-1]["risk_calculation_inputs"][0]
-    assert audit["physics_conflicts"][0]["field"] == "relative_speed_kph"
-    assert audit["hazardous_event_risk_context"]["relative_speed_kph"]["status"] == "UNAVAILABLE"
+    assert not audit["physics_conflicts"]  # later impact speed is not the initial operating speed
+    assert audit["hazardous_event_risk_context"]["relative_speed_kph"]["value"] == 12.0
     assert conflicted.risk_results[0].exposure.value.startswith("E")
 
 

@@ -392,7 +392,7 @@ def test_l_causal_reuse_does_not_reuse_c_or_asil_ratings(method):
     ratings = []
     for candidate, causal in zip((a, b), results):
         facts = {**candidate.facts, "scenario_id": candidate.scenario_id, "malfunction_id": malfunction().malfunction_id,
-                 "_fact_provenance": {"relative_speed_kph": {"provenance": "PROJECT_INPUT", "source_refs": [asdict(SOURCE)]}}}
+                 "_fact_provenance": {"relative_speed_kph": {"provenance": "PROJECT_INPUT", "approval": "FINALIZED", "source_refs": [asdict(SOURCE)]}}}
         facts["_exposure_dimension_coverage_decision"] = ExposureDimensionCoverageService(method).decide(
             assessment_key=candidate.scenario_id, function=None, operating_mode=candidate.operating_mode,
         )

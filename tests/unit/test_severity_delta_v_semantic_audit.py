@@ -47,7 +47,8 @@ def test_direct_source_grounded_relative_speed_is_ready():
         "facts": {"relative_speed_kph": 7.0},
         "fact_provenance": {"relative_speed_kph": {
             "provenance": "PROJECT_INPUT",
-            "source_refs": [{"location": "ItemDef.docx:p12"}],
+            "approval": "FINALIZED",
+            "source_refs": [{"source_id": "ItemDef.docx", "location": "p12"}],
         }},
     })
 

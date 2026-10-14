@@ -602,7 +602,9 @@ def test_canonical_renderer_reads_current_run_trace_and_writes_real_reference(tm
         assert "自车速度：7 km/h" in detail.cell(5, detail_headers["Physical Inputs"]).value
         audit = workbook["99_Audit"]
         audit_headers = {cell.value: cell.column for cell in audit[4] if cell.value is not None}
-        assert audit.cell(5, audit_headers["Risk execution trace"]).value == str(trace_path)
+        reference = audit.cell(5, audit_headers["Risk execution trace"]).value
+        assert (output.parent / reference).resolve() == trace_path.resolve()
+        assert not Path(reference).is_absolute()
     finally:
         workbook.close()
 

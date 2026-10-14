@@ -117,6 +117,9 @@ class RiskExecutionTraceService:
             "rule_ids": [result.get("engineering_rule_id", "")] if result.get("engineering_rule_id") else [],
             "source_refs": [result.get("engineering_location", "")] if result.get("engineering_location") else [],
             "result": result.get("severity_score", ""),
+            "branch_evaluations": result.get("branch_evaluations", []),
+            "deciding_branch_id": result.get("deciding_branch_id", ""),
+            "invariant": result.get("invariant"),
             "executor_invoked": bool(result.get("executor_invoked", True)),
             "pending_reason": (
                 f"MISSING_{semantic}" if input_key and value is None
@@ -164,6 +167,13 @@ class RiskExecutionTraceService:
                 detail = details_by_id.get(atom_id, {})
                 level = str(detail.get("e_rank", ""))
                 atom_dimensions = list(atom.dimensions) if atom is not None else list(detail.get("dimensions", []))
+                bindings = scenario.get("method_scenario_dimensions", {})
+                binding = next((value for value in bindings.values() if isinstance(value, dict)
+                    and value.get("atom_id") == atom_id), {}) if isinstance(bindings, dict) else {}
+                role = binding.get("exposure_condition_role") or (
+                    "ENVIRONMENT" if set(atom_dimensions) & {"WHERE", "ROAD", "EGO_X_ROAD"}
+                    else "OBJECT_DESCRIPTION_PARTICIPATION_METHOD_DEPENDENT" if "OBJECT" in atom_dimensions
+                    else "UNRESOLVED_PRECONDITION_OR_FAULT_CONSEQUENCE")
                 atoms.append({
                     "atom_id": atom_id, "dimension": atom_dimensions,
                     "E_class": level,
@@ -172,6 +182,11 @@ class RiskExecutionTraceService:
                     "skip_reason": str(detail.get("skip_reason", "")),
                     "requested_domain": str(detail.get("requested_domain", requested_domain)),
                     "actual_domain": str(detail.get("actual_domain", "")),
+                    "raw_source_value": detail.get("raw_value", ""),
+                    "source_value_status": detail.get("value_state", ""),
+                    "participation_rule": detail.get("participation_rule", ""),
+                    "condition_role": role,
+                    "role_source": binding.get("exposure_condition_role_source", ""),
                     "available_but_unused": not executor_invoked,
                     "source": _source(atom.source_ref) if atom is not None else {},
                 })
@@ -181,6 +196,7 @@ class RiskExecutionTraceService:
             policy = method.aggregation_policy
             aggregation = {
                 "policy_id": policy.policy_id,
+                "policy_authority": "ACTIVE_PROJECT_METHOD_NOT_A_GENERAL_STANDARD_CLAIM",
                 "policy_branch": str(result.get("aggregation_rule", "NOT_INVOKED")),
                 "input_classes": classes,
                 "coupling": str(result.get("coupling", "")),
@@ -253,6 +269,7 @@ class RiskExecutionTraceService:
         return {
             "executor": "StructuredControllabilityExecutor",
             "selected_profile": profile.profile_id if profile else "",
+            "avoidance_paths": result.get("avoidance_paths", {}),
             "profile_id": profile.profile_id if profile else "",
             "source_status": "CONFIRMED" if profile is not None else "UNRESOLVED",
             "status": _status(result),

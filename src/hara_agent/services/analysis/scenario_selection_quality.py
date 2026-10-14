@@ -48,6 +48,7 @@ _CATEGORY_MARKERS: dict[str, tuple[str, ...]] = {
     ),
     "OBJECT_PEDESTRIAN": ("pedestrian", "person", "vru", "行人"),
     "OBJECT_CYCLIST": ("cyclist", "bicycle", "two-wheel", "骑行", "自行车"),
+    "OBJECT_TRAM": ("tram", "有轨电车"),
     "OBJECT_VEHICLE": (
         "passenger_car", "rear vehicle", "front vehicle", "other vehicle",
         "another vehicle", "adjacent vehicle", "neighboring vehicle",
@@ -123,6 +124,8 @@ def explicit_environment(text: str) -> set[str]:
 
 def normalize_object_category(value: Any) -> str:
     folded = str(value).strip().casefold()
+    if any(token in folded for token in ("tram", "有轨电车")):
+        return "OBJECT_TRAM"
     if any(token in folded for token in ("pedestrian", "person", "vru", "行人")):
         return "OBJECT_PEDESTRIAN"
     if any(token in folded for token in ("cycl", "bicycle", "自行车", "骑行")):
@@ -621,7 +624,7 @@ class ScenarioDimensionApplicabilityService:
                 trigger = ("NO_ROAD_RELATION",)
         elif dimension == "OBJECT":
             if (
-                set(objects) == {"OBJECT_STATIC"} and not traffic
+                set(objects) == {"OBJECT_STATIC"}
                 and not query.get("unmapped_object_sources")
             ):
                 status = ScenarioDimensionApplicability.NOT_APPLICABLE
@@ -702,6 +705,14 @@ class ScenarioSemanticCompatibilityClassifier:
             dimension, ScenarioCandidateRanker.atom_categories(atom),
         )
         query_categories = cls._query_categories(dimension, query)
+
+        # A shared traffic relation does not prove a different ego maneuver.
+        # For example, encountering oncoming traffic does not entail overtaking.
+        if dimension == "EGO_ACTION":
+            atom_actions = atom_categories & _ACTION_CATEGORIES
+            query_actions = query_categories & _ACTION_CATEGORIES
+            if "ACTION_OVERTAKE" in atom_actions and query_actions and "ACTION_OVERTAKE" not in query_actions:
+                return SemanticCompatibility.CONTRADICTED, "EGO_ACTION_CONTRADICTION"
 
         if dimension == "OBJECT":
             active = fm_template.get("active_option", {})

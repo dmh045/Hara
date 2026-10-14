@@ -91,7 +91,7 @@ def _explicit_label_slope_range(label: str) -> dict[str, Any]:
 class YamlBaselineCompiler:
     """Compile a governed YAML bundle into the production MethodContract."""
 
-    compiler_version = "yaml-baseline-compiler-v3"
+    compiler_version = "yaml-baseline-compiler-v4"
 
     @staticmethod
     def _binding(role: TemplateRole, source_hash: str, location: str) -> RoleBinding:
@@ -270,6 +270,8 @@ class YamlBaselineCompiler:
                     obj_distance_m=float(raw_scenario["obj_distance_m"]),
                     obj_v_kph=float(raw_scenario["obj_v_kph"]),
                     collision_type=str(raw_scenario["collision_type"]),
+                    ego_longitudinal_direction=("FORWARD" if str(raw_scenario["label"]).startswith("前进")
+                                                else "REVERSE" if str(raw_scenario["label"]).startswith("倒车") else ""),
                     source_ref=self._source(
                         bundle_hash_value, paths["scenario_templates"],
                         f"templates[{index - 1}].required_scenarios[{scenario_index}]", raw_scenario,
@@ -564,6 +566,9 @@ class YamlBaselineCompiler:
                 "source_note": str(project_policy.get("source_note", "")),
                 "input_selection": dict(selection),
                 "ego_speed_point_selection": dict(speed),
+                "severity_evaluation": dict(project_policy.get("severity_evaluation", {})),
+                "driver_location_convention": dict(project_policy.get("driver_location_convention", {})),
+                "supersedes": str(project_policy.get("supersedes", "")),
                 "controllability": dict(controllability),
                 "decisions": dict(decisions),
                 "engineering_decisions": dict(engineering_decisions),
@@ -630,6 +635,8 @@ class YamlBaselineCompiler:
                 atom_id=str(item["id"]), dimensions=dimensions,
                 label=str(item["label"]), duration_level=duration,
                 frequency_level=frequency, source_ref=source,
+                raw_duration_value=str(item.get("e_t", "")),
+                raw_frequency_value=str(item.get("e_f", "")),
             ))
             compound = item.get("compound", {})
             compound = compound if isinstance(compound, dict) else {}
@@ -646,6 +653,11 @@ class YamlBaselineCompiler:
                 spec.get("ego_dynamics", {})
                 if isinstance(spec.get("ego_dynamics", {}), dict) else {}
             )
+            refinement = project_policy.get("atom_semantic_refinements", {}).get(str(item["id"]), {})
+            if refinement:
+                if refinement.get("source_label") != item["label"] or not refinement.get("source"):
+                    raise YamlBaselineCompileError("Atom physical refinement must match its exact source label")
+                dynamics = {**dynamics, **refinement.get("ego_dynamics", {})}
             if not any(key in dynamics for key in ("v_range_kph", "v_min_kph", "v_max_kph")):
                 dynamics = {**dynamics, **_explicit_label_speed_range(str(item.get("label", "")))}
             slope = compound.get("slope", {})
@@ -1647,7 +1659,8 @@ class YamlBaselineCompiler:
                     "IN ('VEHICLE','PEDESTRIAN','CYCLIST','MOTORCYCLIST')",
                 ),
             ),
-            spec(FactType.DELTA_V, ("SEVERITY",), FactOrigin.DERIVED_FACT, severity, "km/h"),
+            spec(FactType.RELATIVE_SPEED, ("SEVERITY",), FactOrigin.DERIVED_FACT, severity, "km/h"),
+            spec(FactType.VEHICLE_SPEED, ("PHYSICS",), FactOrigin.SCENARIO_FACT, severity, "km/h"),
             spec(FactType.TTC, ("CONTROLLABILITY", "FTTI"), FactOrigin.DERIVED_FACT, controllability, "s"),
             spec(FactType.DRIVER_IN_VEHICLE, ("CONTROLLABILITY",), FactOrigin.PROJECT_FACT, controllability),
             spec(FactType.REMOTE_INTERVENTION_AVAILABLE, ("CONTROLLABILITY",), FactOrigin.PROJECT_FACT, controllability),

@@ -562,6 +562,7 @@ class ConstrainedScenarioSynthesisService:
                 "obj_position": option.obj_position,
                 "obj_distance_m": option.obj_distance_m,
                 "obj_v_kph": option.obj_v_kph,
+                "ego_longitudinal_direction": option.ego_longitudinal_direction,
                 "collision_type": option.collision_type,
                 "source": self._source_ref_payload(option.source_ref),
             })
@@ -1925,6 +1926,8 @@ class ConstrainedScenarioSynthesisService:
                 "object_position": option.get("obj_position"),
                 "relative_distance_m": option.get("obj_distance_m"),
                 "object_speed_kph": option.get("obj_v_kph"),
+                **({"ego_longitudinal_direction": option["ego_longitudinal_direction"]}
+                   if option.get("ego_longitudinal_direction") else {}),
             }
             mappings: dict[str, Any] = {}
             for field, raw_field, target_field in (

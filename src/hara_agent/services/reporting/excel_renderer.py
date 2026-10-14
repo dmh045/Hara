@@ -102,7 +102,7 @@ class HARAExcelRenderer:
             view_model = HARAReportProjectionService(self.report_schema).project(
                 state, self.method_contract,
                 risk_trace=risk_trace,
-                risk_trace_reference=risk_trace_reference,
+                risk_trace_reference=os.path.relpath(risk_trace_reference, Path(output_path).resolve().parent) if risk_trace_reference else "",
                 style_template_hash=style_template_hash(template_path),
                 generated_scenarios=generated_scenarios,
             )

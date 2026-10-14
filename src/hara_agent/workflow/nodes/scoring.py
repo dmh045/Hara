@@ -21,10 +21,11 @@ from hara_agent.services.semantic.project_evidence_registry import (
     MethodEvidenceProvider, build_project_evidence_registry,
 )
 from hara_agent.services.analysis.scenario_physics import (
-    closing_relative_speed_kph, derive_scenario_physics,
+    derive_scenario_physics, restore_template_ego_direction,
     derive_stationary_object_speed, derive_stationary_object_direction,
     select_ego_speed_from_policy,
 )
+from hara_agent.services.analysis.driver_configuration_service import DriverConfigurationBrancher
 from hara_agent.workflow.state import HARAState, WorkflowStage
 from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
 
@@ -187,6 +188,96 @@ def score_structured_scenarios(
             method.metadata.get("project_analysis_policy", {})
             if method is not None else {}
         )
+        catalog = method.scenario_model.scenario_method.fm_template_catalog if method is not None else None
+        recovered = restore_template_ego_direction(candidate, catalog.templates if catalog else ())
+        if recovered:
+            candidate = replace(candidate, facts={**candidate.facts, "ego_longitudinal_direction": recovered[0]},
+                fact_provenance={**candidate.fact_provenance, "ego_longitudinal_direction": recovered[1]})
+        candidate = DriverConfigurationBrancher(
+            policy_id=str(policy.get("policy_id", "")), policy=policy,
+        ).apply_location_convention(candidate)
+        scenario = {
+            **candidate.facts, "malfunction_id": malfunction_id,
+            "scenario_id": scenario_id, "operating_mode": candidate.operating_mode,
+            "_fact_provenance": dict(candidate.fact_provenance),
+        }
+        if risk_fact_binding is not None and project_facts is not None:
+            binding = risk_fact_binding.bind(project_facts, {
+                **scenario,
+                "malfunction_id": malfunction_id,
+                "scenario_id": scenario_id,
+                "atomic_variant": candidate.atomic_variant,
+            })
+            binding_source_conflicts: list[dict[str, Any]] = []
+            if risk_context_service is not None:
+                for field, incoming in binding.values.items():
+                    try:
+                        risk_context_service.validate_source_conflicts(
+                            scenario, {field: incoming},
+                        )
+                    except ValueError as error:
+                        if not str(error).startswith("FACT_SOURCE_CONFLICT:"):
+                            raise
+                        binding_source_conflicts.append({
+                            "field": field,
+                            "scenario_value": scenario[field],
+                            "project_value": incoming,
+                            "reason": "FACT_SOURCE_CONFLICT",
+                        })
+            conflicting_fields = {item["field"] for item in binding_source_conflicts}
+            refined_fields = {field for field, value in binding.values.items()
+                if field in scenario and risk_context_service is not None
+                and risk_context_service.compatible_refinement(field, scenario[field], value, scenario)}
+            retained_equal = {field for field, value in binding.values.items()
+                if scenario.get(field) == value
+                and scenario["_fact_provenance"].get(field, {}).get("approval") == "FINALIZED"
+                and binding.provenance.get(field, {}).get("approval") != "FINALIZED"}
+            refined_fields.update(retained_equal)
+            blocked_fields = set(conflicting_fields)
+            # A derived Risk input must not survive removal of one of its
+            # conflicting source facts. Independent Exposure atoms remain.
+            changed = True
+            while changed:
+                changed = False
+                for field, metadata in scenario["_fact_provenance"].items():
+                    if field in blocked_fields or not isinstance(metadata, dict):
+                        continue
+                    inputs = metadata.get("inputs", ())
+                    if isinstance(inputs, (list, tuple)) and any(
+                        isinstance(item, str) and item.removeprefix("SCN.") in blocked_fields
+                        for item in inputs
+                    ):
+                        blocked_fields.add(field)
+                        changed = True
+            for field in blocked_fields:
+                scenario.pop(field, None)
+                scenario["_fact_provenance"].pop(field, None)
+            scenario.update({
+                field: value for field, value in binding.values.items()
+                if field not in blocked_fields | refined_fields
+            })
+            scenario["_fact_provenance"].update({
+                field: value for field, value in binding.provenance.items()
+                if field not in blocked_fields | refined_fields
+            })
+            binding_audits.append({
+                "malfunction_id": malfunction_id,
+                "scenario_id": scenario_id,
+                **binding.audit,
+                "source_conflicts": binding_source_conflicts,
+                "preserved_configuration_refinements": sorted(refined_fields),
+                "preserved_approved_equal_facts": sorted(retained_equal),
+                "blocked_dependent_fields": sorted(blocked_fields - conflicting_fields),
+            })
+        # Bind before normalization and derivation so newly supplied physical
+        # inputs participate in this same scoring pass. Preserve the source view.
+        candidate = replace(
+            candidate,
+            facts={key: value for key, value in scenario.items()
+                   if key not in {"_fact_provenance", "malfunction_id", "scenario_id"}
+                   and (key != "operating_mode" or key in candidate.facts)},
+            fact_provenance=scenario["_fact_provenance"],
+        )
         selected_speed = select_ego_speed_from_policy(
             candidate, policy=policy, malfunction_id=malfunction_id,
         )
@@ -240,6 +331,10 @@ def score_structured_scenarios(
                     candidate, facts=scoped_facts,
                     fact_provenance=scoped_provenance,
                 )
+        if assessment_counts[scenario_id] == 1:
+            original = scenario_by_id[scenario_id]
+            original.facts = dict(candidate.facts)
+            original.fact_provenance = dict(candidate.fact_provenance)
         scenario = {
             "scenario_id": scenario_id,
             "malfunction_id": malfunction_id,
@@ -265,12 +360,14 @@ def score_structured_scenarios(
             scenario.pop("object_longitudinal_direction", None)
             scenario["_fact_provenance"].pop("object_longitudinal_direction", None)
         explicit_relative = scenario.get("relative_speed_kph")
-        calculated_relative = closing_relative_speed_kph(
-            scenario.get("ego_speed_kph"), scenario.get("object_speed_kph"),
-            ego_direction=scenario.get("ego_longitudinal_direction"),
-            object_direction=scenario.get("object_longitudinal_direction"),
-            collision_type=scenario.get("collision_type"),
-        )
+        # Compare only against a derivation for the same speed time semantics.
+        # The normal operating bound cannot contradict a later impact speed.
+        comparison = replace(candidate, facts={
+            key: value for key, value in scenario.items()
+            if key not in {"relative_speed_kph", "_fact_provenance"}
+        })
+        calculated_relative = next((record.value for record in derive_scenario_physics(comparison)
+                                   if record.evidence_ref == "DERIVED.relative_speed_kph"), None)
         if (
             isinstance(explicit_relative, (int, float))
             and not isinstance(explicit_relative, bool)
@@ -330,64 +427,6 @@ def score_structured_scenarios(
             }
         scenario.setdefault("situational_description", candidate.situational_description)
         scenario.setdefault("situational_detailing", candidate.situational_detailing)
-        if risk_fact_binding is not None and project_facts is not None:
-            binding = risk_fact_binding.bind(project_facts, {
-                **scenario,
-                "malfunction_id": malfunction_id,
-                "scenario_id": scenario_id,
-                "atomic_variant": candidate.atomic_variant,
-            })
-            binding_source_conflicts: list[dict[str, Any]] = []
-            if risk_context_service is not None:
-                for field, incoming in binding.values.items():
-                    try:
-                        risk_context_service.validate_source_conflicts(
-                            scenario, {field: incoming},
-                        )
-                    except ValueError as error:
-                        if not str(error).startswith("FACT_SOURCE_CONFLICT:"):
-                            raise
-                        binding_source_conflicts.append({
-                            "field": field,
-                            "scenario_value": scenario[field],
-                            "project_value": incoming,
-                            "reason": "FACT_SOURCE_CONFLICT",
-                        })
-            conflicting_fields = {item["field"] for item in binding_source_conflicts}
-            blocked_fields = set(conflicting_fields)
-            # A derived Risk input must not survive removal of one of its
-            # conflicting source facts. Independent Exposure atoms remain.
-            changed = True
-            while changed:
-                changed = False
-                for field, metadata in scenario["_fact_provenance"].items():
-                    if field in blocked_fields or not isinstance(metadata, dict):
-                        continue
-                    inputs = metadata.get("inputs", ())
-                    if isinstance(inputs, (list, tuple)) and any(
-                        isinstance(item, str) and item.removeprefix("SCN.") in blocked_fields
-                        for item in inputs
-                    ):
-                        blocked_fields.add(field)
-                        changed = True
-            for field in blocked_fields:
-                scenario.pop(field, None)
-                scenario["_fact_provenance"].pop(field, None)
-            scenario.update({
-                field: value for field, value in binding.values.items()
-                if field not in blocked_fields
-            })
-            scenario["_fact_provenance"].update({
-                field: value for field, value in binding.provenance.items()
-                if field not in blocked_fields
-            })
-            binding_audits.append({
-                "malfunction_id": malfunction_id,
-                "scenario_id": scenario_id,
-                **binding.audit,
-                "source_conflicts": binding_source_conflicts,
-                "blocked_dependent_fields": sorted(blocked_fields - conflicting_fields),
-            })
         hazard_event = causal_assessment.hazardous_event
         if not hazard_event:
             raise ValueError(
@@ -486,10 +525,20 @@ def score_structured_scenarios(
             )
             else ReviewStatus.PENDING
         )
+        shortcut, shortcut_sources = (
+            asil_table.partial_zero_decision({
+                field: item.value for field, item in (
+                    ("severity", severity), ("exposure", exposure),
+                    ("controllability", controllability),
+                ) if item.status is ReviewStatus.FINALIZED
+            }) if hasattr(asil_table, "partial_zero_decision") else ("", [])
+        )
+        if shortcut:
+            asil_value, asil_status = shortcut, ReviewStatus.FINALIZED
         asil = EvidenceValue(
             value=asil_value,
             status=asil_status,
-            sources=(
+            sources=shortcut_sources or (
                 [asil_table.evidence_source(
                     severity.value, exposure.value, controllability.value
                 )]
