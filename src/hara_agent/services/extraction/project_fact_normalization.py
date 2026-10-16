@@ -12,7 +12,7 @@ from hara_agent.models import (
 )
 
 from .project_fact_specs import RequiredProjectFactSpec
-from hara_agent.models.project_facts import validated_physical_semantics
+from hara_agent.models.project_facts import PHYSICAL_QUANTITY_UNITS, validated_physical_semantics
 
 
 FOUND = "FOUND"
@@ -24,13 +24,28 @@ PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT = (
     "Include physical_semantics_source_excerpt as an exact quote from the cited source. "
     "Copy explicit labels and identities; never invent a collision identity or assign a fault phase by default. "
     "Use {} when the source gives no phase. Normal performance, actuator capability and command limits "
-    "are not fault motion bounds. An interpreted label such as POST_FAULT_CONSTANT_ACCELERATION "
-    "is retained as PENDING unless that label is explicit in the source; it never approves itself. "
+    "are not fault motion bounds. Explicit natural-language statements of constant longitudinal "
+    "acceleration after a fault may use POST_FAULT_CONSTANT_ACCELERATION with the complete source "
+    "sentence, including qualifications. Deterministic normalization checks the phase, quantity and "
+    "unit; an unsupported interpretation remains PENDING and never approves itself. "
+)
+
+# A bounded language normalization, not a physical or rating rule. Full sentences
+# keep negation, hypothetical prefixes, limits and phase changes from being
+# discarded by a keyword search. Unrecognized wording remains pending.
+POST_FAULT_ACCELERATION_ZH_RULE = "physical-phase-post-fault-constant-acceleration-zh-v1"
+_POST_FAULT_ACCELERATION_ZH = re.compile(
+    r"(?:故障(?:发生)?后[，,]?(?:在(?:接触|碰撞)(?:前方|后方)?目标前[，,]?)?(?:车辆|本车|自车)"
+    r"|(?:车辆|本车|自车)在故障(?:发生)?后)[，,]?"
+    r"(?:沿(?:前进|倒车)方向)?以恒定(?:的)?纵向加速度(?:为|=)?"
+    r"(?P<value>[+-]?(?:\d+(?:\.\d+)?|\.\d+))(?P<unit>m/s(?:²|\^2|2))运动[。.]?"
 )
 
 
-def extracted_physical_semantics(raw: dict, sources: Sequence[SourceRef]) -> tuple[dict, ReviewStatus]:
-    """Keep literal source labels; interpreted phase labels await confirmation.
+def extracted_physical_semantics(
+    raw: dict, sources: Sequence[SourceRef], *, normalization_evidence: list[dict] | None = None,
+) -> tuple[dict, ReviewStatus]:
+    """Normalize explicit source phases; unsupported interpretations stay pending.
 
     A citation validates the location, not an LLM's new engineering assertion.
     No default phase is assigned to an ordinary performance quantity.
@@ -40,8 +55,25 @@ def extracted_physical_semantics(raw: dict, sources: Sequence[SourceRef]) -> tup
     if excerpt and (not isinstance(excerpt, str) or not any(excerpt in s.excerpt for s in sources)):
         raise ValueError("INVALID_PHYSICAL_SEMANTICS: excerpt is not in cited evidence")
     texts = [excerpt] if excerpt else [s.excerpt for s in sources]
-    literal = all(any(str(value) in text for text in texts) for value in semantics.values())
-    return semantics, ReviewStatus.FINALIZED if literal else ReviewStatus.PENDING
+    unresolved = {key for key, value in semantics.items()
+                  if not any(str(value) in text for text in texts)}
+    if not unresolved:
+        return semantics, ReviewStatus.FINALIZED
+    if (unresolved == {"analysis_value_semantic"}
+            and semantics["analysis_value_semantic"] == "POST_FAULT_CONSTANT_ACCELERATION"
+            and raw.get("fact_type") == "longitudinal_acceleration_mps2"
+            and raw.get("unit") in PHYSICAL_QUANTITY_UNITS["longitudinal_acceleration_mps2"]):
+        # Inspect the full cited sentence, not a narrower phase excerpt which
+        # could omit a surrounding condition or a conflicting phase.
+        matches = [_POST_FAULT_ACCELERATION_ZH.fullmatch(re.sub(r"\s+", "", s.excerpt)) for s in sources]
+        if matches and all(match and float(match["value"]) == raw.get("value") for match in matches):
+            if normalization_evidence is not None:
+                normalization_evidence.extend({
+                    "field": "analysis_value_semantic", "canonical_value": semantics["analysis_value_semantic"],
+                    "rule_id": POST_FAULT_ACCELERATION_ZH_RULE, "source_excerpt": source.excerpt,
+                } for source in sources)
+            return semantics, ReviewStatus.FINALIZED
+    return semantics, ReviewStatus.PENDING
 
 
 @dataclass(frozen=True)
@@ -241,7 +273,9 @@ class ProjectFactNormalizer:
             for key, item in context.items()
         ):
             raise ValueError("MISSING_CONTEXT: context must be a string-to-string object")
-        semantics, semantic_approval = extracted_physical_semantics(candidate, [source])
+        normalization_evidence = []
+        semantics, semantic_approval = extracted_physical_semantics(
+            {**candidate, "fact_type": spec.fact_type}, [source], normalization_evidence=normalization_evidence)
         identity = json.dumps(
             {
                 "parameter": spec.fact_type,
@@ -266,6 +300,7 @@ class ProjectFactNormalizer:
             approval=semantic_approval,
             produced_by="validated_item_project_fact_extraction",
             physical_semantics=semantics,
+            normalization_evidence=normalization_evidence,
         )
 
     @staticmethod
@@ -299,6 +334,18 @@ class ProjectFactNormalizer:
                 raise ValueError("NOT_OPERATIONAL_SPEED: signed capability range is not an operating speed")
         if excerpt and excerpt not in source_text:
             raise ValueError("UNKNOWN_SOURCE_REF: excerpt is not an exact substring of the source block")
+        if excerpt and _POST_FAULT_ACCELERATION_ZH.fullmatch(re.sub(r"\s+", "", excerpt)):
+            # The model's quote must not cut "假设" or another qualification
+            # off the source sentence and thereby turn it into an assertion.
+            boundaries = "。！？!?;；\n"
+            spans = list(re.finditer(re.escape(excerpt), source_text))
+            complete = any(
+                (not source_text[:m.start()].strip(" \t") or source_text[:m.start()].rstrip(" \t")[-1] in boundaries)
+                and (excerpt.rstrip()[-1] in boundaries or not source_text[m.end():].strip()
+                     or source_text[m.end():].lstrip(" \t")[0] in boundaries)
+                for m in spans)
+            if not complete:
+                excerpt = source_text
         return SourceRef(
             "item_definition", source_id, str(block.get("location", "")),
             excerpt or source_text,

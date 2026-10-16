@@ -33,7 +33,7 @@ class ScenarioRiskFactAgent:
     HUMAN_EVIDENCE and DERIVED_FACT requirements are never guessed here.
     """
 
-    PROMPT_VERSION = "scenario-risk-facts-v5-physical-semantics"
+    PROMPT_VERSION = "scenario-risk-facts-v6-explicit-phase"
 
     def __init__(self, client: LLMClient, *, batch_max_results: int | None = None):
         self.client = client
@@ -611,7 +611,9 @@ class ScenarioRiskFactAgent:
                 sources = list(dict.fromkeys(
                     registry[item] for item in evidence_ids
                 ))
-                semantics, semantic_approval = extracted_physical_semantics(raw, sources)
+                normalization_evidence = []
+                semantics, semantic_approval = extracted_physical_semantics(
+                    raw, sources, normalization_evidence=normalization_evidence)
             except (KeyError, TypeError, ValueError) as error:
                 failures.append(f"invalid result {key}: {error}")
                 continue
@@ -630,6 +632,7 @@ class ScenarioRiskFactAgent:
                 approval=semantic_approval,
                 produced_by=self.PROMPT_VERSION,
                 physical_semantics=semantics,
+                normalization_evidence=normalization_evidence,
             ))
             seen.add(key)
         return facts, seen, not_found, failures

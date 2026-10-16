@@ -3,7 +3,7 @@
 These are explicitly synthetic algorithm oracles, not source integration proof.
 """
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 
 import pytest
@@ -301,7 +301,12 @@ def test_review_structured_contact_is_scoped_to_target_and_phase():
     assert causal_physics_conflicts(sc, restored.to_dict())
 
 
-def test_review_targeted_extraction_to_automatic_dynamic_model(method):
+@pytest.mark.parametrize("text,model_expected", [
+    ("longitudinal_acceleration_mps2=2 m/s²; POST_FAULT_CONSTANT_ACCELERATION", True),
+    ("故障发生后，在接触前方目标前，车辆沿前进方向以恒定纵向加速度2m/s²运动。", True),
+    ("正常功能的起步纵向加速度上限为2m/s²。", False),
+])
+def test_review_targeted_extraction_to_automatic_dynamic_model(method, text, model_expected):
     """Synthetic source response through production request, normalize, bind, producer."""
     from hara_agent.services.extraction import build_project_fact_spec_batches
     from hara_agent.services.semantic.targeted_project_fact_agent import TargetedProjectFactExtractionAgent
@@ -310,7 +315,6 @@ def test_review_targeted_extraction_to_automatic_dynamic_model(method):
     from hara_agent.models import ItemDefinitionFacts
     from hara_agent.services.analysis.analytical_physics_instantiation_service import AnalyticalPhysicsInstantiationService
     specs = build_project_fact_spec_batches((), ())["physical_motion_inputs"]
-    text = "longitudinal_acceleration_mps2=2 m/s²; POST_FAULT_CONSTANT_ACCELERATION"
     class Client:
         def complete_json(self, request):
             assert "physical_semantics" in request.system_prompt
@@ -324,7 +328,10 @@ def test_review_targeted_extraction_to_automatic_dynamic_model(method):
         [{"block_id": "B1", "text": text, "location": "synthetic:p1"}])
     normalized, _ = TargetedProjectFactExtractionAgent(Client()).extract("physical_motion_inputs", specs, route, "synthetic")
     assert not normalized.failures and len(normalized.risk_facts) == 1
-    project = ItemDefinitionFacts("synthetic", "synthetic", risk_facts=normalized.risk_facts,
+    from hara_agent.models.project_facts import risk_fact_from_dict
+    restored = risk_fact_from_dict(json.loads(json.dumps(asdict(normalized.risk_facts[0]))))
+    assert restored == normalized.risk_facts[0]
+    project = ItemDefinitionFacts("synthetic", "synthetic", risk_facts=[restored],
                                   sources=normalized.risk_facts[0].source_refs)
     sc = candidate(ego_speed_kph=0, object_speed_kph=0, relative_distance_m=2,
         ego_longitudinal_direction="FORWARD", object_longitudinal_direction="STATIONARY",
@@ -333,10 +340,83 @@ def test_review_targeted_extraction_to_automatic_dynamic_model(method):
         functional_effect="synthetic", vehicle_level_hazard="impact", causal_chain=["fault", "effect"],
         component_category="actuator_motor", failure_type="excessive")
     result = AnalyticalPhysicsInstantiationService(method).produce_inputs(sc, mf, project_facts=project)
+    if not model_expected:
+        assert normalized.risk_facts[0].approval.value == "PENDING"
+        assert "fault_motion_model" not in result.facts
+        assert "collision_branches" not in result.facts
+        return
     assert result.facts["fault_motion_model"] == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"
     assert result.facts["ttc_s"] == pytest.approx(1.414214)
     assert result.facts["relative_speed_kph"] == pytest.approx(10.182338)
     assert len(result.facts["collision_branches"]) == 1
+    if text.startswith("故障"):
+        from hara_agent.services.extraction.project_fact_normalization import POST_FAULT_ACCELERATION_ZH_RULE
+        evidence = [{"field": "analysis_value_semantic", "canonical_value": "POST_FAULT_CONSTANT_ACCELERATION",
+                     "rule_id": POST_FAULT_ACCELERATION_ZH_RULE, "source_excerpt": text}]
+        assert restored.normalization_evidence == evidence
+        assert result.fact_provenance["longitudinal_acceleration_mps2"]["normalization_evidence"] == evidence
+
+
+@pytest.mark.parametrize("text,value,unit,finalized", [
+    ("故障后，本车以恒定的纵向加速度为2m/s^2运动。", 2, "m/s²", True),
+    ("自车在故障发生后以恒定纵向加速度 2.0 m/s2 运动。", 2, "m/s²", True),
+    ("故障后，车辆以恒定纵向加速度-2m/s²运动。", -2, "m/s²", True),
+    ("正常功能的起步纵向加速度上限为2m/s²。", 2, "m/s²", False),
+    ("故障后，车辆纵向加速度上限为2m/s²。", 2, "m/s²", False),
+    ("故障后，车辆并非以恒定纵向加速度2m/s²运动。", 2, "m/s²", False),
+    ("假设故障后，车辆以恒定纵向加速度2m/s²运动。", 2, "m/s²", False),
+    ("故障前，车辆以恒定纵向加速度2m/s²运动；故障后加速度未知。", 2, "m/s²", False),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动，但此数值未经确认。", 2, "m/s²", False),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。故障后加速度不恒定。", 2, "m/s²", False),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", 3, "m/s²", False),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", 2, "km/h", False),
+])
+def test_explicit_chinese_phase_normalization_is_quantity_bound(text, value, unit, finalized):
+    from hara_agent.models import SourceRef, ReviewStatus
+    from hara_agent.services.extraction.project_fact_normalization import extracted_physical_semantics
+    raw = {"fact_type": "longitudinal_acceleration_mps2", "value": value, "unit": unit,
+           "physical_semantics": {"analysis_value_semantic": "POST_FAULT_CONSTANT_ACCELERATION"}}
+    evidence = []
+    semantics, approval = extracted_physical_semantics(raw,
+        [SourceRef("item_definition", "synthetic", "p1", text)], normalization_evidence=evidence)
+    assert semantics == raw["physical_semantics"]
+    assert (approval is ReviewStatus.FINALIZED) is finalized
+    assert bool(evidence) is finalized
+
+
+def test_phase_excerpt_cannot_discard_source_qualification_or_conflict():
+    from hara_agent.models import SourceRef, ReviewStatus
+    from hara_agent.services.extraction.project_fact_normalization import extracted_physical_semantics
+    statement = "故障后，车辆以恒定纵向加速度2m/s²运动。"
+    raw = {"fact_type": "longitudinal_acceleration_mps2", "value": 2, "unit": "m/s²",
+           "physical_semantics_source_excerpt": statement,
+           "physical_semantics": {"analysis_value_semantic": "POST_FAULT_CONSTANT_ACCELERATION"}}
+    for sources in (
+        [SourceRef("item_definition", "synthetic", "p1", "假设" + statement)],
+        [SourceRef("item_definition", "synthetic", "p1", statement),
+         SourceRef("item_definition", "synthetic", "p2", "故障后，车辆以恒定纵向加速度3m/s²运动。")],
+    ):
+        evidence = []
+        _, approval = extracted_physical_semantics(raw, sources, normalization_evidence=evidence)
+        assert approval is ReviewStatus.PENDING
+        assert evidence == []
+
+
+def test_targeted_quote_cannot_cut_a_hypothesis_out_of_its_source():
+    from hara_agent.models import ReviewStatus
+    from hara_agent.services.extraction import ProjectFactNormalizer, build_project_fact_spec_batches
+    specs = build_project_fact_spec_batches((), ())["physical_motion_inputs"]
+    statement = "故障后，车辆以恒定纵向加速度2m/s²运动。"
+    raw = [{"fact_type": spec.fact_type, "status": "FOUND", "value": 2, "unit": "m/s²", "context": {},
+            "source_block_id": "B1", "source_excerpt": statement,
+            "physical_semantics": {"analysis_value_semantic": "POST_FAULT_CONSTANT_ACCELERATION"}}
+           if spec.fact_type == "longitudinal_acceleration_mps2" else
+           {"fact_type": spec.fact_type, "status": "NOT_FOUND"} for spec in specs]
+    normalized = ProjectFactNormalizer().normalize(specs, raw,
+        [{"block_id": "B1", "location": "p1", "text": "假设" + statement}], "synthetic")
+    assert not normalized.failures
+    assert normalized.risk_facts[0].approval is ReviewStatus.PENDING
+    assert normalized.risk_facts[0].source_refs[0].excerpt == "假设" + statement
 
 
 def test_review_semantic_interpretation_never_promotes_a_normal_limit():

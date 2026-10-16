@@ -329,6 +329,9 @@ class MethodRiskFactBindingService:
                 "source_binding_kind": "METHOD_RISK_FACT_BINDING",
                 "method_contract_hash": self.template_hash,
             }
+            evidence = [entry for fact, _ in selected for entry in fact.normalization_evidence]
+            if evidence:
+                provenance[key]["normalization_evidence"] = evidence
 
         # Neutral model quantities are source inputs, not method rating rules.
         # Bind exact parameter names and SI units before the ordinary producer;
@@ -357,6 +360,9 @@ class MethodRiskFactBindingService:
                 "approval": "FINALIZED" if all(f.approval is ReviewStatus.FINALIZED for f in selected) else "PENDING",
                 "source_refs": [self._source_dict(ref) for ref in refs],
                 "applicable_scope": first.context, "source_binding_kind": "EXACT_SOURCE_PHYSICAL_QUANTITY"}
+            evidence = [entry for fact in selected for entry in fact.normalization_evidence]
+            if evidence:
+                provenance[key]["normalization_evidence"] = evidence
             sources.extend(refs)
             physical_bound.append(key)
         missing = sorted(

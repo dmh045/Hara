@@ -60,6 +60,7 @@ class RiskFact:
     approval: ReviewStatus = ReviewStatus.PENDING
     produced_by: str = "bounded_semantic_interpretation"
     physical_semantics: dict[str, Any] = field(default_factory=dict)
+    normalization_evidence: list[dict[str, str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.fact_id.strip() or not self.parameter.strip():
