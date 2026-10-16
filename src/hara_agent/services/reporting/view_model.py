@@ -57,6 +57,7 @@ class ScenarioDetailView:
     driver_branch: str = ""
     controllability_branch: str = ""
     analysis_basis: str = ""
+    branch_results: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
@@ -119,6 +120,10 @@ class MalfunctionView:
     excluded: int
     pending: int
     disposition: str
+    review_group: str = ""
+    coverage_summary: str = ""
+    risk_distribution: str = ""
+    pending_summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}

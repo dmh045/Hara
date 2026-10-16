@@ -152,6 +152,9 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
         counts['driver_families'] += len(families)
         counts['potential_driver_reuse_requires_dependency_proof'] += len(children) - len(families)
         for child in children:
+            counts['collision_branches'] += len(child.facts.get('collision_branches', []))
+            counts['motion_models'] += bool(child.facts.get('fault_motion_model'))
+            counts['impact_speeds'] += child.facts.get('ego_impact_speed_kph') is not None
             atoms = child.facts.get('scenario_atom_ids', [])
             source_conditions = child.facts.get('source_operating_conditions', {})
             source_locations[str(source_conditions.get('operating_scenario', ''))] += 1
@@ -177,6 +180,9 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
                 'driver_position': child.facts.get('driver_position'),
                 'e_preview': result, 'causal_status': 'NOT_REVALIDATED',
                 'source_operating_conditions': source_conditions,
+                'physical_input_production': child.analysis_instance.get('physical_input_production', {}),
+                'collision_branches': child.facts.get('collision_branches', []),
+                'source_candidate': asdict(child),
                 'method_conditions': {dim: {key: value.get(key) for key in ('atom_id', 'atom_label', 'resolution_status')}
                                       for dim, value in bindings.items()},
                 'validation_status': child.analysis_instance.get('validation_status'),

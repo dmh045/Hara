@@ -8,6 +8,30 @@ from typing import Any
 from .common import FactProvenance, ReviewStatus, SourceRef
 
 
+PHYSICAL_SEMANTIC_FIELDS = (
+    "analysis_value_semantic", "time_role", "impact_time_id", "trajectory_id",
+    "branch_id", "object_id", "unit", "assessment_reference", "model_valid_until_s",
+)
+# Neutral quantities accepted by the existing trajectory model, not rating rules.
+PHYSICAL_QUANTITY_UNITS = {
+    "longitudinal_acceleration_mps2": ("m/s²", "m/s^2", "m/s2"),
+    "travel_to_impact_m": ("m",), "relative_distance_m": ("m",),
+    "model_valid_until_s": ("s",),
+}
+
+
+def validated_physical_semantics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) - set(PHYSICAL_SEMANTIC_FIELDS):
+        raise ValueError("INVALID_PHYSICAL_SEMANTICS: unknown fields or non-object")
+    for key, item in value.items():
+        if key == "model_valid_until_s":
+            if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) or item < 0:
+                raise ValueError("INVALID_PHYSICAL_SEMANTICS: horizon must be a finite nonnegative number")
+        elif not isinstance(item, str) or not item.strip():
+            raise ValueError("INVALID_PHYSICAL_SEMANTICS: labels must be nonempty strings")
+    return dict(value)
+
+
 class ConstraintOperator(str, Enum):
     LT = "LT"
     LE = "LE"
@@ -35,6 +59,7 @@ class RiskFact:
     provenance: FactProvenance = FactProvenance.LLM_INFERENCE
     approval: ReviewStatus = ReviewStatus.PENDING
     produced_by: str = "bounded_semantic_interpretation"
+    physical_semantics: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.fact_id.strip() or not self.parameter.strip():
@@ -52,6 +77,7 @@ class RiskFact:
         if not self.source_refs:
             raise ValueError("RiskFact requires an exact SourceRef")
         _validate_context(self.context)
+        validated_physical_semantics(self.physical_semantics)
         if (
             self.approval is ReviewStatus.FINALIZED
             and self.provenance is FactProvenance.LLM_INFERENCE

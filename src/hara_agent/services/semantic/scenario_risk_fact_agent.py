@@ -17,6 +17,9 @@ from hara_agent.models import (
     ScenarioCandidate, SourceRef, evaluate_risk_eligibility_payload,
 )
 from hara_agent.models.project_facts import risk_fact_from_dict
+from hara_agent.services.extraction.project_fact_normalization import (
+    extracted_physical_semantics, PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT,
+)
 
 
 SCENARIO_RISK_FACT_BATCH_CACHE_VERSION = "scenario-risk-fact-batch-v2"
@@ -30,7 +33,7 @@ class ScenarioRiskFactAgent:
     HUMAN_EVIDENCE and DERIVED_FACT requirements are never guessed here.
     """
 
-    PROMPT_VERSION = "scenario-risk-facts-v4-dependent-resolution"
+    PROMPT_VERSION = "scenario-risk-facts-v5-physical-semantics"
 
     def __init__(self, client: LLMClient, *, batch_max_results: int | None = None):
         self.client = client
@@ -513,6 +516,7 @@ class ScenarioRiskFactAgent:
                 "You are a bounded evidence interpreter. Return only facts explicitly supported by "
                 "the supplied evidence excerpts. Do not estimate speed, frequency, duration, or "
                 "avoidability. Do not use template identity or invent engineering rules."
+                + PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT
             ),
             user_prompt=(
                 "Return JSON {\"results\":[...]}. Return exactly one result for every item in "
@@ -607,11 +611,12 @@ class ScenarioRiskFactAgent:
                 sources = list(dict.fromkeys(
                     registry[item] for item in evidence_ids
                 ))
+                semantics, semantic_approval = extracted_physical_semantics(raw, sources)
             except (KeyError, TypeError, ValueError) as error:
                 failures.append(f"invalid result {key}: {error}")
                 continue
             material = json.dumps(
-                {"key": key, "value": value, "unit": unit},
+                {"key": key, "value": value, "unit": unit, "physical_semantics": semantics},
                 ensure_ascii=False, sort_keys=True, separators=(",", ":"),
             )
             facts.append(RiskFact(
@@ -622,8 +627,9 @@ class ScenarioRiskFactAgent:
                 context={"malfunction_id": key[0], "scenario_id": key[1]},
                 source_refs=sources,
                 provenance=FactProvenance.DERIVED,
-                approval=ReviewStatus.FINALIZED,
+                approval=semantic_approval,
                 produced_by=self.PROMPT_VERSION,
+                physical_semantics=semantics,
             ))
             seen.add(key)
         return facts, seen, not_found, failures

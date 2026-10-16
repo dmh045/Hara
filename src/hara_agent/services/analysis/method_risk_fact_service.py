@@ -292,7 +292,8 @@ class MethodRiskFactBindingService:
                 invalid.append(fact_type.value)
                 continue
             distinct = {str(item) for item in normalized}
-            if len(distinct) != 1:
+            semantics = [fact.physical_semantics for fact, _ in selected]
+            if len(distinct) != 1 or any(item != semantics[0] for item in semantics[1:]):
                 conflicts.append(fact_type.value)
                 continue
             key = METHOD_FACT_KEYS[fact_type]
@@ -315,6 +316,7 @@ class MethodRiskFactBindingService:
                 binding.provenance.value for _, binding in selected
             }
             provenance[key] = {
+                **semantics[0],
                 "approval": (
                     "FINALIZED" if approvals == {"FINALIZED"} else "PENDING"
                 ),
@@ -328,6 +330,35 @@ class MethodRiskFactBindingService:
                 "method_contract_hash": self.template_hash,
             }
 
+        # Neutral model quantities are source inputs, not method rating rules.
+        # Bind exact parameter names and SI units before the ordinary producer;
+        # a normal acceleration value still needs its explicit time semantics.
+        from hara_agent.models.project_facts import PHYSICAL_QUANTITY_UNITS
+        physical_bound = []
+        for key, units in PHYSICAL_QUANTITY_UNITS.items():
+            matching = [fact for fact in project_facts.risk_facts
+                        if fact.parameter == key and self._context_matches(fact.context, candidate)]
+            if not matching:
+                continue
+            specificity = max(len(fact.context) for fact in matching)
+            selected = [fact for fact in matching if len(fact.context) == specificity]
+            if any(fact.unit not in units or not isinstance(fact.value, (int, float))
+                   or (key != "longitudinal_acceleration_mps2" and fact.value < 0) for fact in selected):
+                invalid.append(key)
+                continue
+            first = selected[0]
+            if any((fact.value, fact.physical_semantics) != (first.value, first.physical_semantics) for fact in selected):
+                conflicts.append(key)
+                continue
+            refs = list(dict.fromkeys(ref for fact in selected for ref in fact.source_refs))
+            values[key] = float(first.value)
+            provenance[key] = {**first.physical_semantics, "unit": first.unit,
+                "provenance": first.provenance.value,
+                "approval": "FINALIZED" if all(f.approval is ReviewStatus.FINALIZED for f in selected) else "PENDING",
+                "source_refs": [self._source_dict(ref) for ref in refs],
+                "applicable_scope": first.context, "source_binding_kind": "EXACT_SOURCE_PHYSICAL_QUANTITY"}
+            sources.extend(refs)
+            physical_bound.append(key)
         missing = sorted(
             fact_type.value for fact_type in self.required
             if METHOD_FACT_KEYS[fact_type] not in values
@@ -338,6 +369,7 @@ class MethodRiskFactBindingService:
             provenance=provenance,
             sources=unique_sources,
             audit={
+                "bound_physical_quantities": physical_bound,
                 "bound_fact_types": sorted(
                     fact_type.value for fact_type in self.required
                     if METHOD_FACT_KEYS[fact_type] in values

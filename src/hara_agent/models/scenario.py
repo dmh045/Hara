@@ -60,6 +60,7 @@ class ScenarioFeasibilityAssessment:
     evidence_contract_version: str = ""
     causal_assessment: "ScenarioCausalAssessment | None" = None
     dependency_metadata: dict[str, Any] = field(default_factory=dict)
+    physical_interaction: dict[str, str] = field(default_factory=dict)
 
     @property
     def retain(self) -> bool:
@@ -139,6 +140,7 @@ class ScenarioFeasibilityAssessment:
             ),
             causal_assessment=causal_assessment,
             dependency_metadata=dict(value.get("dependency_metadata", {})),
+            physical_interaction=dict(value.get("physical_interaction", {})),
         )
 
     @classmethod

@@ -562,6 +562,14 @@ class MethodScenarioCandidateService:
         children, audit = templates._with_driver_configurations(
             malfunction, representatives, audit, project_facts,
         )
+        from .analytical_physics_instantiation_service import AnalyticalPhysicsInstantiationService
+        physics = AnalyticalPhysicsInstantiationService(self.method)
+        children = [physics.produce_inputs(child, asdict(malfunction), project_facts=project_facts) for child in children]
+        audit["physical_input_production"] = {
+            "candidate_count": len(children),
+            "with_collision_branches": sum(bool(child.facts.get("collision_branches")) for child in children),
+            "with_motion_model": sum(bool(child.facts.get("fault_motion_model")) for child in children),
+        }
         if record_generated is not None:
             final_ids = {child.scenario_id for child in children}
             for candidate in generated:

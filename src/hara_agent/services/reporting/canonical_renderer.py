@@ -237,8 +237,10 @@ class HARAReportWorkbookRenderer:
             self._render_records(
                 sheets["03_Malfunctions"], "Malfunctions", registry,
                 ("Malfunction ID", "Function ID", "Guideword", "Malfunction", "Hazard",
-                 "Retained", "Excluded", "Pending", "Risk Disposition"),
+                 "Retained", "Excluded", "Pending", "Risk Disposition", "Review Group Basis",
+                 "Covered Conditions", "Independent Risk Distribution", "Pending Causes"),
                 self._malfunctions(view_model),
+                width_source_columns=(1, 2, 3, 7, 8, 13, 13, 13, 16, 7, 7, 7, 7),
             )
             layout = self._render_main_hara(sheets[MAIN_SHEET], view_model, schema, registry)
             self._render_scenario_details(
@@ -402,7 +404,9 @@ class HARAReportWorkbookRenderer:
         for row_number, record in enumerate(records, start=5):
             for offset, value in enumerate(record):
                 self._write_cell(sheet, row_number, 2 + offset, value, registry, "data_static", wrap=True)
-            sheet.row_dimensions[row_number].height = self._estimated_height(record, (26,) * len(record), registry)
+            sources = width_source_columns or tuple(min(1 + offset, 21) for offset in range(len(headers)))
+            widths = tuple(registry._source_widths.get(column) or 14 for column in sources)
+            sheet.row_dimensions[row_number].height = self._estimated_height(record, widths, registry)
         self._finish_support_sheet(
             sheet, len(headers), max(5, len(records) + 4), registry,
             width_source_columns=width_source_columns,
@@ -417,7 +421,7 @@ class HARAReportWorkbookRenderer:
             "HARA-ID", "Semantic Group ID", "Variant", "Scenario ID", "Situational Description",
             "Situational Detailing", "Speed Constraint", "Causal Status",
             "Object / Interaction", "Hazardous Event", "Physical Inputs",
-            "Driver Branch", "C Decision", "Analysis Basis",
+            "Driver Branch", "C Decision", "Analysis Basis", "Collision Branch S/E/C/ASIL",
         )
         records = [
             (
@@ -426,13 +430,13 @@ class HARAReportWorkbookRenderer:
                 item.speed_constraint, item.causal_status,
                 item.object_interaction_summary, item.hazardous_event,
                 item.physical_inputs, item.driver_branch,
-                item.controllability_branch, item.analysis_basis,
+                item.controllability_branch, item.analysis_basis, item.branch_results,
             )
             for item in view_model.scenario_details
         ]
         self._render_records(
             sheet, "Analytical Scenario Detail", registry, headers, records,
-            width_source_columns=(1, 5, 14, 11, 7, 8, 11, 16, 14, 7, 11, 14, 16, 14),
+            width_source_columns=(1, 5, 14, 11, 7, 8, 11, 16, 14, 7, 11, 14, 16, 14, 14),
         )
 
     @staticmethod
@@ -626,9 +630,10 @@ class HARAReportWorkbookRenderer:
         registry.apply_page_setup(sheet, registry.safety_goals)
         self._set_title(sheet, "A1:F1", "A1", "Hazards and Safety Goals", registry, "safety_goal_title")
         headers = ("HZ-ID", "Hazard", "SG-ID", "Safety Goal", "Safety State", "Max ASIL")
+        width_sources = (1, 6, 18, 19, 20, 17)
         for column, header in enumerate(headers, start=1):
             self._write_cell(sheet, 3, column, header, registry, "safety_goal_header", wrap=True)
-            registry.apply_width(sheet, column, min(column + 5, 21))
+            registry.apply_width(sheet, column, width_sources[column - 1])
         if view_model.safety_goals:
             for row_number, goal in enumerate(view_model.safety_goals, start=4):
                 values = (f"HZ-{row_number - 3:03d}", goal.hazard, goal.sg_id, goal.safety_goal, goal.safe_state, goal.max_asil)
@@ -636,7 +641,10 @@ class HARAReportWorkbookRenderer:
                     self._write_cell(sheet, row_number, column, value, registry, "safety_goal_data", wrap=True)
                 sheet.row_dimensions[row_number].height = self._estimated_height(values, (14, 36, 14, 44, 32, 12), registry)
         else:
-            self._set_title(sheet, "A4:F4", "A4", "No Safety Goal generated because no ASIL assessment has been finalized.", registry, "safety_goal_data")
+            completed = (view_model.projection_metrics or {}).get("safety_goal_stage_completed")
+            reason = ("Safety Goal stage completed without producing a Safety Goal." if completed else
+                      "Safety Goal generation has not been completed in this run; existing ASIL results do not imply generated Safety Goals.")
+            self._set_title(sheet, "A4:F4", "A4", reason, registry, "safety_goal_data")
             self._set_title(sheet, "A5:F5", "A5", "Pending / Not available — DRAFT — NOT FOR RELEASE", registry, "data_pending_warning")
             sheet.row_dimensions[4].height = self._estimated_height((sheet["A4"].value,), (120,), registry)
             sheet.row_dimensions[5].height = self._estimated_height((sheet["A5"].value,), (120,), registry)

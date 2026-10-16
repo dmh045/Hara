@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from typing import Any
 from .common import EvidenceValue
 
 
@@ -17,6 +18,8 @@ class RiskAssessment:
     potential_harm: str = ""
     exposure_tf: str = ""
     safety_goal_id: str = ""
+    branch_evaluations: list[dict[str, Any]] = field(default_factory=list)
+    branch_summary: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.assessment_id or not self.scenario_id:

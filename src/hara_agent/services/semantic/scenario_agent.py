@@ -68,7 +68,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v17-physical-context"
+    PROMPT_VERSION = "scenario-feasibility-v22-scoped-contact-output"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -88,11 +88,15 @@ DIRECT_FACT 只能引用 [kind=DIRECT_FACT]；DERIVED_PHYSICS 只能引用 [kind
 false 时 hazardous_event=""、risk_dimension_changes=[]。没有证据不等于证明不可能。positive 时 hazardous_event 非空，risk_dimension_changes 仍可为 []。
 
 PHYSICAL CONSISTENCY
+physical_interaction 与物理评分使用同一组对象、方向、阶段和模型。存在代表工况时只验证所列工况，不把它解释为所有故障轨迹的上界。不得忽略该模型或对未列出的对象/运动过程复用父级结论。
+physical_interaction 是展示视图，其 JSON 路径不是证据 ID。引用所列条件时必须使用 physical_interaction.evidence_refs 中的完整 ID，或 causal_evidence_view 已列出的 ID；不得引用 physical_interaction.conditions.* 或 physical_interaction.branches.*。physically_possible 只是物理条件检查，不能据此跳过因果判断。
+derived_physics_evidence 中列出本场景已注册的物理推导及其 kind。basis_type=DERIVED_PHYSICS 时仅引用 kind=DERIVED_PHYSICS 的完整 ID，不混入 SCN.collision_branches 或其他 DIRECT_FACT；代表工况的推导只能证明该工况，不能证明全部故障轨迹。
 前后左右以本车坐标为准；倒车时不要把后方对象改成前方，不要声称远离对象时距离正在缩小。
+若主张与当前外部目标接近/接触，返回 physical_interaction={"target":"SCENARIO_OBJECT","object_position":"输入的方位","relation":"APPROACH或CONTACT","assessment_reference":"CURRENT_STATE或MODEL_TRAJECTORY"}；存在 object_id 时原样返回。这里只描述主张，不提供新的物理事实或批准。其他对象、阶段或车内非接触伤害返回 target="OTHER"，不得借当前目标的接近速度否定其他机制。
 对象类别与运动状态分开：静止电车仍是电车。初始/正常车速不等于故障可达速度或碰撞速度。静止后溜车需要独立运动依据，不能直接用正常上限；静止 EPB 夹紧损坏不能直接当成外部碰撞伤害。
 
 OUTPUT CONTRACT
-输出 assessments 数组，每个请求 scenario_id 恰好一项。每项包含 scenario_id、physically_feasible、functionally_relevant、causally_relevant (JSON boolean)、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、confidence (0..1)、status (PENDING/FINALIZED)。
+输出 assessments 数组，每个请求 scenario_id 恰好一项。每项包含 scenario_id、physically_feasible、functionally_relevant、causally_relevant (JSON boolean)、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、physical_interaction、confidence (0..1)、status (PENDING/FINALIZED)。physical_interaction 按上面的对象/阶段结构返回，无当前外部目标主张时返回 {"target":"OTHER"}，不可省略。
 causal_chain 是对象而非数组，结构 {"m_to_b":{"claim":"...","basis_type":"DIRECT_FACT","evidence_refs":[]},"b_to_i":{...},"i_to_h":{...}}。所有返回的 hop 必须有非空 claim；示例只说明结构，不构成证据。
 risk_dimension_changes 每项含 dimension、evidence_refs、reason；只选择当前事实明确需要重评的维度，使用用户提示中的枚举，不输出 risk_dimensions_changed 或 rationale。
 若不能证明跨驾驶员分支的无关性，dependency_metadata 只返回 {"complete":false}。
@@ -1606,6 +1610,16 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                     f"expected={expected} batch={batch} split_path={split_path} "
                     f"split_depth={split_depth}"
                 )
+        interaction = item.get("physical_interaction", {})
+        if (not isinstance(interaction, dict) or set(interaction) - {
+                "target", "object_position", "object_id", "relation", "assessment_reference"}
+                or any(not isinstance(value, str) for value in interaction.values())
+                or (interaction and interaction.get("target") not in {"SCENARIO_OBJECT", "OTHER"})
+                or (interaction.get("target") == "SCENARIO_OBJECT" and (
+                    interaction.get("relation") not in {"APPROACH", "CONTACT", "NOT_CLOSING", "UNKNOWN"}
+                    or interaction.get("object_position", "").upper() not in {"FRONT", "REAR", "LEFT", "RIGHT"}
+                    or interaction.get("assessment_reference") not in {"CURRENT_STATE", "MODEL_TRAJECTORY", "OTHER"}))):
+            raise ScenarioSchemaContractError("Invalid scoped physical_interaction claim")
         if causal:
             conflicts = causal_physics_conflicts(scenario, item)
             if conflicts:
@@ -1648,6 +1662,7 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             evidence_contract_version=SCENARIO_ASSESSMENT_CONTRACT_VERSION,
             causal_assessment=causal_assessment,
             dependency_metadata=ScenarioFeasibilityAgent._dependencies(item, scenario),
+            physical_interaction=dict(interaction),
         )
 
     @staticmethod

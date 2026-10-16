@@ -39,11 +39,40 @@ def scenario_conditions(scenario: ScenarioCandidate, *, without_driver: bool = F
     # effective numeric constraints remain in facts and in the binding above.
     facts.pop("speed_context_resolution", None)
     authority = {
-        field: {key: metadata.get(key) for key in ("provenance", "approval", "method_source_hash")}
+        field: {key: metadata.get(key) for key in (
+            "provenance", "approval", "method_source_hash", "method_contract_hash",
+            "analysis_value_semantic", "time_role", "unit", "source_refs",
+            "applicable_scope", "validation_status", "input_fact_metadata",
+        ) if key in metadata}
         for field, metadata in scenario.fact_provenance.items()
         if field in facts and isinstance(metadata, dict)
     }
-    return {"operating_mode": scenario.operating_mode, "facts": facts, "fact_authority": authority}
+    local_ids = {getattr(scenario, "scenario_id", ""), getattr(scenario, "source_scenario_id", "")}
+    instance = getattr(scenario, "analysis_instance", {})
+    local_ids.update(instance.get("equivalent_parent_ids", []))
+    local_ids.discard("")
+    phases = {}
+
+    def semantic(value, key=""):
+        if isinstance(value, dict):
+            result = {name: semantic(item, name) for name, item in sorted(value.items())
+                    if name not in {"branch_id", "semantic_fingerprint", "display_label"}}
+            if value.get("source_type") == "parent_scenario" and value.get("source_id") in local_ids:
+                result["source_id"] = "$LOCAL_SCOPE"
+            return result
+        if isinstance(value, (list, tuple)):
+            result = [semantic(item, key) for item in value]
+            return sorted(result, key=lambda item: json.dumps(item, sort_keys=True, default=str)) if key in {"source_refs", "scenario_atom_ids"} else result
+        if key in {"scenario_id", "parent_scenario_id"} and value in local_ids:
+            return "$LOCAL_SCOPE"
+        if key == "hazardous_event_id" and isinstance(value, str):
+            return "::".join("$LOCAL_SCOPE" if part in local_ids else part for part in value.split("::"))
+        if key in {"impact_time_id", "trajectory_id"} and value:
+            phases.setdefault(str(value), f"$PHASE_{len(phases)}")
+            return phases[str(value)]
+        return value
+
+    return semantic({"operating_mode": scenario.operating_mode, "facts": facts, "fact_authority": authority})
 
 
 def coalesce_candidates(candidates: list[ScenarioCandidate]) -> tuple[list[ScenarioCandidate], list[dict]]:
@@ -85,11 +114,13 @@ def driver_families(candidates: list[ScenarioCandidate]) -> list[list[ScenarioCa
 
 def driver_reuse_proof(assessment: dict, parent: ScenarioCandidate, child: ScenarioCandidate) -> dict:
     """Require explicit noninterference as well as identical non-driver inputs."""
-    changed = sorted(key for key in set(parent.facts) | set(child.facts)
+    changed = sorted(key for key in DRIVER_FIELDS
                      if parent.facts.get(key) != child.facts.get(key))
-    if not set(changed) <= DRIVER_FIELDS:
+    parent_conditions = scenario_conditions(parent, without_driver=True)
+    child_conditions = scenario_conditions(child, without_driver=True)
+    if parent_conditions["facts"] != child_conditions["facts"] or parent.operating_mode != child.operating_mode:
         return {"reusable": False, "reason": "NON_DRIVER_CONDITIONS_CHANGED"}
-    if scenario_conditions(parent, without_driver=True) != scenario_conditions(child, without_driver=True):
+    if parent_conditions != child_conditions:
         return {"reusable": False, "reason": "NON_DRIVER_EVIDENCE_AUTHORITY_CHANGED"}
     metadata = assessment.get("dependency_metadata", {})
     dependencies = set().union(*(set(metadata.get(key, [])) for key in (

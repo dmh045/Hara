@@ -10,6 +10,7 @@ from hara_agent.models import (
     EvidenceKind, EvidenceRecord, FactProvenance, ReviewStatus,
     ScenarioCandidate, SourceRef,
 )
+from hara_agent.models.project_facts import PHYSICAL_SEMANTIC_FIELDS
 
 
 class DerivedPhysicsType(str, Enum):
@@ -22,6 +23,135 @@ class DerivedPhysicsType(str, Enum):
 _ANALYSIS_ORIGIN = FactProvenance.SCENARIO_DEFINED.value
 _FINAL_APPROVALS = {ReviewStatus.FINALIZED.value, "APPROVED"}
 TTC_CLOSING_FORMULA_IDENTITY = "relative_distance_m / (closing_speed_kph / 3.6)"
+
+
+def physical_semantics(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Resolve legacy normalization wrappers without changing a value's phase."""
+    result = {key: metadata[key] for key in PHYSICAL_SEMANTIC_FIELDS if key in metadata}
+    if metadata.get("derivation_type") == DerivedPhysicsType.CANONICAL_INPUT_NORMALIZATION.value:
+        inputs = metadata.get("input_fact_metadata", [])
+        if len(inputs) == 1 and isinstance(inputs[0], dict):
+            result = {**physical_semantics(inputs[0]), **result}
+    return result
+
+
+def branch_physics_view(parent: dict, branch: dict) -> dict:
+    """Invalidate dependent parent values, then reuse the neutral physics service."""
+    view = {**parent, **branch}
+    view["_fact_provenance"] = {**parent.get("_fact_provenance", {}), **branch.get("_fact_provenance", {})}
+    geometry = {"object_position", "object_id", "road_user_type", "collision_type",
+                "ego_longitudinal_direction", "object_longitudinal_direction"}
+    speeds = {"ego_speed_kph", "object_speed_kph", "ego_impact_speed_kph", "object_impact_speed_kph"}
+    model = {"fault_motion_model", "longitudinal_acceleration_mps2", "model_valid_until_s",
+             "impact_time_id", "trajectory_id", "assessment_reference"}
+    distances = {"relative_distance_m", "relative_distance", "travel_to_impact_m"}
+    changed = {key for key in branch if not key.startswith("_")
+               and (key not in parent or parent[key] != branch[key])}
+    changed.update(key for key, metadata in branch.get("_fact_provenance", {}).items()
+                   if key in view and metadata != parent.get("_fact_provenance", {}).get(key))
+    # None explicitly clears a branch input; absent keys still inherit it.
+    for key in changed:
+        if key in branch and branch[key] is None:
+            view.pop(key, None)
+            view["_fact_provenance"].pop(key, None)
+        elif key in branch and key not in branch.get("_fact_provenance", {}):
+            view["_fact_provenance"].pop(key, None)
+    # A new identifier/category alone labels the current object; it does not
+    # contradict a directly sourced closing velocity. Actual geometry does.
+    changed_geometry = changed & (geometry - {"object_id", "road_user_type", "collision_type"})
+    changed_geometry |= changed & {"object_id", "road_user_type", "collision_type"} & parent.keys()
+    if "collision_type" in changed and is_lateral_collision(view.get("collision_type")):
+        changed_geometry.add("collision_type")
+    phase_ids = {"impact_time_id", "trajectory_id"}
+    changed_model = changed & (model - phase_ids)
+    if view.get("fault_motion_model") or any(key in parent for key in ("ego_impact_speed_kph", "object_impact_speed_kph")):
+        changed_model |= changed & phase_ids
+    invalidate = set()
+    if changed_geometry or changed & speeds or changed_model:
+        invalidate.update(("relative_speed_kph", "closing_speed_kph", "ttc_s"))
+    if changed & (distances | {"closing_speed_kph", "relative_speed_kph"}):
+        invalidate.add("ttc_s")
+    if changed_model or (changed & distances and view.get("fault_motion_model")):
+        invalidate.update(("ego_impact_speed_kph", "relative_speed_kph", "ttc_s"))
+    if view.get("fault_motion_model") and (changed_model or changed_geometry or changed & speeds):
+        invalidate.update(("ego_impact_speed_kph", "object_impact_speed_kph"))
+    # Preserve recorded dependencies as well as the neutral model's inputs.
+    # Source/phase changes invalidate transitive dependants even at equal values.
+    while True:
+        dependants = {key for key, metadata in parent.get("_fact_provenance", {}).items()
+                      if isinstance(metadata, dict) and any(
+                          ref.removeprefix("SCN.").removeprefix("DERIVED.") in changed | invalidate
+                          and ref.removeprefix("SCN.").removeprefix("DERIVED.") != key
+                          for ref in metadata.get("inputs", []) if isinstance(ref, str))}
+        if dependants <= invalidate:
+            break
+        invalidate.update(dependants)
+    for key in invalidate - branch.keys():
+        view.pop(key, None); view["_fact_provenance"].pop(key, None)
+    candidate = ScenarioCandidate(str(view.get("scenario_id", "branch")), "branch", "branch", "branch",
+        facts={key: value for key, value in view.items() if not key.startswith("_")},
+        fact_provenance=view["_fact_provenance"])
+    records = derive_scenario_physics(candidate)
+    conflicts = []
+    outcome = next((r.value for r in records if r.evidence_ref == "DERIVED.motion_model_outcome"), {})
+    if outcome and outcome.get("status") != "CONTACT":
+        for key in ("ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s"):
+            if key in view:
+                view.pop(key)
+                view["_fact_provenance"].pop(key, None)
+                invalidate.add(key)
+        conflicts.append({"reason": outcome["status"], "field": "fault_motion_model"})
+    for record in records:
+        key = record.evidence_ref.removeprefix("DERIVED.")
+        if outcome and outcome.get("status") != "CONTACT" and key in {
+            "ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s",
+        }:
+            continue
+        # A directly supplied branch measurement must not be silently overwritten
+        # by a different computation for that same branch and time.
+        if (key in branch and branch[key] is not None
+                and record.metadata.get("derivation_type") != DerivedPhysicsType.CANONICAL_INPUT_NORMALIZATION.value
+                and branch[key] != record.value):
+            conflicts.append({"reason": "DIRECT_INPUT_CONFLICTS_WITH_DERIVATION", "field": key,
+                              "supplied": branch[key], "derived": record.value})
+            view["_fact_provenance"][key] = {**view["_fact_provenance"].get(key, {}),
+                "approval": "PENDING", "conflicting_derived_value": record.value}
+            continue
+        if key in view and key not in invalidate:
+            continue
+        view[key] = record.value
+        view["_fact_provenance"][key] = {**record.metadata,
+            "provenance": record.provenance.value, "approval": record.approval_status.value,
+            "source_refs": [_source_dict(ref) for ref in record.source_refs]}
+    view["_invalidated_parent_fields"] = sorted(invalidate - branch.keys())
+    view["_physical_input_conflicts"] = conflicts
+    return view
+
+
+def constant_acceleration_contact(initial_kph: Any, acceleration: Any,
+                                  distance_m: Any, valid_until_s: Any = None) -> dict:
+    """First contact along travel, ending at the first stop (no implicit reversal)."""
+    initial = _nonnegative_number(initial_kph)
+    distance = _nonnegative_number(distance_m)
+    if (initial is None or distance is None or isinstance(acceleration, bool)
+            or not isinstance(acceleration, (int, float)) or not math.isfinite(acceleration)):
+        return {"status": "MISSING_MODEL_INPUT"}
+    speed = initial / 3.6
+    squared = speed * speed + 2 * acceleration * distance
+    if squared < 0:
+        return {"status": "STOPPED_BEFORE_CONTACT"}
+    end_speed = math.sqrt(squared)
+    if distance == 0:
+        time = 0.0
+    elif speed + end_speed <= 0:
+        return {"status": "NO_POSITIVE_CONTACT_ROOT"}
+    else:
+        time = 2 * distance / (speed + end_speed)
+    if valid_until_s is not None:
+        horizon = _nonnegative_number(valid_until_s)
+        if horizon is None or time > horizon:
+            return {"status": "CONTACT_OUTSIDE_MODEL_INTERVAL"}
+    return {"status": "CONTACT", "time_s": time, "impact_speed_kph": end_speed * 3.6}
 
 
 def restore_template_ego_direction(scenario: ScenarioCandidate, templates) -> tuple[str, dict] | None:
@@ -314,8 +444,34 @@ def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any
         object_direction=facts.get("object_longitudinal_direction"),
         object_position=position, collision_type=facts.get("collision_type"),
     )
-    if closing == 0 and any(word in text for word in ("距离快速缩小", "距离进一步缩小", "距离将快速缩小")):
-        conflicts.append("NOT_CLOSING_CONTRADICTS_CAUSAL_CLAIM")
+    if closing == 0:
+        modeled = False
+        if facts.get("fault_motion_model") == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE":
+            outcome = constant_acceleration_contact(facts.get("ego_speed_kph"),
+                facts.get("longitudinal_acceleration_mps2"), facts.get("travel_to_impact_m"),
+                facts.get("model_valid_until_s"))
+            modeled = (outcome["status"] == "CONTACT" and facts.get("object_speed_kph") == 0
+                and (str(facts.get("ego_longitudinal_direction", "")).upper(), position) in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}
+                and not is_lateral_collision(facts.get("collision_type")))
+        interaction = payload.get("physical_interaction", {})
+        interaction = interaction if isinstance(interaction, dict) else {}
+        same_target = (interaction.get("target") == "SCENARIO_OBJECT"
+                       and str(interaction.get("object_position", "")).upper() == position
+                       and (not interaction.get("object_id") or interaction["object_id"] == facts.get("object_id")))
+        same_phase = interaction.get("assessment_reference") in {"CURRENT_STATE", "MODEL_TRAJECTORY"}
+        asserts_contact = (same_target and same_phase
+                           and interaction.get("relation") in {"APPROACH", "CONTACT"})
+        if not interaction and position in terms:
+            # Narrow legacy check for explicit statements about this target in
+            # one clause. A generic hazard or an occupant harm is not contact.
+            # New assessments provide the structured relation instead.
+            target = "(?:" + "|".join(re.escape(word) for word in terms[position]) + ")"
+            predicate = r"(?:距离[^，。；;]*缩小|越来越接近|碰撞|相撞)"
+            asserts_contact = any(re.search(target + r"[^，。；;!?]*" + predicate, claim)
+                                  and not re.search(r"(?:不|未|无)[^，。；;!?]*" + predicate, claim)
+                                  for claim in claims)
+        if not modeled and asserts_contact:
+            conflicts.append("NOT_CLOSING_CONTRADICTS_CAUSAL_CLAIM")
     return conflicts
 
 
@@ -496,6 +652,7 @@ def _input_snapshot(
         "validation_status", "source_template_id", "source_option_id",
         "method_contract_hash", "source_binding_kind", "applicable_scope",
         "input_fact_metadata", "analysis_assumption_inputs",
+        *PHYSICAL_SEMANTIC_FIELDS,
     ):
         if field in metadata:
             snapshot[field] = metadata[field]
@@ -560,11 +717,14 @@ def derive_scenario_physics(
             **_combined_analysis_lineage([
                 _analysis_lineage(input_metadata),
             ] if _analysis_lineage(input_metadata) else []),
+            **physical_semantics(input_metadata),
         }
         if input_metadata:
-            metadata["input_fact_metadata"] = [
-                _input_snapshot(input_key, status, sources, input_metadata),
-            ]
+            metadata["input_fact_metadata"] = (
+                input_metadata.get("input_fact_metadata", [])
+                if input_metadata.get("derivation_type") == DerivedPhysicsType.CANONICAL_INPUT_NORMALIZATION.value
+                else [_input_snapshot(input_key, status, sources, input_metadata)]
+            )
         if scenario.semantic_fingerprint:
             metadata["semantic_fingerprint"] = scenario.semantic_fingerprint
         records.append(EvidenceRecord(
@@ -612,31 +772,53 @@ def derive_scenario_physics(
             approval, refs, metadata,
         )
 
-    # This small model is opt-in through a sourced scenario applicability fact.
-    # A capability, Atom envelope, slope label or target speed cannot activate it.
-    if ("ego_impact_speed_kph" not in scenario.facts
-            and scenario.facts.get("fault_motion_model") == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"
-            and scenario.facts.get("impact_time_id")):
-        initial = _nonnegative_number(scenario.facts.get("ego_speed_kph"))
-        travel = _nonnegative_number(scenario.facts.get("travel_to_impact_m"))
-        acceleration = scenario.facts.get("longitudinal_acceleration_mps2")
-        if (initial is not None and travel is not None
-                and isinstance(acceleration, (int, float)) and not isinstance(acceleration, bool)
-                and math.isfinite(acceleration)):
-            squared = (initial / 3.6) ** 2 + 2 * acceleration * travel
-            # Negative means the assumed trajectory stops before the target.
-            # It does not establish S0 or C0 for the hazardous event.
-            if squared >= 0:
-                impact = derived_record("ego_impact_speed_kph", round(math.sqrt(squared) * 3.6, 6),
-                    ("ego_speed_kph", "longitudinal_acceleration_mps2", "travel_to_impact_m",
-                     "fault_motion_model", "impact_time_id"),
-                    DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
-                    formula="3.6 * sqrt((ego_speed_kph / 3.6)^2 + 2 * longitudinal_acceleration_mps2 * travel_to_impact_m)")
-                records.append(impact)
-                scenario = replace(scenario, facts={**scenario.facts, "ego_impact_speed_kph": impact.value},
-                    fact_provenance={**scenario.fact_provenance, "ego_impact_speed_kph": {
-                        **impact.metadata, "provenance": "DERIVED", "approval": impact.approval_status.value,
-                        "source_refs": [_source_dict(ref) for ref in impact.source_refs]}})
+    model_selected = scenario.facts.get("fault_motion_model") == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"
+    model_ttc = None
+    model_contact_valid = not model_selected
+    if model_selected and scenario.facts.get("impact_time_id"):
+        outcome = constant_acceleration_contact(
+            scenario.facts.get("ego_speed_kph"),
+            scenario.facts.get("longitudinal_acceleration_mps2"),
+            scenario.facts.get("travel_to_impact_m"),
+            scenario.facts.get("model_valid_until_s"),
+        )
+        direction, position = (str(scenario.facts[key]).upper() if key in scenario.facts else None
+                               for key in ("ego_longitudinal_direction", "object_position"))
+        if (direction is not None and position is not None
+                and (direction, position) not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}):
+            outcome = {"status": "MODEL_GEOMETRY_NOT_APPLICABLE"}
+        if is_lateral_collision(scenario.facts.get("collision_type")):
+            outcome = {"status": "MODEL_GEOMETRY_NOT_APPLICABLE"}
+        model_inputs = ("ego_speed_kph", "longitudinal_acceleration_mps2", "travel_to_impact_m",
+                        "fault_motion_model", "impact_time_id")
+        if "model_valid_until_s" in scenario.facts:
+            model_inputs += ("model_valid_until_s",)
+        records.append(derived_record("motion_model_outcome", outcome, model_inputs,
+                                      DerivedPhysicsType.KINEMATIC_IMPACT_SPEED))
+        if outcome["status"] == "CONTACT":
+            model_contact_valid = True
+            impact = derived_record("ego_impact_speed_kph", round(outcome["impact_speed_kph"], 6),
+                model_inputs, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
+                formula="v(t)=v0+a*t; d=v0*t+0.5*a*t^2; first contact before stop")
+            impact.metadata.update(analysis_value_semantic="IMPACT_SPEED",
+                                   impact_time_id=scenario.facts["impact_time_id"])
+            records.append(impact)
+            scenario = replace(scenario, facts={**scenario.facts, "ego_impact_speed_kph": impact.value},
+                fact_provenance={**scenario.fact_provenance, "ego_impact_speed_kph": {
+                    **impact.metadata, "provenance": "DERIVED", "approval": impact.approval_status.value,
+                    "source_refs": [_source_dict(ref) for ref in impact.source_refs]}})
+            direction = str(scenario.facts.get("ego_longitudinal_direction", "")).upper()
+            position = str(scenario.facts.get("object_position", "")).upper()
+            stationary_target = scenario.facts.get("object_speed_kph") == 0
+            along_path = (direction, position) in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}
+            same_distance = scenario.facts.get("travel_to_impact_m") == distance_m
+            if stationary_target and along_path and same_distance and not is_lateral_collision(scenario.facts.get("collision_type")):
+                model_ttc = derived_record("ttc_s", round(outcome["time_s"], 6),
+                    (*model_inputs, "object_speed_kph", "ego_longitudinal_direction", "object_position", distance_input_key),
+                    DerivedPhysicsType.TTC, formula="first nonnegative root of d=v0*t+0.5*a*t^2 before stop")
+                model_ttc.metadata.update(impact_time_id=scenario.facts["impact_time_id"],
+                                          assessment_reference="MODEL_INITIAL_STATE")
+
 
     ego = scenario.facts.get("ego_speed_kph")
     obj = scenario.facts.get("object_speed_kph")
@@ -645,17 +827,22 @@ def derive_scenario_physics(
     collision = scenario.facts.get("collision_type")
     position = scenario.facts.get("object_position")
     relative_speed = scenario.facts.get("relative_speed_kph")
-    speed_semantic = scenario.fact_provenance.get("ego_speed_kph", {}).get("analysis_value_semantic", "")
+    speed_semantic = physical_semantics(scenario.fact_provenance.get("ego_speed_kph", {})).get("analysis_value_semantic", "")
     impact_ego = scenario.facts.get("ego_impact_speed_kph")
     impact_object = scenario.facts.get("object_impact_speed_kph")
     impact_time = scenario.facts.get("impact_time_id")
-    same_impact_time = bool(impact_time) and impact_ego is not None and impact_object is not None
+    impact_phases = [physical_semantics(scenario.fact_provenance.get(key, {})).get("impact_time_id")
+                     for key in ("ego_impact_speed_kph", "object_impact_speed_kph")]
+    impact_phase_conflict = any(phase is not None and phase != impact_time for phase in impact_phases)
+    same_impact_time = bool(impact_time) and impact_ego is not None and impact_object is not None and not impact_phase_conflict
     relative_ego = impact_ego if same_impact_time else ego if speed_semantic != "PRE_FAULT_OPERATING_SPEED" else None
     relative_object = impact_object if same_impact_time else obj
     calculated_relative = closing_relative_speed_kph(
         relative_ego, relative_object, ego_direction=ego_direction,
         object_direction=object_direction, collision_type=collision,
     )
+    if impact_phase_conflict or not model_contact_valid:
+        calculated_relative = None
     if relative_speed is None and calculated_relative is not None:
         relative_speed = calculated_relative
         relative_inputs = (
@@ -705,10 +892,14 @@ def derive_scenario_physics(
         closing_speed = direct_closing
         ttc_input_keys = (distance_input_key, "closing_speed_kph")
         formula = TTC_CLOSING_FORMULA_IDENTITY
+    if model_selected:
+        if model_ttc is not None:
+            records.append(model_ttc)
+        return tuple({record.evidence_ref: record for record in records}.values())
     ttc = time_to_collision_s(distance_m, closing_speed)
     if ttc is not None:
         records.append(derived_record(
             "ttc_s", ttc, ttc_input_keys, DerivedPhysicsType.TTC,
             formula=formula,
         ))
-    return tuple(records)
+    return tuple({record.evidence_ref: record for record in records}.values())

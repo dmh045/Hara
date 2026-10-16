@@ -91,7 +91,7 @@ def _explicit_label_slope_range(label: str) -> dict[str, Any]:
 class YamlBaselineCompiler:
     """Compile a governed YAML bundle into the production MethodContract."""
 
-    compiler_version = "yaml-baseline-compiler-v4"
+    compiler_version = "yaml-baseline-compiler-v5"
 
     @staticmethod
     def _binding(role: TemplateRole, source_hash: str, location: str) -> RoleBinding:
@@ -567,6 +567,9 @@ class YamlBaselineCompiler:
                 "input_selection": dict(selection),
                 "ego_speed_point_selection": dict(speed),
                 "severity_evaluation": dict(project_policy.get("severity_evaluation", {})),
+                "representative_motion_rules": list(project_policy.get("representative_motion_rules", [])),
+                "template_semantic_aliases": dict(project_policy.get("template_semantic_aliases", {})),
+                "template_context_exclusions": dict(project_policy.get("template_context_exclusions", {})),
                 "driver_location_convention": dict(project_policy.get("driver_location_convention", {})),
                 "supersedes": str(project_policy.get("supersedes", "")),
                 "controllability": dict(controllability),

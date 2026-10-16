@@ -801,6 +801,12 @@ class HARAReportProjectionService:
                     driver_branch=self.text.driver_branch(child, child_trace),
                     controllability_branch=self.text.controllability_branch(child_trace),
                     analysis_basis=self.text.analysis_basis(child),
+                    branch_results="\n".join(
+                        f"{branch['branch_id']}: S={branch.get('S') or 'Pending'}, E={branch.get('E') or 'Pending'}, "
+                        f"C={branch.get('C') or 'Pending'}, ASIL={branch.get('ASIL') or 'Pending'}; "
+                        f"relative={branch.get('relative_speed_kph')} km/h; TTC={branch.get('ttc_s')} s; {branch.get('status')}"
+                        for branch in child_risk.branch_evaluations
+                    ),
                 ))
                 audit.append(AuditReferenceView(
                     run_id=state.run_id,
@@ -911,6 +917,10 @@ class HARAReportProjectionService:
         divergence_groups = sum(max(0, len(events) - 1) for events in base_events.values())
         speed_values = [item.speed_constraint for item in details if item.speed_constraint]
         projection_metrics = {
+            "safety_goal_stage_completed": any(event.get("event") == "safety_goals_aggregated"
+                                               for event in state.audit_trail),
+            "display_review_groups": len({(risk.malfunction_id, malfunctions.get(risk.malfunction_id, {}).get('vehicle_level_hazard', '')) for risk in state.risk_results}),
+            "collision_branch_rows": sum(len(risk.branch_evaluations) for risk in state.risk_results),
             "child_scenario_rows": len(details),
             "main_hara_groups": len(rows),
             "grouping_reduction": len(details) - len(rows),
@@ -960,12 +970,49 @@ class HARAReportProjectionService:
             retained = counts["RETAINED_FOR_RISK"]
             excluded = counts["EXCLUDED_FROM_RISK"]
             pending = counts["PENDING_CAUSAL"]
+            members = [entry for entry in entries if entry["risk"].malfunction_id == identity]
+            distributions = []
+            from hara_agent.services.analysis.asil_service import MethodContractASILService
+            asil_order = (MethodContractASILService(method).result_order()
+                          if getattr(method, "engineering_rules_compiled", False) else [])
+            known_asils = [entry["risk"].branch_summary.get("highest_known_asil") or
+                (_value(entry["risk"].asil) if _status(entry["risk"].asil) == "FINALIZED" else "") for entry in members]
+            known_asils = [value for value in known_asils if value in asil_order]
+            known_s = [entry["risk"].branch_summary.get("severity_maximum") or
+                (_value(entry["risk"].severity) if _status(entry["risk"].severity) == "FINALIZED" else "") for entry in members]
+            s_order = list(method.asil.severity_levels) if hasattr(method, "asil") else []
+            known_s = [value for value in known_s if value in s_order]
+            distributions.append("已知最大 S=" + (max(known_s, key=s_order.index) if known_s else "Pending")
+                + "；已知最高 ASIL=" + (max(known_asils, key=asil_order.index) if known_asils else "Pending")
+                + "；仅汇总已验证子结果，未决分支另列")
+            for dimension in ("severity", "exposure", "controllability", "asil"):
+                distribution = Counter((_value(getattr(entry["risk"], dimension)) if _status(getattr(entry["risk"], dimension)) == "FINALIZED" else "Pending") for entry in members)
+                distributions.append(f"{dimension}: " + ", ".join(f"{key}×{value}" for key, value in sorted(distribution.items())))
+            pending_reasons = Counter(
+                entry["trace"].get("physical_input_production", {}).get("pending_reason") or
+                entry["trace"].get("controllability", {}).get("input_diagnostic", {}).get("reason", "")
+                for entry in members if entry["risk"].asil.status.value != "FINALIZED"
+            )
+            coverage = [f"{len(members)} 个独立子结果；完整条件见场景明细"]
+            for label, field in (("对象", "road_user_type"), ("目标方位", "object_position"),
+                                 ("自车方向", "ego_longitudinal_direction"), ("驾驶员", "driver_position")):
+                values = sorted({str(entry["scenario"].facts[field]) for entry in members if field in entry["scenario"].facts})
+                if values:
+                    coverage.append(f"{label}：" + " / ".join(values))
+            locations = sorted({str(entry["scenario"].facts.get("source_operating_conditions", {}).get("operating_scenario", ""))
+                                for entry in members} - {""})
+            if locations:
+                coverage.append("位置：" + " / ".join(locations))
             inventory.append(MalfunctionView(
                 identity, str(item.get("function_id", "")), str(item.get("guideword", "")),
                 str(item.get("description", "")), str(item.get("vehicle_level_hazard", "")),
                 retained, excluded, pending,
                 "RETAINED_FOR_RISK" if retained else "PENDING_CAUSAL" if pending
                 else "EXCLUDED_FROM_RISK" if excluded else "NOT_ASSESSED",
+                review_group="按失效/危险声明展示；不表示风险等价，各子结果独立",
+                coverage_summary="\n".join(coverage),
+                risk_distribution="\n".join(distributions),
+                pending_summary="\n".join(f"{reason or '待因果/方法证据'}: {count}" for reason, count in pending_reasons.items()),
             ))
         return HARAReportViewModel(
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,

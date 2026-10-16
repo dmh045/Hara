@@ -112,6 +112,7 @@ class RiskExecutionTraceService:
                 "status": input_provenance.get("approval", "MISSING"),
             },
             "ego_speed_constraint": {"value": scenario.get("ego_speed_constraint"), "USED_FOR_SEVERITY": False},
+            "input_production": scenario.get("_physical_input_production", {}),
             "missing_inputs": [input_key] if input_key and value is None else [],
             "derived_values": {key: scenario.get(key) for key in ("delta_v_kph", "impact_speed_kph", "relative_speed_kph") if key in scenario},
             "rule_ids": [result.get("engineering_rule_id", "")] if result.get("engineering_rule_id") else [],
@@ -268,6 +269,14 @@ class RiskExecutionTraceService:
         pending = result.get("reasoning", "") if _status(result) != CalculationStatus.FINALIZED.value else ""
         return {
             "executor": "StructuredControllabilityExecutor",
+            "input_diagnostic": (
+                scenario["_hazardous_event_risk_context"].ttc_s.to_dict()
+                if scenario.get("_hazardous_event_risk_context") is not None else {}
+            ),
+            "known_physical_inputs": {key: scenario[key] for key in (
+                "ego_speed_kph", "object_speed_kph", "relative_distance_m", "object_position",
+                "ego_longitudinal_direction", "object_longitudinal_direction", "fault_motion_model",
+            ) if key in scenario},
             "selected_profile": profile.profile_id if profile else "",
             "avoidance_paths": result.get("avoidance_paths", {}),
             "profile_id": profile.profile_id if profile else "",
@@ -360,6 +369,9 @@ class RiskExecutionTraceService:
             if pair in scored:
                 severity, exposure, controllability, facts = scored[pair]
                 row.update({
+                    "physical_input_production": facts.get("_physical_input_production", {}),
+                    "branch_summary": facts.get("_branch_summary", {}),
+                    "branch_evaluations": severity.get("branch_evaluations", []),
                     "hazardous_event_risk_context": (
                         context.to_dict() if context is not None else {}
                     ),

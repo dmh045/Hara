@@ -134,7 +134,7 @@ def scoring_view(method):
     return {"scenario_id": "SC", "malfunction_id": "MF", "harm_mechanism_id": "IMPACT",
         "component_category": "sensor_camera", "scenario_atom_ids": ["SO010", "PH005"],
         "method_scenario_dimensions": {}, "ttc_s": 4.1,
-        "_fact_provenance": {"collision_branches": source()},
+        "_fact_provenance": {"collision_branches": source(), "ttc_s": source()},
         "_exposure_dimension_coverage_decision": ExposureDimensionCoverageService(method).decide(
             assessment_key="MF::SC", function=None, operating_mode="parking_vehicle_control")}
 
@@ -143,7 +143,7 @@ def branch(name, road_user, collision, speed):
     return {"branch_id": name, "mechanism_id": "IMPACT", "impact_time_id": "t1",
         "physically_possible": True, "road_user_type": road_user,
         "collision_type": collision, "relative_speed_kph": speed,
-        "_fact_provenance": {"relative_speed_kph": source(), "relative_speed_range_kph": source()}}
+        "_fact_provenance": {key: source() for key in ("relative_speed_kph", "relative_speed_range_kph", "road_user_type", "collision_type", "ttc_s")}}
 
 
 @pytest.mark.parametrize("speed,expected,invariant", [(7, "S1", True), (10, "S2", False)])

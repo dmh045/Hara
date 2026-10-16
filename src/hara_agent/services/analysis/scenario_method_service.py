@@ -178,6 +178,9 @@ class ScenarioMethodService:
             return "AMBIGUOUS", None, "TIER_1_COMPONENT_AND_FAILURE"
         if component_hits and failure_hits and set(component_hits) != set(failure_hits):
             return "AMBIGUOUS", None, "STRUCTURED_SELECTOR_CONFLICT"
+        semantic_hits = [index for index in failure_hits if "KEYWORD" in matches[index][1]]
+        if len(semantic_hits) == 1 and not component_hits:
+            return "STRONG_MATCH", semantic_hits[0], "FAILURE_AND_SOURCE_MECHANISM"
         component_templates = self._selector_template_ids(
             "COMPONENT_CATEGORY", component,
         )
@@ -185,7 +188,7 @@ class ScenarioMethodService:
             return "STRONG_MATCH", component_hits[0], "TIER_2_UNIQUE_COMPONENT"
         failure_templates = self._selector_template_ids("FAILURE_TYPE", failure_type)
         if len(failure_templates) == 1 and len(failure_hits) == 1:
-            return "STRONG_MATCH", failure_hits[0], "TIER_3_UNIQUE_FAILURE_TYPE"
+            return "WEAK_MATCH", failure_hits[0], "FAILURE_TYPE_WITHOUT_MECHANISM_SUPPORT"
         keyword_only = [
             index for index, item in enumerate(matches)
             if item[1] == ("KEYWORD",)
@@ -289,8 +292,11 @@ class ScenarioMethodService:
         ]] = []
         for template in catalog.templates:
             match = template.match
+            if any(term.casefold() in fm_text for term in policy.get("template_context_exclusions", {}).get(template.template_id, [])):
+                continue
             keyword_terms = tuple(
-                keyword for keyword in match.keywords if keyword.casefold() in fm_text
+                keyword for keyword in (*match.keywords, *policy.get("template_semantic_aliases", {}).get(template.template_id, []))
+                if keyword.casefold() in fm_text
             )
             component_resolutions = tuple(
                 self.template_selector_resolver.resolve("COMPONENT_CATEGORY", value)

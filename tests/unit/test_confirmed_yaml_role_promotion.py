@@ -438,14 +438,15 @@ def test_qualification_keeps_conflicting_structured_selectors_ambiguous():
     assert result.qualification_tier == "STRUCTURED_SELECTOR_CONFLICT"
 
 
-def test_unique_structured_selector_beats_keyword_only_candidate():
+def test_generic_failure_type_does_not_authorize_unrelated_braking_geometry():
     result = ScenarioMethodService(_method()).match_fm_template(_malfunction(
         description="path_deviation", component="computing", failure_type="degraded",
     ))
-    assert result.status == "STRONG_MATCH"
+    assert result.status == "WEAK_MATCH"
     assert result.template is not None
     assert result.template.template_id == "FM_TEMPLATE_001"
-    assert result.qualification_tier == "TIER_3_UNIQUE_FAILURE_TYPE"
+    assert result.qualification_tier == "FAILURE_TYPE_WITHOUT_MECHANISM_SUPPORT"
+    assert not result.injectable
 
 
 def test_ambiguity_audit_retains_parent_subtype_and_never_uses_first_match():

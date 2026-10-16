@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from typing import Any
-from .scenario_physics import source_is_accepted_for
+from .scenario_physics import source_is_accepted_for, branch_physics_view
+from .asil_service import MethodContractASILService
+from copy import deepcopy
 
 from hara_agent.contracts import (
     CalculationStatus, ExposureDimensionCoverageDecision,
@@ -18,6 +20,7 @@ from .exposure_input_readiness_service import (
     ExposureInputReadinessService, READY_STATUSES,
 )
 from .severity_delta_v_semantic_audit_service import SeverityDeltaVSemanticAuditService
+from .hazardous_event_risk_context_service import HazardousEventRiskContextService
 
 
 class StructuredRiskScoringService:
@@ -324,10 +327,9 @@ class StructuredRiskScoringService:
                         or branch.get("physically_possible") is not True):
                     failures.append("BRANCH_MECHANISM_OR_PHYSICS_UNRESOLVED")
                     continue
-                view = {**base, **branch}
-                view["_fact_provenance"] = {**base.get("_fact_provenance", {}), **branch.get("_fact_provenance", {})}
+                view = branch_physics_view(base, branch)
                 interval = branch.get("relative_speed_range_kph")
-                points = [branch.get("relative_speed_kph")]
+                points = [view.get("relative_speed_kph")]
                 if interval is not None:
                     if (not isinstance(interval, (list, tuple)) or len(interval) != 2
                             or any(self.inputs._number(value) is None for value in interval)
@@ -341,9 +343,37 @@ class StructuredRiskScoringService:
                     points = sorted(set(cuts + [(left + right) / 2 for left, right in zip(cuts, cuts[1:])]))
                     view["_fact_provenance"]["relative_speed_kph"] = view["_fact_provenance"].get("relative_speed_range_kph", {})
                 for point in points:
-                    result = self.score({**view, "relative_speed_kph": point}, hazard_event)
+                    point_view = {**view, **({"relative_speed_kph": point} if point is not None else {})}
+                    contexts = HazardousEventRiskContextService(self.method)
+                    context = contexts.build(malfunction_id=str(view.get("malfunction_id", "")),
+                        scenario_id=str(view.get("scenario_id", "")),
+                        hazard_node_id=str(branch["branch_id"]), scenario=point_view)
+                    point_view = contexts.scoring_facts(context, point_view)
+                    result = self.score(point_view, hazard_event)
+                    physical_conflicts = view.get("_physical_input_conflicts", [])
+                    if physical_conflicts:
+                        for dimension in ("severity", "controllability"):
+                            result[dimension] = {**result[dimension], dimension + "_score": "",
+                                "engineering_status": "PENDING", "calculation_status": "PENDING_INPUT",
+                                "pending_reason": "BRANCH_PHYSICAL_INPUT_CONFLICT",
+                                "reasoning": "; ".join(item["reason"] for item in physical_conflicts)}
+                    object_changed = (base.get("road_user_type") is not None
+                                      and branch.get("road_user_type", base["road_user_type"]) != base["road_user_type"])
+                    parent_object_binding = base.get("method_scenario_dimensions", {}).get("OBJECT", {})
+                    if (object_changed and parent_object_binding.get("resolution_status") == "RESOLVED"
+                            and "scenario_atom_ids" not in branch and "OBJECT" not in branch.get("method_scenario_dimensions", {})):
+                        result["exposure"] = {**result["exposure"], "exposure_score": "", "engineering_status": "PENDING",
+                            "calculation_status": "PENDING_INPUT", "pending_reason": "BRANCH_OBJECT_EXPOSURE_BINDING_REQUIRED",
+                            "reasoning": "Changed collision object cannot inherit a different object's Exposure atom without a binding or invariance proof."}
+                    if interval is not None and interval[0] != interval[1] and any("ttc" in key.lower() for key in result["controllability"].get("inputs_used", [])):
+                        result["controllability"] = {**result["controllability"], "controllability_score": "",
+                            "engineering_status": "PENDING", "calculation_status": "PENDING_INPUT",
+                            "pending_reason": "C_INTERVAL_NOT_PROVEN", "reasoning": "S table partition does not prove C over a trajectory interval."}
                     rows.append({"branch_id": branch["branch_id"], "impact_time_id": branch["impact_time_id"],
-                                 "relative_speed_kph": point, "scores": result})
+                                 "relative_speed_kph": point_view.get("relative_speed_kph"), "scores": result,
+                                 "risk_context": context.to_dict(),
+                                 "physical_input_conflicts": physical_conflicts,
+                                 "ttc_s": view.get("ttc_s"), "invalidated_parent_fields": view.get("_invalidated_parent_fields", [])})
                     if result["severity"]["engineering_status"] != "FINALIZED":
                         failures.append("BRANCH_SEVERITY_UNRESOLVED")
         if failures or not rows:
@@ -354,7 +384,7 @@ class StructuredRiskScoringService:
         else:
             levels = list(self.method.asil.severity_levels)
             deciding = max(rows, key=lambda row: levels.index(row["scores"]["severity"]["severity_score"]))
-            result = deciding["scores"]
+            result = deepcopy(deciding["scores"])
             # E/C belong to the same selected physical branch; retain all tied
             # cases in the trace rather than borrowing a C from another object.
             result["severity"]["deciding_branch_id"] = deciding["branch_id"]
@@ -366,11 +396,42 @@ class StructuredRiskScoringService:
                     result[dimension] = {**result[dimension], score_key: "", "engineering_status": "PENDING",
                         "calculation_status": "PENDING_INPUT", "pending_reason": "DISTINCT_BRANCH_RISK_CONDITIONS",
                         "reasoning": "Equal maximum S branches have different E/C; retain separate branch evaluations."}
-        result["severity"]["branch_evaluations"] = [
-            {"branch_id": row["branch_id"], "impact_time_id": row["impact_time_id"],
-             "relative_speed_kph": row["relative_speed_kph"],
-             "S": row["scores"]["severity"]["severity_score"],
-             "E": row["scores"]["exposure"]["exposure_score"],
-             "C": row["scores"]["controllability"]["controllability_score"],
-             "status": row["scores"]["severity"]["calculation_status"]} for row in rows]
+        asil_service = MethodContractASILService(self.method)
+        evaluations = []
+        for row in rows:
+            approved = {dimension: score[dimension + "_score"] for dimension, score in row["scores"].items()
+                        if dimension in {"severity", "exposure", "controllability"} and score["engineering_status"] == "FINALIZED"}
+            asil, sources = asil_service.partial_zero_decision(approved)
+            if len(approved) == 3:
+                asil = asil_service.determine(approved["severity"], approved["exposure"], approved["controllability"])
+            if row["physical_input_conflicts"]:
+                asil = ""
+            evaluations.append({"branch_id": row["branch_id"], "impact_time_id": row["impact_time_id"],
+                "relative_speed_kph": row["relative_speed_kph"], "ttc_s": row["ttc_s"],
+                "invalidated_parent_fields": row["invalidated_parent_fields"],
+                "physical_input_conflicts": row["physical_input_conflicts"],
+                "risk_context": row["risk_context"],
+                "S": row["scores"]["severity"]["severity_score"], "E": row["scores"]["exposure"]["exposure_score"],
+                "C": row["scores"]["controllability"]["controllability_score"], "ASIL": asil,
+                "status": "FINALIZED" if asil else "PENDING", "scores": row["scores"]})
+        known = [row for row in evaluations if row["ASIL"]]
+        order = asil_service.result_order()
+        deciding_risk = max(known, key=lambda row: (order.index(row["ASIL"]), list(self.method.asil.severity_levels).index(row["S"]) if row["S"] else -1)) if known else None
+        maximum_s = result["severity"]["severity_score"]
+        invariant_s = result["severity"].get("invariant")
+        if deciding_risk:
+            result = deepcopy(deciding_risk["scores"])
+            result["severity"].update(deciding_branch_id=deciding_risk["branch_id"],
+                                       maximum_feasible_severity=maximum_s, invariant=invariant_s)
+        result["branch_evaluations"] = evaluations
+        # Keep legacy diagnostic consumers, with an identical branch list.
+        result["severity"]["branch_evaluations"] = evaluations
+        result["branch_summary"] = {
+            "highest_known_asil": deciding_risk["ASIL"] if deciding_risk else "",
+            "deciding_branch_id": deciding_risk["branch_id"] if deciding_risk else "",
+            "status": "PENDING" if failures or not evaluations or any(not row["ASIL"] for row in evaluations) else "FINALIZED",
+            "unresolved_reasons": sorted(set(failures)),
+            "severity_maximum": maximum_s,
+            "aggregation_basis": "EACH_BRANCH_OWN_SEC_ACTIVE_MATRIX",
+        }
         return result

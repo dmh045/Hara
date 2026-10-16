@@ -7,7 +7,7 @@ from typing import Sequence
 
 from hara_agent.infrastructure.llm import LLMClient, LLMRequest
 from hara_agent.services.extraction.project_fact_normalization import (
-    ProjectFactNormalizationResult, ProjectFactNormalizer,
+    ProjectFactNormalizationResult, ProjectFactNormalizer, PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT,
 )
 from hara_agent.services.extraction.project_fact_specs import RequiredProjectFactSpec
 
@@ -17,7 +17,7 @@ from .item_supplement_agent import RoutedDocumentBlocks
 class TargetedProjectFactExtractionAgent:
     """One bounded schema-guided call for one Project Fact category."""
 
-    PROMPT_VERSION = "targeted-project-facts-v4-atomic-speed-shape"
+    PROMPT_VERSION = "targeted-project-facts-v5-physical-semantics-atomic-speed-shape"
 
     def __init__(self, client: LLMClient, normalizer: ProjectFactNormalizer | None = None):
         self.client = client
@@ -88,6 +88,7 @@ class TargetedProjectFactExtractionAgent:
                 "source_block_id必须逐字使用给定ID，source_excerpt若提供必须是该块原文的连续精确子串。"
                 "相邻表头或邻行仅用于理解上下文；source_block_id必须取当前spec的retrieval_candidate_block_ids之一，"
                 "非结构候选的正文必须包含当前spec的任一alias；不得选择support-only块。"
+                + PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT
             ),
             user_prompt=(
                 "For mode-specific speed specs, copy the first context_hint into "

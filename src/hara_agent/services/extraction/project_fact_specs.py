@@ -7,6 +7,7 @@ from typing import Sequence
 
 from hara_agent.contracts import FactOrigin, FactType, RequiredFactSpec
 from hara_agent.models import ProjectFactOutputType
+from hara_agent.models.project_facts import PHYSICAL_QUANTITY_UNITS
 
 from .evidence_retrieval import FactRetrievalSpec
 
@@ -71,6 +72,18 @@ def build_project_fact_spec_batches(
         batches["mode_speed_envelopes"] = speed_specs
     if risk_specs:
         batches["method_risk_facts"] = risk_specs
+    # Names route source text only; no numeric or fault-stage defaults.
+    aliases = {
+        "longitudinal_acceleration_mps2": ("longitudinal acceleration", "纵向加速度"),
+        "travel_to_impact_m": ("travel to impact", "碰撞前行驶距离"),
+        "relative_distance_m": ("relative distance", "相对距离"),
+        "model_valid_until_s": ("model valid until", "模型有效时间"),
+    }
+    batches["physical_motion_inputs"] = tuple(RequiredProjectFactSpec(
+        key, ProjectFactOutputType.RISK_FACT, (key, *aliases[key]), units, (),
+        ("status", "value", "unit", "context", "source_block_id", "source_excerpt"),
+        constraints=("Only an explicit scalar source quantity; no conversion of command limits or normal envelopes into a fault bound.",),
+    ) for key, units in PHYSICAL_QUANTITY_UNITS.items())
     return batches
 
 

@@ -35,6 +35,8 @@ def write(path, payload):
 def run(args):
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
+    if (out / 'checkpoints' / f'{args.run_id}.checkpoint.json').exists():
+        raise ValueError('Use a new run ID/output directory; historical replay is immutable.')
     source_hash = hashlib.sha256(args.checkpoint.read_bytes()).hexdigest()
     raw = json.loads(args.checkpoint.read_text())
     state = HARAState.read_committed(deepcopy(raw))
@@ -103,6 +105,18 @@ def run(args):
         writer.record_scenario_feasibility(a)
     state = score_structured_scenarios(state, StructuredRiskScoringService(method), MethodContractASILService(method),
         risk_fact_binding=MethodRiskFactBindingService(method), review_artifact_writer=writer)
+    pre_scoring_changed = changed
+    original_candidates = {candidate['scenario_id']: candidate for candidate in raw['scenarios']}
+    changed = []
+    for candidate in state.scenarios:
+        original = original_candidates[candidate.scenario_id]
+        fields = sorted(key for key in set(original['facts']) | set(candidate.facts)
+                        if original['facts'].get(key) != candidate.facts.get(key))
+        original_provenance = original.get('fact_provenance', {})
+        source_fields = sorted(key for key in set(original_provenance) | set(candidate.fact_provenance)
+                               if original_provenance.get(key) != candidate.fact_provenance.get(key))
+        if fields or source_fields:
+            changed.append({'scenario_id': candidate.scenario_id, 'fields': fields, 'provenance_fields': source_fields})
     # Retain existing SG associations as historical drafts; no new SG business
     # generation is performed in P7 (G-1).
     state.safety_goals = old_goals
@@ -116,14 +130,19 @@ def run(args):
     write(out / 'input_consumption.json', {'bindings': event['risk_fact_binding_audits'],
         'calculation_inputs': event['risk_calculation_inputs']})
     def counts(risks):
-        return {field: dict(Counter((getattr(risk, field).value or 'Pending') for risk in risks))
+        risks = list(risks)
+        return {field: dict(Counter((getattr(risk, field).value if getattr(risk, field).status is ReviewStatus.FINALIZED else 'Pending') for risk in risks))
                 for field in ('severity', 'exposure', 'controllability', 'asil')}
     summary = {'source_run_id': raw['run_id'], 'run_id': state.run_id,
         'source_checkpoint_sha256': source_hash, 'method_hash': method.metadata['method_source_hash'],
         'compiler_version': method.compiler_version, 'provider_calls': 0,
         'fixed_candidate_count': len(state.item_definition['scenario_assessments']),
         'before': counts(old_risks.values()), 'after': counts(state.risk_results),
-        'new_causal_pending': len(rejected), 'fact_changes': len(changed),
+        'physical_revalidation_flags': len(rejected),
+        'new_causal_pending': sum(a.get('status') == 'PENDING' and b.get('status') != 'PENDING'
+            for a,b in zip(state.item_definition['scenario_assessments'], raw['item_definition']['scenario_assessments'])),
+        'fact_changes': len(changed),
+        'pre_scoring_fact_changes': len(pre_scoring_changed),
         'input_binding_counts': dict(Counter(t for a in event['risk_fact_binding_audits'] for t in a['bound_fact_types'])),
         'binding_conflicts': sum(bool(a['source_conflicts']) for a in event['risk_fact_binding_audits']),
         'all_dimensions_finalized': sum(all(getattr(r,f).status is ReviewStatus.FINALIZED for f in ('severity','exposure','controllability','asil')) for r in state.risk_results),
@@ -157,7 +176,7 @@ def run(args):
             'candidates': [asdict(c) for c in cases.values()], 'generation': {'source': 'P7_FIXED_HISTORICAL_SAMPLE'}})
     write(out / 'sample_plan.json', plan)
     result = OfflineReportRebuilder().rebuild(checkpoint_path=checkpoint, method_baseline_path=args.baseline,
-        report_style_template_path=args.template, output_path=out / 'HARA_P7_Revised_Draft_20261014.xlsx',
+        report_style_template_path=args.template, output_path=out / args.report_name,
         review_root=review_root, audit_output_dir=out / 'report_audit')
     print(json.dumps({'summary': summary, 'report': str(result),
                       'sample_instances': sum(len(c['candidates']) for c in plan['cases'])}, ensure_ascii=False, default=str))
@@ -170,6 +189,7 @@ if __name__ == '__main__':
     parser.add_argument('--source-report', type=Path, default=Path('output/HARA_full_p6_20261012_002.xlsx'))
     parser.add_argument('--output', type=Path, default=Path('output/p7_closure'))
     parser.add_argument('--run-id', default='p7-offline-20261014-001')
+    parser.add_argument('--report-name', default='HARA_P7_Revised_Draft_20261014.xlsx')
     parser.add_argument('--baseline', type=Path, default=Path('method_assets/fusa_baseline_v1/manifest.yaml'))
     parser.add_argument('--template', type=Path, default=Path('references/HARA_Template_AI_20260327.xlsx'))
     run(parser.parse_args())

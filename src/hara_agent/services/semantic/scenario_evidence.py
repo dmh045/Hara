@@ -20,6 +20,7 @@ from hara_agent.models import (
 )
 from hara_agent.services.analysis.scenario_physics import (
     DerivedPhysicsType, derive_scenario_physics, has_analysis_assumption_lineage,
+    source_is_accepted_for,
 )
 
 from .scenario_contract import RISK_DIMENSION_VALUES, SCENARIO_CONTRACT_VERSION
@@ -602,6 +603,14 @@ def validate_evidence_contract(
                 or has_analysis_assumption_lineage(fact)
             )
             and not _is_validated_analytical_scenario_atom(fact)
+            and not (fact.get("kind") == EvidenceKind.DERIVED_PHYSICS.value
+                     and scenario.analysis_instance.get("physical_input_production", {}).get("producer")
+                         == "AnalyticalPhysicsInstantiationService.produce_inputs"
+                     and scenario.facts.get("fault_motion_model")
+                     and source_is_accepted_for(scenario.fact_provenance.get("fault_motion_model", {}),
+                         malfunction_id=malfunction.malfunction_id, scenario_id=scenario.scenario_id)
+                     and source_is_accepted_for(fact, malfunction_id=malfunction.malfunction_id,
+                                               scenario_id=scenario.scenario_id))
             for fact in resolved
         ):
             raise _error(

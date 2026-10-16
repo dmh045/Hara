@@ -37,6 +37,34 @@ class MethodContractASILService:
     def determine(self, severity: str, exposure: str, controllability: str) -> str:
         return self._mapping(severity, exposure, controllability).result
 
+    def result_order(self) -> list[str]:
+        """Derive result precedence from the active matrix's ordered axes.
+
+        No second ASIL matrix or assumed label ranking. Non-monotone source
+        tables cannot authorize a single maximum and are rejected here.
+        """
+        levels = (self.method.asil.severity_levels, self.method.asil.exposure_levels,
+                  self.method.asil.controllability_levels)
+        labels = {row.result for row in self.matrix.values()}
+        before = {label: set() for label in labels}
+        for key, row in self.matrix.items():
+            for axis, values in enumerate(levels):
+                index = values.index(key[axis])
+                if index + 1 < len(values):
+                    neighbour = list(key); neighbour[axis] = values[index + 1]
+                    other = self.matrix.get(tuple(neighbour))
+                    if other and other.result != row.result:
+                        before[other.result].add(row.result)
+        ordered = []
+        while before:
+            ready = [label for label, predecessors in before.items() if not predecessors]
+            if len(ready) != 1:
+                raise ValueError("Active ASIL matrix does not establish a unique result order")
+            label = ready[0]; ordered.append(label); del before[label]
+            for predecessors in before.values():
+                predecessors.discard(label)
+        return ordered
+
     def partial_zero_decision(self, approved: dict[str, str]) -> tuple[str, list[SourceRef]]:
         """Prove the governed zero shortcut against every remaining matrix cell.
 

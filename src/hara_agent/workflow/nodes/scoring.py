@@ -122,6 +122,7 @@ def score_structured_scenarios(
     review_artifact_writer: ReviewArtifactWriter | None = None,
 ) -> HARAState:
     """Score each retained malfunction-scenario association without prose heuristics."""
+    from hara_agent.services.analysis.analytical_physics_instantiation_service import AnalyticalPhysicsInstantiationService
     scenario_by_id = _unique_index(state.scenarios, lambda item: item.scenario_id, "Scenario")
     malfunction_by_id = _unique_index(
         state.malfunctions, lambda item: str(item.get("malfunction_id", "")), "Malfunction",
@@ -211,6 +212,11 @@ def score_structured_scenarios(
             binding_source_conflicts: list[dict[str, Any]] = []
             if risk_context_service is not None:
                 for field, incoming in binding.values.items():
+                    if (field in binding.audit.get("bound_physical_quantities", []) and field in scenario
+                            and scenario[field] != incoming):
+                        binding_source_conflicts.append({"field": field, "scenario_value": scenario[field],
+                            "project_value": incoming, "reason": "FACT_SOURCE_CONFLICT"})
+                        continue
                     try:
                         risk_context_service.validate_source_conflicts(
                             scenario, {field: incoming},
@@ -331,10 +337,25 @@ def score_structured_scenarios(
                     candidate, facts=scoped_facts,
                     fact_provenance=scoped_provenance,
                 )
+        validated_model = candidate.facts.get("fault_motion_model")
+        candidate = AnalyticalPhysicsInstantiationService(method).produce_inputs(candidate, malfunction)
         if assessment_counts[scenario_id] == 1:
             original = scenario_by_id[scenario_id]
             original.facts = dict(candidate.facts)
             original.fact_provenance = dict(candidate.fact_provenance)
+            original.analysis_instance = dict(candidate.analysis_instance)
+        if candidate.facts.get("fault_motion_model") != validated_model:
+            # Fresh candidates already carry this model into the causal prompt.
+            # A legacy approval cannot silently authorize a new motion process.
+            assessment["status"] = "PENDING"
+            assessment["rationale"] = "NEW_MOTION_CONDITION_REQUIRES_CAUSAL_REVALIDATION"
+            if assessment.get("causal_assessment"):
+                assessment["causal_assessment"]["review_status"] = "PENDING"
+            pending.append({"scenario_id": scenario_id, "malfunction_id": malfunction_id,
+                "field": "causal_assessment", "reason": assessment["rationale"]})
+            if review_artifact_writer is not None:
+                review_artifact_writer.record_scenario_feasibility(assessment)
+            continue
         scenario = {
             "scenario_id": scenario_id,
             "malfunction_id": malfunction_id,
@@ -452,6 +473,8 @@ def score_structured_scenarios(
                 operating_mode=candidate.operating_mode,
             )
         scored = scoring.score(scenario, hazard_event)
+        scenario["_physical_input_production"] = candidate.analysis_instance.get("physical_input_production", {})
+        scenario["_branch_summary"] = scored.get("branch_summary", {})
         scored_by_pair[(malfunction_id, scenario_id)] = (
             scored["severity"], scored["exposure"], scored["controllability"],
             dict(scenario),
@@ -535,6 +558,10 @@ def score_structured_scenarios(
         )
         if shortcut:
             asil_value, asil_status = shortcut, ReviewStatus.FINALIZED
+        branch_summary = scored.get("branch_summary", {})
+        if branch_summary:
+            asil_value = branch_summary["highest_known_asil"]
+            asil_status = ReviewStatus(branch_summary["status"])
         asil = EvidenceValue(
             value=asil_value,
             status=asil_status,
@@ -560,6 +587,8 @@ def score_structured_scenarios(
             hazardous_event=hazard_event,
             potential_harm=potential_harm,
             exposure_tf=exposure_method,
+            branch_evaluations=scored.get("branch_evaluations", []),
+            branch_summary=branch_summary,
         )
         risks.append(risk)
         for stored in assessments:
@@ -574,6 +603,9 @@ def score_structured_scenarios(
             "malfunction_id": malfunction_id,
             "scenario_id": scenario_id,
             "physics_conflicts": physics_conflicts,
+            "physical_input_production": scenario.get("_physical_input_production", {}),
+            "branch_evaluations": scored.get("branch_evaluations", []),
+            "branch_summary": branch_summary,
             "severity_input": calculation_inputs.severity(
                 malfunction_id, scenario_id, scenario,
                 getattr(getattr(method, "structured_risk_method", None), "severity", None).speed_semantic

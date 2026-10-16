@@ -33,6 +33,26 @@ python -m venv .venv
 
 `doctor` is offline for template compilation and separately reports LLM configuration readiness. `analyze` fails closed when the method, facts, or approvals are incomplete. `--allow-draft` permits a visibly watermarked report without bypassing review state.
 
+### P7R: source-produced collision inputs and branch consistency
+
+Current changes and limitations are tracked in [the P7R R01–R12 ledger](docs/P7R_Closure_20261016.md).
+The ordinary candidate/scoring path now produces source-scoped braking representative
+conditions and finite collision branches. The bounded validation used 17 of 20
+authorized Provider attempts: 11 of 14 distinct source candidates completed S/E/C/ASIL,
+and two repeated candidates passed the final evidence validator. Dynamic fault-motion
+inputs and demonstrated causal-result reuse remain incomplete. Historical ratings
+whose template sources no longer apply are withdrawn in an independent draft.
+Reports and reproducible evidence are under `output/p7r_closure/`; no full Provider
+run was started and no historical checkpoint was replaced.
+
+The independent review follow-up fixes branch dependency invalidation for newly
+supplied inputs, preserves physical phase metadata at extraction, scopes the
+non-closing guard to the claimed target/phase, and corrects the empty Safety Goal
+page. Updated evidence and draft workbooks are in
+`output/p7r_review_followup_20261016/`. The fixed historical replay now retains
+886 risk records (880 E calculated; S/C/ASIL pending); the additional 28 records
+were previously blocked by the overbroad guard and are not deduplication gains.
+
 ### P7: physical input and bounded validation closure
 
 P7 code and evidence are documented in [the unified issue ledger](docs/P7_Closure_20261014.md).

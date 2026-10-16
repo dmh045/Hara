@@ -12,10 +12,36 @@ from hara_agent.models import (
 )
 
 from .project_fact_specs import RequiredProjectFactSpec
+from hara_agent.models.project_facts import validated_physical_semantics
 
 
 FOUND = "FOUND"
 NOT_FOUND = "NOT_FOUND"
+PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT = (
+    "For physical quantities preserve explicitly stated time/phase in an optional physical_semantics object. "
+    "Allowed keys: analysis_value_semantic, time_role, impact_time_id, trajectory_id, branch_id, "
+    "object_id, unit, assessment_reference (nonempty strings), model_valid_until_s (nonnegative seconds). "
+    "Include physical_semantics_source_excerpt as an exact quote from the cited source. "
+    "Copy explicit labels and identities; never invent a collision identity or assign a fault phase by default. "
+    "Use {} when the source gives no phase. Normal performance, actuator capability and command limits "
+    "are not fault motion bounds. An interpreted label such as POST_FAULT_CONSTANT_ACCELERATION "
+    "is retained as PENDING unless that label is explicit in the source; it never approves itself. "
+)
+
+
+def extracted_physical_semantics(raw: dict, sources: Sequence[SourceRef]) -> tuple[dict, ReviewStatus]:
+    """Keep literal source labels; interpreted phase labels await confirmation.
+
+    A citation validates the location, not an LLM's new engineering assertion.
+    No default phase is assigned to an ordinary performance quantity.
+    """
+    semantics = validated_physical_semantics(raw.get("physical_semantics", {}))
+    excerpt = raw.get("physical_semantics_source_excerpt", "")
+    if excerpt and (not isinstance(excerpt, str) or not any(excerpt in s.excerpt for s in sources)):
+        raise ValueError("INVALID_PHYSICAL_SEMANTICS: excerpt is not in cited evidence")
+    texts = [excerpt] if excerpt else [s.excerpt for s in sources]
+    literal = all(any(str(value) in text for text in texts) for value in semantics.values())
+    return semantics, ReviewStatus.FINALIZED if literal else ReviewStatus.PENDING
 
 
 @dataclass(frozen=True)
@@ -204,7 +230,7 @@ class ProjectFactNormalizer:
             if not value:
                 raise ValueError("NON_ATOMIC_CANDIDATE: value must not be blank")
         raw_unit = str(candidate.get("unit", "")).strip()
-        expected_unit = spec.unit_hints[0] if spec.unit_hints else ""
+        expected_unit = raw_unit if raw_unit in spec.unit_hints else (spec.unit_hints[0] if spec.unit_hints else "")
         if expected_unit and raw_unit != expected_unit:
             raise ValueError("INVALID_UNIT: unit must match the Method Contract")
         if not expected_unit and raw_unit:
@@ -215,6 +241,7 @@ class ProjectFactNormalizer:
             for key, item in context.items()
         ):
             raise ValueError("MISSING_CONTEXT: context must be a string-to-string object")
+        semantics, semantic_approval = extracted_physical_semantics(candidate, [source])
         identity = json.dumps(
             {
                 "parameter": spec.fact_type,
@@ -222,6 +249,7 @@ class ProjectFactNormalizer:
                 "unit": expected_unit,
                 "context": context,
                 "source": asdict(source),
+                "physical_semantics": semantics,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -235,8 +263,9 @@ class ProjectFactNormalizer:
             context=dict(context),
             source_refs=[source],
             provenance=FactProvenance.PROJECT_INPUT,
-            approval=ReviewStatus.FINALIZED,
+            approval=semantic_approval,
             produced_by="validated_item_project_fact_extraction",
+            physical_semantics=semantics,
         )
 
     @staticmethod
@@ -294,7 +323,7 @@ class ProjectFactNormalizer:
             "risk", fact.parameter, tuple(sorted(fact.context.items())),
             source_scope,
         )
-        return scope, (fact.value, fact.unit)
+        return scope, (fact.value, fact.unit, json.dumps(fact.physical_semantics, sort_keys=True))
 
     @staticmethod
     def _fail(result, fact_type, code, reason):

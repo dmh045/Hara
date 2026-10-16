@@ -219,6 +219,8 @@ class HARAState:
             potential_harm=str(value.get("potential_harm", "")),
             exposure_tf=str(value.get("exposure_tf", "")),
             safety_goal_id=str(value.get("safety_goal_id", "")),
+            branch_evaluations=list(value.get("branch_evaluations", [])),
+            branch_summary=dict(value.get("branch_summary", {})),
         )
 
     @staticmethod

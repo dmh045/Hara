@@ -292,6 +292,13 @@ class EngineeringReportTextMapper:
             for label, number, unit in quantities
             if isinstance(number, (int, float)) and not isinstance(number, bool)
         ]
+        model = facts.get("fault_motion_model")
+        if model == "CONSTANT_SPEED_REPRESENTATIVE":
+            parts.append("恒速代表工况；用于所列碰撞条件，不是故障最大速度包络")
+        elif model:
+            parts.append(f"运动模型：{model}")
+        if facts.get("impact_time_id"):
+            parts.append(f"碰撞时点：{facts['impact_time_id']}")
         if not any(part.startswith("TTC：") for part in parts) and (
             str(derived.get("closing_speed_status", "")) == "TTC_NOT_CLOSING"
         ):
@@ -377,8 +384,10 @@ class EngineeringReportTextMapper:
             "ego_speed_kph": "自车速度", "object_speed_kph": "目标速度",
             "relative_distance_m": "相对距离", "ttc_s": "TTC",
             "driver_position": "驾驶员配置",
+            "fault_motion_model": "运动分析条件", "ego_impact_speed_kph": "碰撞速度",
         }
         parts = []
+        all_source_locations = []
         for field, label in labels.items():
             record = provenance.get(field, {})
             if not isinstance(record, Mapping) or not record:
@@ -396,10 +405,11 @@ class EngineeringReportTextMapper:
             description = [rule] if rule else []
             if approval and approval != "FINALIZED":
                 description.append("待审设定")
-            if source_locations:
-                description.append("来源 " + ", ".join(dict.fromkeys(source_locations)))
+            all_source_locations.extend(source_locations)
             if description:
                 parts.append(f"{label}：{'；'.join(description)}")
+        if all_source_locations:
+            parts.append("来源：" + ", ".join(dict.fromkeys(all_source_locations)))
         return "；".join(parts)
 
     def scenario(self, scenario: Any, *, variant_count: int = 1) -> tuple[str, str]:
@@ -512,7 +522,22 @@ class EngineeringReportTextMapper:
 
     def severity_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
         if _status(evidence) == "FINALIZED":
+            production = trace.get("input_production", {})
+            if production.get("rule_id"):
+                return "已按来源支持的代表碰撞工况完成 S 评定；未证明所有故障轨迹的速度上界。"
             return "已按当前方法完成 S 评定。"
+        production = trace.get("input_production", {})
+        if isinstance(production, Mapping) and production.get("pending_reason"):
+            reasons = {
+                "TEMPLATE_MECHANISM_NOT_SUPPORTED": "原模板与当前失效机制不匹配，所供对象/几何条件不能沿用",
+                "MOTION_MODEL_OR_ENVELOPE_NOT_SOURCED": "缺故障后的适用运动模型或速度包络",
+                "TARGET_OR_PHYSICAL_SOURCE_UNRESOLVED": "碰撞对象、构型或其物理条件尚未由适用来源确定",
+            }
+            known = production.get("after", {})
+            available = ", ".join(f"{key}={known[key]}" for key in (
+                "ego_speed_kph", "object_speed_kph", "road_user_type", "collision_type",
+            ) if known.get(key) is not None)
+            return f"{reasons.get(production['pending_reason'], production['pending_reason'])}；已有 {available or '来源场景条件'}；S 暂未定。"
         reason = str(trace.get("pending_reason", "") or getattr(evidence, "review_reason", ""))
         if self._has_reason(reason, "MISSING_RELATIVE_SPEED"):
             return "缺少该危险事件的实际相对速度，S 暂不评定。"
@@ -592,6 +617,19 @@ class EngineeringReportTextMapper:
     def controllability_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
         if _status(evidence) == "FINALIZED":
             return "已按当前方法完成 C 评定。"
+        diagnostic = trace.get("input_diagnostic", {})
+        if isinstance(diagnostic, Mapping) and diagnostic.get("reason"):
+            labels = {
+                "MISSING_DISTANCE": "缺相对距离", "MISSING_GEOMETRY": "缺运动方向或几何关系",
+                "MODEL_NOT_APPLICABLE": "侧向交互：当前纵向 TTC 模型不适用",
+                "NOT_CLOSING": "当前匀速模型不接近，未证明后续过程，不能判 C0",
+                "TTC_NOT_CLOSING": "当前匀速模型不接近，未证明后续过程，不能判 C0",
+                "SOURCE_NOT_FINALIZED": "已有数值的来源未通过校验",
+            }
+            code = str(diagnostic["reason"])
+            known = trace.get("known_physical_inputs", {})
+            available = ", ".join(f"{key}={value}" for key, value in known.items())
+            return f"{labels.get(code, code)}；已有 {available or '场景 Atom'}；C 暂未定。"
         reason = trace.get("decision_status", "") or getattr(evidence, "review_reason", "")
         if self._has_reason(reason, "METHOD_BRANCH_UNRESOLVED") or self._has_reason(reason, "UNKNOWN_BRANCH_POLICY_UNSPECIFIED"):
             return "未知分支策略未定义，C 暂不评定。"

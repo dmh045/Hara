@@ -76,6 +76,27 @@ def _scenario_json(
                 for dimension, binding in scenario.facts.get("method_scenario_dimensions", {}).items()
                 if isinstance(binding, dict) and binding.get("resolution_status") == "RESOLVED"
             },
+            "physical_interaction": {
+                "target_id": scenario.facts.get("object_id", scenario.scenario_id + ":target"),
+                "impact_time_id": scenario.facts.get("impact_time_id", ""),
+                "conditions": {key: scenario.facts[key] for key in (
+                    "object_position", "ego_longitudinal_direction", "object_longitudinal_direction",
+                    "ego_speed_kph", "object_speed_kph", "relative_distance_m", "fault_motion_model",
+                    "ego_impact_speed_kph", "relative_speed_kph", "ttc_s",
+                ) if key in scenario.facts},
+                "branches": [{key: value for key, value in branch.items() if not key.startswith("_")}
+                             for branch in scenario.facts.get("collision_branches", [])],
+                "condition_basis": scenario.analysis_instance.get("physical_input_production", {}).get("rule_id", ""),
+                "evidence_refs": {key: next(ref for ref in ("DERIVED." + key, "SCN." + key)
+                    if registry.resolve_record(ref) is not None)
+                    for key in ("ego_speed_kph", "object_speed_kph", "relative_distance_m", "fault_motion_model",
+                                "ego_impact_speed_kph", "relative_speed_kph", "ttc_s")
+                    if any(registry.resolve_record(prefix + key) is not None for prefix in ("DERIVED.", "SCN."))},
+                "derived_physics_evidence": {"DERIVED." + key: {"value": registry.resolve_record("DERIVED." + key).value,
+                    "kind": registry.resolve_record("DERIVED." + key).kind.value}
+                    for key in ("ego_impact_speed_kph", "relative_speed_kph", "closing_speed_kph", "ttc_s")
+                    if registry.resolve_record("DERIVED." + key) is not None},
+            },
             "causal_evidence_view": selection.compact_view,
             **(
                 {
@@ -120,7 +141,8 @@ def _prompt_parts(
         "\n这里只评估当前batch列出的Scenario。必须逐一返回，不得遗漏，不得增加未提供Scenario。"
         "返回assessments数组，每项包含scenario_id、physically_feasible、functionally_relevant、"
         "causally_relevant、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、"
-        "confidence、status。保留场景的hazardous_event必须结合当前失效和具体场景；Potential Harm"
+        "physical_interaction、confidence、status。physical_interaction必须返回结构化目标/方位/关系/阶段主张；"
+        "无当前外部目标主张时返回{\"target\":\"OTHER\"}。保留场景的hazardous_event必须结合当前失效和具体场景；Potential Harm"
         "由下游确定性 MethodContract 计算，不在此阶段生成。不得复制其他子系统模板。"
         "risk_dimension_changes必须为JSON object array；每项包含dimension、evidence_refs、reason。"
         "dimension必须严格从以下canonical allowed values选择："

@@ -1,6 +1,6 @@
-policy_id: AVP_SEC_2026_10_P7
-version: "2.0"
-supersedes: AVP_SEC_2026_09_V1
+policy_id: AVP_SEC_2026_10_P7R
+version: "2.1"
+supersedes: AVP_SEC_2026_10_P7
 project_scope: current_avp_item_definition
 source_kind: USER_RELAYED_HARA_ENGINEERING_OPINION
 source_note: >-
@@ -32,6 +32,32 @@ severity_evaluation:
   aggregation: MAXIMUM_PHYSICALLY_POSSIBLE_BRANCH
   invariance: ALL_FEASIBLE_BRANCHES_AND_TABLE_INTERVALS
   require_same_mechanism_and_impact_time: true
+representative_motion_rules:
+  - rule_id: P7R_BRAKING_TEMPLATE_CONSTANT_SPEED_CASE
+    status: CONFIRMED_FOR_CURRENT_PROJECT
+    source: HARA_P7R_详细修复提示词_20261016.md#5.2路径B
+    template_ids: [FM_TEMPLATE_001, FM_TEMPLATE_002]
+    failure_types: [loss, degraded]
+    operating_modes: [parking_vehicle_control]
+    model: CONSTANT_SPEED_REPRESENTATIVE
+    object_speed_kph: 0
+    require_positive_initial_speed: true
+    require_explicit_longitudinal_approach: true
+    condition: >-
+      Selected brake-insufficiency/loss template, continuing at the sourced
+      representative initial speed to its stationary obstacle. This is a
+      constant-speed analytical case, not a measured impact or a fault maximum.
+      Residual braking, drive acceleration and gravity-induced speed changes
+      are separate trajectories and are not proved covered by this case.
+template_semantic_aliases:
+  # Same brake-loss meaning as the source template; no binding to a dated MF ID.
+  FM_TEMPLATE_002: [制动扭矩输出功能完全丧失]
+template_context_exclusions:
+  # Parking-hold failures need their own rollaway/drag mechanism; a service
+  # braking template cannot be authorized by the word "degraded" alone.
+  FM_TEMPLATE_001: [驻车, 夹紧, EPB]
+  FM_TEMPLATE_002: [驻车, 夹紧, EPB]
+  FM_TEMPLATE_004: [驻车, 夹紧, 制动, 转向, 报警]
 driver_location_convention:
   rule_id: P7_C4_OUTSIDE_SEAT_AS_OUTSIDE_VEHICLE
   status: CONFIRMED_FOR_CURRENT_PROJECT
