@@ -26,7 +26,7 @@ PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT = (
     "Use {} when the source gives no phase. Normal performance, actuator capability and command limits "
     "are not fault motion bounds. Explicit natural-language statements of constant longitudinal "
     "acceleration after a fault may use POST_FAULT_CONSTANT_ACCELERATION with the complete source "
-    "sentence, including qualifications. Deterministic normalization checks the phase, quantity and "
+    "sentence, including adjacent qualifications and corrections. Deterministic normalization checks the phase, quantity and "
     "unit; an unsupported interpretation remains PENDING and never approves itself. "
 )
 
@@ -40,10 +40,52 @@ _POST_FAULT_ACCELERATION_ZH = re.compile(
     r"(?:沿(?:前进|倒车)方向)?以恒定(?:的)?纵向加速度(?:为|=)?"
     r"(?P<value>[+-]?(?:\d+(?:\.\d+)?|\.\d+))(?P<unit>m/s(?:²|\^2|2))运动[。.]?"
 )
+_SOURCE_SENTENCE = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?")
+_ACCELERATION_SUBJECT = re.compile(r"纵向加速度|恒加速度|故障(?:发生)?后加速度|longitudinal_acceleration_mps2|POST_FAULT_CONSTANT_ACCELERATION")
+_QUALIFIED_ASSERTION = re.compile(r"假设|假定|尚未验证|未经验证|未经确认|未确认|待确认|不成立|不恒定|非恒定|并非|不是|不适用|撤回|更正|修正")
+_OTHER_PHASE = re.compile(r"^(?:(?:本车|车辆|自车)(?:的)?)?(?:正常(?:功能|工况|运行|起步)|故障(?:发生)?前)")
+_BACK_REFERENCE = re.compile(r"^(?:上述|以上|前述|该|此|这一)(?:内容|描述|陈述|说明|参数|数值|模型|结论)")
+_FORWARD_ASSUMPTION = re.compile(
+    r"(?:以下|下述|如下)(?:内容|参数|数值|模型)?(?:均|都)?(?:仅为|仅是|为|是)?"
+    r"(?:尚未验证的|未经验证的)?(?:模型)?(?:假设|假定)[。:：]?"
+)
+PHYSICAL_SOURCE_SCOPE_RULE = "physical-assertion-source-context-v1"
+
+
+def _phase_context_scope(claim: str, context: str, value: float) -> list[str]:
+    """Check explicit same-quantity claims and adjacent referring sentences.
+
+    This is a bounded source-scope check, not a document-wide assumption veto.
+    A qualifier about another named quantity does not qualify this acceleration.
+    """
+    spans = list(re.finditer(re.escape(claim), context))
+    sentences = list(_SOURCE_SENTENCE.finditer(context))
+    claim_indices = {i for i, sentence in enumerate(sentences)
+                     if any(sentence.start() < span.end() and span.start() < sentence.end() for span in spans)}
+    if not claim_indices:
+        return ["SOURCE_CONTEXT_MISMATCH"]
+    findings = []
+    for i, sentence in enumerate(sentences):
+        text = sentence.group().strip()
+        compact = re.sub(r"\s+", "", text)
+        same_quantity = bool(_ACCELERATION_SUBJECT.search(compact) and not _OTHER_PHASE.match(compact))
+        basis = (
+            "CLAIM_SENTENCE" if i in claim_indices else
+            "SAME_QUANTITY" if same_quantity else
+            "PRECEDING_ASSUMPTION" if i + 1 in claim_indices and _FORWARD_ASSUMPTION.fullmatch(compact) else
+            "FOLLOWING_REFERENCE" if i - 1 in claim_indices and _BACK_REFERENCE.match(compact) else ""
+        )
+        if basis and _QUALIFIED_ASSERTION.search(compact):
+            findings.append(f"{basis}: {text}")
+        match = _POST_FAULT_ACCELERATION_ZH.fullmatch(compact)
+        if match and float(match["value"]) != value:
+            findings.append(f"CONFLICTING_ACCELERATION: {text}")
+    return findings
 
 
 def extracted_physical_semantics(
     raw: dict, sources: Sequence[SourceRef], *, normalization_evidence: list[dict] | None = None,
+    source_contexts: Sequence[SourceRef] | None = None,
 ) -> tuple[dict, ReviewStatus]:
     """Normalize explicit source phases; unsupported interpretations stay pending.
 
@@ -57,23 +99,40 @@ def extracted_physical_semantics(
     texts = [excerpt] if excerpt else [s.excerpt for s in sources]
     unresolved = {key for key, value in semantics.items()
                   if not any(str(value) in text for text in texts)}
-    if not unresolved:
-        return semantics, ReviewStatus.FINALIZED
-    if (unresolved == {"analysis_value_semantic"}
-            and semantics["analysis_value_semantic"] == "POST_FAULT_CONSTANT_ACCELERATION"
+    if (unresolved.issubset({"analysis_value_semantic"})
+            and semantics.get("analysis_value_semantic") == "POST_FAULT_CONSTANT_ACCELERATION"
             and raw.get("fact_type") == "longitudinal_acceleration_mps2"
             and raw.get("unit") in PHYSICAL_QUANTITY_UNITS["longitudinal_acceleration_mps2"]):
-        # Inspect the full cited sentence, not a narrower phase excerpt which
-        # could omit a surrounding condition or a conflicting phase.
-        matches = [_POST_FAULT_ACCELERATION_ZH.fullmatch(re.sub(r"\s+", "", s.excerpt)) for s in sources]
-        if matches and all(match and float(match["value"]) == raw.get("value") for match in matches):
-            if normalization_evidence is not None:
-                normalization_evidence.extend({
-                    "field": "analysis_value_semantic", "canonical_value": semantics["analysis_value_semantic"],
-                    "rule_id": POST_FAULT_ACCELERATION_ZH_RULE, "source_excerpt": source.excerpt,
-                } for source in sources)
-            return semantics, ReviewStatus.FINALIZED
-    return semantics, ReviewStatus.PENDING
+        evidence = []
+        for source in sources:
+            quote = excerpt if excerpt and excerpt in source.excerpt else source.excerpt
+            literal = semantics["analysis_value_semantic"] in quote
+            claims = [s.group().strip() for s in _SOURCE_SENTENCE.finditer(quote)
+                if (semantics["analysis_value_semantic"] in s.group() if literal else
+                    _POST_FAULT_ACCELERATION_ZH.fullmatch(re.sub(r"\s+", "", s.group())))]
+            mapping_unresolved = not claims or (not literal and any(float(_POST_FAULT_ACCELERATION_ZH.fullmatch(
+                re.sub(r"\s+", "", claim))["value"]) != raw.get("value") for claim in claims))
+            contexts = [ref.excerpt for ref in (source_contexts or sources)
+                        if (ref.source_type, ref.source_id, ref.location) ==
+                           (source.source_type, source.source_id, source.location)]
+            if not contexts:
+                return semantics, ReviewStatus.PENDING
+            for claim in claims or [quote]:
+                for context in contexts:
+                    findings = (["PHASE_STATEMENT_OR_QUANTITY_NOT_NORMALIZED"] if mapping_unresolved else
+                                _phase_context_scope(claim, context, raw.get("value")))
+                    evidence.append({
+                        "field": "analysis_value_semantic", "canonical_value": semantics["analysis_value_semantic"],
+                        "rule_id": "physical-phase-literal-v1" if literal else POST_FAULT_ACCELERATION_ZH_RULE,
+                        "source_excerpt": source.excerpt, "normalized_excerpt": claim, "source_context": context,
+                        "scope_rule_id": PHYSICAL_SOURCE_SCOPE_RULE, "scope_evidence": "\n".join(findings),
+                        "status": "PENDING" if findings else "FINALIZED",
+                    })
+        if normalization_evidence is not None:
+            normalization_evidence.extend(evidence)
+        finalized = evidence and all(entry["status"] == "FINALIZED" for entry in evidence)
+        return semantics, ReviewStatus.FINALIZED if finalized else ReviewStatus.PENDING
+    return semantics, ReviewStatus.PENDING if unresolved else ReviewStatus.FINALIZED
 
 
 @dataclass(frozen=True)
@@ -187,7 +246,9 @@ class ProjectFactNormalizer:
                         candidate, block_map, source_id, spec,
                         (candidate_block_ids_by_fact or {}).get(spec.fact_type),
                     )
-                    fact = self._atomic_fact(spec, candidate, source)
+                    source_context = SourceRef(source.source_type, source.source_id, source.location,
+                        str(block_map[str(candidate.get("source_block_id", ""))].get("text", "")))
+                    fact = self._atomic_fact(spec, candidate, source, source_context=source_context)
                     scope, payload = self._identity(fact)
                     if scope in seen_atomic:
                         code = (
@@ -212,7 +273,7 @@ class ProjectFactNormalizer:
             })
         return result
 
-    def _atomic_fact(self, spec, candidate, source):
+    def _atomic_fact(self, spec, candidate, source, *, source_context=None):
         if spec.output_type is ProjectFactOutputType.SPEED_ENVELOPE:
             operator = self.OPERATOR_ALIASES.get(str(candidate.get("operator", "")))
             if operator is None:
@@ -275,7 +336,8 @@ class ProjectFactNormalizer:
             raise ValueError("MISSING_CONTEXT: context must be a string-to-string object")
         normalization_evidence = []
         semantics, semantic_approval = extracted_physical_semantics(
-            {**candidate, "fact_type": spec.fact_type}, [source], normalization_evidence=normalization_evidence)
+            {**candidate, "fact_type": spec.fact_type}, [source], normalization_evidence=normalization_evidence,
+            source_contexts=[source_context] if source_context is not None else None)
         identity = json.dumps(
             {
                 "parameter": spec.fact_type,
@@ -284,6 +346,7 @@ class ProjectFactNormalizer:
                 "context": context,
                 "source": asdict(source),
                 "physical_semantics": semantics,
+                **({"normalization_evidence": normalization_evidence} if normalization_evidence else {}),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -334,18 +397,6 @@ class ProjectFactNormalizer:
                 raise ValueError("NOT_OPERATIONAL_SPEED: signed capability range is not an operating speed")
         if excerpt and excerpt not in source_text:
             raise ValueError("UNKNOWN_SOURCE_REF: excerpt is not an exact substring of the source block")
-        if excerpt and _POST_FAULT_ACCELERATION_ZH.fullmatch(re.sub(r"\s+", "", excerpt)):
-            # The model's quote must not cut "假设" or another qualification
-            # off the source sentence and thereby turn it into an assertion.
-            boundaries = "。！？!?;；\n"
-            spans = list(re.finditer(re.escape(excerpt), source_text))
-            complete = any(
-                (not source_text[:m.start()].strip(" \t") or source_text[:m.start()].rstrip(" \t")[-1] in boundaries)
-                and (excerpt.rstrip()[-1] in boundaries or not source_text[m.end():].strip()
-                     or source_text[m.end():].lstrip(" \t")[0] in boundaries)
-                for m in spans)
-            if not complete:
-                excerpt = source_text
         return SourceRef(
             "item_definition", source_id, str(block.get("location", "")),
             excerpt or source_text,

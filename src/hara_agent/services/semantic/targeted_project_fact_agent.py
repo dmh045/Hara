@@ -17,7 +17,7 @@ from .item_supplement_agent import RoutedDocumentBlocks
 class TargetedProjectFactExtractionAgent:
     """One bounded schema-guided call for one Project Fact category."""
 
-    PROMPT_VERSION = "targeted-project-facts-v6-explicit-phase-atomic-speed-shape"
+    PROMPT_VERSION = "targeted-project-facts-v7-phase-source-context-atomic-speed-shape"
 
     def __init__(self, client: LLMClient, normalizer: ProjectFactNormalizer | None = None):
         self.client = client

@@ -301,12 +301,37 @@ def test_review_structured_contact_is_scoped_to_target_and_phase():
     assert causal_physics_conflicts(sc, restored.to_dict())
 
 
-@pytest.mark.parametrize("text,model_expected", [
-    ("longitudinal_acceleration_mps2=2 m/s²; POST_FAULT_CONSTANT_ACCELERATION", True),
-    ("故障发生后，在接触前方目标前，车辆沿前进方向以恒定纵向加速度2m/s²运动。", True),
-    ("正常功能的起步纵向加速度上限为2m/s²。", False),
+@pytest.mark.parametrize("text,model_expected,context", [
+    ("longitudinal_acceleration_mps2=2 m/s²; POST_FAULT_CONSTANT_ACCELERATION", True, None),
+    ("故障发生后，在接触前方目标前，车辆沿前进方向以恒定纵向加速度2m/s²运动。", True, None),
+    ("正常功能的起步纵向加速度上限为2m/s²。", False, None),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", False,
+     "故障后，车辆以恒定纵向加速度2m/s²运动。\n上述故障后恒加速度描述仅为假设，尚未验证。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", False,
+     "故障后，车辆以恒定纵向加速度2m/s²运动。故障后加速度实际不恒定，上述恒加速度描述不成立。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", False,
+     "以下为尚未验证的模型假设。故障后，车辆以恒定纵向加速度2m/s²运动。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", True,
+     "环境温度为20°C。故障后，车辆以恒定纵向加速度2m/s²运动。光照良好。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", True,
+     "照明条件仅为假设，尚未验证。故障后，车辆以恒定纵向加速度2m/s²运动。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", True,
+     "故障后，车辆以恒定纵向加速度2m/s²运动。上述照明条件仅为假设，尚未验证。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", True,
+     "以下为尚未验证的照明模型假设。故障后，车辆以恒定纵向加速度2m/s²运动。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", True,
+     "正常功能的纵向加速度上限仅为假设。故障后，车辆以恒定纵向加速度2m/s²运动。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", False,
+     "故障后，车辆以恒定纵向加速度2m/s²运动。上述内容仅为假设。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", False,
+     "故障后，车辆以恒定纵向加速度2m/s²运动。环境温度为20°C。故障后恒加速度描述不成立。"),
+    ("故障后，车辆以恒定纵向加速度2m/s²运动。", False,
+     "故障后，车辆以恒定纵向加速度2m/s²运动。故障后，车辆以恒定纵向加速度3m/s²运动。"),
+    ("环境温度为20°C。故障后，车辆以恒定纵向加速度2m/s²运动。照明条件仅为假设。", True, None),
+    ("longitudinal_acceleration_mps2=2 m/s²; POST_FAULT_CONSTANT_ACCELERATION", False,
+     "longitudinal_acceleration_mps2=2 m/s²; POST_FAULT_CONSTANT_ACCELERATION。上述内容仅为假设。"),
 ])
-def test_review_targeted_extraction_to_automatic_dynamic_model(method, text, model_expected):
+def test_review_targeted_extraction_to_automatic_dynamic_model(method, text, model_expected, context):
     """Synthetic source response through production request, normalize, bind, producer."""
     from hara_agent.services.extraction import build_project_fact_spec_batches
     from hara_agent.services.semantic.targeted_project_fact_agent import TargetedProjectFactExtractionAgent
@@ -324,8 +349,9 @@ def test_review_targeted_extraction_to_automatic_dynamic_model(method, text, mod
                 "physical_semantics": {"analysis_value_semantic": "POST_FAULT_CONSTANT_ACCELERATION"}}
                 if spec.fact_type == "longitudinal_acceleration_mps2" else
                 {"fact_type": spec.fact_type, "status": "NOT_FOUND"} for spec in specs]}, "offline-fixture")
-    route = RoutedDocumentBlocks("project_evidence", ["B1"], text,
-        [{"block_id": "B1", "text": text, "location": "synthetic:p1"}])
+    source_block = context or text
+    route = RoutedDocumentBlocks("project_evidence", ["B1"], source_block,
+        [{"block_id": "B1", "text": source_block, "location": "synthetic:p1"}])
     normalized, _ = TargetedProjectFactExtractionAgent(Client()).extract("physical_motion_inputs", specs, route, "synthetic")
     assert not normalized.failures and len(normalized.risk_facts) == 1
     from hara_agent.models.project_facts import risk_fact_from_dict
@@ -340,6 +366,13 @@ def test_review_targeted_extraction_to_automatic_dynamic_model(method, text, mod
         functional_effect="synthetic", vehicle_level_hazard="impact", causal_chain=["fault", "effect"],
         component_category="actuator_motor", failure_type="excessive")
     result = AnalyticalPhysicsInstantiationService(method).produce_inputs(sc, mf, project_facts=project)
+    evidence = restored.normalization_evidence
+    if evidence:
+        assert all(entry["source_excerpt"] == text and entry["source_context"] == source_block for entry in evidence)
+        assert result.fact_provenance["longitudinal_acceleration_mps2"]["normalization_evidence"] == evidence
+        assert all(entry["status"] == ("FINALIZED" if model_expected else "PENDING") for entry in evidence)
+        if not model_expected:
+            assert any(entry["scope_evidence"] for entry in evidence)
     if not model_expected:
         assert normalized.risk_facts[0].approval.value == "PENDING"
         assert "fault_motion_model" not in result.facts
@@ -351,10 +384,8 @@ def test_review_targeted_extraction_to_automatic_dynamic_model(method, text, mod
     assert len(result.facts["collision_branches"]) == 1
     if text.startswith("故障"):
         from hara_agent.services.extraction.project_fact_normalization import POST_FAULT_ACCELERATION_ZH_RULE
-        evidence = [{"field": "analysis_value_semantic", "canonical_value": "POST_FAULT_CONSTANT_ACCELERATION",
-                     "rule_id": POST_FAULT_ACCELERATION_ZH_RULE, "source_excerpt": text}]
-        assert restored.normalization_evidence == evidence
-        assert result.fact_provenance["longitudinal_acceleration_mps2"]["normalization_evidence"] == evidence
+        assert evidence[0]["canonical_value"] == "POST_FAULT_CONSTANT_ACCELERATION"
+        assert evidence[0]["rule_id"] == POST_FAULT_ACCELERATION_ZH_RULE
 
 
 @pytest.mark.parametrize("text,value,unit,finalized", [
@@ -381,7 +412,10 @@ def test_explicit_chinese_phase_normalization_is_quantity_bound(text, value, uni
         [SourceRef("item_definition", "synthetic", "p1", text)], normalization_evidence=evidence)
     assert semantics == raw["physical_semantics"]
     assert (approval is ReviewStatus.FINALIZED) is finalized
-    assert bool(evidence) is finalized
+    if finalized:
+        assert evidence and all(entry["status"] == "FINALIZED" for entry in evidence)
+    else:
+        assert not evidence or any(entry["status"] == "PENDING" for entry in evidence)
 
 
 def test_phase_excerpt_cannot_discard_source_qualification_or_conflict():
@@ -399,7 +433,7 @@ def test_phase_excerpt_cannot_discard_source_qualification_or_conflict():
         evidence = []
         _, approval = extracted_physical_semantics(raw, sources, normalization_evidence=evidence)
         assert approval is ReviewStatus.PENDING
-        assert evidence == []
+        assert not evidence or any(entry["status"] == "PENDING" for entry in evidence)
 
 
 def test_targeted_quote_cannot_cut_a_hypothesis_out_of_its_source():
@@ -416,7 +450,25 @@ def test_targeted_quote_cannot_cut_a_hypothesis_out_of_its_source():
         [{"block_id": "B1", "location": "p1", "text": "假设" + statement}], "synthetic")
     assert not normalized.failures
     assert normalized.risk_facts[0].approval is ReviewStatus.PENDING
-    assert normalized.risk_facts[0].source_refs[0].excerpt == "假设" + statement
+    assert normalized.risk_facts[0].source_refs[0].excerpt == statement
+    assert normalized.risk_facts[0].normalization_evidence[0]["source_context"] == "假设" + statement
+
+
+def test_phase_source_context_changes_persisted_fact_identity():
+    from hara_agent.models import SourceRef
+    from hara_agent.services.extraction import ProjectFactNormalizer, build_project_fact_spec_batches
+    spec = next(s for s in build_project_fact_spec_batches((), ())["physical_motion_inputs"]
+                if s.fact_type == "longitudinal_acceleration_mps2")
+    statement = "故障后，车辆以恒定纵向加速度2m/s²运动。"
+    quote = SourceRef("item_definition", "synthetic", "p1", statement)
+    raw = {"value": 2, "unit": "m/s²", "context": {},
+           "physical_semantics": {"analysis_value_semantic": "POST_FAULT_CONSTANT_ACCELERATION"}}
+    accepted = ProjectFactNormalizer()._atomic_fact(spec, raw, quote, source_context=quote)
+    pending = ProjectFactNormalizer()._atomic_fact(spec, raw, quote,
+        source_context=replace(quote, excerpt=statement + "上述内容仅为假设。"))
+    assert accepted.source_refs == pending.source_refs
+    assert accepted.approval.value == "FINALIZED" and pending.approval.value == "PENDING"
+    assert accepted.fact_id != pending.fact_id
 
 
 def test_review_semantic_interpretation_never_promotes_a_normal_limit():

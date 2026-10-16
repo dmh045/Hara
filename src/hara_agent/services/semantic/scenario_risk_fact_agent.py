@@ -33,7 +33,7 @@ class ScenarioRiskFactAgent:
     HUMAN_EVIDENCE and DERIVED_FACT requirements are never guessed here.
     """
 
-    PROMPT_VERSION = "scenario-risk-facts-v6-explicit-phase"
+    PROMPT_VERSION = "scenario-risk-facts-v7-phase-source-context"
 
     def __init__(self, client: LLMClient, *, batch_max_results: int | None = None):
         self.client = client
