@@ -317,7 +317,11 @@ class EngineeringReportTextMapper:
                     parts.append(f"假设范围：{labels.get(parameter['field'], parameter['field'])}={quantity_range(parameter['lower'], parameter['upper'], FIELD_UNITS.get(parameter['field'], ''))}；有限采样未证明连续不变性")
             if any(p["kind"] == "SYMBOLIC" for p in analysis.get("hypothesis", {}).get("parameters", [])):
                 boundaries = analysis.get("sensitivity", {}).get("method_boundaries", [])
-                parts.append("参数关系：v²=v₀²+2ad；d=v₀t+at²/2（首次接触且模型持续有效）" if model == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE" else "参数关系见物理 trace")
+                relations = analysis.get("sensitivity", {}).get("parameter_relations", [])
+                if relations:
+                    parts.extend("参数关系：" + text for relation in relations for text in relation["relations"])
+                else:
+                    parts.append("参数关系：v²=v₀²+2ad；d=v₀t+at²/2（首次接触且模型持续有效）" if model == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE" else "参数关系见物理 trace")
                 parts.extend(f"边界条件：{labels.get(row['parameter'], row['parameter'])}≈{quantity(row['boundary'], FIELD_UNITS.get(row['parameter'], ''))}；精确关系见物理追溯"
                     for row in boundaries[:3] if isinstance(row.get("boundary"), (float, int)))
             grade = analysis.get("grade_mapping", {})
@@ -327,10 +331,13 @@ class EngineeringReportTextMapper:
             inherited = [labels.get(field, field) for field, record in analysis.get("model_input_view", {}).items() if record.get("action") == "INHERITED"]
             if inherited:
                 parts.append("相容父输入继承：" + "、".join(inherited))
-            parts.append("适用条件：" + "；".join(cls._CONDITION_TEXT.get(text, text)
-                for text in analysis.get("hypothesis", {}).get("conditions", [])))
-            parts.append("未覆盖：" + "；".join(cls._CONDITION_TEXT.get(text, text)
-                for text in analysis.get("sensitivity", {}).get("uncovered_conditions", [])))
+            # Symbolic equations and their full source scope need separate
+            # existing columns; Excel's maximum row height otherwise clips them.
+            if not analysis.get("sensitivity", {}).get("parameter_relations"):
+                parts.append("适用条件：" + "；".join(cls._CONDITION_TEXT.get(text, text)
+                    for text in analysis.get("hypothesis", {}).get("conditions", [])))
+                parts.append("未覆盖：" + "；".join(cls._CONDITION_TEXT.get(text, text)
+                    for text in analysis.get("sensitivity", {}).get("uncovered_conditions", [])))
             if facts.get("first_contact_time_s") is not None:
                 parts.append(f"侧向首次接触：{quantity(facts['first_contact_time_s'], 's')} s（不作为纵向 TTC）")
             parts.append("假设追溯：" + str(analysis.get("plan_key", ""))[:12] + ":" + str(analysis.get("hypothesis_id", "")).split(":", 1)[-1])
@@ -423,8 +430,8 @@ class EngineeringReportTextMapper:
                 parts.append("处理结果：" + {"SKIP_TO_TTC": "进入 TTC 分档"}.get(action, "见方法依据"))
         return "；".join(parts)
 
-    @staticmethod
-    def analysis_basis(scenario: Any) -> str:
+    @classmethod
+    def analysis_basis(cls, scenario: Any) -> str:
         provenance = getattr(scenario, "fact_provenance", {}) or {}
         if not isinstance(provenance, Mapping):
             return ""
@@ -438,8 +445,15 @@ class EngineeringReportTextMapper:
             for origin in origins.values():
                 label = labels.get(origin, "既有条件")
                 counts[label] = counts.get(label, 0) + 1
+            symbolic = physical.get("sensitivity", {}).get("parameter_relations")
+            scope = ("适用条件：" + "；".join(cls._CONDITION_TEXT.get(text, text)
+                        for text in physical.get("hypothesis", {}).get("conditions", []))
+                     + "；未覆盖：" + "；".join(dict.fromkeys(cls._CONDITION_TEXT.get(text, text)
+                        for text in physical.get("sensitivity", {}).get("uncovered_conditions", [])))) if symbolic else ""
             return ("；".join(f"{label} {count} 项" for label, count in counts.items())
-                + "；碰撞速度/首次接触时间由同一轨迹计算。条件性结果不代表车辆实测能力。"
+                + ("；符号参数关系及分档边界见物理输入；未生成唯一碰撞速度或接触时间。" if symbolic else
+                   "；碰撞速度/首次接触时间由同一轨迹计算。")
+                + "条件性结果不代表车辆实测能力。" + scope
                 + "方案：" + physical["plan_key"][:12] + "；完整输入及来源见该运行的物理追踪。")
         labels = {
             "ego_speed_kph": "自车速度", "object_speed_kph": "目标速度",

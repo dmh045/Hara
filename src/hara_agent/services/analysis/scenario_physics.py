@@ -831,6 +831,24 @@ def derive_scenario_physics(
             records.append(derived_record("motion_model_outcome", {"status": "GRADE_DIRECTION_UNRESOLVED_OR_CONFLICTING"},
                 grade_inputs, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED))
             return tuple(records)
+        if grade is not None:
+            records.append(derived_record("gravity_body_acceleration_mps2",
+                (-1 if downhill == "REAR" else 1) * 9.80665 * math.sin(math.atan(grade / 100)),
+                ("slope_percent", *grade_inputs), DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
+                formula="body forward positive; gravity sign from downhill; resistance opposes motion"))
+        position = str(scenario.facts.get("object_position", "")).upper()
+        # From rest, gravity and nonnegative resistance cannot launch toward
+        # an opposite-side stationary target. This is independent of the
+        # unknown resistance magnitude, so check before numerical completeness.
+        if (scenario.facts.get("ego_speed_kph") == 0 and scenario.facts.get("object_speed_kph") == 0
+                and position in {"FRONT", "REAR", "LEFT", "RIGHT"} and position != downhill):
+            records.append(derived_record("motion_model_outcome", {
+                "status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "TARGET_OUTSIDE_GRAVITY_PATH",
+                "contact_possible_in_model": False, "target_position": position, "downhill_body_direction": downhill},
+                ("fault_motion_model", "ego_speed_kph", "object_speed_kph", "object_position", *grade_inputs),
+                DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
+                formula="from rest; pure gravity with opposing resistance; stationary target outside downhill path"))
+            return tuple(records)
         if grade is not None and resistance is not None and scenario.facts.get("ego_speed_kph") == 0:
             # Grade percent is rise/run, not degrees. Static residual holding
             # can prevent motion, but cannot accelerate the car uphill here.
@@ -841,10 +859,6 @@ def derive_scenario_physics(
                 formula="max(0, g*sin(atan(grade_percent/100))-residual_resistance); g=9.80665 m/s2")
             records.append(record)
             scenario = with_derived(record)
-            records.append(derived_record("gravity_body_acceleration_mps2",
-                (-1 if downhill == "REAR" else 1) * 9.80665 * math.sin(math.atan(grade / 100)),
-                ("slope_percent", *grade_inputs), DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
-                formula="body forward positive; gravity sign from downhill; net travel acceleration=max(0,abs(gravity)-resistance)"))
         else:
             records.append(derived_record("motion_model_outcome", {"status": "ROLLAWAY_INITIAL_STATE_OR_GRADE_UNRESOLVED"},
                 ("fault_motion_model", "ego_speed_kph", "slope_percent", "residual_resistance_mps2"),

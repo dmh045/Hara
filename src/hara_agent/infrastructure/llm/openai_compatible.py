@@ -254,11 +254,16 @@ class OpenAICompatibleClient:
                     task=request.task,
                     system_prompt=request.system_prompt + (
                         "\nFORMAT RETRY: The previous response was not valid machine JSON. "
-                        "Re-evaluate the same supplied inputs and return exactly one raw JSON object. "
+                        "Correct the JSON syntax in previous_invalid_response and return exactly one raw JSON object. "
+                        "Preserve its scenario identities and semantic judgments; use the original inputs to check the schema. "
                         "Do not use Markdown or code fences. Do not add text before or after JSON. "
                         "Do not change the requested schema."
                     ),
-                    user_prompt=request.user_prompt,
+                    user_prompt=request.user_prompt + "\nFORMAT_CORRECTION_INPUT=" + json.dumps({
+                        "previous_invalid_response": content,
+                        "parse_error": {key: diagnostics.get(key) for key in
+                            ("json_error_type", "json_error_line", "json_error_column", "json_error_position")},
+                    }, ensure_ascii=False),
                     schema_name=request.schema_name,
                     prompt_version=request.prompt_version,
                     metadata=retry_metadata,
@@ -712,6 +717,7 @@ class OpenAICompatibleClient:
                 raise
             if budget_attempt_id is not None:
                 self.attempt_budget.finish(budget_attempt_id, response=response)
+                self.attempt_budget.save_response(budget_attempt_id, request, response)
             return response, {"attempts": attempt, "error_counts": error_counts}
         raise RuntimeError("LLM请求未执行")
 

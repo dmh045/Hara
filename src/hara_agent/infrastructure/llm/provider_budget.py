@@ -10,6 +10,7 @@ import json
 import fcntl
 import os
 import threading
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -133,3 +134,21 @@ class ProviderAttemptBudget:
                 "finish_reason": str(first.get("finish_reason", "")) if isinstance(first, dict) else "",
                 "model": str((response or {}).get("model", "")),
             })
+
+    def save_response(self, attempt_id: int, request: LLMRequest, response: dict[str, Any]) -> None:
+        """Persist the original envelope before parsing, separately from the ledger.
+
+        Request fields contain no transport headers/credentials. Invalid JSON
+        and format corrections remain inspectable instead of disappearing when
+        the successful-response checkpoint cannot accept them.
+        """
+        directory = self.path.with_suffix(".responses")
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{attempt_id:06d}.json"
+        temporary = target.with_suffix(".tmp")
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump({"run_id": self.run_id, "attempt_id": attempt_id,
+                "request": asdict(request), "response": response}, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)

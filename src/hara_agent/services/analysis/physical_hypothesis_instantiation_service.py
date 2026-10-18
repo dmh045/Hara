@@ -75,51 +75,118 @@ class PhysicalHypothesisInstantiationService:
         return not (candidate.facts.get("collision_branches") and
                     source_is_accepted_for(candidate.fact_provenance.get("collision_branches", {}), **scope))
 
-    def boundaries(self, values: dict, model: str) -> list[dict]:
-        """Invert active table boundaries; these are conditions, not capabilities."""
-        if model == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" and values.get("slope_percent") is not None:
-            gravity = 9.80665 * math.sin(math.atan(values["slope_percent"] / 100))
-            rows = [{"parameter": "residual_resistance_mps2", "boundary": gravity,
-                     "condition": "rollaway from rest requires residual resistance < g*sin(atan(grade/100))"}]
-            for row in self.boundaries(values, "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"):
-                if row["boundary"] >= 0:
-                    rows.append({**row, "parameter": "residual_resistance_mps2", "boundary": gravity - row["boundary"],
-                                 "condition": "a_net=g*sin(atan(grade/100))-residual_resistance; " + row["condition"]})
-            return rows
+    @staticmethod
+    def _opposite_target(values, model):
         if model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
-            return [{"parameter": "lateral_acceleration_mps2", "symbolic_condition":
-                     "clearance = v_y0*t + a_y*t^2/2; t is the first nonnegative root before stop/horizon",
-                     "condition": "moving ego; stationary extended side target; C requires a separately applicable method"}]
-        if model != "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE":
+            return False
+        direction, position = values.get("ego_longitudinal_direction"), values.get("object_position")
+        return bool(direction and position and (direction, position) not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")})
+
+    def boundaries(self, values: dict, model: str) -> list[dict]:
+        """Invert active table boundaries; these are conditions, not ratings/capabilities."""
+        if self._opposite_target(values, model):
             return []
-        v0, distance = values.get("ego_speed_kph"), values.get("relative_distance_m")
-        if v0 is None or distance is None or distance <= 0:
+        if model == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE":
+            grade = values.get("slope_percent")
+            if grade is None:
+                return []
+            gravity = 9.80665 * math.sin(math.atan(grade / 100))
+            rows = [{"parameter": "residual_resistance_mps2", "boundary": gravity,
+                     "condition": "rollaway from rest requires 0 <= residual resistance < g*sin(atan(grade/100))"}]
+            longitudinal = dict(values)
+            resistance = values.get("residual_resistance_mps2")
+            if resistance is not None:
+                longitudinal["longitudinal_acceleration_mps2"] = max(0, gravity - resistance)
+            for row in self.boundaries(longitudinal, "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"):
+                if row["parameter"] == "longitudinal_acceleration_mps2":
+                    if 0 <= row["boundary"] <= gravity:
+                        rows.append({**row, "parameter": "residual_resistance_mps2", "boundary": gravity - row["boundary"],
+                                     "condition": "a_net=g*sin(atan(grade/100))-residual_resistance; " + row["condition"]})
+                else:
+                    rows.append(row)
+            return rows
+        lateral = model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT"
+        if not lateral and model != "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE":
+            return []
+        v0 = values.get("ego_speed_kph")
+        if v0 is None:
+            return []
+        distance_field = "lateral_clearance_m" if lateral else "relative_distance_m"
+        acceleration_field = "lateral_acceleration_mps2" if lateral else "longitudinal_acceleration_mps2"
+        distance, acceleration = values.get(distance_field), values.get(acceleration_field)
+        vy = values.get("lateral_speed_mps")
+        if lateral and vy is None:
+            return []
+        initial_squared = (v0 / 3.6) ** 2 + (vy ** 2 if lateral else 0)
+        # For a known acceleration, invert for the missing distance. Otherwise
+        # retain the existing acceleration sensitivity at a known distance.
+        distance_unknown = distance is None and acceleration is not None
+        if not distance_unknown and (distance is None or distance <= 0):
             return []
         rows = []
         severity = self.method.structured_risk_method.severity
         group = dict(severity.road_user_groups).get(values.get("road_user_type"))
         collision = dict(severity.collision_types).get(values.get("collision_type"))
         for band in severity.bands:
-            if group and band.collision_group != group or collision and band.collision_type and band.collision_type != collision:
+            if not group or not collision or band.collision_group != group or band.collision_type and band.collision_type != collision:
                 continue
             for bound in (band.lower_kph, band.upper_kph):
-                if bound is not None:
-                    if values.get("post_fault_speed_cap_kph") is not None and float(bound) > values["post_fault_speed_cap_kph"]:
+                if bound is None:
+                    continue
+                if values.get("post_fault_speed_cap_kph") is not None and float(bound) > values["post_fault_speed_cap_kph"]:
+                    continue
+                delta = (float(bound) / 3.6) ** 2 - initial_squared
+                if distance_unknown:
+                    if acceleration == 0:
+                        continue  # Speed does not vary with distance.
+                    boundary = delta / (2 * acceleration)
+                    if boundary < 0:
                         continue
-                    rows.append({"parameter": "longitudinal_acceleration_mps2", "boundary":
-                        ((float(bound) / 3.6) ** 2 - (v0 / 3.6) ** 2) / (2 * distance),
-                        "method_rule_id": band.rule_id, "speed_boundary_kph": bound,
-                        "condition": "stationary target; first contact before stop/horizon; a=(v_boundary^2-v0^2)/(2*d)"})
-        if values.get("post_fault_speed_cap_kph") is None:
+                    parameter = distance_field
+                else:
+                    boundary, parameter = delta / (2 * distance), acceleration_field
+                rows.append({"parameter": parameter, "boundary": boundary,
+                    "method_rule_id": band.rule_id, "speed_boundary_kph": bound,
+                    "condition": ("stationary extended side target; |v_rel|^2=v_x^2+v_y0^2+2*a_y*w; " if lateral else
+                                  "stationary target on travel path; v^2=v0^2+2*a*d; ") +
+                                 "first contact before stop/horizon; any remaining cap applies; this is a method boundary, not a rating"})
+        if not lateral and values.get("post_fault_speed_cap_kph") is None:
             for band in self.method.structured_risk_method.controllability_profile.bands:
                 for t in (band.lower_ttc_s, band.upper_ttc_s):
-                    if t is not None and t > 0:
-                        a = 2 * (distance - v0 / 3.6 * t) / (t * t)
-                        if v0 / 3.6 + a * t >= 0:
-                            rows.append({"parameter": "longitudinal_acceleration_mps2", "boundary": a,
-                                "method_rule_id": band.rule_id, "time_boundary_s": t,
-                                "condition": "stationary target; first positive contact; a=2*(d-v0*t)/t^2; C profile applicability still required"})
+                    if t is None or t <= 0:
+                        continue
+                    a = acceleration if distance_unknown else 2 * (distance - v0 / 3.6 * t) / (t * t)
+                    boundary = v0 / 3.6 * t + a * t * t / 2 if distance_unknown else a
+                    if v0 / 3.6 + a * t >= 0 and (not distance_unknown or boundary > 0):
+                        rows.append({"parameter": distance_field if distance_unknown else acceleration_field,
+                            "boundary": boundary, "method_rule_id": band.rule_id, "time_boundary_s": t,
+                            "condition": "stationary target on travel path; d=v0*t+a*t^2/2; first contact before stop/horizon; C profile applicability still required"})
         return rows
+
+    def parameter_relations(self, values, h):
+        """Small model-specific symbolic output, consumed by causal input and report."""
+        symbols = {p["field"]: p["symbol"] for p in h["parameters"] if p["kind"] == "SYMBOLIC"}
+        if not symbols:
+            return []
+        model = h["model"]
+        scoped = {**values, **h["geometry"]}
+        if self._opposite_target(scoped, model):
+            texts = ["当前模型的运动方向与目标位置不构成接近；未知参数不能改变该几何条件，不给出接触速度或TTC。"]
+        elif model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
+            texts = ["w=v_y0·t+a_y·t²/2；取停止前且模型有效期内的首次非负根。",
+                     "v_rel=3.6·sqrt(v_x²+v_y0²+2a_y·w)，v_x=初始车速/3.6；目标须静止并沿纵向路径延伸。",
+                     "侧向首次接触时间不作为纵向TTC；C仍须适用的侧向方法。"]
+        else:
+            texts = ["v0=初始车速/3.6；d为沿运动方向至同一静止目标的行程，a为该阶段沿行程方向的加速度。"]
+            if model == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE":
+                texts.append("g_d=g·sin(arctan(坡度/100))；a=max(0,g_d−r)。初始静止、r≥g_d时不启动；0≤r<g_d时沿下坡方向运动。")
+            texts += ["v_impact(d)=3.6·sqrt(v0²+2ad)；T(d)=2d/(v0+sqrt(v0²+2ad))。",
+                      "上述关系仅在d>0、根号及分母有效、首次接触发生在停止前及模型有效期内成立；未证明真实能力上界。"]
+            if values.get("post_fault_speed_cap_kph") is not None:
+                texts += ["存在残余限速时，上式仅用于达到限速前；若a>0且v_cap≥v0，t_cap=(v_cap−v0)/a，d_cap=(v_cap²−v0²)/(2a)。",
+                          "d>d_cap时v_impact=3.6·v_cap，T=t_cap+(d−d_cap)/v_cap；v_cap使用m/s且须大于0。"]
+        return [{"model": model, "relations": texts, "known_inputs": dict(values), "symbolic_parameters": symbols,
+                 "geometry": dict(h["geometry"]), "calculation_nature": "CONDITIONAL", "numeric_rating_produced": False}]
 
     def _samples(self, h, existing, limit):
         values = dict(existing)
@@ -145,6 +212,7 @@ class PhysicalHypothesisInstantiationService:
         return samples[:limit], {
             "sampling": "REPRESENTATIVE_AND_ONE_FACTOR_BOUNDARIES", "planned_point_count": len(samples),
             "deferred_points": samples[limit:], "method_boundaries": boundaries,
+            "parameter_relations": self.parameter_relations(values, h),
             "range_invariance_proven": False, "vehicle_upper_bound_proven": False,
         }
 

@@ -24,13 +24,57 @@ from hara_agent.services.analysis.scenario_equivalence import signature, scenari
 from hara_agent.workflow import CheckpointRepository
 
 
-def prepare(source, output, run_id, limit):
+FAMILIES = ('braking', 'drive', 'uphill', 'downhill', 'lateral')
+
+
+class SavedPhysicalProposalClient(OfflinePhysicalClient):
+    """Unmodified historical physical replies plus explicitly scripted causality.
+
+    This tests downstream plumbing, never the new prompt/model behavior. Missing
+    saved replies stop locally; there is no network client or fallback.
+    """
+    def __init__(self, output, checkpoint):
+        super().__init__(output)
+        self.config.provider = 'OFFLINE_SAVED_PHYSICAL_SCRIPTED_CAUSAL'
+        self.records = {}
+        self.next_index = defaultdict(int)
+        for entry in json.loads(checkpoint.read_text())['item_definition']['physical_analysis_plans'].values():
+            context = entry['context']
+            if 'v3-' not in context['prompt_version']:
+                continue
+            key = (context['malfunction']['malfunction_id'], signature(context['conditions']))
+            self.records[key] = entry['responses']
+
+    def proposal(self, request):
+        from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+        payload = json.loads(request.user_prompt)
+        context = expand_physical_prompt_view(payload['context'], payload.get('source_texts', {}))
+        key = (context['malfunction']['malfunction_id'], signature(context['conditions']))
+        index = self.next_index[key]
+        records = self.records.get(key, [])
+        if index >= len(records):
+            raise AssertionError('No saved physical response for this exact source condition; no transport allowed')
+        record = records[index]
+        self.next_index[key] += 1
+        with (self.output/'saved_physical_replies.jsonl').open('a') as stream:
+            stream.write(json.dumps({'current_plan_key': context['plan_key'], 'original_record': record}, ensure_ascii=False)+'\n')
+        return record['response']['data']
+
+
+def prepare(source, output, run_id, limit, *, families=None):
+    selected = set(FAMILIES if families is None else families)
+    if not selected or selected - set(FAMILIES):
+        raise ValueError('Select one or more available source families')
     saved = json.loads(source.read_text())
     resolution = MethodSourceResolver().resolve(template_path=None,
         baseline_manifest_path=ROOT/'method_assets/fusa_baseline_v1/manifest.yaml',
         report_template_path=ROOT/'references/HARA_Template_AI_20260327.xlsx')
     method = resolution.method
     state = source_state(saved, method, ROOT/'input/ItemDef.docx', run_id)
+    if families is not None:
+        function_ids = {dict(braking='F01', drive='F02', lateral='F03', uphill='F08', downhill='F08')[label] for label in selected}
+        state.functions = [f for f in state.functions if f['function_id'] in function_ids]
+        state.malfunctions = [m for m in state.malfunctions if m['function_id'] in function_ids]
     state.method_contract.update(method_source_hash=method.metadata['method_source_hash'], report_template_hash=resolution.report_template_hash)
     config = RunConfig(ROOT/'input/ItemDef.docx', None, output/'HARA_Physical_Followup.xlsx', output/'checkpoints',
         run_id=run_id, resume=True, allow_draft=True, operating_mode='parking_vehicle_control', max_workers=1)
@@ -47,6 +91,8 @@ def prepare(source, output, run_id, limit):
             groups[signature(scenario_conditions(candidate,without_driver=True))].append(candidate)
         labels=['uphill','downhill'] if mf.function_id=='F08' else [{'F01':'braking','F02':'drive','F03':'lateral'}[mf.function_id]]
         for label in labels:
+            if label not in selected:
+                continue
             choices=list(groups.values())
             if label in {'uphill','downhill'}:
                 tag='上坡' if label=='uphill' else '下坡'
@@ -64,6 +110,11 @@ def prepare(source, output, run_id, limit):
         'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'method_hash':method.metadata['method_source_hash'],
         'expected_first_physical_proposals':4,'range_policy':'One representative hypothesis first; symbolic inputs remain symbolic. No range Cartesian expansion.',
         'budget_limit':limit,'live_requests':0,'budget_authorization':'Not granted by this plan; obtain a current explicit user budget before --live.'}
+    if families is not None:
+        from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+        plan.update(version='physical-followup-selected-families-v2', selected_families=sorted(selected),
+            physical_prompt_version=PhysicalScenarioAgent.PROMPT_VERSION,
+            expected_first_physical_proposals=sum(case['label'] != 'braking' for case in cases))
     state.item_definition['physical_validation_policy']=plan['range_policy']
     return state,config,plan
 
@@ -77,15 +128,21 @@ def main():
     mode=parser.add_mutually_exclusive_group();mode.add_argument('--live',action='store_true');mode.add_argument('--offline',action='store_true')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--symbolic-drive',action='store_true',help='Offline fixture only; exercises symbolic proposal through reporting')
+    parser.add_argument('--families',nargs='+',choices=FAMILIES,help='Narrow existing production sample selection; e.g. drive selects its two driver identities')
+    parser.add_argument('--replay-physical-checkpoint', type=Path, help='Offline only: unmodified saved v3 physical replies; causal/fact replies remain scripted')
     args=parser.parse_args()
     if args.symbolic_drive and not args.offline:
         parser.error('--symbolic-drive is an offline fixture option')
+    if args.replay_physical_checkpoint and (not args.offline or args.symbolic_drive):
+        parser.error('--replay-physical-checkpoint requires --offline and cannot edit saved replies via --symbolic-drive')
     if args.live and args.max_provider_attempts<1:
         parser.error('--live requires the explicitly authorized positive request budget')
     # Preview/offline uses a non-transport budget object for the production
     # bounded-sample contract; no transport or environment is constructed.
-    state,config,plan=prepare(args.source_context,args.output,args.run_id,args.max_provider_attempts if args.live else 1)
+    state,config,plan=prepare(args.source_context,args.output,args.run_id,args.max_provider_attempts if args.live else 1, families=args.families)
     plan['offline_symbolic_drive']=args.symbolic_drive
+    if args.replay_physical_checkpoint:
+        plan['saved_physical_checkpoint_sha256'] = hashlib.sha256(args.replay_physical_checkpoint.read_bytes()).hexdigest()
     plan['budget_limit']=args.max_provider_attempts if args.live else 0
     args.output.mkdir(parents=True,exist_ok=args.resume)
     plan_path=args.output/'sample_plan.json'
@@ -101,7 +158,8 @@ def main():
     if args.live:
         load_local_env(); app=HARAApplication.from_env(config)
     else:
-        client=OfflinePhysicalClient(args.output,symbolic_drive=args.symbolic_drive)
+        client=(SavedPhysicalProposalClient(args.output,args.replay_physical_checkpoint) if args.replay_physical_checkpoint
+                else OfflinePhysicalClient(args.output,symbolic_drive=args.symbolic_drive))
         client.attempt_budget=ProviderAttemptBudget(config.run_dir/f'{config.run_id}.provider-attempts.jsonl',run_id=config.run_id,limit=1)
         app=HARAApplication(config,client)
     if not args.resume:
@@ -114,7 +172,8 @@ def main():
             result=app.run()
         summary={'reason':result.reason,'scenarios':len(result.state.scenarios),'risk_results':len(result.state.risk_results),
             'physical_metrics':result.state.item_definition.get('physical_analysis_metrics'),
-            'live_requests':app.llm_client.attempt_budget.attempts,'mode':'LIVE' if args.live else 'OFFLINE_SCRIPTED',
+            'live_requests':app.llm_client.attempt_budget.attempts,
+            'mode':'LIVE' if args.live else 'OFFLINE_SAVED_PHYSICAL_SCRIPTED_CAUSAL' if args.replay_physical_checkpoint else 'OFFLINE_SCRIPTED',
             'scripted_calls':dict(app.llm_client.calls) if args.offline else {}}
         (args.output/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n')
         print(json.dumps(summary,ensure_ascii=False))

@@ -1,5 +1,8 @@
 """A workflow-scheduled proposal task; no scoring or approval authority."""
 from dataclasses import asdict
+from collections import Counter
+from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 
@@ -10,8 +13,65 @@ from hara_agent.infrastructure.llm import LLMRequest
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 
 
+def physical_prompt_view(context: dict) -> tuple[dict, dict]:
+    """Lossless request projection; full provenance remains the plan identity.
+
+    Only exact repeated context and source excerpts are referenced. No source,
+    qualifier, scope, or numeric input is summarized or truncated.
+    """
+    view = deepcopy(context)
+    evidence = view.get("evidence", {})
+    if "conditions" in view and evidence.get("SCENARIO.conditions") == view["conditions"]:
+        evidence["SCENARIO.conditions"] = {"$context_ref": "conditions"}
+    project = evidence.get("PROJECT.operating_context", {})
+    if "project_context" in view and project.get("value") == view["project_context"]:
+        project["value"] = {"$context_ref": "project_context"}
+
+    counts = Counter()
+
+    def count(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "excerpt" and isinstance(item, str) and len(item) > 128:
+                    counts[item] += 1
+                else:
+                    count(item)
+        elif isinstance(value, list):
+            for item in value:
+                count(item)
+
+    count(view)
+    texts = {hashlib.sha256(text.encode()).hexdigest(): text for text, n in counts.items() if n > 1}
+
+    def intern(value):
+        if isinstance(value, dict):
+            return {key: {"$source_text": hashlib.sha256(item.encode()).hexdigest()}
+                    if key == "excerpt" and isinstance(item, str) and counts[item] > 1
+                    else intern(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [intern(item) for item in value]
+        return value
+
+    return intern(view), texts
+
+
+def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
+    """Reconstruct the original context for audits and offline equivalence tests."""
+    def expand(value):
+        if isinstance(value, dict):
+            if set(value) == {"$source_text"}:
+                return source_texts[value["$source_text"]]
+            if set(value) == {"$context_ref"}:
+                return expand(view[value["$context_ref"]])
+            return {key: expand(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        return value
+    return expand(view)
+
+
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v3-explicit-payload-vocabulary"
+    PROMPT_VERSION = "post-fault-physical-scenario-v4-lossless-context-symbolic-geometry"
 
     def __init__(self, client, *, response_checkpoint_dir: Path | None = None):
         self.client = client
@@ -33,6 +93,8 @@ class PhysicalScenarioAgent:
             }], "uncovered_conditions": ["not an exhaustive vehicle capability envelope"],
         }
         system = (
+            "输入使用无损引用：$context_ref 指向 context 的同名字段，$source_text 指向 source_texts 中的完整原文。"
+            "引用处保留来源身份、位置和适用范围；读取所引用全文，包括否定和限定，不得把引用当成缺失来源。"
             "先遵守 output_contract 的精确字段、枚举和引用ID。geometry_values列的是可输出的键，"
             "不要用自然语言标签或自行创造对象类别。不能把不支持的障碍物伪称车辆；"
             "若分析另一个合法对象，必须声明condition_changes.target及新object_id，说明新条件和未覆盖对象。"
@@ -52,16 +114,22 @@ class PhysicalScenarioAgent:
             "所有支持模型当前只计算静止目标，移动目标列为未覆盖。"
             "参数可以 POINT(value)、RANGE(lower,value,upper；value 是代表值)、SYMBOLIC(symbol)。"
             "不确定真实上界时给条件性代表值/敏感性范围或符号条件，不编造最大速度。"
+            "距离、净距等缺少实测值时，也可提出有依据的条件性代表值并说明适用范围；"
+            "无法合理选值则保留明确符号，程序输出参数关系，不得借用其他对象或阶段的距离。"
             "依据必须引用 evidence 中的 ID，但分析假设无需在来源中逐字出现。"
             "只返回规定 JSON；禁止附加字段。"
             "显式 SYMBOLIC 不得用父场景旧阶段数值补回。未填写参数只有同对象、同阶段、同角色和适用模型才可继承。"
             "同一初始静止条件不能同时是非零初速；同一移动目标不能改成静止。需要新初始工况/新对象时，"
             "用 condition_changes 明确声明并说明依据；新对象给不同 object_id，程序重新绑定受影响 Atom。"
+            "例如来源初速非零而坡道模型要求静止，必须明确 initial_state=true 及独立静止工况依据，"
+            "不能一边写初速0一边声明初始条件未变；也可以保留原条件并说明当前模型不适用。"
             "坡道模型必须提供 grade_frame：coordinate_frame=BODY_FORWARD_POSITIVE，"
             "slope_reference=EGO_FORWARD|ROAD_REFERENCE|UNSPECIFIED，heading_relative_to_downhill=UPHILL|DOWNHILL，"
             "downhill_body_direction=FRONT|REAR，orientation_basis=SOURCE|ANALYSIS_ASSUMPTION，rationale。"
             "道路参考另给 ego_forward_relative_to_reference=SAME|OPPOSITE。车头朝上坡时重力向后，"
             "车头朝下坡时向前；模型运动方向必须沿重力，目标是否在该方向由程序判断。"
+            "静止起步纯重力向后时，不能声称撞上车前静止目标；可保留为不接触对照，"
+            "另设车后目标必须声明新对象条件，不能只在文字中换目标。"
             "来源只有上坡标签而未说明朝向时，以明确分析假设选择少量朝向，不把标签自动当作车头方向。"
             "correction_diagnostics 如存在，保留有效分支并针对具体冲突有限修正，不能修改原始事实或声称批准。"
         )
@@ -73,7 +141,9 @@ class PhysicalScenarioAgent:
                 "RANGE": {"lower": "finite number", "value": "representative number", "upper": "finite number"},
                 "SYMBOLIC": {"symbol": "nonempty string; omit value/lower/upper"}},
         }
-        content = {"output_contract": output_contract, "context": context, "model_catalog": MODEL_CATALOG,
+        prompt_context, source_texts = physical_prompt_view(context)
+        content = {"output_contract": output_contract, "context": prompt_context, "source_texts": source_texts,
+                   "model_catalog": MODEL_CATALOG,
                    "parameter_units": PARAMETER_UNITS, "output_shape": example,
                    "control_identities": sorted(CONTROL_IDENTITIES),
                    "contract_version": PHYSICAL_PLAN_VERSION}

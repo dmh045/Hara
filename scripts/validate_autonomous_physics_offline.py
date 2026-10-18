@@ -96,11 +96,12 @@ class OfflinePhysicalClient:
             impact = next((ref for ref in ("DERIVED.ego_impact_speed_kph", "DERIVED.relative_speed_kph") if ref in derived), None)
             analysis = {**shared.get("conditional_physical_analysis", {}), **sc.get("conditional_physical_analysis", {})}
             symbolic = any(p["kind"] == "SYMBOLIC" for p in analysis.get("hypothesis", {}).get("parameters", []))
-            positive = bool(impact) or symbolic
+            outcome = analysis.get("physics", {}).get("motion_model_outcome", {})
+            positive = bool(impact) or (symbolic and outcome.get("contact_possible_in_model") is not False)
             contact_ref = impact or ("SCN.fault_motion_model" if symbolic else None)
             contact_basis = "DERIVED_PHYSICS" if impact else "DIRECT_FACT" if symbolic else "ASSUMPTION"
             chain = {"m_to_b": {"claim": "在给定失效定义下发生所列运动偏离（离线模拟判断）", "basis_type": "DIRECT_FACT", "evidence_refs": ["MF.description"]},
-                "b_to_i": {"claim": "仅在 a_fault>0 且模型持续有效至首次接触的条件下，参数化轨迹到达所列目标" if symbolic else "在该模型与假设下到达所列目标" if positive else "该候选未形成可计算的接触轨迹",
+                "b_to_i": {"claim": "仅在所列参数关系成立、目标位于接近路径且模型持续有效至首次接触的条件下，参数化轨迹到达所列目标" if symbolic and positive else "在该模型与假设下到达所列目标" if positive else "该候选未形成可计算的接触轨迹",
                     "basis_type": contact_basis, "evidence_refs": [contact_ref] if positive else []}}
             if positive:
                 chain["i_to_h"] = {"claim": "在所列条件下与该目标发生接触", "basis_type": contact_basis, "evidence_refs": [contact_ref]}

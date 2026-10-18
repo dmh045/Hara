@@ -73,6 +73,34 @@ def test_transport_retries_consume_durable_provider_budget(tmp_path):
     assert calls == 2
 
 
+@pytest.mark.parametrize('limit', [1, 2])
+def test_raw_invalid_json_is_saved_before_repair_and_shared_budget_still_applies(tmp_path, limit):
+    ledger = tmp_path / 'raw.provider-attempts.jsonl'
+    budget = ProviderAttemptBudget(ledger, run_id='raw', limit=limit)
+    bodies = []
+    malformed = '{"assessments":[{"scenario_id":"child"}]'
+
+    def transport(_url, _headers, body, _timeout):
+        bodies.append(json.loads(body))
+        if len(bodies) == 2:
+            correction = json.loads(bodies[-1]['messages'][1]['content'].split('FORMAT_CORRECTION_INPUT=', 1)[1])
+            assert correction['previous_invalid_response'] == malformed
+            assert correction['parse_error']['json_error_position'] is not None
+        return {'model': 'test-model', 'choices': [{'message': {'content': malformed if len(bodies) == 1 else '{"assessments":[]}'}, 'finish_reason': 'stop'}]}
+
+    client = OpenAICompatibleClient(_config(), transport=transport, attempt_budget=budget)
+    if limit == 1:
+        with pytest.raises(ProviderAttemptBudgetExceeded):
+            client.complete_json(_request())
+    else:
+        assert client.complete_json(_request()).data == {'assessments': []}
+    original = json.loads((ledger.with_suffix('.responses')/'000001.json').read_text())
+    assert original['response']['choices'][0]['message']['content'] == malformed
+    assert 'Authorization' not in json.dumps(original) and 'unused' not in json.dumps(original)
+    assert len(bodies) == budget.attempts == limit
+    assert len(list(ledger.with_suffix('.responses').glob('*.json'))) == limit
+
+
 def test_bounded_config_requires_all_limits_and_single_worker(tmp_path):
     base = dict(
         item_path=tmp_path / "item.docx",
