@@ -240,7 +240,8 @@ def test_T18_production_projection_never_pairs_max_s_with_max_asil(active_method
     before=deepcopy(state)
     view=HARAReportProjectionService(load_report_schema()).project(state,active_method)
     assert (view.rows[0].severity,view.rows[0].exposure,view.rows[0].controllability,view.rows[0].asil)==('S2','E4','C3','C')
-    assert 'highest-asil' in view.rows[0].scenario_detail
+    assert 'highest-asil' not in view.rows[0].scenario_detail
+    assert 'highest-asil' in view.scenario_details[0].branch_results
     assert view.scenario_details[0].severity=='S2'
     assert 'more-severe' in view.scenario_details[0].branch_results
     assert state==before

@@ -34,10 +34,8 @@ _ALLOWED_ASCII = re.compile(
     re.IGNORECASE,
 )
 _STATUS_REMARK = re.compile(
-    r"S (?:已计算|待审试算|未计算)；"
-    r"E (?:已计算|待审试算|未计算)；"
-    r"C (?:已计算|待审试算|未计算)；"
-    r"ASIL (?:已计算|待审试算|未计算)"
+    r"(?:S|E|C|ASIL)(?:/(?:S|E|C|ASIL))* (?:已计算|待审试算|未计算)"
+    r"(?:；(?:S|E|C|ASIL)(?:/(?:S|E|C|ASIL))* (?:已计算|待审试算|未计算))*"
 )
 
 

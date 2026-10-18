@@ -380,14 +380,8 @@ class HARAReportProjectionService:
             "severity": "S", "exposure": "E",
             "controllability": "C", "asil": "ASIL",
         }
-        if state == _TRIAL:
-            if field == "exposure":
-                return self.text.exposure_rationale(evidence, trace, calculated=True)
-            if field == "severity":
-                return "按所列对象及碰撞相对速度计算；具体运动条件和输入来源见场景明细。"
-            if field == "controllability":
-                return "按所列控制条件计算；" + self.text.controllability_branch({"controllability": trace})
-            return "按同一分支 S/E/C 查询活动矩阵；各分支完整元组见明细。"
+        if field == "exposure" and state == _TRIAL:
+            return self.text.exposure_rationale(evidence, trace, calculated=True)
         if state == _UNCALCULATED and _status(evidence) == "FINALIZED":
             return f"当前执行记录未证明 {labels[field]} 已完成评分，暂不展示旧值。"
         mapper = {
@@ -397,6 +391,68 @@ class HARAReportProjectionService:
             "asil": self.text.asil_rationale,
         }
         return mapper[field](evidence, trace)
+
+    @staticmethod
+    def _display_trace(field: str, trace: Mapping, branch: Mapping | None = None) -> dict:
+        """Join saved calculation evidence for display, without recomputing it."""
+        result = dict(trace.get(field, {}))
+        context = trace.get("hazardous_event_risk_context", {})
+        if branch:
+            result = dict(branch.get("scores", {}).get(field, {}))
+            context = branch.get("risk_context", {})
+            if field == "exposure":
+                source = trace.get(field, {})
+                source_atoms = source.get("atom_bindings", source.get("atom_details", []))
+                if {a.get("atom_id") for a in source_atoms} == {a.get("atom_id") for a in result.get("atom_details", [])}:
+                    result["scenario_terms"] = source.get("scenario_terms", {})
+            result["result"] = branch.get({"severity": "S", "exposure": "E", "controllability": "C", "asil": "ASIL"}[field])
+            result["branch_grades"] = {k: branch.get(k) for k in ("S", "E", "C", "ASIL")}
+        result["physical_inputs"] = {key: value.get("value") for key, value in context.items()
+            if isinstance(value, Mapping) and value.get("status") == "AVAILABLE"}
+        if branch:
+            result["physical_inputs"].update({key: branch[key] for key in ("relative_speed_kph", "ttc_s")
+                if branch.get(key) is not None})
+        return result
+
+    @staticmethod
+    def _common_mapping(values: list[Mapping]) -> dict:
+        """Intersect raw structured values; rounded labels never prove equality."""
+        common = {}
+        for key, value in values[0].items():
+            if not all(key in other for other in values[1:]):
+                continue
+            items = [other[key] for other in values]
+            if all(isinstance(item, Mapping) for item in items):
+                nested = HARAReportProjectionService._common_mapping(items)
+                if nested:
+                    common[key] = nested
+            elif all(item == value for item in items):
+                common[key] = deepcopy(value)
+        return common
+
+    def _group_scenario(self, siblings: list[dict]) -> tuple[str, str]:
+        if len(siblings) == 1:
+            return self.text.scenario(siblings[0]["scenario"])
+        scenarios = [entry["scenario"] for entry in siblings]
+        common = deepcopy(scenarios[0])
+        for field in ("facts", "context_resolution", "analysis_instance"):
+            setattr(common, field, self._common_mapping([getattr(s, field) or {} for s in scenarios]))
+        for field in ("operating_mode", "operating_scenario", "atomic_variant"):
+            if len({str(getattr(s, field)) for s in scenarios}) > 1:
+                setattr(common, field, "")
+        operational, detail = self.text.scenario(common)
+        if "ego_impact_speed_kph" not in common.facts:
+            operational = operational.replace("；碰撞速度另行确定", "")
+            detail = detail.replace("；碰撞速度另行确定", "")
+        return operational, detail
+
+    @staticmethod
+    def _status_note(states: Mapping[str, str]) -> str:
+        labels = {"severity": "S", "exposure": "E", "controllability": "C", "asil": "ASIL"}
+        groups = defaultdict(list)
+        for field, status in states.items():
+            groups[status].append(labels[field])
+        return "；".join("/".join(fields) + " " + status for status, fields in groups.items())
 
     @staticmethod
     def _normalized_hazardous_event(value: Any) -> str:
@@ -762,6 +818,8 @@ class HARAReportProjectionService:
         goal_presentations = {goal.sg_id: self.text.safety_goal_presentation([
             {"scenario_id": risk.scenario_id, "malfunction_id": risk.malfunction_id,
              "malfunction": str(malfunctions.get(risk.malfunction_id, {}).get("description", "")),
+             "function": str(functions.get(str(malfunctions.get(risk.malfunction_id, {}).get("function_id", "")), {}).get("name", "")),
+             "functional_effect": str(malfunctions.get(risk.malfunction_id, {}).get("functional_effect", "")),
              "vehicle_hazard": str(malfunctions.get(risk.malfunction_id, {}).get("vehicle_level_hazard", "")),
              "operating_mode": scenarios[risk.scenario_id].operating_mode if risk.scenario_id in scenarios else "",
              "hazardous_event": risk.hazardous_event}
@@ -778,15 +836,10 @@ class HARAReportProjectionService:
             trace = representative["trace"]
             malfunction = malfunctions.get(risk.malfunction_id, {})
             function = functions.get(str(malfunction.get("function_id", "")), {})
-            operational, detail = self.text.scenario(
-                scenario,
-                variant_count=max(
-                    len(siblings), self.text.coverage_variant_count(scenario),
-                ),
-            )
-            severity_trace = trace.get("severity", {}) if isinstance(trace, Mapping) else {}
-            exposure_trace = trace.get("exposure", {}) if isinstance(trace, Mapping) else {}
-            control_trace = trace.get("controllability", {}) if isinstance(trace, Mapping) else {}
+            operational, detail = self._group_scenario(siblings)
+            severity_trace = self._display_trace("severity", trace)
+            exposure_trace = self._display_trace("exposure", trace)
+            control_trace = self._display_trace("controllability", trace)
             score_states = self._score_states(
                 risk, trace, trace_provided=risk_trace is not None,
             )
@@ -803,22 +856,10 @@ class HARAReportProjectionService:
                 values, partial_rationales, distribution = self._common_partial_grades(
                     siblings, trace_provided=risk_trace is not None)
                 partial_group_distributions[f"HARA_{offset:03d}"] = distribution
-            combinations = list(dict.fromkeys(self.text.condition_combination(e["scenario"]) for e in siblings))
             pending_count = sum(
                 any(not _value(getattr(e["risk"], f)) for f in ("severity", "exposure", "controllability", "asil"))
                 or any(not all(b.get(k) for k in ("S", "E", "C", "ASIL")) for b in e["risk"].branch_evaluations)
                 for e in siblings)
-            if is_review_group:
-                operational = "；".join(dict.fromkeys(
-                    self.text.object_interaction_summary(e["scenario"]) for e in siblings
-                    if self.text.object_interaction_summary(e["scenario"]))) or "项目运行区域内，所列失效的相关场景"
-                detail = (f"{len(siblings)} 个成员，{pending_count} 个含未决评级。\n"
-                          + "实际组合：" + "；".join(combinations)
-                          + "。参数、对象身份及逐分支结果见场景明细。")
-            if highest_members:
-                highest_branch = highest_members[0][2]
-                if highest_branch:
-                    detail += "\n最高已知结果对应：" + self.text.branch_result(highest_branch)
             causal_status = causal_status_by_pair.get((risk.malfunction_id, risk.scenario_id), "")
             assessment_status = self._assessment_status(
                 risk=risk, scenario=scenario, trace=trace, causal_status=causal_status,
@@ -866,17 +907,13 @@ class HARAReportProjectionService:
                 safe_state=next((goal.safe_state if goal.status.value == "FINALIZED" else "待确定" for goal in state.safety_goals if goal.sg_id == risk.safety_goal_id), "待确定"),
                 assessment_status=assessment_status,
                 clarification_ids=self._clarifications(risk),
-                remark=(f"审核展示分组，不代表风险等价；{len(siblings)} 个成员。" if is_review_group else "")
+                remark=(f"审核展示分组，不代表风险等价；{len(siblings)} 个成员。" if is_review_group and len(siblings) > 1 else "")
                   + (("最高已知 ASIL 的完整元组；" if headline and headline[0] != "待评定" else
-                      "并列最高 ASIL 有不同元组，见明细；") if highest_members else "")
+                      "并列最高 ASIL 有不同元组，见明细；") if highest_members and (len(siblings) > 1 or len(risk.branch_evaluations) > 1) else "")
                   + ("尚有未决成员，最高已知结果不是全组上界；" if pending_count and is_review_group else "")
-                  + "；".join(
-                    f"{label} {score_states[field]}"
-                    for field, label in (
-                        ("severity", "S"), ("exposure", "E"),
-                        ("controllability", "C"), ("asil", "ASIL"),
-                    )
-                ) + ("；归并依据：相同结构化场景条件、因果链、伤害机制及完整评分；原始记录见场景明细"
+                  + self._status_note(score_states)
+                  + ("；条件差异：" + self.text.group_differences([e["scenario"] for e in siblings]) if len(siblings) > 1 else "")
+                  + ("；归并依据：相同结构化场景条件、因果链、伤害机制及完整评分；原始记录见场景明细"
                      if len(siblings) > 1 and all(e["risk_equivalence_key"] is not None and e["risk_equivalence_key"] == representative["risk_equivalence_key"] for e in siblings) else "")
                   + ("；SG为历史草稿关联，本轮未重评" if risk.safety_goal_id and any(
                       event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail) else ""),
@@ -884,10 +921,9 @@ class HARAReportProjectionService:
             if highest_members and highest_members[0][2]:
                 # An aggregate max-S rationale may describe a different branch.
                 # Point every headline dimension at the same selected branch.
-                selected_scores = highest_members[0][2].get("scores", {})
                 row = replace(row, **{field + "_rationale":
                     (self._score_rationale(field, replace(getattr(risk, field), value=values[field]),
-                        selected_scores.get(field, {}), score_states[field])
+                        self._display_trace(field, trace, highest_members[0][2]), score_states[field])
                      if headline[0] != "待评定" else "并列最高 ASIL 对应不同元组，各分支依据见场景明细。")
                     for field in ("severity", "exposure", "controllability", "asil")})
             elif partial_rationales:

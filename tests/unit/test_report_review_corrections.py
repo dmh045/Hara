@@ -79,11 +79,14 @@ def test_sg_rewording_requires_all_member_sources_and_keeps_status(active_method
         assert result['members'][0]['basis'] == rule['source']
         changed = {**member, 'scenario_id': 'B', 'vehicle_hazard': '另一种危险机制', 'malfunction': '另一种失效'}
         result = mapper.safety_goal_presentation([member, changed], '原目标')
-        assert '另一种失效' in result['text']  # never narrow all members to the first
-        assert result['members'][1]['wording_id'] == 'original_intent'
+        assert '原目标' in result['text']  # unsupported wording retains its original goal
+        assert result['members'][1]['malfunction'] == '另一种失效'
+        assert result['members'][1]['wording_id'] == 'grounded_behavior_excerpt'
     # A claim about absent contact must not get rewritten into a collision goal.
     changed = {**rules[1]['source'], 'hazardous_event': '未发生接触'}
-    assert mapper.safety_goal_presentation([changed], '原目标')['members'][0]['wording_id'] == 'original_intent'
+    displayed = mapper.safety_goal_presentation([changed], '原目标')
+    assert displayed['members'][0]['wording_id'] == 'grounded_behavior_excerpt'
+    assert '碰撞' not in displayed['text']
     state = mixed_pending_group()
     state.malfunctions[0].update(description=rules[0]['source']['malfunction'],
         vehicle_level_hazard=rules[0]['source']['vehicle_hazard'])

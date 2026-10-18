@@ -350,7 +350,7 @@ def test_fresh_report_context_restores_group_coverage_and_contextual_speed(tmp_p
     assert detail.speed_constraint == "适用车速范围：不高于5 km/h"
     assert "车辆执行泊车" in detail.operational_scenario
     assert "横穿交通参与者" in detail.operational_scenario
-    assert "当前为综合前审阅投影" in view.rows[0].scenario_detail
+    assert view.rows[0].scenario_detail == detail.scenario_detail
     assert view.projection_metrics["contextual_speed_rows"] == 1
     assert state == before
 
@@ -444,8 +444,8 @@ def test_driver_branches_and_trial_values_remain_distinct_in_formal_report(tmp_p
     assert len(view.rows) == 2
     assert "驾驶员在驾驶位" in view.rows[0].operational_scenario
     assert "驾驶员不在驾驶位" in view.rows[1].operational_scenario
-    assert view.rows[0].remark == "S 已计算；E 已计算；C 已计算；ASIL 已计算"
-    assert view.rows[1].remark == "S 已计算；E 待审试算；C 待审试算；ASIL 待审试算"
+    assert view.rows[0].remark == "S/E/C/ASIL 已计算"
+    assert view.rows[1].remark == "S 已计算；E/C/ASIL 待审试算"
     assert view.rows[1].exposure == "E3"
     assert view.rows[1].asil == "B"
     assert "待审试算" in view.rows[1].remark
@@ -456,8 +456,9 @@ def test_driver_branches_and_trial_values_remain_distinct_in_formal_report(tmp_p
     assert "TTC：1.54 s" in view.scenario_details[0].physical_inputs
     assert "目标位置：前方" in view.scenario_details[0].physical_inputs
     assert "车内状态：未确定" in view.scenario_details[1].driver_branch
-    assert "命中规则：C-TTC-01" in view.scenario_details[0].controllability_branch
-    assert "table[14].row[15]" in view.scenario_details[0].analysis_basis
+    assert "预计首次接触：1.54 s" in view.scenario_details[0].controllability_branch
+    assert "C-TTC-01" not in view.scenario_details[0].controllability_branch
+    assert "完整来源位置及规则" in view.scenario_details[0].analysis_basis
 
     output = tmp_path / "review.xlsx"
     HARAReportWorkbookRenderer().render(
@@ -601,7 +602,8 @@ def test_canonical_renderer_reads_current_run_trace_and_writes_real_reference(tm
         detail_headers = {
             cell.value: cell.column for cell in detail[4] if cell.value is not None
         }
-        assert "C-TTC-01" in detail.cell(5, detail_headers["C Decision"]).value
+        assert "方法尚未明确" in detail.cell(5, detail_headers["C Decision"]).value
+        assert "C-TTC-01" not in detail.cell(5, detail_headers["C Decision"]).value
         assert "自车速度：7 km/h" in detail.cell(5, detail_headers["Physical Inputs"]).value
         audit = workbook["99_Audit"]
         audit_headers = {cell.value: cell.column for cell in audit[4] if cell.value is not None}

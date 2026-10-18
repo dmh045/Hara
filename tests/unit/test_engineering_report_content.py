@@ -68,7 +68,7 @@ def test_text_mapper_keeps_scenario_facts_and_hides_dimension_reason_codes():
     scenario = _state().scenarios[0]
     operational, detail = mapper.scenario(scenario)
     assert operational == "室外停车场，AVP处于激活状态，适用车速范围为0–20 km/h。"
-    assert detail == "适用车速范围：0–20 km/h；分析变体：受控分析场景。"
+    assert detail == "适用车速范围：0–20 km/h。"
     assert "交通参与者信息未提供" not in detail
     assert "AMBIGUOUS_BINDING" not in detail
     assert "NO_ITEM_FACT" not in detail
@@ -91,7 +91,7 @@ def test_text_mapper_projects_resolved_synthesized_dimensions_separately():
     )
     operational, detail = EngineeringReportTextMapper().scenario(scenario)
     assert operational == "项目运行区域内，AVP处于激活状态。"
-    assert detail == "分析变体：受控分析场景。"
+    assert detail == "运行细节未确定。"
     for raw in ("Garage", "Parking in/out", "Low speed", "Pedestrian", "EGO_X_ROAD", "FA001"):
         assert raw not in operational + detail
 
@@ -206,7 +206,7 @@ def test_projection_does_not_publish_stale_values_when_trace_says_scoring_not_in
     assert view.rows[0].severity == "待评定"
     assert view.rows[0].asil == "待评定"
     assert "暂不展示旧值" in view.rows[0].severity_rationale
-    assert view.rows[0].remark == "S 未计算；E 未计算；C 未计算；ASIL 未计算"
+    assert view.rows[0].remark == "S/E/C/ASIL 未计算"
     assert view.rows[0].assessment_status == "PENDING — RISK SCORING NOT EXECUTED"
     assert view.projection_metrics["score_status_counts"]["severity"]["calculated"] == 0
     assert "RISK SCORING NOT YET EXECUTED" in view.summary.report_status
@@ -230,11 +230,11 @@ def test_exposure_rationale_is_trace_derived_for_finalized_evidence():
             "dependency_coupling": {"policy_branch": "e3_e4_mix"},
         },
     )
-    assert "请求 Z 域" in rationale
+    assert "请求 Z 域" not in rationale
     assert "自车动态=E4" in rationale
     assert "自车动作=E3" in rationale
     assert "FA001" not in rationale
     assert "PH005" not in rationale
-    assert "FUSA v1" in rationale
+    assert "E3 与 E4 条件共同出现" in rationale
     assert "最终 E3" in rationale
     assert rationale != "已按当前方法完成 E 评定。"
