@@ -24,7 +24,8 @@ class CheckpointRepository:
 
     def save(self, state: HARAState) -> Path:
         target = self.path_for(state.run_id)
-        payload = json.dumps(state.to_dict(), ensure_ascii=False, indent=2)
+        # Large full-run states need the fast encoder; whitespace is not state.
+        payload = json.dumps(state.to_dict(), ensure_ascii=False, separators=(",", ":"))
         handle, temp_name = tempfile.mkstemp(
             prefix=f".{state.run_id}.", suffix=".tmp", dir=str(self.run_dir), text=True
         )
