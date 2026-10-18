@@ -11,7 +11,7 @@ from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v2-scoped-inputs-grade-frame"
+    PROMPT_VERSION = "post-fault-physical-scenario-v3-explicit-payload-vocabulary"
 
     def __init__(self, client, *, response_checkpoint_dir: Path | None = None):
         self.client = client
@@ -33,6 +33,14 @@ class PhysicalScenarioAgent:
             }], "uncovered_conditions": ["not an exhaustive vehicle capability envelope"],
         }
         system = (
+            "先遵守 output_contract 的精确字段、枚举和引用ID。geometry_values列的是可输出的键，"
+            "不要用自然语言标签或自行创造对象类别。不能把不支持的障碍物伪称车辆；"
+            "若分析另一个合法对象，必须声明condition_changes.target及新object_id，说明新条件和未覆盖对象。"
+            "SYMBOLIC使用symbol字符串，不能把符号放进value；POINT只有value；RANGE必须有lower/value/upper。"
+            "basis_refs只能选basis_ref_ids中的完整ID，不得把它扩展成未提供的字段路径。"
+            "failed_controls/remaining_controls只能选control_identities中的完整键。"
+            "遵守validation_sampling_policy；若要求One representative hypothesis first，只返回一个代表假设，"
+            "优先点值或符号，其他变体列为未覆盖，不展开范围或多个模型。"
             "你是故障后物理场景分析员。使用给定项目事实、来源限定、FM、Atom 和已确认方法约束，"
             "提出 1–3 个有工程意义的条件性物理假设；原文未提供故障加速度并不禁止提出分析假设。"
             "不得把假设声称为原文事实、车辆真实能力或可信上界。不得输出 S/E/C/ASIL、批准状态、"
@@ -57,15 +65,25 @@ class PhysicalScenarioAgent:
             "来源只有上坡标签而未说明朝向时，以明确分析假设选择少量朝向，不把标签自动当作车头方向。"
             "correction_diagnostics 如存在，保留有效分支并针对具体冲突有限修正，不能修改原始事实或声称批准。"
         )
-        content = {"context": context, "model_catalog": MODEL_CATALOG,
+        output_contract = {
+            "basis_ref_ids": sorted(context["evidence"]),
+            "geometry_values": {field: sorted(values) for field, values in context.get("risk_vocabulary", {}).items()},
+            "control_identities": sorted(CONTROL_IDENTITIES),
+            "parameter_payloads": {"POINT": {"value": "finite number"},
+                "RANGE": {"lower": "finite number", "value": "representative number", "upper": "finite number"},
+                "SYMBOLIC": {"symbol": "nonempty string; omit value/lower/upper"}},
+        }
+        content = {"output_contract": output_contract, "context": context, "model_catalog": MODEL_CATALOG,
                    "parameter_units": PARAMETER_UNITS, "output_shape": example,
                    "control_identities": sorted(CONTROL_IDENTITIES),
                    "contract_version": PHYSICAL_PLAN_VERSION}
         attempts = []
         errors = []
+        previous_response = None
         for repair in (False, True):
             request = LLMRequest(task="construct_post_fault_physical_scenario",
-                system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors}, ensure_ascii=False, default=str),
+                system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
+                    **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str),
                 schema_name="PhysicalScenarioPlan", prompt_version=self.PROMPT_VERSION,
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair}, max_tokens=4096)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
@@ -80,4 +98,5 @@ class PhysicalScenarioAgent:
                     "schema_repairs": int(repair), "model": response.model}
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))
+                previous_response = response.data
         raise ValueError("Physical plan schema repair exhausted: " + "; ".join(errors))

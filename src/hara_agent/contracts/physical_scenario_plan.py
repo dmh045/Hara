@@ -37,7 +37,9 @@ CONTROL_IDENTITIES = {"drive", "steering", "braking", "parking_hold", "speed_lim
 
 def _object(value: Any, required: set[str], optional: set[str] = frozenset()) -> dict:
     if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - optional:
-        raise ValueError(f"Physical plan keys must be {sorted(required)} plus {sorted(optional)}")
+        detail = (f"; missing={sorted(required - value.keys())}, "
+                  f"unexpected={sorted(value.keys() - required - optional)}" if isinstance(value, dict) else "; expected object")
+        raise ValueError(f"Physical plan keys must be {sorted(required)} plus {sorted(optional)}" + detail)
     return value
 
 
@@ -104,7 +106,7 @@ class PhysicalScenarioPlan:
             _text(h["rationale"])
             refs = _texts(h["basis_refs"])
             if not refs or not set(refs) <= evidence_ids:
-                raise ValueError("Hypothesis basis must refer to supplied context")
+                raise ValueError(f"hypotheses[{identity}].basis_refs must use supplied IDs {sorted(evidence_ids)}; received {refs}")
             for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
                 _texts(h[key])
             if not set(h["failed_controls"] + h["remaining_controls"]) <= CONTROL_IDENTITIES:
@@ -132,6 +134,15 @@ class PhysicalScenarioPlan:
                     raise ValueError("Unknown, duplicate or incorrectly dimensioned parameter")
                 fields.add(field)
                 _text(p["rationale"])
+                payload = {"POINT": {"value"}, "RANGE": {"lower", "value", "upper"},
+                           "SYMBOLIC": {"symbol"}}.get(p["kind"])
+                if payload is None:
+                    raise ValueError(f"parameters[{field}].kind must be POINT, RANGE or SYMBOLIC")
+                missing = payload - p.keys()
+                forbidden = ({"value", "lower", "upper", "symbol"} - payload) & p.keys()
+                if missing or forbidden:
+                    raise ValueError(f"parameters[{field}] kind={p['kind']} requires {sorted(payload)}; "
+                                     f"missing={sorted(missing)}, forbidden={sorted(forbidden)}")
                 if p["kind"] == "POINT":
                     values = [_number(p["value"])]
                     if {"lower", "upper", "symbol"} & p.keys():

@@ -112,6 +112,31 @@ def test_known_slope_reference_rejects_opposite_heading(method):
     assert not children and errors[0]['reason_code']=='GRADE_HEADING_CONFLICT'
 
 
+def test_same_world_enum_spelling_keeps_source_and_parent_unchanged(method):
+    parent=make_candidate()
+    parent.facts.update(object_position='front',road_user_type='vehicle',collision_type='frontal',
+                        object_longitudinal_direction='stationary',object_speed_kph=0)
+    for field in ('object_position','road_user_type','collision_type','object_longitudinal_direction','object_speed_kph'):
+        parent.fact_provenance[field]=deepcopy(parent.fact_provenance['ego_speed_kph'])
+    before=deepcopy(parent)
+    children,errors=produce(method,grade_raw('DOWNHILL','FRONT'),parent)
+    assert not errors and len(children)==1
+    assert parent==before
+    child=children[0]
+    assert child.facts['object_position']=='FRONT' and child.facts['road_user_type']=='VEHICLE'
+    assert child.fact_provenance['object_position']['approval']==parent.fact_provenance['object_position']['approval']
+    assert child.fact_provenance['object_position']['source_refs']==parent.fact_provenance['object_position']['source_refs']
+    assert child.facts['motion_model_outcome']['status']=='CONTACT'
+
+
+@pytest.mark.parametrize('field,old', [('object_position','rear'),('object_id','Object1')])
+def test_enum_normalization_does_not_merge_changed_geometry_or_object_identity(method,field,old):
+    parent=make_candidate();parent.facts[field]=old
+    parent.fact_provenance[field]=deepcopy(parent.fact_provenance['ego_speed_kph'])
+    children,errors=produce(method,grade_raw('DOWNHILL','FRONT'),parent)
+    assert not children and errors[0]['field']==field
+
+
 def test_bounded_semantic_correction_retains_initial_response_and_resumes(method,tmp_path):
     from hara_agent.workflow import HARAState
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios

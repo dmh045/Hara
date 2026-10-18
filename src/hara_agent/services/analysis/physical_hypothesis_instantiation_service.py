@@ -60,6 +60,15 @@ class PhysicalHypothesisInstantiationService:
         self.vocabulary = RiskVocabularyAdapter(method)
         self.physics_solve_count = 0
 
+    def _same_input(self, field, old, proposed):
+        if field in {"road_user_type", "collision_type"}:
+            a = self.vocabulary.resolve(field=field, raw_value=old)
+            b = self.vocabulary.resolve(field=field, raw_value=proposed)
+            return a.mapped and b.mapped and a.canonical_value == b.canonical_value
+        if field in {"object_position", "ego_longitudinal_direction", "object_longitudinal_direction"}:
+            return isinstance(old, str) and isinstance(proposed, str) and old.strip().upper() == proposed.strip().upper()
+        return old == proposed
+
     @staticmethod
     def needed(candidate, malfunction_id):
         scope = dict(malfunction_id=malfunction_id, scenario_id=candidate.scenario_id)
@@ -366,7 +375,7 @@ class PhysicalHypothesisInstantiationService:
                 raise PhysicalInputConflict("INITIAL_STATE_ATOM_CONFLICT", "ego_speed_kph", atom_range, initial)
         if lateral and initial is not None and initial <= 0:
             raise ValueError("STEERING_LATERAL_MODEL_REQUIRES_LONGITUDINAL_MOTION")
-        previous_direction = parent.facts.get("ego_longitudinal_direction")
+        previous_direction = str(parent.facts.get("ego_longitudinal_direction", "")).upper()
         if initial and not new_initial and previous_direction in {"FORWARD", "REVERSE"} and previous_direction != g["ego_longitudinal_direction"]:
             raise ValueError("DIRECTION_REVERSAL_REQUIRES_A_STOP_AND_SEPARATE_PHASE")
         if initial is not None and speed_range and not (
@@ -396,7 +405,7 @@ class PhysicalHypothesisInstantiationService:
                 continue
             if field in PARAMETER_UNITS and field != "ego_speed_kph" and not self._inheritance_reason(parent, h, field, malfunction.malfunction_id)[0]:
                 continue
-            if (field in parent.facts and parent.facts[field] != value
+            if (field in parent.facts and not self._same_input(field, parent.facts[field], value)
                     and source_is_accepted_for(old, malfunction_id=malfunction.malfunction_id, scenario_id=parent.scenario_id)):
                 if field == "object_id" and not new_target:
                     raise PhysicalInputConflict("TARGET_ID_CHANGED_WITHOUT_NEW_CONDITION", field, parent.facts[field], value)
@@ -444,8 +453,9 @@ class PhysicalHypothesisInstantiationService:
         for field, value in supplied.items():
             # Preserve actual project input and governed initial selections when
             # the proposal uses the same value; don't rewrite their origin.
-            if field in facts and facts[field] == value and source_is_accepted_for(provenance.get(field, {}),
+            if field in facts and self._same_input(field, facts[field], value) and source_is_accepted_for(provenance.get(field, {}),
                     malfunction_id=malfunction.malfunction_id, scenario_id=sid):
+                facts[field] = value  # Canonical spelling; preserve the original authority and parent record.
                 continue
             facts[field], provenance[field] = value, deepcopy(meta)
         if "ego_speed_kph" in values:
@@ -466,7 +476,7 @@ class PhysicalHypothesisInstantiationService:
             "source_reference": parent.facts.get("slope_reference", "UNSPECIFIED"), **grade_mapping} if grade_mapping else {}
         # A newly assumed object does not inherit another object's Exposure.
         dimensions = []
-        if new_target or parent.facts.get("road_user_type") != g["road_user_type"]:
+        if new_target or not self._same_input("road_user_type", parent.facts.get("road_user_type"), g["road_user_type"]):
             dimensions.append("OBJECT")
         if new_initial and initial is not None and parent.facts.get("ego_speed_kph") != initial:
             dimensions.append("EGO_DYNAMICS")

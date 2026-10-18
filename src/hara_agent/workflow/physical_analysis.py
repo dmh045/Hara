@@ -135,7 +135,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["generated_instances"] += len(generated)
                     metrics["diagnostics"].extend({"scenario_id": candidate.scenario_id, **f} for f in failures)
                     entry.setdefault("instantiations", {})[candidate.scenario_id] = {
-                        "generated_ids": [g.scenario_id for g in generated], "failures": failures}
+                        "generated_ids": [g.scenario_id for g in generated],
+                        "generated_scenarios": [asdict(g) for g in generated], "failures": failures}
             except (ValueError, KeyError, TypeError) as error:
                 entry.update(status="INVALID", error=str(error))
                 for candidate in family:

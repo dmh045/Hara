@@ -167,6 +167,56 @@ def test_raw_response_is_saved_and_reparsed_without_new_call(tmp_path):
     assert json.loads(next(tmp_path.glob('*.json')).read_text())["response"]["data"] == raw_plan()
 
 
+@pytest.mark.parametrize("kind,payload,required", [
+    ("SYMBOLIC", {"value": "a_fault"}, "symbol"),
+    ("POINT", {}, "value"),
+    ("RANGE", {"lower": 0, "upper": 2}, "value"),
+])
+def test_parameter_payload_error_identifies_field_and_required_key(kind, payload, required):
+    raw = raw_plan()
+    p = raw["hypotheses"][0]["parameters"][-1]
+    p.pop("value"); p.update(kind=kind, **payload)
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match=r"parameters\[longitudinal_acceleration_mps2\]") as error:
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={"MF.description"})
+    assert required in str(error.value) and "missing=" in str(error.value)
+    assert raw == before
+
+
+def test_schema_repair_receives_original_invalid_payload_and_dynamic_contract(tmp_path):
+    bad = raw_plan()
+    p = bad["hypotheses"][0]["parameters"][-1]
+    p.update(kind="SYMBOLIC", value="a_fault")
+    good = deepcopy(bad)
+    p = good["hypotheses"][0]["parameters"][-1]
+    p["symbol"] = p.pop("value")
+    requests, records = [], []
+    class Client:
+        def complete_json(self, request):
+            requests.append(json.loads(request.user_prompt))
+            return LLMResponse(deepcopy(bad if len(requests) == 1 else good), "OFFLINE")
+    agent = PhysicalScenarioAgent(Client(), response_checkpoint_dir=tmp_path)
+    context = {"plan_key": "repair", "evidence": {"MF.description": "drive fault"},
+               "risk_vocabulary": {"road_user_type": {"VEHICLE": "vehicle"},
+                                   "collision_type": {"FRONTAL": "frontal"}}}
+    plan, audit = agent.propose(context, on_response=records.append)
+    assert len(requests) == 2 and audit["schema_repairs"] == 1
+    contract = requests[0]["output_contract"]
+    assert contract["geometry_values"] == {"road_user_type": ["VEHICLE"], "collision_type": ["FRONTAL"]}
+    assert contract["basis_ref_ids"] == ["MF.description"]
+    assert requests[1]["previous_invalid_response"] == bad
+    assert "longitudinal_acceleration_mps2" in requests[1]["repair_errors"][0]
+    assert records[0]["response"]["data"] == bad
+    assert plan.to_dict() == good
+
+
+def test_unknown_basis_error_lists_supplied_ids_without_accepting_invented_path():
+    raw = raw_plan(); raw["hypotheses"][0]["basis_refs"] = ["PROJECT.slope_percent"]
+    with pytest.raises(ValueError, match="basis_refs must use supplied IDs") as error:
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={"MF.description", "SCENARIO.conditions"})
+    assert "SCENARIO.conditions" in str(error.value) and "PROJECT.slope_percent" in str(error.value)
+
+
 @pytest.mark.parametrize("acceleration", [0, -.5])
 def test_fault_motion_need_not_exceed_normal_speed(method, acceleration):
     sc = instantiate(method, raw_plan(initial=7, acceleration=acceleration), make_candidate(initial=7))[0]
@@ -214,6 +264,33 @@ def test_plan_reuse_resume_and_context_change_are_separate_from_causal_reuse(met
     run(); assert client.calls == 1
     a.fact_provenance["ego_speed_kph"]["source_refs"][0]["excerpt"] = "changed relevant evidence"
     run(); assert client.calls == 2
+
+
+def test_budget_stop_preserves_completed_physical_instances_before_next_plan(method, tmp_path):
+    from hara_agent.workflow import HARAState, CheckpointRepository
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudgetExceeded
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            if self.calls > 1:
+                raise ProviderAttemptBudgetExceeded(limit=1, attempts=1, ledger_path=tmp_path/'ledger')
+            return LLMResponse(raw_plan(), 'OFFLINE')
+    state = HARAState('physical-persistence')
+    repo = CheckpointRepository(tmp_path/'state')
+    a = make_candidate(); b = deepcopy(a); b.scenario_id = 'second'; b.facts['where'] = 'different condition'
+    with pytest.raises(ProviderAttemptBudgetExceeded):
+        construct_physical_scenarios(state, {'MF': [a, b]}, [mf()], method=method,
+            agent=PhysicalScenarioAgent(Client()), project_facts=None, checkpoint=repo.save)
+    restored = repo.load(state.run_id)
+    done = next(e for e in restored.item_definition['physical_analysis_plans'].values() if e.get('instantiations'))
+    record = done['instantiations'][a.scenario_id]
+    child = record['generated_scenarios'][0]
+    assert record['generated_ids'] == [child['scenario_id']]
+    assert child['facts']['motion_model_outcome']['status'] == 'CONTACT'
+    assert child['facts']['ego_impact_speed_kph'] > 0
+    assert child['fact_provenance']['fault_motion_model']['approval'] == 'PENDING'
 
 
 def test_existing_direct_path_never_requests_a_physical_plan(method):
