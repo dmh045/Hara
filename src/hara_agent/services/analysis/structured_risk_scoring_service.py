@@ -151,6 +151,48 @@ class StructuredRiskScoringService:
         return None
 
     def score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
+        result = self._score(scenario, hazard_event)
+        analysis = scenario.get("physical_analysis")
+        if not analysis:
+            return result
+        # Numeric table evaluations are retained; engineering confirmation is
+        # independent and never manufactured from the proposal's validity.
+        conditional_dimensions = ("severity", "controllability", "exposure") if scenario.get("physical_object_exposure_conditional") else ("severity", "controllability")
+        for dimension in conditional_dimensions:
+            result[dimension].update(engineering_status="PENDING", calculation_nature="CONDITIONAL",
+                engineering_basis="条件性试算；仅适用于所列物理假设，并非已确认车辆能力。")
+        if scenario.get("physical_object_exposure_unresolved"):
+            result["exposure"].update(exposure_score="", engineering_status="PENDING",
+                calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
+        for row in result.get("branch_evaluations", []):
+            row.update(status="PENDING", calculation_nature="CONDITIONAL")
+            for dimension in conditional_dimensions:
+                row["scores"][dimension].update(engineering_status="PENDING", calculation_nature="CONDITIONAL")
+        if result.get("branch_summary"):
+            result["branch_summary"].update(status="PENDING", calculation_nature="CONDITIONAL",
+                vehicle_upper_bound_proven=False, range_invariance_proven=False)
+        result["physical_analysis"] = analysis
+        return result
+
+    def _score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
+        result = self._calculate(scenario, hazard_event)
+        if scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
+            result["controllability"].update(controllability_score="", engineering_status="PENDING",
+                calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
+                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                reasoning="Lateral first-contact time is not a longitudinal TTC; no applicable lateral C method is compiled.")
+        if scenario.get("physical_object_exposure_unresolved"):
+            result["exposure"].update(exposure_score="", engineering_status="PENDING",
+                calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
+        if (scenario.get("physical_analysis") and scenario.get("emergency_braking_available") is False
+                and result["controllability"].get("selected_profile_id")):
+            result["controllability"].update(controllability_score="", engineering_status="PENDING",
+                calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED",
+                decision_status="MODEL_DEPENDENCY_UNRESOLVED", engineering_rule_id="",
+                reasoning="The failed braking control cannot establish an available braking avoidance path.")
+        return result
+
+    def _calculate(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
         if "collision_branches" in scenario:
             return self._score_collision_branches(scenario, hazard_event)
         malfunction_id = str(scenario.get("malfunction_id", "UNKNOWN"))
@@ -349,7 +391,7 @@ class StructuredRiskScoringService:
                         scenario_id=str(view.get("scenario_id", "")),
                         hazard_node_id=str(branch["branch_id"]), scenario=point_view)
                     point_view = contexts.scoring_facts(context, point_view)
-                    result = self.score(point_view, hazard_event)
+                    result = self._score(point_view, hazard_event)
                     physical_conflicts = view.get("_physical_input_conflicts", [])
                     if physical_conflicts:
                         for dimension in ("severity", "controllability"):
@@ -371,13 +413,14 @@ class StructuredRiskScoringService:
                             "pending_reason": "C_INTERVAL_NOT_PROVEN", "reasoning": "S table partition does not prove C over a trajectory interval."}
                     rows.append({"branch_id": branch["branch_id"], "impact_time_id": branch["impact_time_id"],
                                  "relative_speed_kph": point_view.get("relative_speed_kph"), "scores": result,
+                                 "first_contact_time_s": point_view.get("first_contact_time_s"),
                                  "risk_context": context.to_dict(),
                                  "physical_input_conflicts": physical_conflicts,
                                  "ttc_s": view.get("ttc_s"), "invalidated_parent_fields": view.get("_invalidated_parent_fields", [])})
                     if result["severity"]["engineering_status"] != "FINALIZED":
                         failures.append("BRANCH_SEVERITY_UNRESOLVED")
         if failures or not rows:
-            result = self.score(base, hazard_event)
+            result = self._score(base, hazard_event)
             result["severity"].update(severity_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="COLLISION_BRANCH_SET_UNRESOLVED",
                 reasoning="; ".join(sorted(set(failures))), executor_invoked=False)
@@ -408,6 +451,7 @@ class StructuredRiskScoringService:
                 asil = ""
             evaluations.append({"branch_id": row["branch_id"], "impact_time_id": row["impact_time_id"],
                 "relative_speed_kph": row["relative_speed_kph"], "ttc_s": row["ttc_s"],
+                "first_contact_time_s": row["first_contact_time_s"],
                 "invalidated_parent_fields": row["invalidated_parent_fields"],
                 "physical_input_conflicts": row["physical_input_conflicts"],
                 "risk_context": row["risk_context"],

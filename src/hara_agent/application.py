@@ -9,6 +9,7 @@ from hara_agent.config import LLMConfig, RunConfig
 from hara_agent.contracts import CompileStatus
 from hara_agent.infrastructure.llm import LLMClient, create_llm_client
 from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
 from hara_agent.services.analysis import (
     MethodScenarioCandidateService,
     MethodSafetyGoalService,
@@ -69,6 +70,24 @@ class HARAApplication:
             create_llm_client(llm_config or LLMConfig.from_env(), attempt_budget=budget),
         )
 
+    def bounded_source_context(self, method_ref: dict) -> dict:
+        provider_config = getattr(self.llm_client, "config", None)
+        return {
+            "item_sha256": hashlib.sha256(self.config.item_path.read_bytes()).hexdigest(),
+            "method_source_hash": method_ref["method_source_hash"],
+            "report_template_hash": method_ref["report_template_hash"],
+            "operating_mode": self.config.operating_mode or "",
+            "ego_speed_kph": self.config.ego_speed_kph,
+            "ego_speed_source": self.config.ego_speed_source,
+            "allow_aggregate_speed_fallback": self.config.allow_aggregate_speed_fallback,
+            "provider": getattr(provider_config, "provider", ""),
+            "model": getattr(provider_config, "model", ""),
+            "extraction_thinking": getattr(provider_config, "extraction_thinking", ""),
+            "guideword_thinking": getattr(provider_config, "guideword_thinking", ""),
+            "malfunction_thinking": getattr(provider_config, "malfunction_thinking", ""),
+            "scenario_thinking": getattr(provider_config, "scenario_thinking", ""),
+        } if self.config.bounded_sample else {}
+
     def run(self) -> WorkflowRunResult:
         self.config.validate()
         resolution = MethodSourceResolver().resolve(
@@ -91,22 +110,7 @@ class HARAApplication:
             "method_source_hash": method.metadata.get("method_source_hash", method.metadata["template_hash"]),
             "report_template_hash": resolution.report_template_hash,
         }
-        provider_config = getattr(self.llm_client, "config", None)
-        bounded_source_context = {
-            "item_sha256": hashlib.sha256(self.config.item_path.read_bytes()).hexdigest(),
-            "method_source_hash": method_ref["method_source_hash"],
-            "report_template_hash": method_ref["report_template_hash"],
-            "operating_mode": self.config.operating_mode or "",
-            "ego_speed_kph": self.config.ego_speed_kph,
-            "ego_speed_source": self.config.ego_speed_source,
-            "allow_aggregate_speed_fallback": self.config.allow_aggregate_speed_fallback,
-            "provider": getattr(provider_config, "provider", ""),
-            "model": getattr(provider_config, "model", ""),
-            "extraction_thinking": getattr(provider_config, "extraction_thinking", ""),
-            "guideword_thinking": getattr(provider_config, "guideword_thinking", ""),
-            "malfunction_thinking": getattr(provider_config, "malfunction_thinking", ""),
-            "scenario_thinking": getattr(provider_config, "scenario_thinking", ""),
-        } if self.config.bounded_sample else {}
+        bounded_source_context = self.bounded_source_context(method_ref)
         # Preserve the compiled template semantics.  The semantic agent still
         # accepts plain strings for tests/embedders, but production must not
         # discard the normative description and source binding here.
@@ -257,6 +261,7 @@ class HARAApplication:
                 sample_function_limit=self.config.sample_function_limit,
                 sample_malfunction_limit=self.config.sample_malfunction_limit,
                 sample_function_ids=self.config.sample_function_ids,
+                sample_generated_scenario_ids=self.config.sample_generated_scenario_ids,
                 sample_malfunction_ids=self.config.sample_malfunction_ids,
             ),
             SemanticWorkflowAgents(
@@ -284,6 +289,8 @@ class HARAApplication:
                     response_checkpoint_dir=self.config.run_dir / f"{self.config.run_id}.scenario-responses",
                 ),
                 risk_facts=ScenarioRiskFactAgent(self.llm_client),
+                physical_scenarios=PhysicalScenarioAgent(self.llm_client,
+                    response_checkpoint_dir=self.config.run_dir / f"{self.config.run_id}.physical-responses"),
             ),
             RiskWorkflowServices(
                 scoring=risk_services.scoring,
@@ -444,6 +451,7 @@ class HARAApplication:
         typed = state.item_definition.get("typed", {})
         project_facts = ItemDefinitionFacts.from_dict(typed)
         by_malfunction = {}
+        found_generated_ids = set()
         for value in state.malfunctions:
             payload = dict(value)
             payload["sources"] = [
@@ -460,7 +468,13 @@ class HARAApplication:
                     (item for item in state.functions if item.get("function_id") == malfunction.function_id), None,
                 )),
             )
+            found_generated_ids.update(item.scenario_id for item in instances)
+            if self.config.sample_generated_scenario_ids:
+                instances = [item for item in instances if item.scenario_id in self.config.sample_generated_scenario_ids]
             by_malfunction[malfunction.malfunction_id] = len(instances)
+        missing = set(self.config.sample_generated_scenario_ids) - found_generated_ids
+        if missing:
+            raise ValueError(f"Selected generated scenario IDs unavailable: {sorted(missing)}")
         pair_count = sum(by_malfunction.values())
         return {
             "function_count": len(state.functions),

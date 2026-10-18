@@ -1,0 +1,63 @@
+{
+  "hypotheses": [
+    {
+      "hypothesis_id": "h1",
+      "model": "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT",
+      "rationale": "offline hypothetical post-fault motion",
+      "basis_refs": [
+        "MF.description"
+      ],
+      "geometry": {
+        "road_user_type": "VEHICLE",
+        "collision_type": "SIDE",
+        "object_position": "LEFT",
+        "ego_longitudinal_direction": "FORWARD",
+        "object_id": "object1",
+        "object_extent": "EXTENDED_ALONG_TRAVEL_PATH"
+      },
+      "parameters": [
+        {
+          "field": "ego_speed_kph",
+          "unit": "km/h",
+          "kind": "POINT",
+          "value": 3.6,
+          "rationale": "offline analytical assumption"
+        },
+        {
+          "field": "lateral_clearance_m",
+          "unit": "m",
+          "kind": "POINT",
+          "value": 1,
+          "rationale": "conditional lateral trajectory"
+        },
+        {
+          "field": "lateral_speed_mps",
+          "unit": "m/s",
+          "kind": "POINT",
+          "value": 0,
+          "rationale": "conditional lateral trajectory"
+        },
+        {
+          "field": "lateral_acceleration_mps2",
+          "unit": "m/s2",
+          "kind": "POINT",
+          "value": 0.5,
+          "rationale": "conditional lateral trajectory"
+        }
+      ],
+      "conditions": [
+        "stationary target"
+      ],
+      "uncovered_conditions": [
+        "moving targets; real capability bound unknown"
+      ],
+      "failed_controls": [
+        "steering"
+      ],
+      "remaining_controls": []
+    }
+  ],
+  "uncovered_conditions": [
+    "offline proposal; no live validation"
+  ]
+}

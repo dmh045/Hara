@@ -21,6 +21,7 @@ from hara_agent.models import (
 from hara_agent.services.analysis.scenario_physics import (
     DerivedPhysicsType, derive_scenario_physics, has_analysis_assumption_lineage,
     source_is_accepted_for,
+    has_conditional_lineage,
 )
 
 from .scenario_contract import RISK_DIMENSION_VALUES, SCENARIO_CONTRACT_VERSION
@@ -28,6 +29,21 @@ from .scenario_contract import RISK_DIMENSION_VALUES, SCENARIO_CONTRACT_VERSION
 
 SCENARIO_ASSESSMENT_CONTRACT_VERSION = SCENARIO_CAUSAL_ASSESSMENT_VERSION
 _VALIDATED_ANALYTICAL_ATOM_BASIS = "VALIDATED_ANALYTICAL_SCENARIO_ATOM"
+
+
+def _conditional_evidence(record, malfunction_id=None, scenario_id=None):
+    """A verified condition can support a conditional proof, not fact approval."""
+    if isinstance(record, EvidenceRecord):
+        metadata = {**record.metadata, "provenance": record.provenance.value,
+            "approval": record.approval_status.value, "source_refs": [vars(s) for s in record.source_refs]}
+    else:
+        metadata = record
+    if not isinstance(metadata, dict) or not has_conditional_lineage(metadata):
+        return False
+    scope = metadata.get("analysis_assumption_scope", metadata.get("applicable_scope", {}))
+    return source_is_accepted_for(metadata,
+        malfunction_id=malfunction_id or scope.get("malfunction_id", ""),
+        scenario_id=scenario_id or scope.get("scenario_id", ""))
 
 
 # v1 hop basis values and Registry evidence kinds intentionally share values,
@@ -274,7 +290,7 @@ class CausalEvidenceSelector:
         if (
             record.provenance is FactProvenance.SCENARIO_DEFINED
             or has_analysis_assumption_lineage(metadata)
-        ) and not validated_atom:
+        ) and not validated_atom and not _conditional_evidence(record):
             return None
         if record.namespace == "METHOD" and metadata.get("causal_relevance") is not True:
             return None
@@ -603,6 +619,8 @@ def validate_evidence_contract(
                 or has_analysis_assumption_lineage(fact)
             )
             and not _is_validated_analytical_scenario_atom(fact)
+            and not (scenario.analysis_instance.get("physical_hypothesis")
+                     and _conditional_evidence(fact, malfunction.malfunction_id, scenario.scenario_id))
             and not (fact.get("kind") == EvidenceKind.DERIVED_PHYSICS.value
                      and scenario.analysis_instance.get("physical_input_production", {}).get("producer")
                          == "AnalyticalPhysicsInstantiationService.produce_inputs"
@@ -810,7 +828,9 @@ def compile_causal_assessment(
                     bool(refs)
                     and len(resolved_records) == len(refs)
                     and all(
-                        record.approval_status is ReviewStatus.FINALIZED
+                        (record.approval_status is ReviewStatus.FINALIZED
+                         or (scenario.analysis_instance.get("physical_hypothesis") and
+                             _conditional_evidence(record, malfunction.malfunction_id, scenario.scenario_id)))
                         and bool(record.source_refs)
                         for record in resolved_records
                     )
@@ -853,7 +873,9 @@ def compile_causal_assessment(
             and all(item.status is ReviewStatus.FINALIZED for item in bindings)
             and all(
                 record is not None
-                and record.approval_status is ReviewStatus.FINALIZED
+                and (record.approval_status is ReviewStatus.FINALIZED
+                     or (scenario.analysis_instance.get("physical_hypothesis") and
+                         _conditional_evidence(record, malfunction.malfunction_id, scenario.scenario_id)))
                 and bool(record.source_refs)
                 for record in change_records
             )

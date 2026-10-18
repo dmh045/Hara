@@ -37,6 +37,8 @@ def _provenance(scenario: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _status(result: dict[str, Any]) -> str:
+    if result.get("calculation_nature") == "CONDITIONAL":
+        return "CONDITIONAL_TRIAL" if result.get("calculation_status") == "FINALIZED" else str(result.get("calculation_status", "PENDING_INPUT"))
     return str(result.get("calculation_status", "PENDING_METHOD_SEMANTICS"))
 
 
@@ -113,6 +115,8 @@ class RiskExecutionTraceService:
             },
             "ego_speed_constraint": {"value": scenario.get("ego_speed_constraint"), "USED_FOR_SEVERITY": False},
             "input_production": scenario.get("_physical_input_production", {}),
+            "calculation_nature": result.get("calculation_nature", "CONFIRMED_INPUTS"),
+            "trial_status": "CONDITIONAL_TRIAL" if result.get("calculation_nature") == "CONDITIONAL" else "",
             "missing_inputs": [input_key] if input_key and value is None else [],
             "derived_values": {key: scenario.get(key) for key in ("delta_v_kph", "impact_speed_kph", "relative_speed_kph") if key in scenario},
             "rule_ids": [result.get("engineering_rule_id", "")] if result.get("engineering_rule_id") else [],
@@ -259,16 +263,18 @@ class RiskExecutionTraceService:
         if unresolved and action == "UNSPECIFIED_BLOCKED":
             action = "NO_TRANSITION_DEFINED"
         ttc_state = (
-            "TTC_NOT_CLOSING" if (
+            "AVAILABLE" if ttc is not None else "TTC_NOT_CLOSING" if (
                 isinstance(closing_speed, (int, float)) and closing_speed <= 0
                 or closing_speed is None
                 and isinstance(relative_speed, (int, float)) and relative_speed <= 0
             )
-            else "AVAILABLE" if ttc is not None else "TTC_MISSING"
+            else "TTC_MISSING"
         )
         pending = result.get("reasoning", "") if _status(result) != CalculationStatus.FINALIZED.value else ""
         return {
             "executor": "StructuredControllabilityExecutor",
+            "calculation_nature": result.get("calculation_nature", "CONFIRMED_INPUTS"),
+            "trial_status": "CONDITIONAL_TRIAL" if result.get("calculation_nature") == "CONDITIONAL" else "",
             "input_diagnostic": (
                 scenario["_hazardous_event_risk_context"].ttc_s.to_dict()
                 if scenario.get("_hazardous_event_risk_context") is not None else {}

@@ -1,0 +1,56 @@
+{
+  "hypotheses": [
+    {
+      "hypothesis_id": "h1",
+      "model": "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE",
+      "rationale": "offline hypothetical post-fault motion",
+      "basis_refs": [
+        "MF.description"
+      ],
+      "geometry": {
+        "road_user_type": "VEHICLE",
+        "collision_type": "FRONTAL",
+        "object_position": "FRONT",
+        "ego_longitudinal_direction": "FORWARD",
+        "object_id": "object1",
+        "object_extent": "POINT_ON_TRAVEL_PATH"
+      },
+      "parameters": [
+        {
+          "field": "ego_speed_kph",
+          "unit": "km/h",
+          "kind": "POINT",
+          "value": 0,
+          "rationale": "offline analytical assumption"
+        },
+        {
+          "field": "relative_distance_m",
+          "unit": "m",
+          "kind": "POINT",
+          "value": 2,
+          "rationale": "offline analytical assumption"
+        },
+        {
+          "field": "longitudinal_acceleration_mps2",
+          "unit": "m/s2",
+          "kind": "POINT",
+          "value": 2,
+          "rationale": "offline analytical assumption"
+        }
+      ],
+      "conditions": [
+        "stationary target"
+      ],
+      "uncovered_conditions": [
+        "moving targets; real capability bound unknown"
+      ],
+      "failed_controls": [
+        "drive"
+      ],
+      "remaining_controls": []
+    }
+  ],
+  "uncovered_conditions": [
+    "offline proposal; no live validation"
+  ]
+}

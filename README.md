@@ -33,6 +33,29 @@ python -m venv .venv
 
 `doctor` is offline for template compilation and separately reports LLM configuration readiness. `analyze` fails closed when the method, facts, or approvals are incomplete. `--allow-draft` permits a visibly watermarked report without bypassing review state.
 
+### Autonomous physics targeted closure (2026-10-18)
+
+The [F01–F06 follow-up ledger](docs/Autonomous_Physics_Followup_20261018.md)
+records scoped parameter inheritance, explicit grade/heading coordinates,
+local Atom rebinding, conditional report labels, and the five-family production
+validation CLI. Point/range/symbolic offline runs pass; no new paid Provider
+budget has been authorized. Use the ledger's bounded sample commands before
+considering a new diagnostic full run.
+
+### Autonomous post-fault physical scenarios (2026-10-18)
+
+Ordinary `analyze` now explicitly schedules bounded physical proposals when the
+existing source/rule producer cannot resolve a scenario. Drive acceleration,
+grade rollaway and lateral contact hypotheses use the existing physics and risk
+executors. Inputs remain unapproved analytical hypotheses; calculated values are
+reported as conditional trials. Existing resolved braking cases skip the new task.
+
+The [W1–W6 / T01–T20 closure ledger](docs/Autonomous_Physics_Closure_20261018.md)
+links code, offline production-chain samples, range checks and limitations.
+No new paid Provider calls were authorized or made. Live proposal quality and
+lateral C remain unverified; offline sample workbooks are under
+`output/autonomous_physics_20261018/sample/` and `sensitivity/`.
+
 ### P7R: source-produced collision inputs and branch consistency
 
 Current changes and limitations are tracked in [the P7R R01–R12 ledger](docs/P7R_Closure_20261016.md).

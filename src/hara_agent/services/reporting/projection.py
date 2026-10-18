@@ -33,7 +33,7 @@ _TRIAL = "待审试算"
 _UNCALCULATED = "未计算"
 _TRIAL_MARKERS = (
     "CONDITIONAL_TRIAL", "CANDIDATE_DEFAULT", "CANDIDATE_POLICY",
-    "TRIAL_PENDING", "PENDING_ANALYSIS_ASSUMPTION", "待审试算",
+    "TRIAL_PENDING", "PENDING_ANALYSIS_ASSUMPTION", "待审试算", "条件性",
 )
 
 
@@ -57,6 +57,7 @@ class HARAReportProjectionService:
 
         configured = event("bounded_sample_configured")
         replay = event("p7_fixed_population_replay")
+        offline_sample = event("offline_source_context_replay")
         bounded = bool(configured)
         limits = configured.get("scope", {}) if bounded else {}
         inventory = state.item_definition.get("bounded_sample_inventory", {})
@@ -102,21 +103,25 @@ class HARAReportProjectionService:
             for item in trace_rows
         )
         return {
-            "run_scope": "OFFLINE FIXED-POPULATION REPLAY" if replay else "BOUNDED ENGINEERING SAMPLE" if bounded else "FULL PROJECT HARA",
+            "run_scope": "OFFLINE SCRIPTED SOURCE SAMPLE" if offline_sample else "OFFLINE FIXED-POPULATION REPLAY" if replay else "BOUNDED ENGINEERING SAMPLE" if bounded else "FULL PROJECT HARA",
             "report_class": (
+                "OFFLINE INTEGRATION SAMPLE" if offline_sample else
                 str(configured.get("report_class", "ENGINEERING_SAMPLE_ONLY")).replace("_", " ")
                 if bounded else "REVISED ENGINEERING DRAFT" if replay else "PROJECT HARA"
             ),
             "full_project_population": (
+                "NOT MEASURED: OFFLINE SAMPLE ONLY" if offline_sample else
                 f"{len(state.risk_results)} retained historical records; no new full causal validation" if replay else "NOT MEASURED IN THIS RUN"
                 if bounded or not trace_rows else
                 f"{len(state.risk_results)} risk-eligible records in this full-scope run"
             ),
             "scope_note": (
+                f"来源样本：{len(state.malfunctions)}/{offline_sample.get('available_malfunction_count', '未记录')} 个失效；模拟模型响应；真实 Provider 调用 0。评级仅用于验证程序链路，未经真实因果验证。" if offline_sample else
                 f"Offline replay of {replay.get('source_run_id')}; 0 new Provider calls; historical results preserved." if replay else "This workbook is not a full-project HARA population report."
                 if bounded else ""
             ),
             "hara_row_meaning": (
+                "Offline scripted candidate results; not live validated hazardous events" if offline_sample else
                 "Retained/risk-eligible rows in this bounded engineering sample"
                 if bounded else "Retained/risk-eligible rows in this run"
             ),
@@ -804,7 +809,10 @@ class HARAReportProjectionService:
                     branch_results="\n".join(
                         f"{branch['branch_id']}: S={branch.get('S') or 'Pending'}, E={branch.get('E') or 'Pending'}, "
                         f"C={branch.get('C') or 'Pending'}, ASIL={branch.get('ASIL') or 'Pending'}; "
-                        f"relative={branch.get('relative_speed_kph')} km/h; TTC={branch.get('ttc_s')} s; {branch.get('status')}"
+                        f"relative={branch.get('relative_speed_kph')} km/h; "
+                        + (f"TTC={branch['ttc_s']} s; " if branch.get('ttc_s') is not None else
+                           f"首次接触={branch['first_contact_time_s']} s（非纵向 TTC）; " if branch.get('first_contact_time_s') is not None else "接触时间待定; ")
+                        + str(branch.get('status'))
                         for branch in child_risk.branch_evaluations
                     ),
                 ))
@@ -908,15 +916,19 @@ class HARAReportProjectionService:
             asil="当前 MethodContract 矩阵",
             ftti="方法源已提供；运行时未启用",
         )
+        offline_goals = any(event.get("event") == "offline_source_context_replay" for event in state.audit_trail)
+        conditional_goal_ids = {risk.safety_goal_id for risk in state.risk_results
+            if risk.asil.value and risk.asil.status.value != "FINALIZED"}
         goals = tuple(
             SafetyGoalView(goal.sg_id, goal.text, goal.safe_state,
-                ("历史草稿 " + goal.max_asil) if any(event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail) else goal.max_asil,
+                ("历史草稿 " + goal.max_asil) if any(event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail) else (("离线/条件性草稿 " if offline_goals else "条件性草稿 ") + goal.max_asil) if offline_goals or goal.sg_id in conditional_goal_ids else goal.max_asil,
                 "；".join(dict.fromkeys(risk.hazardous_event for risk in state.risk_results if risk.safety_goal_id == goal.sg_id)))
             for goal in state.safety_goals
         )
         divergence_groups = sum(max(0, len(events) - 1) for events in base_events.values())
         speed_values = [item.speed_constraint for item in details if item.speed_constraint]
         projection_metrics = {
+            "safety_goal_scope_note": "最高 ASIL 仅覆盖本次已计算成员；未计算成员不包含在该最大值中。" + (" 本页为离线/条件性草稿，不与历史目标累计。" if offline_goals or conditional_goal_ids else ""),
             "safety_goal_stage_completed": any(event.get("event") == "safety_goals_aggregated"
                                                for event in state.audit_trail),
             "display_review_groups": len({(risk.malfunction_id, malfunctions.get(risk.malfunction_id, {}).get('vehicle_level_hazard', '')) for risk in state.risk_results}),
@@ -982,9 +994,10 @@ class HARAReportProjectionService:
                 (_value(entry["risk"].severity) if _status(entry["risk"].severity) == "FINALIZED" else "") for entry in members]
             s_order = list(method.asil.severity_levels) if hasattr(method, "asil") else []
             known_s = [value for value in known_s if value in s_order]
-            distributions.append("已知最大 S=" + (max(known_s, key=s_order.index) if known_s else "Pending")
+            conditional_count = sum(bool(entry["scenario"].facts.get("physical_analysis")) for entry in members)
+            distributions.append(("包含条件性试算；已知最大 S=" if conditional_count else "已知最大 S=") + (max(known_s, key=s_order.index) if known_s else "Pending")
                 + "；已知最高 ASIL=" + (max(known_asils, key=asil_order.index) if known_asils else "Pending")
-                + "；仅汇总已验证子结果，未决分支另列")
+                + ("；仅限所列假设，未证明全范围上界" if conditional_count else "；仅汇总已验证子结果，未决分支另列"))
             for dimension in ("severity", "exposure", "controllability", "asil"):
                 distribution = Counter((_value(getattr(entry["risk"], dimension)) if _status(getattr(entry["risk"], dimension)) == "FINALIZED" else "Pending") for entry in members)
                 distributions.append(f"{dimension}: " + ", ".join(f"{key}×{value}" for key, value in sorted(distribution.items())))

@@ -1,0 +1,63 @@
+{
+  "hypotheses": [
+    {
+      "hypothesis_id": "h1",
+      "model": "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE",
+      "rationale": "offline hypothetical post-fault motion",
+      "basis_refs": [
+        "MF.description"
+      ],
+      "geometry": {
+        "road_user_type": "VEHICLE",
+        "collision_type": "FRONTAL",
+        "object_position": "FRONT",
+        "ego_longitudinal_direction": "FORWARD",
+        "object_id": "object1",
+        "object_extent": "POINT_ON_TRAVEL_PATH"
+      },
+      "parameters": [
+        {
+          "field": "ego_speed_kph",
+          "unit": "km/h",
+          "kind": "POINT",
+          "value": 0,
+          "rationale": "offline analytical assumption"
+        },
+        {
+          "field": "relative_distance_m",
+          "unit": "m",
+          "kind": "POINT",
+          "value": 2,
+          "rationale": "offline analytical assumption"
+        },
+        {
+          "field": "slope_percent",
+          "unit": "%",
+          "kind": "POINT",
+          "value": 15,
+          "rationale": "source grade context"
+        },
+        {
+          "field": "residual_resistance_mps2",
+          "unit": "m/s2",
+          "kind": "POINT",
+          "value": 0,
+          "rationale": "conditional no residual holding"
+        }
+      ],
+      "conditions": [
+        "stationary target"
+      ],
+      "uncovered_conditions": [
+        "moving targets; real capability bound unknown"
+      ],
+      "failed_controls": [
+        "parking_hold"
+      ],
+      "remaining_controls": []
+    }
+  ],
+  "uncovered_conditions": [
+    "offline proposal; no live validation"
+  ]
+}

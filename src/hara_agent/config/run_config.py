@@ -27,6 +27,7 @@ class RunConfig:
     sample_function_ids: tuple[str, ...] = ()
     sample_malfunction_ids: tuple[str, ...] = ()
     sample_parent_scenario_ids: tuple[str, ...] = ()
+    sample_generated_scenario_ids: tuple[str, ...] = ()
     sample_scenario_pair_limit: int = 32
     provider_attempt_limit: int | None = None
 
@@ -47,6 +48,7 @@ class RunConfig:
             "function_ids": list(self.sample_function_ids),
             "malfunction_ids": list(self.sample_malfunction_ids),
             "parent_scenario_ids": list(self.sample_parent_scenario_ids),
+            "generated_scenario_ids": list(self.sample_generated_scenario_ids),
         }
 
     def validate(self) -> None:
@@ -78,6 +80,9 @@ class RunConfig:
             raise ValueError("operating_mode不得为空白字符串")
         if not 1 <= self.max_workers <= 32:
             raise ValueError("max_workers必须在1到32之间")
+        if self.sample_generated_scenario_ids:
+            if not self.bounded_sample or len(set(self.sample_generated_scenario_ids)) != len(self.sample_generated_scenario_ids) or any(not identity.strip() for identity in self.sample_generated_scenario_ids):
+                raise ValueError("Generated scenario selection requires a bounded sample and unique nonblank IDs")
         sample_limits = (
             self.sample_function_limit,
             self.sample_malfunction_limit,

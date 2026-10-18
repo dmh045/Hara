@@ -82,7 +82,8 @@ def _scenario_json(
                 "conditions": {key: scenario.facts[key] for key in (
                     "object_position", "ego_longitudinal_direction", "object_longitudinal_direction",
                     "ego_speed_kph", "object_speed_kph", "relative_distance_m", "fault_motion_model",
-                    "ego_impact_speed_kph", "relative_speed_kph", "ttc_s",
+                    "ego_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s",
+                    "lateral_clearance_m", "slope_percent", "residual_resistance_mps2",
                 ) if key in scenario.facts},
                 "branches": [{key: value for key, value in branch.items() if not key.startswith("_")}
                              for branch in scenario.facts.get("collision_branches", [])],
@@ -94,9 +95,12 @@ def _scenario_json(
                     if any(registry.resolve_record(prefix + key) is not None for prefix in ("DERIVED.", "SCN."))},
                 "derived_physics_evidence": {"DERIVED." + key: {"value": registry.resolve_record("DERIVED." + key).value,
                     "kind": registry.resolve_record("DERIVED." + key).kind.value}
-                    for key in ("ego_impact_speed_kph", "relative_speed_kph", "closing_speed_kph", "ttc_s")
+                    for key in ("ego_impact_speed_kph", "relative_speed_kph", "closing_speed_kph", "ttc_s", "first_contact_time_s")
                     if registry.resolve_record("DERIVED." + key) is not None},
             },
+            "conditional_physical_analysis": {key: scenario.analysis_instance.get("physical_hypothesis", {}).get(key)
+                for key in ("hypothesis_id", "hypothesis", "sample_parameters", "calculation_nature")
+                if key in scenario.analysis_instance.get("physical_hypothesis", {})},
             "causal_evidence_view": selection.compact_view,
             **(
                 {

@@ -280,10 +280,10 @@ class EngineeringReportTextMapper:
         if ttc is None and candidate_only:
             ttc = facts.get("ttc_s")
         quantities = (
-            ("自车速度", value("ego_speed_kph"), "km/h"),
+            ("初始自车速度" if facts.get("physical_analysis") else "自车速度", value("ego_speed_kph"), "km/h"),
             ("目标速度", value("object_speed_kph"), "km/h"),
             ("相对速度", value("relative_speed_kph"), "km/h"),
-            ("接近速度", closing_speed, "km/h"),
+            ("初始接近速度" if facts.get("physical_analysis") else "接近速度", closing_speed, "km/h"),
             ("相对距离", value("relative_distance_m"), "m"),
             ("TTC", ttc, "s"),
         )
@@ -293,10 +293,44 @@ class EngineeringReportTextMapper:
             if isinstance(number, (int, float)) and not isinstance(number, bool)
         ]
         model = facts.get("fault_motion_model")
+        analysis = facts.get("physical_analysis", {})
+        if analysis:
+            parts.append("条件性分析；LLM 假设未获工程批准，未证明真实车辆上界")
+            labels = {"ego_speed_kph": "初速(km/h)", "relative_distance_m": "行程(m)",
+                "longitudinal_acceleration_mps2": "纵向加速度(m/s²)", "slope_percent": "坡度(%)",
+                "residual_resistance_mps2": "残余阻力减速度(m/s²)", "lateral_clearance_m": "侧向净距(m)",
+                "lateral_speed_mps": "初始侧速(m/s)", "lateral_acceleration_mps2": "侧向加速度(m/s²)",
+                "model_valid_until_s": "模型时域(s)", "post_fault_speed_cap_kph": "残余限速(km/h)"}
+            parts.append("假设实例：" + ", ".join(f"{labels.get(key, key)}={value}" for key, value in analysis.get("sample_parameters", {}).items()))
+            for parameter in analysis.get("hypothesis", {}).get("parameters", []):
+                if parameter["kind"] == "SYMBOLIC":
+                    parts.append(f"符号条件：{labels.get(parameter['field'], parameter['field'])}={parameter['symbol']}")
+                elif parameter["kind"] == "RANGE":
+                    parts.append(f"假设范围：{labels.get(parameter['field'], parameter['field'])}=[{parameter['lower']}, {parameter['upper']}]；有限采样未证明连续不变性")
+            if any(p["kind"] == "SYMBOLIC" for p in analysis.get("hypothesis", {}).get("parameters", [])):
+                boundaries = analysis.get("sensitivity", {}).get("method_boundaries", [])
+                parts.append("参数关系：v²=v₀²+2ad；d=v₀t+at²/2（首次接触且模型持续有效）" if model == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE" else "参数关系见物理 trace")
+                parts.extend(f"方法边界：{labels.get(row['parameter'], row['parameter'])}={row['boundary']:.4g}，{row.get('method_rule_id', '运动成立边界')}"
+                    for row in boundaries[:3] if isinstance(row.get("boundary"), (float, int)))
+            grade = analysis.get("grade_mapping", {})
+            if grade:
+                parts.append(f"坡向来源标签：{grade.get('source_tag') or '未注明'}；原参考方向：{grade.get('source_reference')}")
+                parts.append("朝向假设：" + ("车头朝上坡，重力向车后" if grade.get("ego_heading_relative_to_downhill") == "UPHILL" else "车头朝下坡，重力向车前"))
+            inherited = [labels.get(field, field) for field, record in analysis.get("model_input_view", {}).items() if record.get("action") == "INHERITED"]
+            if inherited:
+                parts.append("相容父输入继承：" + "、".join(inherited))
+            parts.append("适用条件：" + "；".join(analysis.get("hypothesis", {}).get("conditions", [])))
+            parts.append("未覆盖：" + "；".join(analysis.get("sensitivity", {}).get("uncovered_conditions", [])))
+            if facts.get("first_contact_time_s") is not None:
+                parts.append(f"侧向首次接触：{facts['first_contact_time_s']} s（不作为纵向 TTC）")
+            parts.append("假设追溯：" + str(analysis.get("plan_key", ""))[:12] + ":" + str(analysis.get("hypothesis_id", "")).split(":", 1)[-1])
         if model == "CONSTANT_SPEED_REPRESENTATIVE":
             parts.append("恒速代表工况；用于所列碰撞条件，不是故障最大速度包络")
         elif model:
-            parts.append(f"运动模型：{model}")
+            names = {"GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": "坡道溜车（重力减残余阻力）",
+                "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": "恒加速度至首次接触",
+                "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "侧向恒加速度至首次接触"}
+            parts.append(f"运动模型：{names.get(model, model)}")
         if facts.get("impact_time_id"):
             parts.append(f"碰撞时点：{facts['impact_time_id']}")
         if not any(part.startswith("TTC：") for part in parts) and (
@@ -358,6 +392,10 @@ class EngineeringReportTextMapper:
         control = trace.get("controllability", {})
         if not isinstance(control, Mapping) or not control:
             return ""
+        if control.get("decision_status") == "MODEL_NOT_APPLICABLE":
+            return "侧向接触模型；当前方法无适用 C 规则，局部 Pending"
+        if control.get("decision_status") == "MODEL_DEPENDENCY_UNRESOLVED":
+            return "故障影响规避控制；C 方法依赖尚未成立"
         stage = {
             "OVERRIDE": "干预覆盖",
             "TTC": "TTC 分档",
@@ -380,6 +418,19 @@ class EngineeringReportTextMapper:
         provenance = getattr(scenario, "fact_provenance", {}) or {}
         if not isinstance(provenance, Mapping):
             return ""
+        physical = (getattr(scenario, "facts", {}) or {}).get("physical_analysis")
+        if physical:
+            origins = physical.get("input_origins", {})
+            labels = {"PROJECT_INPUT": "项目事实", "HUMAN_CONFIRMATION": "工程师输入",
+                "SCENARIO_DEFINED": "方法场景条件", "METHOD_CONTRACT": "方法规则",
+                "LLM_ANALYSIS_HYPOTHESIS": "LLM 分析假设", "DERIVED": "程序推导"}
+            counts = {}
+            for origin in origins.values():
+                label = labels.get(origin, "既有条件")
+                counts[label] = counts.get(label, 0) + 1
+            return ("；".join(f"{label} {count} 项" for label, count in counts.items())
+                + "；碰撞速度/首次接触时间由同一轨迹计算。条件性结果不代表车辆实测能力。"
+                + "方案：" + physical["plan_key"][:12] + "；完整输入及来源见该运行的物理追踪。")
         labels = {
             "ego_speed_kph": "自车速度", "object_speed_kph": "目标速度",
             "relative_distance_m": "相对距离", "ttc_s": "TTC",
@@ -521,6 +572,8 @@ class EngineeringReportTextMapper:
         return self._PENDING_VALUE
 
     def severity_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
+        if "条件性" in str(getattr(evidence, "review_reason", "")):
+            return f"条件性 S 试算：{getattr(evidence, 'value', '') or '尚缺适用输入'}；使用所列假设与当前方法表，不代表车辆实测能力。"
         if _status(evidence) == "FINALIZED":
             production = trace.get("input_production", {})
             if production.get("rule_id"):
@@ -636,6 +689,8 @@ class EngineeringReportTextMapper:
         return "缺少 C 评定所需控制上下文或方法分支，C 暂不评定。"
 
     def asil_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
+        if "条件性" in str(getattr(evidence, "review_reason", "")):
+            return "条件性分支 ASIL 试算；每个分支按自身 S/E/C 查询当前矩阵。未确认工程结论。"
         if _status(evidence) == "FINALIZED":
             return "已按当前 ASIL 矩阵完成评定。"
         return "S/E/C 未全部确定，ASIL 暂不评定。"

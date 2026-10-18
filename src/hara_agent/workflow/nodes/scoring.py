@@ -83,7 +83,10 @@ def _scoring_evidence(result: dict[str, Any], value_key: str) -> EvidenceValue[s
         rule_version=str(result.get("engineering_rule_version", "")),
         review_reason=(
             "" if status is ReviewStatus.FINALIZED
-            else str(result.get("engineering_basis", "Scoring evidence is pending."))
+            else "; ".join(dict.fromkeys(str(value) for value in (
+                result.get("pending_reason"),
+                result.get("engineering_basis", "Scoring evidence is pending."),
+            ) if value))
         ),
     )
 
@@ -573,6 +576,10 @@ def score_structured_scenarios(
             ),
             review_reason=(
                 "" if asil_status is ReviewStatus.FINALIZED
+                else ("条件性 ASIL 试算；假设范围内的分支结果，未获工程批准。" if asil_value else
+                      "ASIL 未决；" + "; ".join(f"{label}: {value.review_reason}" for label, value in
+                          (("S", severity), ("E", exposure), ("C", controllability)) if not value.value))
+                if scenario.get("physical_analysis")
                 else "ASIL lookup requires complete, approved S/E/C values."
             ),
         )
@@ -647,6 +654,9 @@ def score_structured_scenarios(
                 })
 
     state.risk_results = risks
+    if getattr(scoring, "method", None) is not None and any(c.facts.get("physical_analysis") for c in state.scenarios):
+        from hara_agent.services.analysis.physical_hypothesis_instantiation_service import summarize_physical_hypotheses
+        state.item_definition["physical_hypothesis_summaries"] = summarize_physical_hypotheses(state, scoring.method)
     state.pending_reviews.extend(pending)
     state.stage = WorkflowStage.SAFETY_GOALS
     state.record(

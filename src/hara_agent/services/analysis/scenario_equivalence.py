@@ -43,6 +43,7 @@ def scenario_conditions(scenario: ScenarioCandidate, *, without_driver: bool = F
             "provenance", "approval", "method_source_hash", "method_contract_hash",
             "analysis_value_semantic", "time_role", "unit", "source_refs",
             "applicable_scope", "validation_status", "input_fact_metadata",
+            "object_id", "coordinate_frame", "fault_motion_model",
         ) if key in metadata}
         for field, metadata in scenario.fact_provenance.items()
         if field in facts and isinstance(metadata, dict)

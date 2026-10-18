@@ -49,6 +49,10 @@ class AnalyticalPhysicsInstantiationService:
         fault limit. Unsupported mechanisms retain their existing dimensions.
         """
         required_mf = {"malfunction_id", "function_id", "guideword", "description", "functional_effect", "vehicle_level_hazard", "causal_chain"}
+        if scenario.analysis_instance.get("physical_hypothesis"):
+            # The workflow has already instantiated and causally assessed this
+            # conditional world. Do not reapply a template's motion defaults.
+            return scenario
         if (self.method is None or self.method.structured_risk_method is None
                 or not required_mf.issubset(malfunction)):
             return scenario

@@ -70,6 +70,7 @@ class SemanticWorkflowInputs:
     review_artifact_writer: ReviewArtifactWriter | None = None
     sample_function_limit: int | None = None
     sample_malfunction_limit: int | None = None
+    sample_generated_scenario_ids: tuple[str, ...] = ()
     sample_function_ids: tuple[str, ...] = ()
     sample_malfunction_ids: tuple[str, ...] = ()
 
@@ -81,6 +82,7 @@ class SemanticWorkflowAgents:
     malfunctions: MalfunctionHazardAgent
     scenarios: ScenarioFeasibilityAgent
     risk_facts: ScenarioRiskFactAgent | None = None
+    physical_scenarios: object | None = None
 
 
 @dataclass(frozen=True)
@@ -295,6 +297,8 @@ def build_semantic_frontend_graph(
             max_workers=inputs.max_workers,
             progress=inputs.progress,
             risk_fact_agent=agents.risk_facts,
+            physical_agent=agents.physical_scenarios,
+            selected_generated_scenario_ids=inputs.sample_generated_scenario_ids,
             required_fact_specs=inputs.required_fact_specs,
             method=inputs.method_contract,
             checkpoint=(

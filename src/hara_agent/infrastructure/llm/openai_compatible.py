@@ -348,6 +348,7 @@ class OpenAICompatibleClient:
             "assess_scenario_feasibility",
             "interpret_scenario_risk_facts",
             "select_scenario_synthesis",
+            "construct_post_fault_physical_scenario",
         }:
             configured_mode = self.config.scenario_thinking
         elif task == "repair_schema_envelope":

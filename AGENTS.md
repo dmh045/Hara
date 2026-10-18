@@ -60,3 +60,7 @@ Also run `python -m hara_agent doctor` against the active template. Any skipped 
 ## Documentation authority
 
 `SKILL.md`, stage skills, this file, the active input documents/template, compiled contracts, and deterministic services are current authority. Historical migration documents must not be restored as runtime guidance.
+
+## GitHub delivery
+
+After each project update, complete the required validation, commit the relevant project changes, and push to GitHub. This is the user’s standing instruction. Keep credentials, personal configuration, and historical runtime artifacts out of commits; do not force-push.

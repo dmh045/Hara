@@ -350,10 +350,10 @@ class HARAReportWorkbookRenderer:
             ("Report schema hash", values["report_schema_hash"]),
             ("Style template hash", values["style_template_hash"]),
             ("Report status", values["report_status"]),
-            ("Severity finalized / pending", f"{values['severity_finalized']} / {values['severity_pending']}"),
-            ("Exposure finalized / pending", f"{values['exposure_finalized']} / {values['exposure_pending']}"),
-            ("Controllability finalized / pending", f"{values['controllability_finalized']} / {values['controllability_pending']}"),
-            ("ASIL finalized / pending", f"{values['asil_finalized']} / {values['asil_pending']}"),
+            *[(f"{label}：既有依据已计算 / 条件性数值 / 尚无数值",
+                " / ".join(str((view_model.projection_metrics or {}).get("score_status_counts", {}).get(field, {}).get(key, "—"))
+                    for key in ("calculated", "conditional_trial", "uncalculated")))
+                for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL"))],
             ("Engineering clarifications", values["clarification_ids"]),
         ])
         self._render_support_table(sheet, "HARA Engineering Report", registry, rows)
@@ -629,7 +629,10 @@ class HARAReportWorkbookRenderer:
         self._clear_sheet(sheet)
         registry.apply_page_setup(sheet, registry.safety_goals)
         self._set_title(sheet, "A1:F1", "A1", "Hazards and Safety Goals", registry, "safety_goal_title")
-        headers = ("HZ-ID", "Hazard", "SG-ID", "Safety Goal", "Safety State", "Max ASIL")
+        note = (view_model.projection_metrics or {}).get("safety_goal_scope_note", "最高 ASIL 仅覆盖已计算成员。")
+        self._set_title(sheet, "A2:F2", "A2", note, registry, "safety_goal_data")
+        sheet.row_dimensions[2].height = 36
+        headers = ("HZ-ID", "Hazard", "SG-ID", "Safety Goal", "Safety State", "最高已计算 ASIL")
         width_sources = (1, 6, 18, 19, 20, 17)
         for column, header in enumerate(headers, start=1):
             self._write_cell(sheet, 3, column, header, registry, "safety_goal_header", wrap=True)

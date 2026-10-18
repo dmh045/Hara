@@ -189,6 +189,8 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                      max_workers: int = 1,
                      progress=None,
                      risk_fact_agent: ScenarioRiskFactAgent | None = None,
+                     physical_agent=None,
+                     selected_generated_scenario_ids=(),
                      required_fact_specs: Sequence[RequiredFactSpec] = (),
                      method: MethodContract | None = None,
                      checkpoint: Callable[[HARAState], object] | None = None,
@@ -247,6 +249,29 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                         candidate,
                         generated_for_malfunction_ids=[malfunction.malfunction_id],
                     )
+    if selected_generated_scenario_ids:
+        requested = set(selected_generated_scenario_ids)
+        available = {candidate.scenario_id for values in contextual_candidates.values() for candidate in values}
+        if requested - available:
+            raise ValueError(f"Selected generated scenario IDs unavailable: {sorted(requested - available)}")
+        for identity, values in contextual_candidates.items():
+            selected = [candidate for candidate in values if candidate.scenario_id in requested]
+            contextual_candidates[identity] = selected
+            instantiation_audit[identity]["bounded_generated_selection"] = {
+                "available": len(values), "selected_ids": [candidate.scenario_id for candidate in selected]}
+        state.record("bounded_generated_scenarios_selected", selected_ids=sorted(requested), available_count=len(available))
+    if physical_agent is not None and method is not None and method.structured_risk_method is not None:
+        from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+        contextual_candidates = construct_physical_scenarios(state, contextual_candidates, malfunctions,
+            method=method, agent=physical_agent, project_facts=project_facts,
+            checkpoint=checkpoint)
+        for malfunction_id, generated in contextual_candidates.items():
+            instantiation_audit[malfunction_id]["physical_analysis"] = {
+                "instance_count": len(generated), "stage": "BEFORE_CAUSAL_ASSESSMENT"}
+            if review_artifact_writer is not None:
+                for candidate in generated:
+                    review_artifact_writer.record_scenario_candidate(candidate,
+                        generated_for_malfunction_ids=[malfunction_id])
     runtime_candidates = [
         candidate
         for malfunction in malfunctions
