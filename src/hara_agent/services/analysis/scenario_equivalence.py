@@ -99,7 +99,7 @@ def exact_task_key(agent, malfunction, scenario, project_registry=None) -> str:
         "evidence_budget": getattr(agent, "causal_evidence_budget", None),
         "project": project_registry.snapshot(include_values=True) if project_registry else {},
         "route": {key: getattr(config, key, "") for key in
-                  ("provider", "model", "base_url", "scenario_thinking")},
+                  ("provider", "model", "base_url", "scenario_thinking", "scenario_response_format")},
     })
 
 

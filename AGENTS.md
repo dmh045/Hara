@@ -64,3 +64,7 @@ Also run `python -m hara_agent doctor` against the active template. Any skipped 
 ## GitHub delivery
 
 After each project update, complete the required validation, commit the relevant project changes, and push to GitHub. This is the user’s standing instruction. Keep credentials, personal configuration, and historical runtime artifacts out of commits; do not force-push.
+
+## Targeted repairs
+
+Locate and fix routine defects autonomously, using the smallest change that addresses the demonstrated cause. Preserve effective behavior and verify the affected production path. Report material method or behavior changes; new paid Provider usage still requires an unspent, explicitly authorized budget.

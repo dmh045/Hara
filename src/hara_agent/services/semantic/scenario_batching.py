@@ -98,9 +98,11 @@ def _scenario_json(
                     for key in ("ego_impact_speed_kph", "relative_speed_kph", "closing_speed_kph", "ttc_s", "first_contact_time_s")
                     if registry.resolve_record("DERIVED." + key) is not None},
             },
-            "conditional_physical_analysis": {key: scenario.analysis_instance.get("physical_hypothesis", {}).get(key)
+            "conditional_physical_analysis": {**{key: scenario.analysis_instance.get("physical_hypothesis", {}).get(key)
                 for key in ("hypothesis_id", "hypothesis", "sample_parameters", "calculation_nature")
                 if key in scenario.analysis_instance.get("physical_hypothesis", {})},
+                **({"parameter_relations_ref": "DERIVED.parameter_relations"}
+                   if "DERIVED.parameter_relations" in selection.selected_refs else {})},
             "causal_evidence_view": selection.compact_view,
             **({"shared_causal_evidence": scenario.analysis_instance["shared_causal_evidence"]}
                if scenario.analysis_instance.get("shared_causal_evidence") else {}),
@@ -161,7 +163,8 @@ def _prompt_parts(
         "confidence必须为0.0到1.0范围内的JSON number；禁止使用high、medium、low等文字等级，"
         "禁止字符串数字、百分数、null或缺失。"
         "不要返回rationale；可读说明由Python根据已验证的结构化因果字段确定性生成。"
-        "允许附加dependency_metadata，按系统提示说明因果/适用性依赖和已证明无关的字段；无法证明时complete=false。"
+        "仅在四项驾驶员无关性都有明确引用时附加dependency_metadata；否则省略该可选字段。"
+        "不要在输出中重复shared_causal_evidence或输入物理方案；复用统计由程序计算。"
     )
     return prefix, suffix
 

@@ -33,6 +33,13 @@ python -m venv .venv
 
 `doctor` is offline for template compilation and separately reports LLM configuration readiness. `analyze` fails closed when the method, facts, or approvals are incomplete. `--allow-draft` permits a visibly watermarked report without bypassing review state.
 
+`volcengine-agent-plan` uses JSON mode on causal requests and their bounded
+corrections by default; this route was exercised with two real replies on
+2026-10-19. Other providers default to `none`. Override with
+`HARA_LLM_SCENARIO_RESPONSE_FORMAT=json_object` or `none`. JSON mode constrains
+syntax only; local schema, evidence and physics validation still apply. A schema
+name in the audit log alone does not enable provider structured output.
+
 ### Autonomous physics targeted closure (2026-10-18)
 
 The [F01–F06 follow-up ledger](docs/Autonomous_Physics_Followup_20261018.md)

@@ -74,7 +74,40 @@ SG 改写是已有意图的展示配置，不是新安全目标生成器或工�
 
 本次图像位于 `qa/final_{Before,HARA_Review}_{main,summary,goals}.png`，已查看三个修改区域。仍是 Artifact 只读渲染；本次没有新增原生打印验证。
 
-## 真实样本独立复核的定向修订（2026-10-19）
+## 真实物理修订包复核：因果输入与 JSON 收口（2026-10-19，当前结果）
+
+对应《真实物理样本修订包_独立复核_20261019.md》，实施基线 `87f3a8ac913fe31e7cd8ee20203a1c0b72ce5fce`。tracked 工作树起始干净；个人配置不改。证据根 `output/physical_causal_review_20261019/`。以下是同一清单的最新增量；下节的 6/8 是保留的历史现场，**当前同一账本已达 8/8，余量为 0**。
+
+| 清单项 | 本轮代码和实际证据 | 具体边界 |
+|---|---|---|
+| R1 输入贯通 | 将实例化器已经生成、已通过当前身份来源检查的参数关系注册为 `DERIVED.parameter_relations`，带对象、轨迹、阶段、接触身份和原假设来源。优先进入有限因果证据视图；真实两次返回均引用该 ID | 明确 `numeric_result_available=false`，没有伪造碰撞速度/TTC或批准。S/C 方法分档边界仍留在风险/报告链，不作为因果证据 |
+| R2 最小输出 | 保留三跳、引用、交互、判断等必要字段；禁止重复输入共有证据；缺少四项引用时省略可选复用证明。保留有证据的驾驶员无关性证明与原正反例 | 不是全局禁用依赖证明，不将 complete 改为 true；不能将两次成功外推为所有 Provider 稳定 |
+| R3 调度与成本 | 普通 HARAApplication 同 Run ID 恢复，物理方案缓存命中 1、方案跨身份复用 1；因果独立判断 2、局部 M→B 复用 1、精确/完整因果复用均 0 | 两次真实请求共 8,932 prompt / 1,112 completion token；没有把局部复用计成节省一次请求 |
+| R4 生产报告 | 新点值/符号离线样本均经普通应用生成 1 审核组、2 明细记录。报告布局、分组与 renderer 未修改 | 这些是脚本回答的离线报告，不是本轮真实数值端到端 Excel |
+| R5 可读与追溯 | 保留关系的完整适用条件；原无效 JSON 原样纳入回归夹具；原始第 7/8 次请求、返回及解析结果保存 | 没有手工补花括号作为模型成功；第 3/4 次历史丢失正文仍不能补造 |
+| R6 数值与物理 | 没有改物理公式、参数精度、S/E/C 表、E 聚合或 ASIL 矩阵 | 当前真实加速度与距离仍为符号，不能给出唯一数值评级 |
+| R7 性质与预算 | JSON 模式经实际 Agent Plan 路由接收；两条条件因果通过本地校验后保存；第 9 次意图在发出前被预算阻断 | 未形成新真实风险记录/SG/Excel；全量数值链技术条件仍未证明，预算不具备，未全量 |
+
+### 原反例和修复后真实结果
+
+- 第 5/6 次同一原文 SHA `ce92856ecc34d36d3b79c91169935154e44699b8c3568766a9071bf214e6f7f4`，严格 JSON 解析在 2158 位置失败。回归仍拒绝该原文，最多一次原文反馈修复；没有增加重试数。
+- 原请求未投影 `v_impact(d)` / `T(d)`；新请求为两个当前物理身份投影精确注册引用，`before_after.json` / `causal_projection.json` 保存对照，物理子身份及假设内容未改。
+- 新第 7/8 次分别为 1,514 / 1,334 字符，合法 JSON，均为 `causally_relevant=true / breakpoint=NONE`，引用条件性关系；省略无证据的可选依赖对象，无格式/语义修正。原第一个驾驶员的 I_TO_H 是证据未决，保留历史结果；新结论来自新请求，不是人工翻转。
+- 请求实际带 `response_format={"type":"json_object"}`，元数据记 `JSON_OBJECT`；这只声明 JSON 语法模式，不声称 Provider 执行完整 schema 或认可因果。语义和物理仍由本地校验。官方 [结构化输出说明](https://docs.volcengine.com/docs/ark/structured-output-beta?lang=en) 区分 JSON object 与 JSON schema；[Agent Plan 接入说明](https://docs.volcengine.com/docs/ark/agent-plan-personal-opencode?lang=en) 指定专用 Chat API 路径，实际路径另外由本次请求验证。
+- 当前 Provider 的环境配置加载默认启用此模式，后续本地 CLI 同样生效；其他 Provider 默认不变，可用 `HARA_LLM_SCENARIO_RESPONSE_FORMAT=none` 显式覆盖。个人 `.env` 没有改动；模式也进入请求/工作流缓存身份，不能用旧无约束缓存冒充新验证。
+
+原 Run ID `physical-review-drive-live-20261019`；本轮只使用原来剩余 2 次，没有新增预算。累计 8 次：1 物理、7 因果（含历史格式重试）、0 事实。累计 prompt 45,593 / completion 5,487 / total 51,080 token。实际返回模型仍为用户已允许的 `doubao-seed-2-1-turbo-260628`。风险事实阶段的启动日志只表示调用意图，预算拦截前未发生网络请求。两个已完成因果判断已进入 checkpoint 的 `scenario_assessment_batches`，主场景列表尚未在整阶段结束时提交；不能因其仍为 0 就认为因果回答丢失。
+
+### 验证与交付
+
+- 定向回归 **62 passed**；完整回归 **955 passed、1 skipped**，compileall / diff --check / doctor 通过。唯一跳过为 opt-in 历史 guard。新 2 次真实调用另外记录，未混入离线测试通过数。
+- `point_drive/HARA_Physical_Followup.xlsx` 与 `symbolic_drive/HARA_Physical_Followup.xlsx` 是本轮新离线报告；点值 S1/E3/C3/A，符号 E3、S/C/ASIL 待评定，均保留条件性状态。查看了 `qa/` 的报告截图；模板自带 ASIL_Table!U5/U6 错误未修改。
+- `live_before/` 保留恢复前完整现场，`live_after/` 为本轮停止后现场；新增原文与同一账本可逐笔核对。历史已保存响应缓存只新增文件，不修改旧内容；checkpoint 按正常恢复流程更新，恢复前副本完整保留。
+- 交付 ZIP 纳入完整 tracked docs，特别是独立复核指出遗漏的 `docs/architecture/TEMPLATE_DRIVEN_GOVERNANCE_MIGRATION.md`，仅供历史和测试依赖；未恢复为运行时指导。
+
+**剩余范围：** 本轮已解决符号关系未送达和当前样本无效 JSON 阻塞；真实数值链仍缺一个由 Agent 自主产生、可数值求解的代表方案及其风险事实/评分/报告验证。当前计划有意允许符号输出，不能把它当作数值链完成。后续有新明确预算时才安排一个驱动族的小样本，优先请求有解释依据的条件代表点/范围，保留无可信上界和真实缺口；不得手工补碰撞分支、速度、TTC或批准。先完成该样本，再判断全量；本轮无额外付费或全量请求。
+
+## 真实样本独立复核的定向修订（2026-10-19，历史 6/8 现场）
 
 实施基线为 `1a0458de128db02e853da537975406af2a91c187`，开始时 tracked 工作树干净，远端 master 经 SSH 核对相同。个人配置、未跟踪工作簿与历史产物保持原样。本节对应《真实代表样本验证_独立复核_20261018.md》，证据根为 `output/physical_live_review_20261018/`。此前 20/20 与本次新授权 8 次是两个独立账本，不相加冒充成功样本，也不重置旧预算。
 

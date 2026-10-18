@@ -286,6 +286,8 @@ class CausalEvidenceSelector:
         # context and would invite self-referential proof.
         if record.namespace == "MF":
             return None
+        if ref == "DERIVED.parameter_relations" and _conditional_evidence(record):
+            return 0, "current conditional model relations"
         validated_atom = _is_validated_analytical_scenario_atom(record)
         if (
             record.provenance is FactProvenance.SCENARIO_DEFINED
@@ -489,6 +491,30 @@ def build_fact_registry(
             provenance, approval, sources, fact_metadata,
         ))
     registry.extend(derive_scenario_physics(scenario))
+    # Reuse the instantiator's validated, pair-scoped output. A symbolic
+    # relation is a bounded derivation, never a numeric contact result.
+    analysis = registry.resolve_record("SCN.physical_analysis")
+    if analysis is not None and _conditional_evidence(
+        analysis, malfunction.malfunction_id, scenario.scenario_id,
+    ):
+        info = analysis.value
+        relations = info.get("sensitivity", {}).get("parameter_relations", [])
+        if relations:
+            registry.register(EvidenceRecord(
+                "DERIVED.parameter_relations",
+                {"parameter_relations": relations,
+                 "object_id": scenario.facts.get("object_id"),
+                 "trajectory_id": scenario.facts.get("trajectory_id"),
+                 "impact_time_id": scenario.facts.get("impact_time_id"),
+                 "phase": "POST_FAULT_CONDITIONAL_MODEL",
+                 "calculation_nature": "CONDITIONAL",
+                 "numeric_result_available": False},
+                EvidenceKind.DERIVED_PHYSICS, FactProvenance.DERIVED,
+                ReviewStatus.PENDING, analysis.source_refs,
+                {**analysis.metadata, "derivation_type": "SYMBOLIC_MODEL_RELATION",
+                 "inputs": ["SCN.physical_analysis"], "causal_relevance": True,
+                 "input_fact_metadata": [dict(scenario.fact_provenance["physical_analysis"])]},
+            ))
     # Exposure metadata is pre-causal context. It is method-sourced evidence,
     # not a final E judgement, and is therefore explicitly attached to the
     # atomic Scenario candidate.

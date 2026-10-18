@@ -50,6 +50,7 @@ def _scenario_batch_cache_key(
         "provider": getattr(config, "provider", type(agent.client).__name__),
         "base_url": getattr(config, "base_url", ""),
         "model": getattr(config, "model", type(agent.client).__name__),
+        "response_format": getattr(agent, "response_format", None),
         "malfunction": asdict(malfunction),
         "scenarios": [{
             "scenario_id": item.scenario_id,

@@ -68,7 +68,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v24-local-reuse-evidence"
+    PROMPT_VERSION = "scenario-feasibility-v25-symbolic-relations-minimal-output"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -92,6 +92,7 @@ PHYSICAL CONSISTENCY
 physical_interaction 与物理评分使用同一组对象、方向、阶段和模型。存在代表工况时只验证所列工况，不把它解释为所有故障轨迹的上界。不得忽略该模型或对未列出的对象/运动过程复用父级结论。
 physical_interaction 是展示视图，其 JSON 路径不是证据 ID。引用所列条件时必须使用 physical_interaction.evidence_refs 中的完整 ID，或 causal_evidence_view 已列出的 ID；不得引用 physical_interaction.conditions.* 或 physical_interaction.branches.*。physically_possible 只是物理条件检查，不能据此跳过因果判断。
 derived_physics_evidence 中列出本场景已注册的物理推导及其 kind。basis_type=DERIVED_PHYSICS 时仅引用 kind=DERIVED_PHYSICS 的完整 ID，不混入 SCN.collision_branches 或其他 DIRECT_FACT；代表工况的推导只能证明该工况，不能证明全部故障轨迹。
+DERIVED.parameter_relations 是当前对象、故障后阶段和模型的条件性符号关系，可在其适用条件内引用。numeric_result_available=false 表示尚无唯一碰撞速度或时间；不得把公式当成已发生接触、数值结果或全部参数范围的证明。符号参数本身不否定条件性危险，但不满足适用条件或证据不足时仍返回具体未决断点。
 前后左右以本车坐标为准；倒车时不要把后方对象改成前方，不要声称远离对象时距离正在缩小。
 若主张与当前外部目标接近/接触，返回 physical_interaction={"target":"SCENARIO_OBJECT","object_position":"输入的方位","relation":"APPROACH或CONTACT","assessment_reference":"CURRENT_STATE或MODEL_TRAJECTORY"}；存在 object_id 时原样返回。这里只描述主张，不提供新的物理事实或批准。其他对象、阶段或车内非接触伤害返回 target="OTHER"，不得借当前目标的接近速度否定其他机制。
 对象类别与运动状态分开：静止电车仍是电车。初始/正常车速不等于故障可达速度或碰撞速度。静止后溜车需要独立运动依据，不能直接用正常上限；静止 EPB 夹紧损坏不能直接当成外部碰撞伤害。
@@ -100,7 +101,7 @@ OUTPUT CONTRACT
 输出 assessments 数组，每个请求 scenario_id 恰好一项。每项包含 scenario_id、physically_feasible、functionally_relevant、causally_relevant (JSON boolean)、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、physical_interaction、confidence (0..1)、status (PENDING/FINALIZED)。physical_interaction 按上面的对象/阶段结构返回，无当前外部目标主张时返回 {"target":"OTHER"}，不可省略。
 causal_chain 是对象而非数组，结构 {"m_to_b":{"claim":"...","basis_type":"DIRECT_FACT","evidence_refs":[]},"b_to_i":{...},"i_to_h":{...}}。所有返回的 hop 必须有非空 claim；示例只说明结构，不构成证据。
 risk_dimension_changes 每项含 dimension、evidence_refs、reason；只选择当前事实明确需要重评的维度，使用用户提示中的枚举，不输出 risk_dimensions_changed 或 rationale。
-可选 dependency_metadata 保持 complete=false；driver_noninterference 分 enablement/trigger/interaction/hazard 四项，每项 {independent:boolean,evidence_refs:[],reason:"依据"}。仅精确证据证明不受驾驶员影响时为true，缺少引用不证明无关。shared_causal_evidence 只复用当前有效共同步骤；差异步骤仍独立判断并返回完整链。"""
+只返回规定的必要字段，不重复输入、rationale或shared_causal_evidence。仅当四项都有明确证据时返回可选 dependency_metadata，保持 complete=false；driver_noninterference 分 enablement/trigger/interaction/hazard 四项，每项 {independent:boolean,evidence_refs:["精确ID"],reason:"简短依据"}。缺少任一项引用时省略该可选对象，不输出空引用或冗长的无法证明说明。输入 shared_causal_evidence 可用于共有步骤；差异步骤仍独立判断并返回完整链，程序自行记录复用。"""
 
     MACHINE_OUTPUT_RULE = """MACHINE OUTPUT RULE
 Return exactly one JSON object {"assessments": [...]} with valid JSON strings, no markdown, comments, trailing commas or explanation outside JSON.
@@ -121,6 +122,8 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
         self.schema_name = "ScenarioFeasibilityAssessmentList"
         self.system_prompt = self.SYSTEM_PROMPT
         config = getattr(client, "config", None)
+        response_format = getattr(config, "scenario_response_format", "none")
+        self.response_format = {"type": "json_object"} if response_format == "json_object" else None
         self.causal_evidence_budget = causal_evidence_budget or getattr(
             config, "scenario_causal_evidence_budget", DEFAULT_CAUSAL_EVIDENCE_BUDGET,
         )
@@ -430,9 +433,10 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                 "split_depth": depth,
                 "scenario_count": len(scenarios),
                 "assessment_contract_version": self.assessment_contract_version,
-                "provider_response_constraint": "NONE",
+                "provider_response_constraint": "JSON_OBJECT" if self.response_format else "NONE",
             },
             max_tokens=self.provider_max_tokens,
+            response_format=self.response_format,
         )
         batch_started = time.monotonic()
         stats["actual_llm_calls"] += 1
@@ -643,11 +647,12 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                 "split_depth": depth,
                 "scenario_count": 1,
                 "assessment_contract_version": self.assessment_contract_version,
-                "provider_response_constraint": "NONE",
+                "provider_response_constraint": "JSON_OBJECT" if self.response_format else "NONE",
                 "item_contract_repair": True,
                 "item_contract_repair_attempt": 1,
             },
             max_tokens=self.provider_max_tokens,
+            response_format=self.response_format,
         )
         repair_started = time.monotonic()
         stats["actual_llm_calls"] += 1

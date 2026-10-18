@@ -22,11 +22,13 @@ class LLMConfig:
     scenario_batch_max_items: int = 12
     scenario_max_split_depth: int = 8
     scenario_causal_evidence_budget: int = 10
+    scenario_response_format: str = "none"
 
     @classmethod
     def from_env(cls, prefix: str = "HARA_LLM_") -> "LLMConfig":
+        provider = os.getenv(f"{prefix}PROVIDER", "openai-compatible")
         return cls(
-            provider=os.getenv(f"{prefix}PROVIDER", "openai-compatible"),
+            provider=provider,
             base_url=os.getenv(f"{prefix}BASE_URL", ""),
             model=os.getenv(f"{prefix}MODEL", ""),
             api_key=os.getenv(f"{prefix}API_KEY", ""),
@@ -58,6 +60,10 @@ class LLMConfig:
             scenario_causal_evidence_budget=int(os.getenv(
                 f"{prefix}SCENARIO_CAUSAL_EVIDENCE_BUDGET", "10"
             )),
+            scenario_response_format=os.getenv(
+                f"{prefix}SCENARIO_RESPONSE_FORMAT",
+                "json_object" if provider == "volcengine-agent-plan" else "none",
+            ).strip().lower(),
         )
 
     def validate(self):
@@ -102,3 +108,5 @@ class LLMConfig:
             )
         if self.scenario_max_split_depth < 0:
             raise ValueError("HARA_LLM_SCENARIO_MAX_SPLIT_DEPTH不得小于0")
+        if self.scenario_response_format not in {"none", "json_object"}:
+            raise ValueError("HARA_LLM_SCENARIO_RESPONSE_FORMAT必须为none或json_object")
