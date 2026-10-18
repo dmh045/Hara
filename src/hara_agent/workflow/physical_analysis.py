@@ -132,6 +132,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             saved = cache.get(key, {})
             entry = saved or {"context": context, "responses": [], "status": "REQUESTED"}
             cache[key] = entry
+            prior_status = entry.get("status")
+            prior_responses = len(entry.get("responses", []))
+            prior_instances = signature(entry.get("instantiations", {}))
 
             def persist_response(record):
                 entry["responses"].append(record)
@@ -211,7 +214,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 # Includes budget/transport exceptions. Successful earlier plans
                 # and every parsed response remain durable on resume.
                 reconcile_metrics()
-                if checkpoint:
+                if checkpoint and (not saved or entry.get("status") != prior_status
+                        or len(entry.get("responses", [])) != prior_responses
+                        or signature(entry.get("instantiations", {})) != prior_instances):
                     checkpoint(state)
         candidates[mf.malfunction_id] = kept
     return candidates

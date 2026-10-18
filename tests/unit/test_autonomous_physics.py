@@ -393,6 +393,37 @@ def test_parallel_physical_plans_equal_serial_and_resume_without_requests(method
     assert restored.item_definition['physical_analysis_metrics']['plan_cache_hits'] == 2
 
 
+def test_physical_resume_skips_unchanged_writes_but_persists_recomputed_values(method, tmp_path):
+    from hara_agent.workflow import HARAState, CheckpointRepository
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw_plan(), 'offline')
+    client = Client(); agent = PhysicalScenarioAgent(client)
+    repo = CheckpointRepository(tmp_path)
+    state = HARAState('resume-unchanged')
+    writes = []
+    def save(s):
+        writes.append(repo.save(s))
+    def run():
+        return construct_physical_scenarios(state, {'MF':[make_candidate()]}, [mf()],
+            method=method, agent=agent, project_facts=None, checkpoint=save)
+    original = run()
+    assert writes and client.calls == 1
+    state = repo.load(state.run_id)
+    writes.clear()
+    assert run() == original and not writes and client.calls == 1
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    saved = next(iter(entry['instantiations'].values()))['generated_scenarios'][0]
+    saved['facts']['ego_impact_speed_kph'] = 999
+    assert run() == original and len(writes) == 1 and client.calls == 1
+    restored = repo.load(state.run_id)
+    actual = next(iter(next(iter(restored.item_definition['physical_analysis_plans'].values()))['instantiations'].values()))
+    assert actual['generated_scenarios'][0]['facts']['ego_impact_speed_kph'] == original['MF'][0].facts['ego_impact_speed_kph']
+
+
 def test_parallel_physical_plans_share_one_hard_budget_and_keep_responses(method, tmp_path):
     from threading import Barrier
     from hara_agent.workflow import HARAState, CheckpointRepository
