@@ -208,7 +208,8 @@ def test_plan_reuse_resume_and_context_change_are_separate_from_causal_reuse(met
     out = run()
     assert len(out["MF"]) == 2 and client.calls == 1
     assert state.item_definition["physical_analysis_metrics"]["physical_plan_reuse"] == 1
-    assert state.item_definition["physical_analysis_metrics"]["complete_causal_reuse"] == 0
+    assert "complete_causal_reuse" not in state.item_definition["physical_analysis_metrics"]
+    assert state.item_definition["physical_analysis_metrics"]["physical_solve_points"] == 2
     state = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
     run(); assert client.calls == 1
     a.fact_provenance["ego_speed_kph"]["source_refs"][0]["excerpt"] = "changed relevant evidence"

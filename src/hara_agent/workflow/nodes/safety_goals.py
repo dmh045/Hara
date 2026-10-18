@@ -78,6 +78,7 @@ def aggregate_safety_goals(
                 ),
             })
 
+    state.item_definition["safety_goal_catalog"] = catalog.to_dict()
     state.safety_goals = goals
     state.stage = WorkflowStage.QUALITY_GATE
     state.record(

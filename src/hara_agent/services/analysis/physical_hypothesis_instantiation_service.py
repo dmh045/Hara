@@ -58,6 +58,7 @@ class PhysicalHypothesisInstantiationService:
     def __init__(self, method):
         self.method = method
         self.vocabulary = RiskVocabularyAdapter(method)
+        self.physics_solve_count = 0
 
     @staticmethod
     def needed(candidate, malfunction_id):
@@ -509,6 +510,7 @@ class PhysicalHypothesisInstantiationService:
             situational_description=descriptions[0], situational_detailing=descriptions[1],
             analysis_instance={**instance, "physical_hypothesis": info})
         child.status = type(parent.status).PENDING
+        self.physics_solve_count += 1
         for record in derive_scenario_physics(child):
             field = record.evidence_ref.removeprefix("DERIVED.")
             facts[field] = record.value

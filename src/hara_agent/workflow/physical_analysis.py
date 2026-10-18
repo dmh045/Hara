@@ -14,7 +14,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     cache = state.item_definition.setdefault("physical_analysis_plans", {})
     metrics = {"existing_path_skipped": 0, "plan_requests": 0, "plan_cache_hits": 0,
                "physical_plan_reuse": 0, "generated_instances": 0, "schema_repairs": 0,
-               "response_cache_hits": 0, "semantic_corrections": 0, "complete_causal_reuse": 0, "diagnostics": []}
+               "response_cache_hits": 0, "semantic_corrections": 0, "plan_reuse_records": [], "diagnostics": []}
     state.item_definition["physical_analysis_metrics"] = metrics
     budget = getattr(agent.client, "attempt_budget", None)
     starting_attempts = getattr(budget, "attempts", None)
@@ -27,8 +27,11 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         metrics["token_usage"] = {key: sum(r["response"]["usage"].get(key, 0) for r in responses)
                                   for key in ("prompt_tokens", "completion_tokens")}
         metrics["provider_transport_attempts_this_stage"] = (budget.attempts - starting_attempts) if starting_attempts is not None else None
-        metrics["exact_deduplication"] = 0
-        metrics["common_evidence_sharing"] = metrics["physical_plan_reuse"]
+        metrics["physical_solve_points"] = producer.physics_solve_count
+        metrics["exact_plan_input_reuse"] = sum(
+            len(row["scenario_ids"]) - len(set(row["exact_input_keys"]))
+            for row in metrics["plan_reuse_records"])
+        metrics["metrics_scope"] = "PHYSICAL_PROPOSALS_AND_SOLVES; causal reuse is accounted in scenario audits"
     project = project_facts.to_dict() if hasattr(project_facts, "to_dict") else asdict(project_facts) if project_facts else {}
     functions = {f["function_id"]: f for f in state.functions}
     config = getattr(agent.client, "config", None)
@@ -121,6 +124,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["response_cache_hits"] += audit["response_cache_hits"]
                     instantiated = instantiate_family(plan)
                 metrics["physical_plan_reuse"] += len(family) - 1
+                metrics["plan_reuse_records"].append({"plan_key": key,
+                    "scenario_ids": [candidate.scenario_id for candidate in family],
+                    "exact_input_keys": [signature(scenario_conditions(candidate)) for candidate in family]})
                 for candidate, generated, failures in instantiated:
                     kept.extend(generated or [candidate])
                     if failures:

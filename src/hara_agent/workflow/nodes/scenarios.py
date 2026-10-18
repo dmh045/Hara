@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from copy import deepcopy
 import hashlib
 import json
 import sys
@@ -24,10 +25,12 @@ from hara_agent.workflow.state import HARAState, WorkflowStage
 
 from .parallel import ordered_parallel_map
 from ..review_artifacts import ReviewArtifactWriter
-from hara_agent.services.analysis.scenario_equivalence import driver_families, driver_reuse_proof
+from hara_agent.services.analysis.scenario_equivalence import (
+    driver_families, driver_reuse_proof, exact_task_key, rebind_assessment_payload,
+)
 
 
-SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v9-p7-physical-context"
+SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v10-exact-local-reuse"
 
 
 def _scenario_batch_cache_key(
@@ -97,90 +100,216 @@ def _assess_instantiated_scenarios(
     candidates: list[ScenarioCandidate],
     instantiation: dict,
     project_registry,
+    prior_batch=None,
 ) -> tuple[list[ScenarioFeasibilityAssessment], dict]:
-    """Assess only the candidate instances selected for one malfunction."""
-    families = driver_families(candidates) if any(
-        candidate.analysis_instance.get("p6_generation") for candidate in candidates
-    ) else [[candidate] for candidate in candidates]
-    if getattr(agent, "paired_driver_requests", False):
-        ordered = [candidate for family in families for candidate in family]
-        previous_max_items = agent.batch_max_items
+    """Deduplicate before batching; parse every reused result in the child world."""
+    exact_groups = {}
+    for candidate in candidates:
+        key = exact_task_key(agent, malfunction, candidate, project_registry)
+        exact_groups.setdefault(key, []).append(candidate)
+    unique = [members[0] for members in exact_groups.values()]
+    restored, cache_records = {}, []
+    prior = prior_batch or {}
+    old_assessments = {row["scenario_id"]: row for row in prior.get("assessments", [])}
+    old_tasks = {row["task_key"]: row for row in prior.get("audit", {}).get("causal_reuse", {}).get("exact_mapping", [])}
+    for key, members in exact_groups.items():
+        old = old_tasks.get(key)
+        if not old:
+            continue
+        current = members[0]
+        old_ids = [identity for identity in old["scenario_ids"] if identity in old_assessments]
+        payloads = []
+        for identity in old_ids:
+            context = old.get("identity_contexts", {}).get(identity, {})
+            parent = replace(current, scenario_id=identity, facts={**current.facts,
+                "object_id": context.get("object_id", identity + ":target")})
+            payloads.append(rebind_assessment_payload(old_assessments[identity], parent, current))
+        if not payloads:
+            continue
+        from hara_agent.services.analysis.scenario_equivalence import signature
+        if len({signature(payload) for payload in payloads}) != 1:
+            cache_records.append({"scenario_id": current.scenario_id, "kind": "exact_input",
+                "reused": False, "reason": "HISTORICAL_EXACT_RESULT_CONFLICT", "task_key": key})
+            continue
         try:
-            agent.batch_max_items = min(previous_max_items, 2)
-            assessments, audit = agent.assess(malfunction, ordered, project_registry=project_registry)
-        finally:
-            agent.batch_max_items = previous_max_items
-        by_id = {item.scenario_id: item for item in assessments}
-        audit["causal_reuse"] = {
-            "mode": "SHARED_REQUEST_INDEPENDENT_JUDGEMENTS",
-            "candidate_count": len(candidates), "representative_count": len(families),
-            "independently_assessed_count": len(candidates), "reused_count": 0,
-            "records": [],
-        }
-        audit["analytical_scenario_instantiation"] = instantiation
-        return [by_id[c.scenario_id] for c in candidates], audit
+            restored[current.scenario_id] = ScenarioFeasibilityAgent._parse(
+                malfunction, payloads[0], scenario=current, project_registry=project_registry)
+            cache_records.append({"scenario_id": current.scenario_id, "kind": "exact_input",
+                "reused": True, "child_revalidated": True, "task_key": key,
+                "representative_scenario_id": old_ids[0], "reason": "EXACT_TASK_CHECKPOINT_HIT"})
+        except ValueError as error:
+            cache_records.append({"scenario_id": current.scenario_id, "kind": "exact_input",
+                "reused": False, "reason": "CACHED_CHILD_EVIDENCE_REVALIDATION_REQUIRED", "detail": str(error)})
+    families = driver_families(unique) if any(
+        candidate.analysis_instance.get("p6_generation") for candidate in unique
+    ) else [[candidate] for candidate in unique]
     representatives = [family[0] for family in families]
-    assessments, audit = agent.assess(malfunction, representatives, project_registry=project_registry)
-    by_id = {item.scenario_id: item for item in assessments}
-    pending, reuse_records = [], []
+    first_wave = []
+    prebatched = set()
+    for family in families:
+        if family[0].scenario_id in restored:
+            continue
+        # If an unproven driver pair already fits one request, speculatively
+        # splitting it cannot save an HTTP call and can double cost. Keep the
+        # pair together; still evaluate its proof for later members/audit.
+        from hara_agent.services.semantic.scenario_batching import estimate_scenario_prompt_chars
+        together = (len(family) > 1 and family[1].scenario_id not in restored
+                    and getattr(agent, "paired_driver_requests", False)
+                    and agent.batch_max_items >= 2
+                    and estimate_scenario_prompt_chars(malfunction, family[:2],
+                        system_prompt=agent.system_prompt + "\n" + agent.MACHINE_OUTPUT_RULE,
+                        project_registry=project_registry, causal_evidence_budget=agent.causal_evidence_budget)
+                    <= agent.batch_max_chars)
+        first_wave.extend(family[:2] if together else family[:1])
+        if together:
+            prebatched.add(family[1].scenario_id)
+
+    def assess_batch(items):
+        # A local copy retains paired transmission without mutating a shared agent.
+        from copy import copy
+        local = copy(agent) if getattr(agent, "paired_driver_requests", False) else agent
+        if getattr(local, "paired_driver_requests", False):
+            local.batch_max_items = min(local.batch_max_items, 2)
+        return local.assess(malfunction, items, project_registry=project_registry)
+
+    assessments, audit = assess_batch(first_wave) if first_wave else ([], {
+        "task": "assess_scenario_feasibility", "malfunction_id": malfunction.malfunction_id,
+        "actual_llm_calls": 0, "llm_calls": 0, "usage": {"batches": []}})
+    by_id = {**restored, **{item.scenario_id: item for item in assessments}}
+    pending, reuse_records, partial_contexts = [], list(cache_records), {}
+
+    def revalidate(assessed, parent, child, changed=()):
+        payload = rebind_assessment_payload(assessed.to_dict(), parent, child, changed)
+        return ScenarioFeasibilityAgent._parse(
+            malfunction, payload, scenario=child, project_registry=project_registry)
+
+    def shared_prefix(assessed, parent, child):
+        from hara_agent.services.semantic.scenario_evidence import build_fact_registry
+        first = build_fact_registry(malfunction, parent, project_registry)
+        second = build_fact_registry(malfunction, child, project_registry)
+        # Only the upstream malfunction-to-behavior step: interaction is never
+        # inherited just because two parameter points happen to have equal grades.
+        hop = assessed.causal_chain.get("m_to_b", {})
+        refs = hop.get("evidence_refs", [])
+        if (hop.get("basis_type") != "ASSUMPTION" and refs
+                and all(ref.startswith("MF.") and first.resolve(ref) == second.resolve(ref)
+                        and first.resolve(ref) is not None for ref in refs)):
+            return {"reused_from": parent.scenario_id, "m_to_b": deepcopy(hop)}
+        return {}
+
     for family in families:
         parent = family[0]
         assessed = by_id[parent.scenario_id]
         for child in family[1:]:
+            if child.scenario_id in restored:
+                continue
             proof = driver_reuse_proof(assessed.to_dict(), parent, child)
+            if child.scenario_id in prebatched:
+                reuse_records.append({"scenario_id": child.scenario_id,
+                    "representative_scenario_id": parent.scenario_id, "kind": "complete_causal",
+                    **proof, "reused": False, "dispatch": "COBATCHED_INDEPENDENT_JUDGMENT"})
+                continue
             reused = None
-            if proof["reusable"] and evaluate_risk_eligibility(assessed).eligible:
-                payload = {key: value for key, value in assessed.to_dict().items() if key in {
-                    "physically_feasible", "functionally_relevant", "causally_relevant",
-                    "breakpoint", "causal_chain", "risk_dimension_changes", "hazardous_event",
-                    "confidence", "status", "dependency_metadata",
-                }}
-                payload["scenario_id"] = child.scenario_id
-                changed_refs = {"SCN." + field for field in proof["changed_fields"]}
-                payload["risk_dimension_changes"] = [
-                    change for change in payload["risk_dimension_changes"]
-                    if not changed_refs.intersection(change.get("evidence_refs", []))
-                ]
-                # Recompile and revalidate every evidence reference against the
-                # child's registry. No copied graph retains a parent's IDs.
+            if proof["reusable"]:
                 try:
-                    reused = ScenarioFeasibilityAgent._parse(
-                        malfunction, payload, scenario=child, project_registry=project_registry,
-                    )
-                except ValueError:
-                    proof = {"reusable": False, "reason": "CHILD_EVIDENCE_REVALIDATION_REQUIRED"}
+                    reused = revalidate(assessed, parent, child, proof.get("changed_fields", []))
+                except ValueError as error:
+                    proof = {"reusable": False, "reason": "CHILD_EVIDENCE_REVALIDATION_REQUIRED", "detail": str(error)}
             if reused is None:
+                shared = shared_prefix(assessed, parent, child)
+                if shared:
+                    partial_contexts[child.scenario_id] = shared
+                    child = replace(child, analysis_instance={**child.analysis_instance,
+                                    "shared_causal_evidence": shared})
                 pending.append(child)
             else:
                 by_id[child.scenario_id] = reused
             reuse_records.append({"scenario_id": child.scenario_id,
-                                 "representative_scenario_id": parent.scenario_id,
-                                 **proof, "reused": reused is not None})
+                "representative_scenario_id": parent.scenario_id,
+                "kind": "complete_causal", **proof, "reused": reused is not None,
+                "child_revalidated": reused is not None})
+    independent_count = len(first_wave) + len(pending)
     if pending:
-        additional, additional_audit = agent.assess(malfunction, pending, project_registry=project_registry)
+        additional, additional_audit = assess_batch(pending)
         by_id.update({item.scenario_id: item for item in additional})
-        # Preserve existing Provider accounting across both scheduling waves.
-        for key, value in additional_audit.items():
-            previous = audit.get(key)
-            if isinstance(value, list) and isinstance(previous, list):
-                audit[key] = previous + value
-            elif isinstance(value, (int, float)) and not isinstance(value, bool) and isinstance(previous, (int, float)):
-                audit[key] = max(previous, value) if key.startswith("max_") else previous + value
-        audit["usage"] = {"batches": [
-            *audit.get("usage", {}).get("batches", []),
-            *additional_audit.get("usage", {}).get("batches", []),
-        ]}
+        _merge_scenario_audits(audit, additional_audit)
+
+    # Exact tasks can reuse retained, excluded or Pending diagnoses. The compiler
+    # determines child status again; complete=false is not an exact-task blocker.
+    exact_fallback = []
+    for key, members in exact_groups.items():
+        parent = members[0]
+        for child in members[1:]:
+            record = {"scenario_id": child.scenario_id,
+                "representative_scenario_id": parent.scenario_id, "task_key": key,
+                "kind": "exact_input", "reason": "IDENTICAL_EFFECTIVE_TASK",
+                "reused": False, "child_revalidated": False}
+            try:
+                by_id[child.scenario_id] = revalidate(by_id[parent.scenario_id], parent, child)
+                record.update(reused=True, child_revalidated=True)
+            except ValueError as error:
+                record.update(reason="CHILD_EVIDENCE_REVALIDATION_REQUIRED", detail=str(error))
+                exact_fallback.append(child)
+            reuse_records.append(record)
+    if exact_fallback:
+        additional, additional_audit = assess_batch(exact_fallback)
+        by_id.update({item.scenario_id: item for item in additional})
+        _merge_scenario_audits(audit, additional_audit)
+        independent_count += len(exact_fallback)
+    partial_records = {record["scenario_id"]: record
+                       for record in audit.get("partial_evidence_reuse_records", [])}
+    # Non-Provider test agents may expose only compiled results, not batch audit.
+    for identity, shared in partial_contexts.items():
+        partial_records.setdefault(identity, {"scenario_id": identity,
+            "representative_scenario_id": shared["reused_from"], "kind": "partial_causal",
+            "shared_steps": ["m_to_b"], "remaining_steps": "independently validated",
+            "reused": by_id[identity].causal_chain.get("m_to_b") == shared["m_to_b"]})
+    reuse_records.extend(partial_records.values())
     assessments = [by_id[candidate.scenario_id] for candidate in candidates]
     audit.update(candidate_count=len(candidates), expected_count=len(candidates),
                  returned_count=len(assessments), retained_count=sum(item.retain for item in assessments))
+    counts = {kind: sum(r["kind"] == kind and r["reused"] for r in reuse_records)
+              for kind in ("exact_input", "complete_causal", "partial_causal")}
     audit["causal_reuse"] = {
-        "candidate_count": len(candidates), "representative_count": len(representatives),
-        "independently_assessed_count": len(representatives) + len(pending),
-        "reused_count": sum(record["reused"] for record in reuse_records),
+        "mode": "EXACT_THEN_REPRESENTATIVE_AND_SHARED_EVIDENCE",
+        "candidate_count": len(candidates), "unique_exact_inputs": len(unique),
+        "representative_count": len(representatives),
+        "co_batched_independent_members": len(prebatched),
+        "independently_assessed_count": independent_count,
+        "reused_count": counts["exact_input"] + counts["complete_causal"],
+        "exact_input_reuse": counts["exact_input"],
+        "complete_causal_reuse": counts["complete_causal"],
+        "partial_causal_reuse": counts["partial_causal"],
+        "partial_context_offered": len(partial_records),
+        "common_evidence_batches": audit.get("shared_context_batch_count", 0),
+        "requests": audit.get("actual_llm_calls", 0),
+        "response_checkpoint_hits": audit.get("response_checkpoint_hits", 0),
+        "exact_task_checkpoint_hits": len(restored),
         "records": reuse_records,
+        "exact_mapping": [{"task_key": key, "representative_scenario_id": members[0].scenario_id,
+                           "scenario_ids": [member.scenario_id for member in members],
+                           "identity_contexts": {member.scenario_id: {"object_id": member.facts.get("object_id", member.scenario_id + ":target")}
+                                                 for member in members}}
+                          for key, members in exact_groups.items()],
     }
     audit["analytical_scenario_instantiation"] = instantiation
     return assessments, audit
+
+
+def _merge_scenario_audits(audit, additional):
+    """Account every actual request/repair/cache event across scheduling waves."""
+    for key, value in additional.items():
+        previous = audit.get(key)
+        if previous is None:
+            audit[key] = deepcopy(value)
+        elif isinstance(value, list) and isinstance(previous, list):
+            audit[key] = previous + value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool) and isinstance(previous, (int, float)):
+            audit[key] = max(previous, value) if key.startswith("max_") else previous + value
+        elif key in {"error_counts_by_code", "transport_error_counts", "repair_failure_by_code", "evidence_selection_reason"}:
+            audit[key] = {code: previous.get(code, 0) + value.get(code, 0) for code in previous.keys() | value.keys()}
+    audit["usage"] = {"batches": [*audit.get("usage", {}).get("batches", []),
+                                 *additional.get("usage", {}).get("batches", [])]}
 
 
 def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
@@ -381,6 +510,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         lambda malfunction: _assess_instantiated_scenarios(
             agent, malfunction, contextual_candidates[malfunction.malfunction_id],
             instantiation_audit[malfunction.malfunction_id], project_registry,
+            prior_batch=cache.get(malfunction.malfunction_id),
         ),
         max_workers=max_workers,
         on_progress=(

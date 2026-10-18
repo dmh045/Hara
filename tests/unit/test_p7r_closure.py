@@ -86,8 +86,8 @@ def test_contact_model_boundaries(initial, accel, distance, horizon, status, tim
 
 def test_equivalence_keeps_sources_slope_and_time_but_ignores_generated_identity():
     from hara_agent.services.analysis.scenario_equivalence import scenario_conditions
-    a = candidate(scenario_atom_ids=['slope'], slope_percent=15, slope_direction='UP', impact_time_id='event-a')
-    b = deepcopy(a); b.scenario_id = 'SC-B'; b.facts['impact_time_id'] = 'event-b'
+    a = candidate(scenario_atom_ids=['slope'], slope_percent=15, slope_direction='UP', impact_time_id='IMPACT-a')
+    b = deepcopy(a); b.scenario_id = 'SC-B'; b.facts['impact_time_id'] = 'IMPACT-b'
     assert scenario_conditions(a) == scenario_conditions(b)
     b.facts['slope_direction'] = 'DOWN'
     assert scenario_conditions(a) != scenario_conditions(b)

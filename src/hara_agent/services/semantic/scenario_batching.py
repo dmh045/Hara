@@ -102,6 +102,8 @@ def _scenario_json(
                 for key in ("hypothesis_id", "hypothesis", "sample_parameters", "calculation_nature")
                 if key in scenario.analysis_instance.get("physical_hypothesis", {})},
             "causal_evidence_view": selection.compact_view,
+            **({"shared_causal_evidence": scenario.analysis_instance["shared_causal_evidence"]}
+               if scenario.analysis_instance.get("shared_causal_evidence") else {}),
             **(
                 {
                     "analysis_scenario_assumptions": scenario.analysis_instance.get(

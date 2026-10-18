@@ -203,8 +203,8 @@ def test_projection_does_not_publish_stale_values_when_trace_says_scoring_not_in
         }]},
     )
 
-    assert view.rows[0].severity == "Pending"
-    assert view.rows[0].asil == "Pending"
+    assert view.rows[0].severity == "待评定"
+    assert view.rows[0].asil == "待评定"
     assert "暂不展示旧值" in view.rows[0].severity_rationale
     assert view.rows[0].remark == "S 未计算；E 未计算；C 未计算；ASIL 未计算"
     assert view.rows[0].assessment_status == "PENDING — RISK SCORING NOT EXECUTED"

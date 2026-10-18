@@ -68,7 +68,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v23-conditional-physical-worlds"
+    PROMPT_VERSION = "scenario-feasibility-v24-local-reuse-evidence"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -100,8 +100,7 @@ OUTPUT CONTRACT
 输出 assessments 数组，每个请求 scenario_id 恰好一项。每项包含 scenario_id、physically_feasible、functionally_relevant、causally_relevant (JSON boolean)、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、physical_interaction、confidence (0..1)、status (PENDING/FINALIZED)。physical_interaction 按上面的对象/阶段结构返回，无当前外部目标主张时返回 {"target":"OTHER"}，不可省略。
 causal_chain 是对象而非数组，结构 {"m_to_b":{"claim":"...","basis_type":"DIRECT_FACT","evidence_refs":[]},"b_to_i":{...},"i_to_h":{...}}。所有返回的 hop 必须有非空 claim；示例只说明结构，不构成证据。
 risk_dimension_changes 每项含 dimension、evidence_refs、reason；只选择当前事实明确需要重评的维度，使用用户提示中的枚举，不输出 risk_dimensions_changed 或 rationale。
-若不能证明跨驾驶员分支的无关性，dependency_metadata 只返回 {"complete":false}。
-只有完整枚举所有适用性与 M→B→I→H 输入时才可 complete=true，并给出 causal_evidence_fields、physical_feasibility_fields、scenario_identity_fields、noninterference_fields（场景字段名数组）及 child_subset_refinement（证明理由）。缺少引用不等于无关；驾驶员会影响使能、触发或危险形成时必须各自分析。"""
+可选 dependency_metadata 保持 complete=false；driver_noninterference 分 enablement/trigger/interaction/hazard 四项，每项 {independent:boolean,evidence_refs:[],reason:"依据"}。仅精确证据证明不受驾驶员影响时为true，缺少引用不证明无关。shared_causal_evidence 只复用当前有效共同步骤；差异步骤仍独立判断并返回完整链。"""
 
     MACHINE_OUTPUT_RULE = """MACHINE OUTPUT RULE
 Return exactly one JSON object {"assessments": [...]} with valid JSON strings, no markdown, comments, trailing commas or explanation outside JSON.
@@ -186,6 +185,7 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
         assessments: list[ScenarioFeasibilityAssessment] = []
         batch_usages, models, request_ids = [], [], []
         stats: dict[str, Any] = {
+            "shared_context_batch_count": 0,
             "adaptive_split_count": 0,
             "adaptive_split_reasons": {},
             "initial_batch_provider_calls": 0,
@@ -236,8 +236,24 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             "markdown_fence_normalizations": 0,
         }
         started = time.monotonic()
+        partial_records = []
         for batch_index, batch in enumerate(batches, start=1):
-            assessments.extend(self._assess_batch_adaptively(
+            original_batch = batch
+            anchor = next((a for a in assessments if
+                a.causal_chain.get("m_to_b", {}).get("basis_type") == "DIRECT_FACT"
+                and a.causal_chain["m_to_b"].get("evidence_refs")
+                and all(ref.startswith("MF.") for ref in a.causal_chain["m_to_b"]["evidence_refs"])), None)
+            if anchor is not None:
+                batch = [replace(candidate, analysis_instance={**candidate.analysis_instance,
+                    "shared_causal_evidence": {"reused_from": anchor.scenario_id,
+                                               "m_to_b": anchor.causal_chain["m_to_b"]}})
+                    if not candidate.analysis_instance.get("shared_causal_evidence") else candidate
+                    for candidate in batch]
+                if (len(batch) > 1 and len(self.system_prompt + self.MACHINE_OUTPUT_RULE)
+                        + len(build_scenario_user_prompt(malfunction, batch, project_registry,
+                                                        self.causal_evidence_budget)) > self.batch_max_chars):
+                    batch = original_batch  # optional context must not create an extra request
+            returned = self._assess_batch_adaptively(
                 malfunction, batch,
                 parent_batch=f"{batch_index}/{len(batches)}",
                 split_path="root",
@@ -247,7 +263,16 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                 models=models,
                 request_ids=request_ids,
                 project_registry=project_registry,
-            ))
+            )
+            by_id = {assessment.scenario_id: assessment for assessment in returned}
+            for candidate in batch:
+                shared = candidate.analysis_instance.get("shared_causal_evidence", {})
+                if shared:
+                    partial_records.append({"scenario_id": candidate.scenario_id,
+                        "representative_scenario_id": shared["reused_from"], "kind": "partial_causal",
+                        "shared_steps": ["m_to_b"], "remaining_steps": "independently validated",
+                        "reused": by_id[candidate.scenario_id].causal_chain.get("m_to_b") == shared["m_to_b"]})
+            assessments.extend(returned)
         self._validate(assessments, ids)
         order = {scenario_id: index for index, scenario_id in enumerate(ids)}
         assessments.sort(key=lambda item: order[item.scenario_id])
@@ -270,9 +295,11 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             "models": models,
             "request_ids": request_ids,
             "usage": {"batches": batch_usages},
+            "partial_evidence_reuse_records": partial_records,
             "candidate_count": len(scenarios),
             "retained_count": sum(item.retain for item in assessments),
             "batch_count": len(batches),
+            "shared_context_batch_count": stats["shared_context_batch_count"],
             "initial_batch_count": len(batches),
             "adaptive_split_count": stats["adaptive_split_count"],
             "leaf_batch_count": len(stats["leaf_items"]),
@@ -413,6 +440,8 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             stats["initial_batch_provider_calls"] += 1
         try:
             response = self._complete_json(request)
+            if len(scenarios) == 2 and '"shared_context"' in user_prompt and not response.usage.get("response_checkpoint_hit"):
+                stats["shared_context_batch_count"] += 1
             if response.usage.get("response_checkpoint_hit") and split_path == "root":
                 stats["initial_batch_provider_calls"] -= 1
         except (LLMOutputLimitError, LLMTimeoutError) as exc:
@@ -1662,14 +1691,30 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             risk_dimension_changes=list(item.get("risk_dimension_changes", [])),
             evidence_contract_version=SCENARIO_ASSESSMENT_CONTRACT_VERSION,
             causal_assessment=causal_assessment,
-            dependency_metadata=ScenarioFeasibilityAgent._dependencies(item, scenario),
+            dependency_metadata=ScenarioFeasibilityAgent._dependencies(
+                item, scenario, build_fact_registry(malfunction, scenario, project_registry)),
             physical_interaction=dict(interaction),
         )
 
     @staticmethod
-    def _dependencies(item: dict, scenario: ScenarioCandidate) -> dict:
+    def _dependencies(item: dict, scenario: ScenarioCandidate, registry=None) -> dict:
         """Invalid optional reuse metadata never upgrades or rejects causality."""
         value = item.get("dependency_metadata", {})
+        if not isinstance(value, dict):
+            return {}
+        local = value.get("driver_noninterference", {})
+        valid_local = {}
+        for aspect in ("enablement", "trigger", "interaction", "hazard"):
+            record = local.get(aspect, {}) if isinstance(local, dict) else {}
+            refs = record.get("evidence_refs", []) if isinstance(record, dict) else []
+            if (registry and isinstance(refs, list) and refs and all(isinstance(ref, str)
+                    and registry.resolve_record(ref) is not None
+                    and registry.resolve_record(ref).approval_status.value == "FINALIZED" for ref in refs)
+                    and isinstance(record.get("independent"), bool)
+                    and isinstance(record.get("reason"), str) and record["reason"].strip()):
+                valid_local[aspect] = {"independent": record["independent"],
+                    "evidence_refs": sorted(set(refs)), "reason": record["reason"]}
+        extra = {"driver_noninterference": valid_local} if len(valid_local) == 4 else {}
         fields = ("causal_evidence_fields", "physical_feasibility_fields",
                   "scenario_identity_fields", "noninterference_fields")
         allowed = set(scenario.facts) | {"driver_position", "allowed_driver_position", "driver_in_vehicle"}
@@ -1679,9 +1724,9 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                 or any(not isinstance(value.get(key), list) or any(
                     not isinstance(field, str) or field not in allowed for field in value[key]
                 ) for key in fields)):
-            return {}
+            return {"complete": False, **extra} if value else {}
         return {"complete": True, "child_subset_refinement": value["child_subset_refinement"],
-                **{key: sorted(set(value[key])) for key in fields}}
+                **{key: sorted(set(value[key])) for key in fields}, **extra}
 
     def _validate(self, assessments: list[ScenarioFeasibilityAssessment], expected_ids: list[str]):
         actual = [item.scenario_id for item in assessments]

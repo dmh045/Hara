@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import json
 from typing import Any
@@ -52,6 +52,8 @@ def scenario_conditions(scenario: ScenarioCandidate, *, without_driver: bool = F
     instance = getattr(scenario, "analysis_instance", {})
     local_ids.update(instance.get("equivalent_parent_ids", []))
     local_ids.discard("")
+    aliases = {identity: "$PARENT" for identity in local_ids}
+    aliases[scenario.scenario_id] = "$SCENARIO"
     phases = {}
 
     def semantic(value, key=""):
@@ -59,21 +61,64 @@ def scenario_conditions(scenario: ScenarioCandidate, *, without_driver: bool = F
             result = {name: semantic(item, name) for name, item in sorted(value.items())
                     if name not in {"branch_id", "semantic_fingerprint", "display_label"}}
             if value.get("source_type") == "parent_scenario" and value.get("source_id") in local_ids:
-                result["source_id"] = "$LOCAL_SCOPE"
+                result["source_id"] = aliases[value["source_id"]]
             return result
         if isinstance(value, (list, tuple)):
             result = [semantic(item, key) for item in value]
             return sorted(result, key=lambda item: json.dumps(item, sort_keys=True, default=str)) if key in {"source_refs", "scenario_atom_ids"} else result
         if key in {"scenario_id", "parent_scenario_id"} and value in local_ids:
-            return "$LOCAL_SCOPE"
+            return aliases[value]
         if key == "hazardous_event_id" and isinstance(value, str):
-            return "::".join("$LOCAL_SCOPE" if part in local_ids else part for part in value.split("::"))
-        if key in {"impact_time_id", "trajectory_id"} and value:
+            return "::".join(aliases.get(part, part) for part in value.split("::"))
+        if key == "object_id" and isinstance(value, str):
+            # Only generated local aliases; actual target identity stays exact.
+            for identity in local_ids:
+                if value.startswith(identity + ":"):
+                    return aliases[identity] + value[len(identity):]
+        if (key in {"impact_time_id", "trajectory_id"} and isinstance(value, str)
+                and value.startswith(("IMPACT-", "TRAJECTORY-"))):
             phases.setdefault(str(value), f"$PHASE_{len(phases)}")
             return phases[str(value)]
         return value
 
     return semantic({"operating_mode": scenario.operating_mode, "facts": facts, "fact_authority": authority})
+
+
+def exact_task_key(agent, malfunction, scenario, project_registry=None) -> str:
+    """Task identity includes all effective versions and raw, unrounded inputs."""
+    config = getattr(getattr(agent, "client", None), "config", None)
+    return signature({
+        "version": "exact-scenario-task-v1", "malfunction": asdict(malfunction),
+        "conditions": scenario_conditions(scenario),
+        "sources": sorted((asdict(ref) for ref in scenario.sources), key=signature),
+        "scenario_contract": scenario.scenario_contract_version,
+        "assumptions": scenario.analysis_instance.get("assumptions", []),
+        "method": getattr(agent, "method_execution_identity", {}),
+        "prompt": getattr(agent, "prompt_version", ""),
+        "contract": getattr(agent, "assessment_contract_version", ""),
+        "evidence_budget": getattr(agent, "causal_evidence_budget", None),
+        "project": project_registry.snapshot(include_values=True) if project_registry else {},
+        "route": {key: getattr(config, key, "") for key in
+                  ("provider", "model", "base_url", "scenario_thinking")},
+    })
+
+
+def rebind_assessment_payload(assessment: dict, parent, child, changed_fields=()) -> dict:
+    """Map typed identity fields only; claims and quotations are never replaced."""
+    fields = {"physically_feasible", "functionally_relevant", "causally_relevant",
+              "breakpoint", "causal_chain", "risk_dimension_changes", "hazardous_event",
+              "confidence", "dependency_metadata", "physical_interaction"}
+    payload = deepcopy({key: value for key, value in assessment.items() if key in fields})
+    payload["scenario_id"] = child.scenario_id
+    interaction = payload.get("physical_interaction", {})
+    old_object = parent.facts.get("object_id", parent.scenario_id + ":target")
+    new_object = child.facts.get("object_id", child.scenario_id + ":target")
+    if interaction.get("object_id") == old_object:
+        interaction["object_id"] = new_object
+    changed_refs = {"SCN." + field for field in changed_fields}
+    payload["risk_dimension_changes"] = [change for change in payload.get("risk_dimension_changes", [])
+        if not changed_refs.intersection(change.get("evidence_refs", []))]
+    return payload
 
 
 def coalesce_candidates(candidates: list[ScenarioCandidate]) -> tuple[list[ScenarioCandidate], list[dict]]:
@@ -127,12 +172,22 @@ def driver_reuse_proof(assessment: dict, parent: ScenarioCandidate, child: Scena
     dependencies = set().union(*(set(metadata.get(key, [])) for key in (
         "causal_evidence_fields", "physical_feasibility_fields", "scenario_identity_fields")))
     declared = set(metadata.get("noninterference_fields", []))
-    if (metadata.get("complete") is not True or not metadata.get("child_subset_refinement")
-            or not set(changed) <= declared or set(changed) & dependencies):
+    local = metadata.get("driver_noninterference", {})
+    local_valid = (all(isinstance(local.get(aspect), dict)
+                       and local[aspect].get("independent") is True
+                       and local[aspect].get("evidence_refs") and local[aspect].get("reason")
+                       for aspect in ("enablement", "trigger", "interaction", "hazard")))
+    global_valid = (metadata.get("complete") is True and metadata.get("child_subset_refinement")
+                    and set(changed) <= declared)
+    if (not (global_valid or local_valid) or set(changed) & dependencies):
         return {"reusable": False, "reason": "DRIVER_NONINTERFERENCE_NOT_PROVEN"}
     causal_refs = {ref for hop in assessment.get("causal_chain", {}).values()
                    if isinstance(hop, dict) for ref in hop.get("evidence_refs", [])}
     if any(ref.removeprefix("SCN.") in changed for ref in causal_refs):
         return {"reusable": False, "reason": "DRIVER_FACT_USED_BY_CAUSAL_CHAIN"}
-    return {"reusable": True, "reason": "VERIFIED_DRIVER_NONINTERFERENCE",
+    local_refs = {ref for aspect in local.values() if isinstance(aspect, dict)
+                  for ref in aspect.get("evidence_refs", [])}
+    if any(ref.removeprefix("SCN.") in changed for ref in local_refs):
+        return {"reusable": False, "reason": "DRIVER_FACT_USED_BY_LOCAL_PROOF"}
+    return {"reusable": True, "reason": "VERIFIED_DRIVER_NONINTERFERENCE" if global_valid else "LOCAL_DRIVER_NONINTERFERENCE",
             "changed_fields": changed, "dependency_metadata": metadata}

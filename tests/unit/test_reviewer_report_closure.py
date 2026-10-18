@@ -209,7 +209,8 @@ def test_p6_j_k_proven_report_group_retains_all_detail_and_identity_mapping():
     assert len(view.scenario_details) == len(view.audit_references) == 3
     mapping = view.projection_metrics["grouping_map"]
     assert mapping[0]["hara_id"] == view.rows[0].hara_id
-    assert mapping[0]["basis"] == "risk_equivalent"
+    assert mapping[0]["basis"] == "review_display"
+    assert all(key[0] == "risk_equivalent" for key in mapping[0]["risk_equivalence_keys"])
     assert set(mapping[0]["scenario_ids"]) == {"SCN-1", "SCN-2", "SCN-3"}
     assert set(mapping[0]["assessment_ids"]) == {"RA-1", "RA-2", "RA-3"}
     assert state == before
@@ -230,8 +231,10 @@ def test_p6_j_different_risk_conditions_do_not_merge_despite_equal_ratings(diffe
     else:
         state.risk_results[2].exposure = _pending()
     view = HARAReportProjectionService(load_report_schema()).project(state, _method())
-    assert len(view.rows) == 2
+    assert len(view.rows) == (2 if difference in {"harm", "causal_path"} else 1)
     assert len(view.scenario_details) == 3
+    keys = [key for group in view.projection_metrics["grouping_map"] for key in group["risk_equivalence_keys"]]
+    assert keys[2] is None or keys[2] != keys[0]
 
 
 def test_text_mapper_preserves_range_and_uses_only_finalized_point_speed():
@@ -443,9 +446,9 @@ def test_driver_branches_and_trial_values_remain_distinct_in_formal_report(tmp_p
     assert "驾驶员不在驾驶位" in view.rows[1].operational_scenario
     assert view.rows[0].remark == "S 已计算；E 已计算；C 已计算；ASIL 已计算"
     assert view.rows[1].remark == "S 已计算；E 待审试算；C 待审试算；ASIL 待审试算"
-    assert view.rows[1].exposure == "E3（试算）"
-    assert view.rows[1].asil == "B（试算）"
-    assert "待审分析设定" in view.rows[1].exposure_rationale
+    assert view.rows[1].exposure == "E3"
+    assert view.rows[1].asil == "B"
+    assert "待审试算" in view.rows[1].remark
     assert view.projection_metrics["score_status_counts"]["asil"] == {
         "calculated": 1, "conditional_trial": 1, "uncalculated": 0,
     }

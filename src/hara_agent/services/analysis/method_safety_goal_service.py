@@ -42,14 +42,18 @@ class MethodSafetyGoalService:
         asil: str,
     ) -> dict[str, str]:
         sg_id = self._intent_id(function_name, guideword, malfunction)
-        safety_goal = (
+        original_safety_goal = (
             f"避免发生因{guideword}{function_name}而导致"
             f"{scenario_description}发生{hazard_event}。"
         )
-        safe_state = "待依据MethodContract与项目能力完成工程推导"
+        # Scope/parameters belong to associations, not the shared intent sentence.
+        safety_goal = "防止" + malfunction.strip().rstrip("。；") + "。"
+        safe_state = "待确定"
         entry = self.catalog.setdefault(sg_id, {
             "sg_id": sg_id,
             "safety_goal": safety_goal,
+            "original_safety_goal": original_safety_goal,
+            "display_basis": "existing malfunction intent; complete member scope in associations",
             "safety_state": safe_state,
             "max_asil": asil,
             "functions": [],

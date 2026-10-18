@@ -4,6 +4,8 @@ from collections.abc import Mapping
 import re
 from typing import Any
 
+from .quantity_format import quantity, quantity_range, FIELD_UNITS
+
 
 def _status(evidence: Any) -> str:
     value = getattr(evidence, "status", "")
@@ -17,7 +19,7 @@ class EngineeringReportTextMapper:
     facts nor makes a risk-method decision.
     """
 
-    _PENDING_VALUE = "Pending"
+    _PENDING_VALUE = "待评定"
     _CATEGORY_TEXT = {
         "LOCATION_PARKING": "停车场内",
         "LOCATION_MOTORWAY": "高速公路",
@@ -83,6 +85,11 @@ class EngineeringReportTextMapper:
         "EGO_DYNAMICS": "自车动态",
         "OBJECT": "对象/交通参与者",
     }
+    _CONDITION_TEXT = {
+        "stationary target": "静止目标",
+        "offline proposal; no live validation": "离线方案，未做真实模型验证",
+        "moving targets; real capability bound unknown": "移动目标未覆盖，车辆真实能力上界未知",
+    }
 
     @staticmethod
     def _has_reason(value: Any, token: str) -> bool:
@@ -93,9 +100,8 @@ class EngineeringReportTextMapper:
         return cls._MODE_TEXT.get(str(mode or "").strip().casefold(), "")
 
     @staticmethod
-    def _number(value: Any) -> str:
-        number = float(value)
-        return f"{number:g}"
+    def _number(value: Any, unit: str = "km/h") -> str:
+        return quantity(value, unit)
 
     @classmethod
     def speed_text(cls, scenario: Any) -> str:
@@ -288,41 +294,42 @@ class EngineeringReportTextMapper:
             ("TTC", ttc, "s"),
         )
         parts = [
-            f"{label}：{cls._number(number)} {unit}"
+            f"{label}：{cls._number(number, unit)} {unit}"
             for label, number, unit in quantities
             if isinstance(number, (int, float)) and not isinstance(number, bool)
         ]
         model = facts.get("fault_motion_model")
         analysis = facts.get("physical_analysis", {})
         if analysis:
-            parts.append("条件性分析；LLM 假设未获工程批准，未证明真实车辆上界")
             labels = {"ego_speed_kph": "初速(km/h)", "relative_distance_m": "行程(m)",
                 "longitudinal_acceleration_mps2": "纵向加速度(m/s²)", "slope_percent": "坡度(%)",
                 "residual_resistance_mps2": "残余阻力减速度(m/s²)", "lateral_clearance_m": "侧向净距(m)",
                 "lateral_speed_mps": "初始侧速(m/s)", "lateral_acceleration_mps2": "侧向加速度(m/s²)",
                 "model_valid_until_s": "模型时域(s)", "post_fault_speed_cap_kph": "残余限速(km/h)"}
-            parts.append("假设实例：" + ", ".join(f"{labels.get(key, key)}={value}" for key, value in analysis.get("sample_parameters", {}).items()))
+            parts.append("假设实例：" + ", ".join(f"{labels.get(key, key)}={quantity(value, FIELD_UNITS.get(key, ""))}" for key, value in analysis.get("sample_parameters", {}).items()))
             for parameter in analysis.get("hypothesis", {}).get("parameters", []):
                 if parameter["kind"] == "SYMBOLIC":
                     parts.append(f"符号条件：{labels.get(parameter['field'], parameter['field'])}={parameter['symbol']}")
                 elif parameter["kind"] == "RANGE":
-                    parts.append(f"假设范围：{labels.get(parameter['field'], parameter['field'])}=[{parameter['lower']}, {parameter['upper']}]；有限采样未证明连续不变性")
+                    parts.append(f"假设范围：{labels.get(parameter['field'], parameter['field'])}={quantity_range(parameter['lower'], parameter['upper'], FIELD_UNITS.get(parameter['field'], ''))}；有限采样未证明连续不变性")
             if any(p["kind"] == "SYMBOLIC" for p in analysis.get("hypothesis", {}).get("parameters", [])):
                 boundaries = analysis.get("sensitivity", {}).get("method_boundaries", [])
                 parts.append("参数关系：v²=v₀²+2ad；d=v₀t+at²/2（首次接触且模型持续有效）" if model == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE" else "参数关系见物理 trace")
-                parts.extend(f"方法边界：{labels.get(row['parameter'], row['parameter'])}={row['boundary']:.4g}，{row.get('method_rule_id', '运动成立边界')}"
+                parts.extend(f"边界条件：{labels.get(row['parameter'], row['parameter'])}≈{quantity(row['boundary'], FIELD_UNITS.get(row['parameter'], ''))}；精确关系见物理追溯"
                     for row in boundaries[:3] if isinstance(row.get("boundary"), (float, int)))
             grade = analysis.get("grade_mapping", {})
             if grade:
-                parts.append(f"坡向来源标签：{grade.get('source_tag') or '未注明'}；原参考方向：{grade.get('source_reference')}")
+                parts.append(f"坡向来源标签：{grade.get('source_tag') or '未注明'}；原参考方向：{ {'EGO_FORWARD': '车头前向', 'ROAD_REFERENCE': '道路参考向', 'UNSPECIFIED': '未注明'}.get(grade.get('source_reference'), '见来源')}")
                 parts.append("朝向假设：" + ("车头朝上坡，重力向车后" if grade.get("ego_heading_relative_to_downhill") == "UPHILL" else "车头朝下坡，重力向车前"))
             inherited = [labels.get(field, field) for field, record in analysis.get("model_input_view", {}).items() if record.get("action") == "INHERITED"]
             if inherited:
                 parts.append("相容父输入继承：" + "、".join(inherited))
-            parts.append("适用条件：" + "；".join(analysis.get("hypothesis", {}).get("conditions", [])))
-            parts.append("未覆盖：" + "；".join(analysis.get("sensitivity", {}).get("uncovered_conditions", [])))
+            parts.append("适用条件：" + "；".join(cls._CONDITION_TEXT.get(text, text)
+                for text in analysis.get("hypothesis", {}).get("conditions", [])))
+            parts.append("未覆盖：" + "；".join(cls._CONDITION_TEXT.get(text, text)
+                for text in analysis.get("sensitivity", {}).get("uncovered_conditions", [])))
             if facts.get("first_contact_time_s") is not None:
-                parts.append(f"侧向首次接触：{facts['first_contact_time_s']} s（不作为纵向 TTC）")
+                parts.append(f"侧向首次接触：{quantity(facts['first_contact_time_s'], 's')} s（不作为纵向 TTC）")
             parts.append("假设追溯：" + str(analysis.get("plan_key", ""))[:12] + ":" + str(analysis.get("hypothesis_id", "")).split(":", 1)[-1])
         if model == "CONSTANT_SPEED_REPRESENTATIVE":
             parts.append("恒速代表工况；用于所列碰撞条件，不是故障最大速度包络")
@@ -331,8 +338,6 @@ class EngineeringReportTextMapper:
                 "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": "恒加速度至首次接触",
                 "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "侧向恒加速度至首次接触"}
             parts.append(f"运动模型：{names.get(model, model)}")
-        if facts.get("impact_time_id"):
-            parts.append(f"碰撞时点：{facts['impact_time_id']}")
         if not any(part.startswith("TTC：") for part in parts) and (
             str(derived.get("closing_speed_status", "")) == "TTC_NOT_CLOSING"
         ):
@@ -393,7 +398,7 @@ class EngineeringReportTextMapper:
         if not isinstance(control, Mapping) or not control:
             return ""
         if control.get("decision_status") == "MODEL_NOT_APPLICABLE":
-            return "侧向接触模型；当前方法无适用 C 规则，局部 Pending"
+            return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
         if control.get("decision_status") == "MODEL_DEPENDENCY_UNRESOLVED":
             return "故障影响规避控制；C 方法依赖尚未成立"
         stage = {
@@ -407,10 +412,12 @@ class EngineeringReportTextMapper:
             parts.extend(f"命中规则：{item}" for item in rule_ids if str(item))
         policy = str(control.get("unknown_override_policy", ""))
         if policy:
-            parts.append(f"未知覆盖策略：{policy}")
+            parts.append("未知干预条件的处理：" + {"SKIP_TO_TTC": "进入 TTC 分档",
+                "UNSPECIFIED": "方法尚未明确", "PENDING": "保留待评定"}.get(policy, "见方法依据"))
         action = str(control.get("unknown_policy_action", ""))
         if action and action not in {"NOT_INVOKED", ""}:
-            parts.append(f"策略处理：{action}")
+            if action != policy:
+                parts.append("处理结果：" + {"SKIP_TO_TTC": "进入 TTC 分档"}.get(action, "见方法依据"))
         return "；".join(parts)
 
     @staticmethod
@@ -562,11 +569,78 @@ class EngineeringReportTextMapper:
         return "；".join(dict.fromkeys(clauses)).rstrip("。") + "。" if clauses else "待危险事件确认。"
 
     def pending_value(self, evidence: Any) -> str:
-        return "Not applicable" if _status(evidence) == "NOT_APPLICABLE" else self._PENDING_VALUE
+        return self._PENDING_VALUE
+
+    @classmethod
+    def known_inputs(cls, facts: Mapping[str, Any]) -> str:
+        labels = {"ego_speed_kph": "初始自车速度", "object_speed_kph": "目标速度",
+                  "relative_speed_kph": "相对速度", "relative_distance_m": "相对距离",
+                  "ttc_s": "TTC", "longitudinal_acceleration_mps2": "纵向加速度"}
+        parts = [f"{label} {quantity(facts[field], FIELD_UNITS[field])} {FIELD_UNITS[field]}"
+                 for field, label in labels.items() if facts.get(field) is not None]
+        position = cls._POSITION_TEXT.get(str(facts.get("object_position", "")).lower())
+        if position:
+            parts.append(position + "目标")
+        directions = {"FORWARD": "前进", "REVERSE": "倒车", "STATIONARY": "静止", "LATERAL": "侧向运动"}
+        for field, label in (("ego_longitudinal_direction", "自车"), ("object_longitudinal_direction", "目标")):
+            if facts.get(field) in directions:
+                parts.append(label + directions[facts[field]])
+        if facts.get("fault_motion_model"):
+            parts.append("所选运动模型见场景明细")
+        return "、".join(parts)
+
+    @classmethod
+    def condition_combination(cls, scenario: Any) -> str:
+        """One observed combination, never a product of independent value lists."""
+        facts = scenario.facts
+        grade = facts.get("physical_analysis", {}).get("grade_mapping", {})
+        values = [
+            {"FORWARD": "前进", "REVERSE": "倒车", "STATIONARY": "初始静止"}.get(
+                str(facts.get("ego_longitudinal_direction", "")).upper(), "运动方向待定"),
+            cls._POSITION_TEXT.get(str(facts.get("object_position", "")).lower(), "目标方位待定") + "目标",
+            {"UPHILL": "车头朝上坡", "DOWNHILL": "车头朝下坡"}.get(
+                grade.get("ego_heading_relative_to_downhill"), ""),
+            {"in_driver_seat": "在驾驶位", "outside_driver_seat": "不在驾驶位"}.get(
+                facts.get("driver_position"), ""),
+        ]
+        return "＋".join(value for value in values if value)
+
+    @staticmethod
+    def safety_intent(malfunctions: list[str], original: str) -> str:
+        """Restate the existing prohibited output; never add a control measure."""
+        intents = list(dict.fromkeys(text.strip().rstrip("。；") for text in malfunctions if text.strip()))
+        if len(intents) == 1:
+            return "防止" + intents[0] + "。"
+        # Distinct intents must remain visible, not collapse to the first member.
+        return "；".join("防止" + text for text in intents) + "。" if intents else original
+
+    @staticmethod
+    def branch_result(branch: Mapping[str, Any]) -> str:
+        scores = " / ".join(str(branch.get(key) or "待评定") for key in ("S", "E", "C", "ASIL"))
+        parts = [f"分支 {branch.get('branch_id', '')}：{scores}"]
+        context = branch.get("risk_context", {})
+        for field, labels in (
+            ("road_user_type", {"PEDESTRIAN": "行人", "CYCLIST": "骑行者", "VEHICLE": "车辆", "PASSENGER_CAR": "乘用车", "FIXED_OBJECT": "固定障碍物"}),
+            ("collision_type", {"FRONTAL": "正面碰撞", "REAR_END": "追尾碰撞", "SIDE": "侧向碰撞", "LATERAL": "侧向碰撞"}),
+        ):
+            value = context.get(field, {})
+            if isinstance(value, Mapping) and value.get("value") in labels:
+                parts.append(labels[value["value"]])
+        if branch.get("relative_speed_kph") is not None:
+            parts.append("碰撞相对速度 " + quantity(branch["relative_speed_kph"], "km/h") + " km/h")
+        if branch.get("ttc_s") is not None:
+            parts.append("TTC " + quantity(branch["ttc_s"], "s") + " s")
+        elif branch.get("first_contact_time_s") is not None:
+            parts.append("侧向首次接触 " + quantity(branch["first_contact_time_s"], "s") + " s（非纵向 TTC）")
+        else:
+            parts.append("接触时间待定")
+        return "；".join(parts)
 
     def potential_harm(self, value: Any, *, severity: Any) -> str:
         if str(value or "").strip():
             return str(value)
+        if getattr(severity, "value", None):
+            return "伤害描述待确定"
         if _status(severity) != "FINALIZED":
             return "待S评定完成后确定"
         return self._PENDING_VALUE
@@ -587,10 +661,8 @@ class EngineeringReportTextMapper:
                 "TARGET_OR_PHYSICAL_SOURCE_UNRESOLVED": "碰撞对象、构型或其物理条件尚未由适用来源确定",
             }
             known = production.get("after", {})
-            available = ", ".join(f"{key}={known[key]}" for key in (
-                "ego_speed_kph", "object_speed_kph", "road_user_type", "collision_type",
-            ) if known.get(key) is not None)
-            return f"{reasons.get(production['pending_reason'], production['pending_reason'])}；已有 {available or '来源场景条件'}；S 暂未定。"
+            available = self.known_inputs(known)
+            return f"{reasons.get(production['pending_reason'], '输入生产尚有未决项，具体原因见风险追溯')}；已有 {available or '来源场景条件'}；S 暂未定。"
         reason = str(trace.get("pending_reason", "") or getattr(evidence, "review_reason", ""))
         if self._has_reason(reason, "MISSING_RELATIVE_SPEED"):
             return "缺少该危险事件的实际相对速度，S 暂不评定。"
@@ -600,8 +672,8 @@ class EngineeringReportTextMapper:
             return "缺少碰撞类型信息，S 暂不评定。"
         return "缺少 S 评定所需项目事实，S 暂不评定。"
 
-    def exposure_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
-        if _status(evidence) == "FINALIZED":
+    def exposure_rationale(self, evidence: Any, trace: Mapping[str, Any], *, calculated: bool = False) -> str:
+        if _status(evidence) == "FINALIZED" or calculated:
             requested = str(trace.get("requested_domain", "") or "")
             actual = str(trace.get("domain", trace.get("actual_domain", "")) or "")
             bindings = trace.get("atom_bindings", [])
@@ -638,7 +710,7 @@ class EngineeringReportTextMapper:
                 if requested and actual else "已记录 Exposure 域"
             )
             fallback = "；请求域无可用值，已回退到实际域" if trace.get("scenario_level_fallback") else ""
-            atom_text = "、".join(atoms) if atoms else "无方法要素（S0 短路）"
+            atom_text = "、".join(atoms) if atoms else "方法要素与聚合步骤见风险追溯"
             final_value = str(trace.get("result", getattr(evidence, "value", "")) or "")
             return f"{domain_text}；{atom_text}；{branch_text}{fallback}，最终 {final_value}。"
         readiness = trace.get("input_readiness", {})
@@ -681,8 +753,8 @@ class EngineeringReportTextMapper:
             }
             code = str(diagnostic["reason"])
             known = trace.get("known_physical_inputs", {})
-            available = ", ".join(f"{key}={value}" for key, value in known.items())
-            return f"{labels.get(code, code)}；已有 {available or '场景 Atom'}；C 暂未定。"
+            available = self.known_inputs(known)
+            return f"{labels.get(code, '可控性输入尚有未决项，具体原因见风险追溯')}；已有 {available or '场景方法要素'}；C 暂未定。"
         reason = trace.get("decision_status", "") or getattr(evidence, "review_reason", "")
         if self._has_reason(reason, "METHOD_BRANCH_UNRESOLVED") or self._has_reason(reason, "UNKNOWN_BRANCH_POLICY_UNSPECIFIED"):
             return "未知分支策略未定义，C 暂不评定。"

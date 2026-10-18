@@ -58,6 +58,12 @@ class ScenarioDetailView:
     controllability_branch: str = ""
     analysis_basis: str = ""
     branch_results: str = ""
+    review_group_id: str = ""
+    severity: str = "待评定"
+    exposure: str = "待评定"
+    controllability: str = "待评定"
+    asil: str = "待评定"
+    pending_reasons: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
@@ -150,6 +156,8 @@ class SafetyGoalView:
     safe_state: str
     max_asil: str
     hazard: str
+    original_text: str = ""
+    status: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
