@@ -1031,6 +1031,11 @@ class HARAReportProjectionService:
             for entry in entries
         )
         scope = self._run_scope(state, trace_rows, complete_risk_chain_count)
+        coverage_notes = (run_summary or {}).get("input_coverage_notes", [])
+        if coverage_notes:
+            if not isinstance(coverage_notes, list) or any(not isinstance(note, str) for note in coverage_notes):
+                raise ValueError("Report input coverage notes must be a list of text")
+            scope["scope_note"] = "\n".join(note for note in [scope["scope_note"], *coverage_notes] if note)
 
         method_hash = str(method.metadata.get("method_source_hash", method.metadata.get("template_hash", "")))
         clarification_ids = "; ".join(sorted({

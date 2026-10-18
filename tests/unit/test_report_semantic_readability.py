@@ -61,6 +61,19 @@ def test_real_numeric_sample_keeps_scenario_and_explains_actual_scores(active_me
     assert state == before and trace == trace_before
 
 
+def test_coverage_note_does_not_change_risk_or_approval(active_method, real_sample):
+    state, trace = real_sample
+    before = deepcopy(state)
+    projector = HARAReportProjectionService(load_report_schema())
+    base = projector.project(state, active_method, risk_trace=trace)
+    note = '原文坡度范围未进入当前候选覆盖；不是对全部场景指定实际坡度。'
+    view = projector.project(state, active_method, risk_trace=trace,
+        run_summary={'input_coverage_notes':[note]})
+    assert note in view.summary.scope['scope_note']
+    assert view.rows == base.rows and view.scenario_details == base.scenario_details
+    assert view.safety_goals == base.safety_goals and state == before
+
+
 def test_multiple_members_keep_only_shared_raw_conditions_and_all_ratings(active_method, real_sample):
     state, _ = real_sample
     first = state.scenarios[0]
