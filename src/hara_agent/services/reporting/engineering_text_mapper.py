@@ -484,6 +484,16 @@ class EngineeringReportTextMapper:
                 parts.append(f"{label}：{'；'.join(description)}")
         if all_source_locations:
             parts.append("完整来源位置及规则见本行审计关联")
+        diagnostics = (getattr(scenario, "analysis_instance", {}) or {}).get("physical_plan_diagnostics", [])
+        gap_labels = {
+            "PHYSICAL_MODEL_NOT_APPLICABLE": "当前可用物理模型不覆盖所提出的交互条件，该方案未生成碰撞数值",
+            "TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH": "所提目标不在故障后的运动路径上，该方案未生成碰撞数值",
+        }
+        gaps = dict.fromkeys(gap_labels[item.get("reason")] for item in diagnostics
+                            if isinstance(item, Mapping) and item.get("reason") in gap_labels)
+        if gaps:
+            parts.extend(gaps)
+            parts.append("完整模型缺口及未覆盖范围见场景物理方案诊断")
         return "；".join(parts)
 
     def scenario(self, scenario: Any, *, variant_count: int = 1) -> tuple[str, str]:

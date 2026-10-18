@@ -3,6 +3,7 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from hara_agent.models import EvidenceValue, ReviewStatus
@@ -16,6 +17,20 @@ from test_reuse_reporting_acceptance import active_method
 def real_sample():
     fixture = json.loads((Path(__file__).parents[1] / 'fixtures/report_numeric_physics_e2e_20261019.json').read_text())
     return HARAState.read_committed(fixture['state']), fixture['trace']
+
+
+@pytest.mark.parametrize('reason,text', [
+    ('PHYSICAL_MODEL_NOT_APPLICABLE', '当前可用物理模型不覆盖'),
+    ('TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH', '目标不在故障后的运动路径'),
+])
+def test_model_gap_is_concise_and_preserves_original_diagnostics(reason, text):
+    scenario = SimpleNamespace(facts={}, fact_provenance={}, analysis_instance={
+        'physical_plan_diagnostics': [{'reason':reason, 'uncovered_conditions':['完整未覆盖原文' * 100]}]})
+    before = deepcopy(scenario)
+    value = EngineeringReportTextMapper.analysis_basis(scenario)
+    assert text in value and '未生成碰撞数值' in value
+    assert reason not in value and '完整未覆盖原文' not in value
+    assert scenario == before
 
 
 def test_real_numeric_sample_keeps_scenario_and_explains_actual_scores(active_method, real_sample):
