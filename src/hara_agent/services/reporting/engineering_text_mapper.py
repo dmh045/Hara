@@ -20,6 +20,9 @@ class EngineeringReportTextMapper:
     """
 
     _PENDING_VALUE = "待评定"
+
+    def __init__(self, language: Mapping[str, Any] | None = None):
+        self.language = language or {}
     _CATEGORY_TEXT = {
         "LOCATION_PARKING": "停车场内",
         "LOCATION_MOTORWAY": "高速公路",
@@ -614,6 +617,26 @@ class EngineeringReportTextMapper:
         # Distinct intents must remain visible, not collapse to the first member.
         return "；".join("防止" + text for text in intents) + "。" if intents else original
 
+    def safety_goal_presentation(self, members: list[dict], original: str) -> dict:
+        """Reword supported existing intents, keeping every member's evidence.
+
+        This report-language catalog is deliberately not a new SG generator.
+        Exact source matches cannot silently broaden an unknown member's scope.
+        """
+        records = []
+        for member in members:
+            matches = [rule for rule in self.language.get("safety_goal_rewordings", [])
+                       if rule.get("source") and all(member.get(field) == value
+                           for field, value in rule["source"].items())]
+            unambiguous = len({rule["text"] for rule in matches}) == 1
+            text = matches[0]["text"] if unambiguous else self.safety_intent([member["malfunction"]], original)
+            records.append({**member, "display_text": text,
+                "wording_id": matches[0]["id"] if unambiguous else "original_intent",
+                "basis": matches[0]["source"] if unambiguous else {"malfunction": member["malfunction"]}})
+        texts = list(dict.fromkeys(record["display_text"].rstrip("。；") for record in records))
+        return {"text": "；".join(texts) + "。" if texts else original,
+                "members": records, "nature": "DISPLAY_ONLY_NO_ENGINEERING_APPROVAL"}
+
     @staticmethod
     def branch_result(branch: Mapping[str, Any]) -> str:
         scores = " / ".join(str(branch.get(key) or "待评定") for key in ("S", "E", "C", "ASIL"))
@@ -638,7 +661,7 @@ class EngineeringReportTextMapper:
 
     def potential_harm(self, value: Any, *, severity: Any) -> str:
         if str(value or "").strip():
-            return str(value)
+            return self.language.get("potential_harm_translations", {}).get(str(value), str(value))
         if getattr(severity, "value", None):
             return "伤害描述待确定"
         if _status(severity) != "FINALIZED":

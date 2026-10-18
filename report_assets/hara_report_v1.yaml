@@ -97,6 +97,31 @@ display_policies:
 # Technical trace fields remain canonical and are rendered on 99_Audit, while
 # this list defines the reviewer-facing HARA table in the template shell.
 presentation:
+  # Source-matched wording only: these paraphrases do not create SG identities,
+  # change associations/ratings, or approve engineering requirements. An unknown
+  # or changed source retains its existing text instead of extending the claim.
+  language:
+    safety_goal_rewordings:
+      - id: parking_hold_intent
+        source:
+          malfunction: MDC未输出驻车制动请求信号，驻车制动请求信号完全丢失
+          vehicle_hazard: 车辆停驻后未拉起驻车制动，存在溜车风险
+        text: 防止驻车保持失效导致车辆非预期移动。
+      - id: unintended_acceleration_intent
+        source:
+          malfunction: MDC输出的轮端扭矩控制信号幅值超出需求值，导致实际输出驱动扭矩大于预期
+          vehicle_hazard: 车辆非预期急加速，与前车距离快速缩小或超出道路预期行驶轨迹
+          operating_mode: parking_vehicle_control
+          hazardous_event: 条件性故障运动导致与所列目标接触（离线模拟因果判断）
+        text: 防止泊车过程中非预期加速引发碰撞。
+      - id: parking_braking_loss_intent
+        source:
+          malfunction: MDC未向IPB输出常规泊车制动减速度控制信号或紧急制动信号，制动扭矩输出功能完全丧失
+          vehicle_hazard: 泊车过程中车辆无法按预期减速，存在与周边障碍物碰撞的风险
+        text: 防止泊车制动能力丧失导致碰撞。
+    potential_harm_translations:
+      "Severe injuries, possibly life-threatening, survival probable": 严重伤害，可能危及生命，但生存可能性较高
+      "Light and moderate injuries": 轻度和中度伤害
   main_hara:
     sheet: 04_HARA
     visible_fields:

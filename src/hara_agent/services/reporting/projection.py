@@ -44,7 +44,7 @@ class HARAReportProjectionService:
 
     def __init__(self, schema: ReportSchema):
         self.schema = schema
-        self.text = EngineeringReportTextMapper()
+        self.text = EngineeringReportTextMapper(schema.presentation.get("language", {}))
 
     @staticmethod
     def _run_scope(
@@ -467,6 +467,31 @@ class HARAReportProjectionService:
         distinct = {values for _, values, _ in highest}
         return (highest[0][1] if len(distinct) == 1 else ("待评定", "待评定", "待评定", asil_order[maximum])), highest
 
+    def _common_partial_grades(self, siblings: list[dict], *, trace_provided: bool) -> tuple:
+        """Display shared observations only; never aggregate an incomplete risk tuple."""
+        values, rationales, distributions = {}, {}, {}
+        for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL")):
+            counts, branch_counts = Counter(), Counter()
+            for entry in siblings:
+                states = self._score_states(entry["risk"], entry["trace"], trace_provided=trace_provided)
+                counts[self._display_score(getattr(entry["risk"], field), states[field])] += 1
+                if entry["trace"].get("risk_scoring_invoked") is not False:
+                    branch_counts.update(str(b.get(label) or "待评定") for b in entry["risk"].branch_evaluations)
+            common = next(iter(counts)) if len(counts) == 1 else "待评定"
+            if branch_counts and set(branch_counts) != {common}:
+                common = "待评定"
+            values[field] = common
+            distributions[field] = {"members": dict(counts), "collision_branches": dict(branch_counts)}
+            distribution = "、".join(f"{value}×{count}" for value, count in counts.most_common())
+            if common != "待评定":
+                reason = f"组内 {len(siblings)} 个成员的 {label} 共同值为 {common}；仅为该维度共同值，未形成完整风险结论。"
+            else:
+                reason = f"组内 {label} 分布：{distribution}；不存在全组共同的已计算等级，逐成员结果及缺口见场景明细。"
+            if branch_counts and set(branch_counts) != set(counts):
+                reason += "碰撞分支分布：" + "、".join(f"{value}×{count}" for value, count in branch_counts.most_common()) + "。"
+            rationales[field + "_rationale"] = reason
+        return values, rationales, distributions
+
     @staticmethod
     def _selected_atom_ids(scenario: Any) -> str:
         facts = scenario.get("facts", {}) if isinstance(scenario, Mapping) else getattr(scenario, "facts", {})
@@ -734,10 +759,16 @@ class HARAReportProjectionService:
         from hara_agent.services.analysis.asil_service import MethodContractASILService
         asil_order = (MethodContractASILService(method).result_order()
                       if getattr(method, "engineering_rules_compiled", False) else [])
-        goal_texts = {goal.sg_id: self.text.safety_intent([
-            str(malfunctions.get(risk.malfunction_id, {}).get("description", ""))
+        goal_presentations = {goal.sg_id: self.text.safety_goal_presentation([
+            {"scenario_id": risk.scenario_id, "malfunction_id": risk.malfunction_id,
+             "malfunction": str(malfunctions.get(risk.malfunction_id, {}).get("description", "")),
+             "vehicle_hazard": str(malfunctions.get(risk.malfunction_id, {}).get("vehicle_level_hazard", "")),
+             "operating_mode": scenarios[risk.scenario_id].operating_mode if risk.scenario_id in scenarios else "",
+             "hazardous_event": risk.hazardous_event}
             for risk in state.risk_results if risk.safety_goal_id == goal.sg_id
         ], goal.text) for goal in state.safety_goals}
+        goal_texts = {sg_id: result["text"] for sg_id, result in goal_presentations.items()}
+        partial_group_distributions = {}
         for offset, siblings in enumerate(ordered_groups, start=1):
             siblings.sort(key=self._representative_rank)
             headline, highest_members = self._highest_known_tuple(siblings, asil_order)
@@ -767,6 +798,11 @@ class HARAReportProjectionService:
                 values.update(dict(zip(("severity", "exposure", "controllability", "asil"), headline)))
             review_group_id = "RG-" + signature(representative["group_key"])[:12].upper()
             is_review_group = representative["group_key"][0] == "review"
+            partial_rationales = {}
+            if is_review_group and not headline:
+                values, partial_rationales, distribution = self._common_partial_grades(
+                    siblings, trace_provided=risk_trace is not None)
+                partial_group_distributions[f"HARA_{offset:03d}"] = distribution
             combinations = list(dict.fromkeys(self.text.condition_combination(e["scenario"]) for e in siblings))
             pending_count = sum(
                 any(not _value(getattr(e["risk"], f)) for f in ("severity", "exposure", "controllability", "asil"))
@@ -854,6 +890,18 @@ class HARAReportProjectionService:
                         selected_scores.get(field, {}), score_states[field])
                      if headline[0] != "待评定" else "并列最高 ASIL 对应不同元组，各分支依据见场景明细。")
                     for field in ("severity", "exposure", "controllability", "asil")})
+            elif partial_rationales:
+                # Keep concrete Pending causes, without presenting the first
+                # member's non-common grade as a group conclusion.
+                for field in ("severity", "exposure", "controllability", "asil"):
+                    if values[field] == "待评定":
+                        reasons = list(dict.fromkeys(self._score_rationale(field, getattr(e["risk"], field),
+                            e["trace"].get(field, {}), _UNCALCULATED) for e in siblings
+                            if not _value(getattr(e["risk"], field))))
+                        if len(reasons) == 1:
+                            partial_rationales[field + "_rationale"] += reasons[0]
+                row = replace(row, **partial_rationales,
+                    remark="无最高已知 ASIL；等级格仅显示全组共同值，不代表完整风险元组。" + row.remark)
             rows.append(row)
             group_source_counts[str(representative["base_key"][0])] += 1
 
@@ -1025,6 +1073,8 @@ class HARAReportProjectionService:
                                                for event in state.audit_trail),
             "display_review_groups": len(rows),
             "safety_goal_text_mapping": [goal.to_dict() for goal in goals],
+            "safety_goal_display_evidence": goal_presentations,
+            "partial_group_grade_distributions": partial_group_distributions,
             "collision_branch_rows": sum(len(risk.branch_evaluations) for risk in state.risk_results),
             "child_scenario_rows": len(details),
             "main_hara_groups": len(rows),

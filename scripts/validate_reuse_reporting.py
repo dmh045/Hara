@@ -10,7 +10,7 @@ from shutil import copy2, copytree
 from hara_agent.services.reporting.offline_rebuild import OfflineReportRebuilder
 
 
-def run(source: Path, output: Path) -> None:
+def run(source: Path, output: Path, previous_reports: Path | None = None) -> None:
     output.mkdir(parents=True, exist_ok=False)
     records = []
     for kind in ("point", "range", "symbolic"):
@@ -19,7 +19,7 @@ def run(source: Path, output: Path) -> None:
         before = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
         target = output / kind
         target.mkdir()
-        original = next(folder.glob("*.xlsx"))
+        original = previous_reports / kind / "HARA_Review.xlsx" if previous_reports else next(folder.glob("*.xlsx"))
         copy2(original, target / "Before.xlsx")
         # Keep trace links portable together with this newly exported workbook.
         copytree(folder / "review", target / "review")
@@ -46,5 +46,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--previous-reports", type=Path, help="Exact prior exported workbooks for before/after comparison")
     args = parser.parse_args()
-    run(args.source, args.output)
+    run(args.source, args.output, args.previous_reports)
