@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import time
+from datetime import datetime, timezone
 
 from validate_autonomous_physics_offline import ROOT, source_state, OfflinePhysicalClient
 from hara_agent.application import HARAApplication
@@ -61,7 +63,7 @@ class SavedPhysicalProposalClient(OfflinePhysicalClient):
         return record['response']['data']
 
 
-def prepare(source, output, run_id, limit, *, families=None):
+def prepare(source, output, run_id, limit, *, families=None, driver_position=None, numeric_representative=False):
     selected = set(FAMILIES if families is None else families)
     if not selected or selected - set(FAMILIES):
         raise ValueError('Select one or more available source families')
@@ -100,6 +102,10 @@ def prepare(source, output, run_id, limit, *, families=None):
             if not choices:
                 raise ValueError('Requested source family unavailable: '+label)
             family=choices[0]
+            if driver_position:
+                family=[c for c in family if c.facts.get('driver_position') == driver_position]
+                if not family:
+                    raise ValueError('Requested driver position unavailable: '+driver_position)
             cases.append({'label':label,'malfunction_id':mf.malfunction_id,
                 'scenario_ids':[c.scenario_id for c in family], 'conditions':scenario_conditions(family[0],without_driver=True)})
     ids=tuple(identity for case in cases for identity in case['scenario_ids'])
@@ -115,11 +121,26 @@ def prepare(source, output, run_id, limit, *, families=None):
         plan.update(version='physical-followup-selected-families-v2', selected_families=sorted(selected),
             physical_prompt_version=PhysicalScenarioAgent.PROMPT_VERSION,
             expected_first_physical_proposals=sum(case['label'] != 'braking' for case in cases))
+    if driver_position:
+        plan['driver_position']=driver_position
+    if numeric_representative:
+        plan['numeric_representative']=True
+        plan['range_policy']=(
+            'One representative hypothesis first. Validation objective: one conditional numeric end-to-end case. '
+            'Preserve the supplied initial state and select a compatible object, geometry and supported motion model. '
+            'For required model inputs lacking measurements, propose justified conditional POINT representatives '
+            'when engineering reasoning supports them, including travel distance and fault motion parameters. '
+            'Explain each rationale, applicability and uncovered conditions. These are analytical assumptions, '
+            'not project measurements, engineering approval or true capability bounds. Do not invent a maximum speed. '
+            'If no defensible representative can be proposed, retain SYMBOLIC and explain the exact gap. '
+            'Return one hypothesis, no range Cartesian expansion. Python computes impact speed, time and ratings.')
     state.item_definition['physical_validation_policy']=plan['range_policy']
     return state,config,plan
 
 
 def main():
+    started=time.monotonic()
+    started_at=datetime.now(timezone.utc).isoformat()
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-context',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
@@ -129,6 +150,8 @@ def main():
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--symbolic-drive',action='store_true',help='Offline fixture only; exercises symbolic proposal through reporting')
     parser.add_argument('--families',nargs='+',choices=FAMILIES,help='Narrow existing production sample selection; e.g. drive selects its two driver identities')
+    parser.add_argument('--driver-position',choices=('in_driver_seat','outside_driver_seat'),help='Select an existing generated driver identity, without changing its facts')
+    parser.add_argument('--numeric-representative',action='store_true',help='Ask the physical Agent for a justified conditional point case; never inject parameter values')
     parser.add_argument('--replay-physical-checkpoint', type=Path, help='Offline only: unmodified saved v3 physical replies; causal/fact replies remain scripted')
     args=parser.parse_args()
     if args.symbolic_drive and not args.offline:
@@ -139,7 +162,8 @@ def main():
         parser.error('--live requires the explicitly authorized positive request budget')
     # Preview/offline uses a non-transport budget object for the production
     # bounded-sample contract; no transport or environment is constructed.
-    state,config,plan=prepare(args.source_context,args.output,args.run_id,args.max_provider_attempts if args.live else 1, families=args.families)
+    state,config,plan=prepare(args.source_context,args.output,args.run_id,args.max_provider_attempts if args.live else 1,
+        families=args.families,driver_position=args.driver_position,numeric_representative=args.numeric_representative)
     plan['offline_symbolic_drive']=args.symbolic_drive
     if args.replay_physical_checkpoint:
         plan['saved_physical_checkpoint_sha256'] = hashlib.sha256(args.replay_physical_checkpoint.read_bytes()).hexdigest()
@@ -181,6 +205,10 @@ def main():
         # The workflow persists every first response, parsed plan and completed
         # causal batch, including budget/transport exits, in config.run_dir.
         print('Checkpoint:',config.run_dir)
+        timing={'started_at':started_at,'finished_at':datetime.now(timezone.utc).isoformat(),
+                'elapsed_seconds':time.monotonic()-started,'mode':'LIVE' if args.live else 'OFFLINE'}
+        with (args.output/'execution_timing.jsonl').open('a') as stream:
+            stream.write(json.dumps(timing)+'\n')
 
 
 if __name__=='__main__':

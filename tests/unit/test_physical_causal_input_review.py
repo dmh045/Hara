@@ -102,3 +102,64 @@ def test_json_mode_is_explicit_and_minimal_output_keeps_valid_driver_proof(monke
     assert ScenarioFeasibilityAgent(SimpleNamespace()).response_format is None
     assert '缺少任一项引用时省略' in ScenarioFeasibilityAgent.SYSTEM_PROMPT
     assert 'driver_noninterference' in ScenarioFeasibilityAgent.SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize('wrong_scope', [False, True])
+def test_risk_fact_extraction_requests_only_missing_current_world_inputs(method, wrong_scope):
+    from hara_agent.contracts import FactOrigin, FactType
+    from hara_agent.infrastructure.llm import LLMResponse
+    from hara_agent.services.semantic import ScenarioRiskFactAgent
+    from test_scenario_risk_fact_agent import _spec
+    child = instantiate(method)[0]
+    if wrong_scope:
+        child.scenario_id = 'different-world'
+    before = deepcopy(child)
+    calls = []
+    class Client:
+        def complete_json(self, request):
+            raw = request.user_prompt.split('fact_requests=', 1)[1]
+            requests, _ = json.JSONDecoder().raw_decode(raw)
+            calls.extend(requests)
+            return LLMResponse({'results':[{**{k:r[k] for k in ('malfunction_id','scenario_id','fact_type')},
+                'status':'NOT_FOUND','evidence_ids':[]} for r in requests]}, 'OFFLINE')
+    specs = [_spec(t, FactOrigin.SCENARIO_FACT) for t in
+             (FactType.COLLISION_TYPE, FactType.VEHICLE_SPEED, FactType.INTERVENTION_AVAILABLE)]
+    facts, audit = ScenarioRiskFactAgent(Client()).interpret(
+        [dict(malfunction_id=mf().malfunction_id, scenario_id=child.scenario_id,
+              physically_feasible=True, functionally_relevant=True, causally_relevant=True,
+              risk_dimensions_changed=[], status='FINALIZED')], [child], [mf()], specs)
+    assert not facts and child == before
+    # The global initial-speed fact is still valid; the scoped hypothesis is not.
+    assert len(calls) == audit['llm_requested_fact_pair_count'] == (2 if wrong_scope else 1)
+    assert audit['existing_fact_count'] == (1 if wrong_scope else 2)
+    if not wrong_scope:
+        assert calls[0]['fact_type'] == 'INTERVENTION_AVAILABLE'
+        assert child.fact_provenance['collision_type']['approval'] == 'PENDING'
+
+
+def test_equal_method_binding_cannot_approve_a_conditional_collision_world(method):
+    from dataclasses import asdict
+    from hara_agent.models import ItemDefinitionFacts, RiskFact, SourceRef, FactProvenance, ReviewStatus
+    from hara_agent.services.analysis import StructuredRiskScoringService, MethodContractASILService, MethodRiskFactBindingService
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.nodes.scoring import score_structured_scenarios
+    child = instantiate(method)[0]
+    original = deepcopy(child.fact_provenance['collision_type'])
+    assessment = ScenarioFeasibilityAgent._parse(mf(), dict(scenario_id=child.scenario_id,
+        physically_feasible=True, functionally_relevant=True, causally_relevant=True,
+        breakpoint='NONE', hazardous_event='conditional contact', risk_dimension_changes=[], confidence=.9,
+        causal_chain={'m_to_b':dict(claim='defined fault',basis_type='DIRECT_FACT',evidence_refs=['MF.description']),
+            'b_to_i':dict(claim='computed motion',basis_type='DERIVED_PHYSICS',evidence_refs=['DERIVED.ego_impact_speed_kph']),
+            'i_to_h':dict(claim='conditional contact',basis_type='DERIVED_PHYSICS',evidence_refs=['DERIVED.relative_speed_kph'])}), scenario=child)
+    fact = RiskFact('EXTRACTED', 'COLLISION_TYPE', child.facts['collision_type'],
+        source_refs=[SourceRef('item_definition','synthetic','p1','parking')],
+        context={'malfunction_id':mf().malfunction_id,'scenario_id':child.scenario_id},
+        provenance=FactProvenance.DERIVED, approval=ReviewStatus.FINALIZED)
+    state = HARAState('offline-source-review',scenarios=[child],malfunctions=[asdict(mf())],
+        item_definition={'scenario_assessments':[assessment.to_dict()],
+            'typed':asdict(ItemDefinitionFacts('synthetic','synthetic',risk_facts=[fact],sources=fact.source_refs))})
+    score_structured_scenarios(state,StructuredRiskScoringService(method),MethodContractASILService(method),
+                              risk_fact_binding=MethodRiskFactBindingService(method))
+    assert state.scenarios[0].fact_provenance['collision_type'] == original
+    audit = next(e for e in state.audit_trail if e['event']=='structured_risk_scoring_completed')
+    assert audit['risk_fact_binding_audits'][0]['preserved_conditional_equal_facts'] == ['collision_type']

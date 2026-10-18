@@ -20,6 +20,8 @@ from hara_agent.models.project_facts import risk_fact_from_dict
 from hara_agent.services.extraction.project_fact_normalization import (
     extracted_physical_semantics, PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT,
 )
+from hara_agent.services.analysis.method_risk_fact_service import METHOD_FACT_KEYS
+from hara_agent.services.analysis.scenario_physics import source_is_accepted_for
 
 
 SCENARIO_RISK_FACT_BATCH_CACHE_VERSION = "scenario-risk-fact-batch-v2"
@@ -33,7 +35,7 @@ class ScenarioRiskFactAgent:
     HUMAN_EVIDENCE and DERIVED_FACT requirements are never guessed here.
     """
 
-    PROMPT_VERSION = "scenario-risk-facts-v7-phase-source-context"
+    PROMPT_VERSION = "scenario-risk-facts-v8-request-missing-inputs"
 
     def __init__(self, client: LLMClient, *, batch_max_results: int | None = None):
         self.client = client
@@ -52,6 +54,20 @@ class ScenarioRiskFactAgent:
             if match:
                 values.append(match.group(1))
         return list(dict.fromkeys(values))
+
+    @staticmethod
+    def _existing_input(pair, spec):
+        """Keep scoped source/model inputs in their existing authority domain."""
+        if spec.fact_type is FactType.SPEED_UNSPECIFIED:
+            return False
+        candidate = pair["candidate"]
+        key = METHOD_FACT_KEYS[spec.fact_type]
+        value = candidate.facts.get(key)
+        allowed = ScenarioRiskFactAgent._allowed_values(spec)
+        return (value is not None and value != "" and (not allowed or str(value).upper() in allowed)
+            and source_is_accepted_for(
+            candidate.fact_provenance.get(key, {}),
+            malfunction_id=pair["malfunction_id"], scenario_id=pair["scenario_id"]))
 
     @staticmethod
     def _evidence(
@@ -187,12 +203,17 @@ class ScenarioRiskFactAgent:
             pair_material, primary_specs, batch_cache=batch_cache, on_batch=on_batch,
         )
         collision_by_pair = {
+            (pair["malfunction_id"], pair["scenario_id"]): pair["candidate"].facts["collision_type"]
+            for pair in pair_material for spec in specs
+            if spec.fact_type is FactType.COLLISION_TYPE and self._existing_input(pair, spec)
+        }
+        collision_by_pair.update({
             (
                 item.context.get("malfunction_id", ""),
                 item.context.get("scenario_id", ""),
             ): str(item.value).upper()
             for item in facts if item.parameter == FactType.COLLISION_TYPE.value
-        }
+        })
         road_user_pairs = [
             pair for pair in pair_material
             if collision_by_pair.get((
@@ -231,7 +252,11 @@ class ScenarioRiskFactAgent:
             for spec in specs:
                 key = (*pair_id, spec.fact_type.value)
                 fact = fact_by_key.get(key)
-                if fact is not None:
+                if self._existing_input(pair, spec):
+                    status = RiskFactResolutionStatus.FOUND
+                    reason = "Existing scoped Scenario input; original provenance/approval retained, not re-extracted as an Item fact."
+                    fact_id = "SCN." + METHOD_FACT_KEYS[spec.fact_type]
+                elif fact is not None:
                     status = RiskFactResolutionStatus.FOUND
                     reason = "A source-grounded fact passed the bounded schema contract."
                     fact_id = fact.fact_id
@@ -286,11 +311,12 @@ class ScenarioRiskFactAgent:
             "requested_fact_type_count": len(specs),
             "candidate_fact_pair_count": expected_count,
             "llm_requested_fact_pair_count": (
-                len(pair_material) * len(primary_specs)
-                + len(road_user_pairs) * len(road_user_specs)
+                sum(not self._existing_input(pair, spec) for pair in pair_material for spec in primary_specs)
+                + sum(not self._existing_input(pair, spec) for pair in road_user_pairs for spec in road_user_specs)
             ),
             "found_fact_count": len(facts),
-            "missing_fact_count": expected_count - len(facts),
+            "existing_fact_count": sum(self._existing_input(pair, spec) for pair in pair_material for spec in specs),
+            "missing_fact_count": expected_count - resolution_counts[RiskFactResolutionStatus.FOUND.value],
             "batch_count": len(batch_audits),
             "coverage_repair_count": sum(
                 item["coverage_repair_count"] for item in batch_audits
@@ -322,12 +348,19 @@ class ScenarioRiskFactAgent:
     ) -> tuple[list[RiskFact], list[dict[str, Any]], int]:
         if not pair_material or not specs:
             return [], [], 0
-        pairs_per_batch = max(1, self.batch_max_results // len(specs))
+        groups = {}
+        for pair in pair_material:
+            needed = tuple(spec for spec in specs if not self._existing_input(pair, spec))
+            if needed:
+                key = tuple(spec.fact_type for spec in needed)
+                groups.setdefault(key, (needed, []))[1].append(pair)
         facts: list[RiskFact] = []
         audits: list[dict[str, Any]] = []
         cache_hits = 0
-        for start in range(0, len(pair_material), pairs_per_batch):
-            batch_pairs = pair_material[start:start + pairs_per_batch]
+        batches = [(pairs[start:start + max(1, self.batch_max_results // len(needed))], needed)
+                   for needed, pairs in groups.values()
+                   for start in range(0, len(pairs), max(1, self.batch_max_results // len(needed)))]
+        for batch_pairs, specs in batches:
             cache_key = self._batch_cache_key(batch_pairs, specs)
             cached = self._load_batch_cache(
                 (batch_cache or {}).get(cache_key), batch_pairs,
@@ -516,6 +549,9 @@ class ScenarioRiskFactAgent:
                 "You are a bounded evidence interpreter. Return only facts explicitly supported by "
                 "the supplied evidence excerpts. Do not estimate speed, frequency, duration, or "
                 "avoidability. Do not use template identity or invent engineering rules."
+                " Scenario/hazard descriptions may contain analytical hypotheses; they are not source excerpts. "
+                "A source saying parking is supported does not establish a collision type. Return NOT_FOUND "
+                "when the cited excerpt does not itself support the requested value."
                 + PHYSICAL_SEMANTICS_EXTRACTION_CONTRACT
             ),
             user_prompt=(

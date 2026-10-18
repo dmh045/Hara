@@ -24,6 +24,7 @@ from hara_agent.services.analysis.scenario_physics import (
     derive_scenario_physics, restore_template_ego_direction,
     derive_stationary_object_speed, derive_stationary_object_direction,
     select_ego_speed_from_policy,
+    has_conditional_lineage, source_is_accepted_for,
 )
 from hara_agent.services.analysis.driver_configuration_service import DriverConfigurationBrancher
 from hara_agent.workflow.state import HARAState, WorkflowStage
@@ -242,6 +243,12 @@ def score_structured_scenarios(
                 and scenario["_fact_provenance"].get(field, {}).get("approval") == "FINALIZED"
                 and binding.provenance.get(field, {}).get("approval") != "FINALIZED"}
             refined_fields.update(retained_equal)
+            retained_conditional = {field for field, value in binding.values.items()
+                if scenario.get(field) == value
+                and has_conditional_lineage(scenario["_fact_provenance"].get(field, {}))
+                and source_is_accepted_for(scenario["_fact_provenance"][field],
+                    malfunction_id=malfunction_id, scenario_id=scenario_id)}
+            refined_fields.update(retained_conditional)
             blocked_fields = set(conflicting_fields)
             # A derived Risk input must not survive removal of one of its
             # conflicting source facts. Independent Exposure atoms remain.
@@ -276,6 +283,7 @@ def score_structured_scenarios(
                 "source_conflicts": binding_source_conflicts,
                 "preserved_configuration_refinements": sorted(refined_fields),
                 "preserved_approved_equal_facts": sorted(retained_equal),
+                "preserved_conditional_equal_facts": sorted(retained_conditional),
                 "blocked_dependent_fields": sorted(blocked_fields - conflicting_fields),
             })
         # Bind before normalization and derivation so newly supplied physical
