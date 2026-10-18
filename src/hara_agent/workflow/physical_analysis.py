@@ -128,6 +128,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     "scenario_ids": [candidate.scenario_id for candidate in family],
                     "exact_input_keys": [signature(scenario_conditions(candidate)) for candidate in family]})
                 for candidate, generated, failures in instantiated:
+                    if not plan.hypotheses:
+                        failures = [{"reason": "PHYSICAL_MODEL_NOT_APPLICABLE",
+                                     "uncovered_conditions": list(plan.uncovered_conditions)}]
                     kept.extend(generated or [candidate])
                     if failures:
                         for item in generated or [candidate]:

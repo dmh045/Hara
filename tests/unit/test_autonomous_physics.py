@@ -309,6 +309,51 @@ def test_existing_direct_path_never_requests_a_physical_plan(method):
     assert state.item_definition["physical_analysis_metrics"]["existing_path_skipped"] == 1
 
 
+def test_unsupported_rear_target_preserves_world_and_reuses_model_gap(method, tmp_path):
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse({"hypotheses": [], "uncovered_conditions": [
+                "Moving following vehicle rear impact is outside the stationary target models."]}, "offline")
+    client = Client()
+    a = make_candidate(7)
+    a.facts.update(object_position="REAR", target_speed_kph=10)
+    b = deepcopy(a); b.scenario_id = "second-driver"
+    a.facts["driver_position"] = "in_driver_seat"
+    b.facts["driver_position"] = "outside_driver_seat"
+    original = [(deepcopy(c.facts), deepcopy(c.fact_provenance)) for c in (a, b)]
+    state = HARAState("unsupported-model")
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    for _ in range(2):
+        result = construct_physical_scenarios(state, {"MF": [a, b]}, [mf()], method=method,
+            agent=agent, project_facts=None)
+        assert result["MF"] == [a, b]
+        assert client.calls == 1
+        for c, (facts, provenance) in zip(result["MF"], original):
+            assert c.facts == facts and c.fact_provenance == provenance
+            assert c.analysis_instance["physical_plan_diagnostics"][0]["reason"] == "PHYSICAL_MODEL_NOT_APPLICABLE"
+    metrics = state.item_definition["physical_analysis_metrics"]
+    assert metrics["physical_plan_reuse"] == 1
+    assert metrics["generated_instances"] == metrics["semantic_corrections"] == metrics["physical_solve_points"] == 0
+
+
+def test_empty_physical_plan_requires_an_explanation():
+    with pytest.raises(ValueError, match="applicability gap"):
+        PhysicalScenarioPlan.from_dict({"hypotheses": [], "uncovered_conditions": []}, evidence_ids=set())
+
+
+def test_negative_physical_range_keeps_signed_order():
+    raw = raw_plan(acceleration=-7)
+    raw["hypotheses"][0]["parameters"][-1].update(kind="RANGE", lower=-8, upper=-6.5)
+    PhysicalScenarioPlan.from_dict(raw, evidence_ids={"MF.description"})
+    raw["hypotheses"][0]["parameters"][-1].update(lower=-6.5, upper=-8)
+    with pytest.raises(ValueError, match="lower <= representative <= upper"):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={"MF.description"})
+
+
 def test_scripted_source_sample_report_does_not_claim_a_full_project():
     from hara_agent.workflow import HARAState
     from hara_agent.services.reporting.projection import HARAReportProjectionService

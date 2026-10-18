@@ -71,8 +71,11 @@ class PhysicalScenarioPlan:
     def from_dict(cls, raw: dict, *, evidence_ids: set[str]) -> "PhysicalScenarioPlan":
         _object(raw, {"hypotheses", "uncovered_conditions"})
         hypotheses = raw["hypotheses"]
-        if not isinstance(hypotheses, list) or not 1 <= len(hypotheses) <= 3:
-            raise ValueError("A physical plan contains 1..3 hypotheses")
+        if not isinstance(hypotheses, list) or not 0 <= len(hypotheses) <= 3:
+            raise ValueError("A physical plan contains 0..3 hypotheses")
+        uncovered = _texts(raw["uncovered_conditions"])
+        if not hypotheses and not uncovered:
+            raise ValueError("An empty physical plan requires a concrete model applicability gap")
         identities = set()
         for h in hypotheses:
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
@@ -160,7 +163,7 @@ class PhysicalScenarioPlan:
                     raise ValueError("Unknown parameter kind")
                 if field not in {"longitudinal_acceleration_mps2", "lateral_acceleration_mps2"} and any(v < 0 for v in values):
                     raise ValueError("Negative magnitude")
-        return cls(tuple(hypotheses), tuple(_texts(raw["uncovered_conditions"])))
+        return cls(tuple(hypotheses), tuple(uncovered))
 
     def to_dict(self) -> dict:
         return {"hypotheses": list(self.hypotheses), "uncovered_conditions": list(self.uncovered_conditions)}

@@ -71,7 +71,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v4-lossless-context-symbolic-geometry"
+    PROMPT_VERSION = "post-fault-physical-scenario-v5-explicit-model-gap"
 
     def __init__(self, client, *, response_checkpoint_dir: Path | None = None):
         self.client = client
@@ -99,12 +99,16 @@ class PhysicalScenarioAgent:
             "不要用自然语言标签或自行创造对象类别。不能把不支持的障碍物伪称车辆；"
             "若分析另一个合法对象，必须声明condition_changes.target及新object_id，说明新条件和未覆盖对象。"
             "SYMBOLIC使用symbol字符串，不能把符号放进value；POINT只有value；RANGE必须有lower/value/upper。"
+            "RANGE始终满足lower<=value<=upper，包括负数，例如-8<=-7<=-6.5，不能按绝对值排列。"
             "basis_refs只能选basis_ref_ids中的完整ID，不得把它扩展成未提供的字段路径。"
             "failed_controls/remaining_controls只能选control_identities中的完整键。"
             "遵守validation_sampling_policy；若要求One representative hypothesis first，只返回一个代表假设，"
             "优先点值或符号，其他变体列为未覆盖，不展开范围或多个模型。"
             "你是故障后物理场景分析员。使用给定项目事实、来源限定、FM、Atom 和已确认方法约束，"
             "提出 1–3 个有工程意义的条件性物理假设；原文未提供故障加速度并不禁止提出分析假设。"
+            "若目录中没有能表示当前危险机制的模型，返回hypotheses空数组，并在uncovered_conditions具体说明模型缺口。"
+            "不得为了满足模型目录把后车追尾改成前方静止目标碰撞，或把移动目标换成静止目标；"
+            "合法新增条件仍必须代表当前失效的危险机制，不能以另一危险机制替代原问题。"
             "不得把假设声称为原文事实、车辆真实能力或可信上界。不得输出 S/E/C/ASIL、批准状态、"
             "碰撞速度、TTC、collision_branches 或 Atom ID。程序会计算这些量。"
             "优先保留已给定的对象类别和运行条件；新对象需说明适用性，不得扩大 ODD。"
@@ -132,6 +136,7 @@ class PhysicalScenarioAgent:
             "另设车后目标必须声明新对象条件，不能只在文字中换目标。"
             "来源只有上坡标签而未说明朝向时，以明确分析假设选择少量朝向，不把标签自动当作车头方向。"
             "correction_diagnostics 如存在，保留有效分支并针对具体冲突有限修正，不能修改原始事实或声称批准。"
+            "correction_diagnostics只属于输入，输出顶层只能含hypotheses和uncovered_conditions。"
         )
         output_contract = {
             "basis_ref_ids": sorted(context["evidence"]),
