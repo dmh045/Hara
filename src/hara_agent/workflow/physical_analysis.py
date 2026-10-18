@@ -1,15 +1,76 @@
 """Explicit pre-causal scheduling for bounded physical analysis proposals."""
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import asdict
 import sys
+from threading import Lock
 
 from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
 
 
+def _construct_parallel(state, candidates, malfunctions, *, method, agent, project_facts,
+                        checkpoint, progress, max_workers):
+    """Use the existing scheduler; keep worker state private and commits serial."""
+    from .nodes.parallel import ordered_parallel_map
+    from .state import HARAState
+    lock = Lock()
+    cache = state.item_definition.setdefault("physical_analysis_plans", {})
+    reports = {}
+    budget = getattr(agent.client, "attempt_budget", None)
+    starting = getattr(budget, "attempts", None)
+
+    def merge(malfunction_id, local):
+        with lock:
+            cache.update(deepcopy(local.item_definition.get("physical_analysis_plans", {})))
+            reports[malfunction_id] = deepcopy(local.item_definition["physical_analysis_metrics"])
+            metrics = {}
+            for report in reports.values():
+                for name, value in report.items():
+                    if isinstance(value, int):
+                        metrics[name] = metrics.get(name, 0) + value
+                    elif isinstance(value, list):
+                        metrics.setdefault(name, []).extend(value)
+            responses = [r for entry in cache.values() for r in entry.get("responses", [])]
+            metrics.update(
+                cumulative_proposal_responses=len(responses),
+                cumulative_uncached_requests=sum(not r["response"]["usage"].get("response_checkpoint_hit") for r in responses),
+                cumulative_schema_repair_responses=sum(r.get("schema_repair", False) for r in responses),
+                token_usage={name: sum(r["response"]["usage"].get(name, 0) for r in responses)
+                             for name in ("prompt_tokens", "completion_tokens")},
+                provider_transport_attempts_this_stage=budget.attempts - starting if starting is not None else None,
+                metrics_scope="PHYSICAL_PROPOSALS_AND_SOLVES; causal reuse is accounted in scenario audits",
+            )
+            state.item_definition["physical_analysis_metrics"] = metrics
+            if checkpoint:
+                checkpoint(state)
+
+    def worker(mf):
+        with lock:
+            local_cache = deepcopy({key: value for key, value in cache.items()
+                if value.get("context", {}).get("malfunction", {}).get("malfunction_id") == mf.malfunction_id})
+        local = HARAState(state.run_id, functions=state.functions, item_definition={
+            "physical_analysis_plans": local_cache,
+            "physical_validation_policy": state.item_definition.get("physical_validation_policy", ""),
+        })
+        result = construct_physical_scenarios(local,
+            {mf.malfunction_id: deepcopy(candidates[mf.malfunction_id])}, [mf], method=method,
+            agent=agent, project_facts=project_facts,
+            checkpoint=lambda child: merge(mf.malfunction_id, child))
+        # Also commit counters for families that needed no proposal at all.
+        merge(mf.malfunction_id, local)
+        return result[mf.malfunction_id]
+
+    results = ordered_parallel_map(malfunctions, worker, max_workers=max_workers, on_progress=progress)
+    return {mf.malfunction_id: result for mf, result in zip(malfunctions, results)}
+
+
 def construct_physical_scenarios(state, candidates, malfunctions, *, method, agent, project_facts,
-                                 checkpoint=None, progress=None):
+                                 checkpoint=None, progress=None, max_workers=1):
+    if max_workers > 1 and len(malfunctions) > 1:
+        return _construct_parallel(state, candidates, malfunctions, method=method, agent=agent,
+            project_facts=project_facts, checkpoint=checkpoint, progress=progress, max_workers=max_workers)
     producer = PhysicalHypothesisInstantiationService(method)
     cache = state.item_definition.setdefault("physical_analysis_plans", {})
     metrics = {"existing_path_skipped": 0, "plan_requests": 0, "plan_cache_hits": 0,

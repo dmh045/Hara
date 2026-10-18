@@ -1,6 +1,6 @@
 """Offline proposal transport + real production consumers; no Provider usage."""
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import math
 
@@ -343,6 +343,79 @@ def test_unsupported_rear_target_preserves_world_and_reuses_model_gap(method, tm
 def test_empty_physical_plan_requires_an_explanation():
     with pytest.raises(ValueError, match="applicability gap"):
         PhysicalScenarioPlan.from_dict({"hypotheses": [], "uncovered_conditions": []}, evidence_ids=set())
+
+
+def test_parallel_physical_plans_equal_serial_and_resume_without_requests(method, tmp_path):
+    from threading import Barrier, Lock
+    from hara_agent.workflow import HARAState, CheckpointRepository
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    class Client:
+        def __init__(self, parallel=False):
+            self.calls = 0
+            self.lock = Lock()
+            self.barrier = Barrier(2) if parallel else None
+        def complete_json(self, request):
+            with self.lock:
+                self.calls += 1
+            if self.barrier:
+                self.barrier.wait(timeout=5)  # Both independent requests must overlap.
+            return LLMResponse(raw_plan(), 'offline')
+    malfunctions = [mf(), replace(mf(), malfunction_id='MF2')]
+    candidates = {}
+    for m in malfunctions:
+        a = make_candidate(); a.scenario_id = m.malfunction_id + '-driver1'
+        b = deepcopy(a); b.scenario_id = m.malfunction_id + '-driver2'
+        a.facts['driver_position'] = 'in_driver_seat'; b.facts['driver_position'] = 'outside_driver_seat'
+        candidates[m.malfunction_id] = [a, b]
+    serial = construct_physical_scenarios(HARAState('serial'), deepcopy(candidates), malfunctions,
+        method=method, agent=PhysicalScenarioAgent(Client()), project_facts=None)
+    state = HARAState('parallel')
+    repo = CheckpointRepository(tmp_path/'state')
+    client = Client(parallel=True)
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    checkpoints = []
+    def save(current):
+        repo.save(current)
+        restored = repo.load(current.run_id)
+        checkpoints.append(len(restored.item_definition['physical_analysis_plans']))
+    parallel = construct_physical_scenarios(state, deepcopy(candidates), malfunctions, method=method,
+        agent=agent, project_facts=None, max_workers=2, checkpoint=save)
+    assert parallel == serial and client.calls == 2
+    assert len(state.item_definition['physical_analysis_plans']) == 2
+    metrics = state.item_definition['physical_analysis_metrics']
+    assert metrics['plan_requests'] == metrics['physical_plan_reuse'] == 2
+    assert metrics['physical_solve_points'] == metrics['generated_instances'] == 4
+    assert checkpoints == sorted(checkpoints) and checkpoints[-1] == 2
+    restored = repo.load(state.run_id)
+    resumed = construct_physical_scenarios(restored, deepcopy(candidates), malfunctions, method=method,
+        agent=agent, project_facts=None, max_workers=2, checkpoint=save)
+    assert resumed == serial and client.calls == 2
+    assert restored.item_definition['physical_analysis_metrics']['plan_cache_hits'] == 2
+
+
+def test_parallel_physical_plans_share_one_hard_budget_and_keep_responses(method, tmp_path):
+    from threading import Barrier
+    from hara_agent.workflow import HARAState, CheckpointRepository
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget, ProviderAttemptBudgetExceeded
+    class Client:
+        attempt_budget = ProviderAttemptBudget(tmp_path/'ledger', run_id='budget-parallel', limit=1)
+        barrier = Barrier(2)
+        def complete_json(self, request):
+            self.barrier.wait(timeout=5)
+            self.attempt_budget.begin(request, model='offline')
+            return LLMResponse(raw_plan(), 'offline')
+    state = HARAState('budget-parallel')
+    repo = CheckpointRepository(tmp_path/'state')
+    malfunctions = [mf(), replace(mf(), malfunction_id='MF2')]
+    with pytest.raises(ProviderAttemptBudgetExceeded):
+        construct_physical_scenarios(state, {m.malfunction_id:[make_candidate()] for m in malfunctions},
+            malfunctions, method=method, agent=PhysicalScenarioAgent(Client()), project_facts=None,
+            max_workers=2, checkpoint=repo.save)
+    restored = repo.load(state.run_id)
+    assert Client.attempt_budget.attempts == 1
+    assert sum(bool(p.get('instantiations')) for p in restored.item_definition['physical_analysis_plans'].values()) == 1
+    assert restored.item_definition['physical_analysis_metrics']['provider_transport_attempts_this_stage'] == 1
 
 
 def test_negative_physical_range_keeps_signed_order():

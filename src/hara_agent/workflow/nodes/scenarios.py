@@ -394,7 +394,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         from hara_agent.workflow.physical_analysis import construct_physical_scenarios
         contextual_candidates = construct_physical_scenarios(state, contextual_candidates, malfunctions,
             method=method, agent=physical_agent, project_facts=project_facts,
-            checkpoint=checkpoint)
+            checkpoint=checkpoint, max_workers=max_workers)
         for malfunction_id, generated in contextual_candidates.items():
             instantiation_audit[malfunction_id]["physical_analysis"] = {
                 "instance_count": len(generated), "stage": "BEFORE_CAUSAL_ASSESSMENT"}
