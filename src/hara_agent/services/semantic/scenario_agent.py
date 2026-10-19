@@ -68,7 +68,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v26-dimension-evidence"
+    PROMPT_VERSION = "scenario-feasibility-v27-physical-role-consistency"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -90,6 +90,7 @@ false 时 hazardous_event=""、risk_dimension_changes=[]。没有证据不等于
 
 PHYSICAL CONSISTENCY
 physical_interaction 与物理评分使用同一组对象、方向、阶段和模型。存在代表工况时只验证所列工况，不把它解释为所有故障轨迹的上界。不得忽略该模型或对未列出的对象/运动过程复用父级结论。
+先核对失效行为能否产生当前模型中的本车运动，再解释接触结果。条件性轨迹计算只证明给定输入下的运动，不能反过来证明该失效产生这些输入。hypothesis.rationale 是待核验解释，不得用它覆盖结构化本车/目标、运动方向、速度及模型坐标。不得将后车相对运动或制动减速度重命名为本车倒车加速度，把移动目标当成静止目标来证明另一事故；当前模型未明确支持的坐标转换不能靠文字“等效”成立。若失效到所列运动缺乏支持，在 B_TO_I 明确断点，保留已成立的 M_TO_B；真实倒车朝后方静止对象运动仍按其自身失效依据独立判断。
 physical_interaction 是展示视图，其 JSON 路径不是证据 ID。引用所列条件时必须使用 physical_interaction.evidence_refs 中的完整 ID，或 causal_evidence_view 已列出的 ID；不得引用 physical_interaction.conditions.* 或 physical_interaction.branches.*。physically_possible 只是物理条件检查，不能据此跳过因果判断。
 derived_physics_evidence 中列出本场景已注册的物理推导及其 kind。basis_type=DERIVED_PHYSICS 时仅引用 kind=DERIVED_PHYSICS 的完整 ID，不混入 SCN.collision_branches 或其他 DIRECT_FACT；代表工况的推导只能证明该工况，不能证明全部故障轨迹。
 DERIVED.parameter_relations 是当前对象、故障后阶段和模型的条件性符号关系，可在其适用条件内引用。numeric_result_available=false 表示尚无唯一碰撞速度或时间；不得把公式当成已发生接触、数值结果或全部参数范围的证明。符号参数本身不否定条件性危险，但不满足适用条件或证据不足时仍返回具体未决断点。
