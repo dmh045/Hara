@@ -5,6 +5,7 @@ import json
 import os
 import re
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from hara_agent.contracts import (
@@ -12,6 +13,7 @@ from hara_agent.contracts import (
     RiskFactResolutionStatus,
 )
 from hara_agent.infrastructure.llm import LLMClient, LLMRequest, LLMSchemaContractError
+from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 from hara_agent.models import (
     FactProvenance, MalfunctionCandidate, ReviewStatus, RiskFact,
     ScenarioCandidate, SourceRef, evaluate_risk_eligibility_payload,
@@ -37,13 +39,19 @@ class ScenarioRiskFactAgent:
 
     PROMPT_VERSION = "scenario-risk-facts-v8-request-missing-inputs"
 
-    def __init__(self, client: LLMClient, *, batch_max_results: int | None = None):
+    def __init__(self, client: LLMClient, *, batch_max_results: int | None = None,
+                 response_checkpoint_dir: Path | None = None):
         self.client = client
+        self.response_checkpoint = ResponseCheckpoint(response_checkpoint_dir) if response_checkpoint_dir else None
         self.batch_max_results = batch_max_results or int(os.getenv(
             "HARA_SCENARIO_RISK_FACT_BATCH_MAX_RESULTS", "16"
         ))
         if self.batch_max_results <= 0:
             raise ValueError("HARA_SCENARIO_RISK_FACT_BATCH_MAX_RESULTS must be positive")
+
+    def _complete_json(self, request):
+        return (self.response_checkpoint.complete(self.client, request)
+                if self.response_checkpoint else self.client.complete_json(request))
 
     @staticmethod
     def _allowed_values(spec: RequiredFactSpec) -> list[str]:
@@ -322,6 +330,7 @@ class ScenarioRiskFactAgent:
                 item["coverage_repair_count"] for item in batch_audits
             ),
             "llm_call_count": sum(item["llm_call_count"] for item in batch_audits),
+            "response_checkpoint_hits": sum(item.get("response_checkpoint_hits", 0) for item in batch_audits),
             "batch_cache_hit_count": cache_hits,
             "validation_failure_count": sum(
                 item.get("validation_failure_count", 0) for item in batch_audits
@@ -367,6 +376,12 @@ class ScenarioRiskFactAgent:
             )
             if cached is not None:
                 batch_facts, batch_audit = cached
+                # The cache entry retains historical usage; this invocation
+                # does not make those requests or restore their raw responses.
+                batch_audit["llm_call_count"] = 0
+                batch_audit["response_checkpoint_hits"] = 0
+                batch_audit["usage"] = {"primary": {"batch_checkpoint_hit": True,
+                    "prompt_tokens": 0, "completion_tokens": 0}, "repair": {}}
                 cache_hits += 1
             else:
                 batch_facts, batch_audit = self._interpret_batch(batch_pairs, specs)
@@ -477,7 +492,7 @@ class ScenarioRiskFactAgent:
         request = self._request(fact_requests, evidence, coverage_repair=False)
         response = None
         try:
-            response = self.client.complete_json(request)
+            response = self._complete_json(request)
         except LLMSchemaContractError as error:
             # An invalid envelope has no validated results. Use the same single
             # coverage repair as missing/invalid result entries.
@@ -504,7 +519,7 @@ class ScenarioRiskFactAgent:
                 repair_requests, evidence, coverage_repair=True,
             )
             try:
-                repair_response = self.client.complete_json(repair_request)
+                repair_response = self._complete_json(repair_request)
             except LLMSchemaContractError as error:
                 validation_failures.append(f"repair response envelope: {error}")
             else:
@@ -518,6 +533,8 @@ class ScenarioRiskFactAgent:
                 validation_failures.extend(repair_failures)
         unresolved = sorted(expected - seen)
         audit_response = response or repair_response
+        response_hits = sum(bool(item and item.usage.get("response_checkpoint_hit"))
+                            for item in (response, repair_response))
         return facts, {
             "model": audit_response.model if audit_response else "",
             "request_id": audit_response.request_id if audit_response else "",
@@ -526,7 +543,8 @@ class ScenarioRiskFactAgent:
                 "repair": repair_response.usage if repair_response else {},
             },
             "coverage_repair_count": int(bool(missing)),
-            "llm_call_count": 1 + int(bool(missing)),
+            "llm_call_count": 1 + int(bool(missing)) - response_hits,
+            "response_checkpoint_hits": response_hits,
             "validation_failure_count": len(validation_failures),
             "validation_failures": validation_failures,
             "unresolved_contract_count": len(unresolved),
@@ -557,6 +575,8 @@ class ScenarioRiskFactAgent:
             user_prompt=(
                 "Return JSON {\"results\":[...]}. Return exactly one result for every item in "
                 "fact_requests. Do not return any unrequested identity. status is FOUND or NOT_FOUND. "
+                "Every result, including NOT_FOUND, must copy malfunction_id, scenario_id and fact_type "
+                "from its fact_request. A status-only object is invalid. "
                 "FOUND requires value, unit, and one or more evidence_ids. Categorical values must "
                 "come from allowed_values; numeric values must be JSON numbers. Evidence IDs must "
                 "come from evidence. No Markdown.\n"

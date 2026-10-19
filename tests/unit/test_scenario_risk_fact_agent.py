@@ -308,6 +308,71 @@ def test_scenario_risk_fact_completed_batch_is_reused_from_cache():
     assert client.calls == 1
     assert len(cache) == 1
     assert second_audit["batch_cache_hit_count"] == 1
+    assert second_audit["llm_call_count"] == 0
+    assert next(iter(cache.values()))["audit"]["llm_call_count"] == 1
+
+
+@pytest.mark.parametrize("needs_repair", [False, True])
+def test_raw_fact_response_survives_failed_batch_save_and_revalidates(tmp_path, needs_repair):
+    class Client:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, request):
+            self.calls += 1
+            result = {
+                "malfunction_id": "MF-1", "scenario_id": "SCN-1",
+                "fact_type": "COLLISION_TYPE", "status": "NOT_FOUND",
+            }
+            if needs_repair and not request.metadata["coverage_repair"]:
+                result.update(status="FOUND", value="FRONTAL", unit="", evidence_ids=["E9999"])
+            return LLMResponse(data={"results": [result]}, model="fake",
+                               usage={"prompt_tokens": 10, "completion_tokens": 5})
+
+    source = SourceRef("item_definition", "item.docx", "p1", "collision")
+    candidate = ScenarioCandidate("SCN-1", "road", "collision", "detail", sources=[source])
+    malfunction = MalfunctionCandidate("MF-1", "FUN-1", "loss", "lost", "absent", "collision",
+                                       ["lost", "collision"], sources=[source])
+    assessments = [{"malfunction_id": "MF-1", "scenario_id": "SCN-1",
+                    "physically_feasible": True, "functionally_relevant": True,
+                    "causally_relevant": True, "status": "FINALIZED"}]
+    specs = [_spec(FactType.COLLISION_TYPE, FactOrigin.SCENARIO_FACT,
+                   ("COLLISION_TYPE IN ('FRONTAL',)",))]
+    client = Client()
+    saved = []
+
+    def failed_save(_key, entry):
+        saved.append(entry)
+        raise RuntimeError("interrupted before whole-state checkpoint commit")
+
+    with pytest.raises(RuntimeError, match="before whole-state"):
+        ScenarioRiskFactAgent(client, response_checkpoint_dir=tmp_path).interpret(
+            assessments, [candidate], [malfunction], specs, on_batch=failed_save)
+    paid = 1 + int(needs_repair)
+    assert client.calls == paid
+    assert len(list(tmp_path.glob("*.json"))) == paid
+
+    facts, audit = ScenarioRiskFactAgent(client, response_checkpoint_dir=tmp_path).interpret(
+        assessments, [candidate], [malfunction], specs)
+    assert client.calls == paid
+    assert audit["response_checkpoint_hits"] == paid
+    assert audit["llm_call_count"] == 0
+    assert audit["validation_failure_count"] == int(needs_repair)
+    assert facts == saved[0]["facts"] == []
+    assert audit["resolution_counts"]["ABSENT_IN_EVIDENCE"] == 1
+
+    # Different source or child identity must not reuse a former request.
+    candidate.sources = [SourceRef("item_definition", "item.docx", "p2", "different evidence")]
+    ScenarioRiskFactAgent(client, response_checkpoint_dir=tmp_path).interpret(
+        assessments, [candidate], [malfunction], specs)
+    assert client.calls == 2 * paid
+    candidate.scenario_id = assessments[0]["scenario_id"] = "SCN-OTHER"
+    # Only test request identity here: this stub still returns the old identity,
+    # which must be rejected and cause the existing bounded repair.
+    _, changed = ScenarioRiskFactAgent(client, response_checkpoint_dir=tmp_path).interpret(
+        assessments, [candidate], [malfunction], specs)
+    assert client.calls == 2 * paid + 2
+    assert changed["unresolved_contract_count"] == 1
 
 
 def test_scenario_risk_fact_agent_batches_by_expected_result_count():
