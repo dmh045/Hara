@@ -51,7 +51,9 @@ representative_motion_rules:
       are separate trajectories and are not proved covered by this case.
 template_semantic_aliases:
   # Same brake-loss meaning as the source template; no binding to a dated MF ID.
-  FM_TEMPLATE_002: [制动扭矩输出功能完全丧失]
+  # Equivalent complete-loss wording observed in a fresh production return.
+  # Still requires the existing canonical loss selector and parking exclusions.
+  FM_TEMPLATE_002: [制动扭矩输出功能完全丧失, 制动扭矩输出完全缺失]
 template_context_exclusions:
   # Parking-hold failures need their own rollaway/drag mechanism; a service
   # braking template cannot be authorized by the word "degraded" alone.

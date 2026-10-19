@@ -2,6 +2,7 @@
 from collections import Counter
 from copy import deepcopy
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,18 @@ from test_reuse_reporting_acceptance import active_method
 
 def test_real_three_models_keep_geometry_and_reduce_only_redundant_sampling(active_method,tmp_path):
     fixture=json.loads((Path(__file__).parents[1]/'fixtures/physical_provider_quality_20261019.json').read_text())
+    # Recorded responses bind to their original governed method, including its
+    # source hash and generated identities. Never relabel them as a new method.
+    from hara_agent.method_sources import MethodSourceResolver
+    baseline = tmp_path / 'frozen_method'
+    shutil.copytree('method_assets/fusa_baseline_v1', baseline)
+    frozen = Path(__file__).parents[1] / 'fixtures/physical_provider_quality_baseline'
+    for name in ('manifest.yaml', 'normalized/project_analysis_policy.yaml'):
+        shutil.copyfile(frozen / name, baseline / name)
+    active_method = MethodSourceResolver().resolve(template_path=None,
+        baseline_manifest_path=baseline / 'manifest.yaml',
+        report_template_path='references/HARA_Template_AI_20260327.xlsx').method
+    assert active_method.metadata['method_source_hash'] == fixture['state']['method_contract']['method_source_hash']
     state=HARAState.read_committed(fixture['state'])
     project=ItemDefinitionFacts.from_dict(state.item_definition['typed'])
     service=MethodScenarioCandidateService(active_method)
@@ -73,3 +86,22 @@ def test_real_three_models_keep_geometry_and_reduce_only_redundant_sampling(acti
     ranges=[c.facts['physical_analysis']['sample_parameters']['longitudinal_acceleration_mps2']
         for c in physical if c.source_scenario_id=='SCN-ANALYTICAL-553F4E2BB72FF4A2']
     assert set(ranges)=={.5,1,2}
+
+
+def test_current_brake_loss_wording_retains_existing_template_path(active_method):
+    from hara_agent.services.analysis.scenario_method_service import ScenarioMethodService
+    fixture=json.loads((Path(__file__).parents[1]/'fixtures/physical_provider_quality_20261019.json').read_text())
+    raw=next(m for m in fixture['state']['malfunctions'] if m['malfunction_id']=='MF-F01-001')
+    mf=MalfunctionCandidate(**{**raw,'status':ReviewStatus(raw['status']),
+        'sources':[SourceRef(**s) for s in raw['sources']]})
+    service=ScenarioMethodService(active_method)
+    for wording in ('制动扭矩输出功能完全丧失', '制动扭矩输出完全缺失'):
+        mf.description='MDC未向IPB输出常规泊车制动减速度控制信号或紧急制动信号，'+wording
+        result=service.match_fm_template(mf)
+        assert result.injectable and result.template.template_id=='FM_TEMPLATE_002'
+    mf.description='驻车制动扭矩输出完全缺失'
+    assert not service.match_fm_template(mf).injectable
+    mf.description='制动扭矩输出完全缺失'
+    mf.failure_type='excessive'
+    result=service.match_fm_template(mf)
+    assert not result.injectable or result.template.template_id!='FM_TEMPLATE_002'

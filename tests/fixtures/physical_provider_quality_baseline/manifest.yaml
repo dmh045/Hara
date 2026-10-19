@@ -1,0 +1,82 @@
+schema_version: "1.0"
+method_id: fusa_hara_baseline_v1
+method_version: "1.0"
+source_kind: YAML_BASELINE
+governance_status: USER_SELECTED_BASELINE
+
+sources:
+  asil: raw/iso26262_spec.yaml
+  severity: raw/severity_table.yaml
+  exposure_atoms: raw/vda702_atoms.yaml
+  exposure_domain: raw/e_dimension_rules.yaml
+  scenario_structure: raw/dimension_structure.yaml
+  atom_spec: raw/atom_spec.yaml
+  controllability_profile: raw/c_profiles/iav_avp.yaml
+  ftti_formulas: raw/ftti_formulas.yaml
+  ftti_budgets: raw/ftti_budgets.yaml
+  component_taxonomy: raw/component_taxonomy.yaml
+  failure_type_taxonomy: raw/failure_type_taxonomy.yaml
+  scenario_templates: raw/fm_scenario_templates.yaml
+  scenario_domain: raw/domain_rules/avp_low_speed.yaml
+  coupling_examples: raw/coupling_examples.yaml
+  infeasible_examples: raw/infeasible_examples.yaml
+
+normalized_sources:
+  malfunction_situation_selection: normalized/malfunction_situation_selection.yaml
+  guidewords: normalized/guidewords.yaml
+  scenario_constraints: normalized/scenario_constraints.yaml
+  scenario_aliases: normalized/scenario_aliases.yaml
+  scenario_coverage_rules: normalized/scenario_coverage_rules.yaml
+  fm_template_selector_map: normalized/fm_template_selector_map.yaml
+  derivation_rules: normalized/derivation_rules.yaml
+  exposure_policy: normalized/exposure_policy.yaml
+  controllability_aliases: normalized/controllability_aliases.yaml
+  severity_semantics: normalized/severity_semantics.yaml
+  risk_vocabulary_mappings: normalized/risk_vocabulary_mappings.yaml
+  project_analysis_policy: normalized/project_analysis_policy.yaml
+
+excluded_numeric_authorities:
+  - raw/controllability_rules.yaml
+  - raw/c_iso26262.yaml
+
+excluded_numeric_sections:
+  raw/domain_rules/avp_low_speed.yaml:
+    - exposure
+    - controllability
+    - severity
+
+policies:
+  asil_zero_short_circuit: QM
+  exposure_aggregation: fusa_v1
+  exposure_dimension_fallback: scenario_level
+  controllability_override_precedence: before_ttc
+  severity_primary_method: relative_velocity
+  severity_fallback_method: traffic_domain
+  ftti_formula_selection: collision_type_first
+
+asset_hashes:
+  normalized/malfunction_situation_selection.yaml: 108aa4cd5c7254534b5de26d780d677bbc163a3f12569d05f987d4dee3bea455
+  normalized/project_analysis_policy.yaml: c32394c1b56a6da85aec48b4ca2c0b8059797167cb8cd94b1c0633da12c67f07
+  raw/atom_spec.yaml: 391ad0433a6f37bb8f1ddc0b7bc004c0c882d4dae364e1420322bb0813331108
+  raw/c_iso26262.yaml: 5a64ce1fa4f8d133f51d0aec7d88506f8a0bdf01ce4aa1ea90318ab388aeb8b9
+  raw/c_profiles/iav_avp.yaml: 4d966dfc584ee31c066db17f076818fc65ccd088fd0c579c741d2db4e2363dfb
+  raw/component_taxonomy.yaml: c472d5b8229909ed31a8d96e3b8701c73433fed4fde7745fdb40dae6e700f479
+  raw/controllability_rules.yaml: dea0bd6f3133603aadeb282dfa5837550b50b1e549febc3bcee6c7c27a8fc1fe
+  raw/coupling_examples.yaml: 8e216ece0b3da39de334b2fe87914448ba843f7ae0abdc27f421a11701de4c3c
+  raw/dimension_structure.yaml: 29c6f969701a8be30c2900272d36f5e548fa2b8cd848b031500acc2aee655eef
+  raw/domain_rules/avp_low_speed.yaml: aea6e742d78eea1a905b67ab4d7c65452ff1c597684904a75869479d1c42ca15
+  raw/e_dimension_rules.yaml: 718a408614830d06f808765dc66f395a447a10f984b6124dcf4a6079f6cf7f4f
+  raw/failure_type_taxonomy.yaml: e2ba063b035ac7b55a05fa5caa944021c1c3137b928df55d18bac50ecfc6f663
+  raw/fm_layer_classification.yaml: a49624ea6d48abbcc9ca1b851adf730e2fc3603d2d7587557b537c38bcc58485
+  raw/fm_scenario_templates.yaml: df7ddc10578cd41fdc4a53688d6ecd69cd503ae469a37821f0f09e823d3a94de
+  raw/ftti_budgets.yaml: 47e789fcffc8b4b80a3eecd81480ca529b325239c1d4e0b41a73b7a13b4019c3
+  raw/ftti_formulas.yaml: 36dd7e947034d784af929b16b55e0267f3d7c25bdf1d23d5b9ffbb34205c9877
+  raw/infeasible_examples.yaml: 156496e129a0c97490351c6e57abc517de9b2e8c0ce1dc035b74c43b4a09bea6
+  raw/iso26262_spec.yaml: 009dad63656731efc09ef4eaa76b3a170172506a0b6f9a404bc3b32b944edb20
+  raw/kb_retrieval.yaml: 6d95d2672924249eb996c73d5e7bd4c1e2f5683eb367685d773345858df02c2b
+  raw/severity_table.yaml: 1494c86e0df453bc3ecd71db6f7e6e5d3026edd598da983cae0df4c3bff61a16
+  raw/vda702_atoms.yaml: 9ecc35bd7bb36161c84aafe33516e59bc01eb0495aa3e65dc929b053a356ba55
+  normalized/scenario_aliases.yaml: e3cfbac84282bd83e164348807d4bd276b67b6408fcf0aac1958bf63f63c3ef1
+  normalized/scenario_coverage_rules.yaml: 9c755819cb08c09d57a21b5ad5576c296d14f7490af31152fe456002804bd86a
+  normalized/fm_template_selector_map.yaml: e7beb284c2f9e67fcd22383ba87f7b70e41dfa3049fc5f754877909f953afabe
+  normalized/risk_vocabulary_mappings.yaml: 382397c58b19c908b4709b32d89778f15dfa8e78d77ce647b5fc5e4805fbbb6c
