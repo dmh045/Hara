@@ -23,6 +23,7 @@ from hara_agent.models import ItemDefinitionFacts, MalfunctionCandidate, ReviewS
 from hara_agent.services.analysis import MethodScenarioCandidateService
 from hara_agent.services.analysis.malfunction_situation_selection import selection_function
 from hara_agent.services.analysis.scenario_equivalence import signature, scenario_conditions
+from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
 from hara_agent.workflow import CheckpointRepository
 
 
@@ -112,17 +113,14 @@ def prepare(source, output, run_id, limit, *, families=None, driver_position=Non
         sample_scenario_pair_limit=len(ids),provider_attempt_limit=limit)
     plan={'version':'physical-followup-five-families-v1','run_id':run_id,'cases':cases,'input_identities':len(ids),
         'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'method_hash':method.metadata['method_source_hash'],
-        'expected_first_physical_proposals':4,'range_policy':'One representative hypothesis first; symbolic inputs remain symbolic. No range Cartesian expansion.',
+        'expected_first_physical_proposals':4,'range_policy':PhysicalScenarioAgent.ANALYSIS_STRATEGY,
         'budget_limit':limit,'live_requests':0,'budget_authorization':'Not granted by this plan; obtain a current explicit user budget before --live.'}
     if families is not None:
-        from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
         plan.update(version='physical-followup-selected-families-v2', selected_families=sorted(selected),
             physical_prompt_version=PhysicalScenarioAgent.PROMPT_VERSION,
             expected_first_physical_proposals=sum(case['label'] != 'braking' for case in cases))
     if driver_position:
         plan['driver_position']=driver_position
-    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
-    plan['range_policy'] = PhysicalScenarioAgent.ANALYSIS_STRATEGY
     # Retain the CLI flag for documented invocations; it no longer changes
     # production semantics or inserts a sample-only prompt into the checkpoint.
     plan['numeric_representative_requested'] = numeric_representative

@@ -1179,9 +1179,6 @@ class HARAReportProjectionService:
             pending = counts["PENDING_CAUSAL"]
             members = [entry for entry in entries if entry["risk"].malfunction_id == identity]
             distributions = []
-            from hara_agent.services.analysis.asil_service import MethodContractASILService
-            asil_order = (MethodContractASILService(method).result_order()
-                          if getattr(method, "engineering_rules_compiled", False) else [])
             member_states = {entry["risk"].assessment_id: self._score_states(
                 entry["risk"], entry["trace"], trace_provided=risk_trace is not None) for entry in members}
             known_asils = [entry["risk"].branch_summary.get("highest_known_asil") or

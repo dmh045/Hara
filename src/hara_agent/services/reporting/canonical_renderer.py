@@ -233,7 +233,7 @@ class HARAReportWorkbookRenderer:
             self._render_records(
                 sheets["02_Functions"], "Functions", registry,
                 ("Function ID", "Function", "Output", "来源审核状态", "失效数", "已分析数", "保留数", "排除数", "因果未决数"),
-                self._functions(view_model),
+                [tuple(item.to_dict().values()) for item in view_model.function_inventory],
                 width_source_columns=(1, 2, 7, 16, 13, 13, 13, 13, 13),
             )
             self._render_records(
@@ -241,7 +241,7 @@ class HARAReportWorkbookRenderer:
                 ("Malfunction ID", "Function ID", "Guideword", "Malfunction", "Hazard",
                  "Retained", "Excluded", "Pending", "Risk Disposition", "Review Group Basis",
                  "Covered Conditions", "Independent Risk Distribution", "Pending Causes"),
-                self._malfunctions(view_model),
+                [tuple(item.to_dict().values()) for item in view_model.malfunction_inventory],
                 width_source_columns=(1, 2, 3, 7, 8, 13, 13, 13, 16, 7, 7, 7, 7),
             )
             layout = self._render_main_hara(sheets[MAIN_SHEET], view_model, schema, registry)
@@ -758,14 +758,6 @@ class HARAReportWorkbookRenderer:
                           for paragraph in text.split("\n"))
             lines = max(lines, wrapped)
         return max(baseline, min(409, 15 * lines + 6))
-
-    @staticmethod
-    def _functions(view_model: HARAReportViewModel) -> list[tuple[Any, ...]]:
-        return [tuple(item.to_dict().values()) for item in view_model.function_inventory]
-
-    @staticmethod
-    def _malfunctions(view_model: HARAReportViewModel) -> list[tuple[Any, ...]]:
-        return [tuple(item.to_dict().values()) for item in view_model.malfunction_inventory]
 
     @staticmethod
     def _save_atomically(workbook: Any, output: Path) -> None:

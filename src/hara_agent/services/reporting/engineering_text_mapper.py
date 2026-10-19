@@ -770,8 +770,6 @@ class EngineeringReportTextMapper:
 
     def exposure_rationale(self, evidence: Any, trace: Mapping[str, Any], *, calculated: bool = False) -> str:
         if _status(evidence) == "FINALIZED" or calculated:
-            requested = str(trace.get("requested_domain", "") or "")
-            actual = str(trace.get("domain", trace.get("actual_domain", "")) or "")
             bindings = trace.get("atom_details", trace.get("atom_bindings", []))
             atoms = []
             if isinstance(bindings, list):

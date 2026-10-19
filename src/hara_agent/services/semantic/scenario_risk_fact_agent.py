@@ -374,7 +374,6 @@ class ScenarioRiskFactAgent:
         batches = [(pairs[start:start + max(1, self.batch_max_results // len(needed))], needed)
                    for needed, pairs in groups.values()
                    for start in range(0, len(pairs), max(1, self.batch_max_results // len(needed)))]
-        pending_batches = []
         for batch_pairs, batch_specs in batches:
             if self._load_batch_cache(scoped_cache.get(self._batch_cache_key(batch_pairs, batch_specs)), batch_pairs) is not None:
                 found, audit, hit = self._interpret_cached_batch(batch_pairs, batch_specs, scoped_cache, on_batch)
@@ -399,18 +398,16 @@ class ScenarioRiskFactAgent:
                 if needed:
                     group = tuple(spec.fact_type for spec in needed)
                     remaining.setdefault(group, (needed, []))[1].append(pair)
-            pending_batches.extend((pairs, specs) for specs, pairs in remaining.values())
             # Drain within the outer loop so subsequent batches see saved
             # negative evidence. Existing batch and raw-response caches stay
             # authoritative for ordinary responses and interrupted requests.
-            for remaining_pairs, remaining_specs in pending_batches:
+            for remaining_specs, remaining_pairs in remaining.values():
                 batch_facts, batch_audit, hit = self._interpret_cached_batch(
                     remaining_pairs, remaining_specs, scoped_cache, on_batch)
                 facts.extend(batch_facts)
                 audits.append(batch_audit)
                 cache_hits += hit
                 absences.update(self._source_absences(remaining_pairs, remaining_specs, batch_audit))
-            pending_batches.clear()
         return facts, audits, cache_hits
 
     def _absence_key(self, pair, spec):
