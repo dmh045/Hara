@@ -122,6 +122,30 @@ def test_holding_resistance_does_not_launch_reverse_motion(method):
     assert 'ttc_s' not in child.facts and 'ego_impact_speed_kph' not in child.facts
 
 
+def test_no_contact_outcome_reaches_causal_request_and_scopes_contact_check(method):
+    from hara_agent.services.semantic.scenario_batching import _scenario_json
+    from hara_agent.services.analysis.scenario_physics import causal_physics_conflicts
+    child = instantiate(method, raw_plan(initial=7, acceleration=-8), make_candidate(7))[0]
+    before = deepcopy(child)
+    assert child.facts['motion_model_outcome']['status'] == 'STOPPED_BEFORE_CONTACT'
+    request = json.loads(_scenario_json(mf(), child))
+    view = request['physical_interaction']
+    assert view['conditions']['motion_model_outcome'] == child.facts['motion_model_outcome']
+    assert view['evidence_refs']['motion_model_outcome'] == 'DERIVED.motion_model_outcome'
+    assert view['derived_physics_evidence']['DERIVED.motion_model_outcome']['value']['status'] == 'STOPPED_BEFORE_CONTACT'
+    claim = {'target': 'SCENARIO_OBJECT', 'object_position': child.facts['object_position'],
+             'relation': 'CONTACT', 'assessment_reference': 'MODEL_TRAJECTORY'}
+    assert 'NO_CONTACT_TRAJECTORY_CONTRADICTS_CONTACT_CLAIM' in causal_physics_conflicts(
+        child, {'physical_interaction': claim})
+    # Initial approach and a different target/phase are not disproved by this trajectory.
+    for difference in ({'relation': 'APPROACH'}, {'target': 'OTHER'},
+                       {'assessment_reference': 'OTHER'}, {'object_id': 'another-object'}):
+        assert not causal_physics_conflicts(child, {'physical_interaction': {**claim, **difference}})
+    contact = instantiate(method, raw_plan(initial=7, acceleration=2), make_candidate(7))[0]
+    assert not causal_physics_conflicts(contact, {'physical_interaction': claim})
+    assert child == before
+
+
 def test_unknown_slope_reference_needs_explicit_orientation(method):
     raw=grade_raw(); raw['hypotheses'][0].pop('grade_frame')
     parent=make_candidate();parent.facts['source_slope_direction']='上坡'

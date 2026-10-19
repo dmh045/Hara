@@ -465,6 +465,17 @@ def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any
         object_direction=facts.get("object_longitudinal_direction"),
         object_position=position, collision_type=facts.get("collision_type"),
     )
+    interaction = payload.get("physical_interaction", {})
+    interaction = interaction if isinstance(interaction, dict) else {}
+    same_target = (interaction.get("target") == "SCENARIO_OBJECT"
+                   and str(interaction.get("object_position", "")).upper() == position
+                   and (not interaction.get("object_id") or interaction["object_id"] == facts.get("object_id")))
+    same_phase = interaction.get("assessment_reference") in {"CURRENT_STATE", "MODEL_TRAJECTORY"}
+    outcome = facts.get("motion_model_outcome", {})
+    if (same_target and same_phase and interaction.get("relation") == "CONTACT"
+            and isinstance(outcome, dict) and outcome.get("status") in {
+                "STOPPED_BEFORE_CONTACT", "NO_POSITIVE_CONTACT_ROOT", "CONTACT_OUTSIDE_MODEL_INTERVAL"}):
+        conflicts.append("NO_CONTACT_TRAJECTORY_CONTRADICTS_CONTACT_CLAIM")
     if closing == 0:
         modeled = False
         if facts.get("fault_motion_model") in {"CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE"}:
@@ -474,12 +485,6 @@ def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any
             modeled = (outcome["status"] == "CONTACT" and facts.get("object_speed_kph") == 0
                 and (str(facts.get("ego_longitudinal_direction", "")).upper(), position) in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}
                 and not is_lateral_collision(facts.get("collision_type")))
-        interaction = payload.get("physical_interaction", {})
-        interaction = interaction if isinstance(interaction, dict) else {}
-        same_target = (interaction.get("target") == "SCENARIO_OBJECT"
-                       and str(interaction.get("object_position", "")).upper() == position
-                       and (not interaction.get("object_id") or interaction["object_id"] == facts.get("object_id")))
-        same_phase = interaction.get("assessment_reference") in {"CURRENT_STATE", "MODEL_TRAJECTORY"}
         asserts_contact = (same_target and same_phase
                            and interaction.get("relation") in {"APPROACH", "CONTACT"})
         if not interaction and position in terms:

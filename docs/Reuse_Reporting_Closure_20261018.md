@@ -49,6 +49,18 @@
 
 通过现有CheckpointRepository为上述3个INVALID执行记录各安排一次有界恢复，记录operational_recovery_history及审计事件；不修改来源、假设内容、评分字段或原始响应。完整原checkpoint在corrected/before_grade_location_recovery/，恢复脚本与清单同目录旁保留。主运行003、原002/4500账本不变，恢复启动时已消耗476次；已验证方案继续复用。代码定向59 passed，完整1037 passed、1 skipped，compileall/diff/doctor通过。恢复结果及全量最终结果在完成后追加。
 
+### 全量实测补充：无接触计算结果未稳定传入因果视图
+
+进一步抽查发现v27虽排除了MF-F01-005的已知等效反例，MF-F01-002另一组6个取点仍将追尾“等效”为倒车碰静止目标。实际motion_model_outcome为STOPPED_BEFORE_CONTACT，因果文字却主张可能接触。查明固定physical_interaction视图列出了速度、距离和TTC，但没有motion_model_outcome；紧凑证据选择也不保证包含它。因此不能把问题简单归为模型能力，也不能仅凭前一双身份通过宣布全部关闭。
+
+修复沿用现有入口：scenario_batching投影已有结果及其DERIVED引用/kind；ScenarioFeasibilityAgent v28明确区分初始接近与当前轨迹接触；causal_physics_conflicts在同一对象/阶段下拒绝明确无接触轨迹的CONTACT主张，保留初始APPROACH、其他对象/阶段及正常CONTACT正例。没有修改物理数值、方法表、ASIL、参数假设或审批。测试走真实实例化后检查请求实际包含结果，验证校验不改输入。初始测试夹具把父初速0与子7混用，已改为匹配父7并保留原相容性检查，未降低断言。
+
+真实原6取点在补齐输入后均排除（3请求、41.1秒），正常倒车驱动双身份仍通过（1请求、16.3秒），无单项纠正。先行“仅改提示词”的探针因缺失输入刚被定位而中止，未作为通过证据，其在途请求仍记账。所有原始返回和对照见corrected/no_contact_projected_v28_result.json、reverse_control_v28_result.json及同一响应账本。旧v27现场保留before_contact_outcome_projection/。
+
+主运行仍003、方法与物理计划不变，恢复时账本1151/4500。因果任务版本变化使旧因果缓存失效，重新验证，额外耗时/请求必须纳入本轮全量成本，不能宣称旧判断全被安全复用。审核JSONL原入口为按身份首次写入；本轮用独立review_v28根目录保留新投影，原review不覆盖，未另造报告器。监控只计当前v28完整批次，旧批次仍保留在快照与原始缓存。
+
+相关96 passed；完整1038 passed、1 skipped，compileall/diff/doctor通过。跨模块检查覆盖契约、实例化、物理推导、因果视图/解析、分组缓存、预算/原始响应及报告投影；本次新增内容复用原职责。没有证明可安全删除的实现，没有纯清理提交或声称全项目语义已正确。后续以本次全量结果和报告实物继续验收。
+
 ## 2026-10-19 参考表／离线样本／真实Provider质量对比收口
 
 本节为最新状态。A基线与SSH核对远端均为 `58657081988ab4b910fbc0b2a42c852a241c5eac`；起始无未提交代码。只读审阅用户提供的IAV参考工作簿全部14个有内容的工作表、最新14身份离线样本、历史全量checkpoint及首次物理返回；保留历史运行及个人配置。本轮用户另行授权20次真实请求，已使用20/20；没有启动全量或续借历史额度。
