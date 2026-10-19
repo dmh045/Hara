@@ -1585,6 +1585,29 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
         )
 
     @staticmethod
+    def _omit_empty_later_hops(item: dict) -> dict:
+        """Treat empty post-breakpoint placeholders as omitted, without editing raw output."""
+        hops = ("m_to_b", "b_to_i", "i_to_h", "h_to_harm")
+        breakpoint = item.get("breakpoint")
+        chain = item.get("causal_chain")
+        if (item.get("causally_relevant") is not False
+                or not isinstance(breakpoint, str)
+                or breakpoint not in {"M_TO_B", "B_TO_I", "I_TO_H"}
+                or not isinstance(chain, dict)):
+            return item
+        later = hops[hops.index(breakpoint.lower()) + 1:]
+        empty = {
+            name for name in later
+            if isinstance((hop := chain.get(name)), dict)
+            and set(hop) == {"claim", "basis_type", "evidence_refs"}
+            and isinstance(hop["claim"], str) and not hop["claim"].strip()
+            and hop["basis_type"] == "ASSUMPTION" and hop["evidence_refs"] == []
+        }
+        if not empty:
+            return item
+        return {**item, "causal_chain": {key: value for key, value in chain.items() if key not in empty}}
+
+    @staticmethod
     def _parse(
         malfunction: MalfunctionCandidate,
         item: Any,
@@ -1615,6 +1638,7 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             raise ScenarioSchemaContractError(
                 f"Scenario assessment引用未知scenario_id={scenario_id!r}"
             )
+        item = ScenarioFeasibilityAgent._omit_empty_later_hops(item)
         causal = item["causally_relevant"]
         hazardous_event = str(item.get("hazardous_event", "")).strip()
         normalized_dimensions, _ = validate_evidence_contract(
