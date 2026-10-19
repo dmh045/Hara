@@ -102,6 +102,11 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         for candidate in candidates[mf.malfunction_id]:
             if not producer.needed(candidate, mf.malfunction_id):
                 kept.append(candidate); metrics["existing_path_skipped"] += 1
+            elif gap := producer.known_model_gap(candidate, mf.malfunction_id):
+                candidate.analysis_instance["physical_plan_diagnostics"] = [gap]
+                kept.append(candidate)
+                metrics["known_model_gap_skipped"] = metrics.get("known_model_gap_skipped", 0) + 1
+                metrics["diagnostics"].append({"scenario_id": candidate.scenario_id, **gap})
             else:
                 groups[signature(scenario_conditions(candidate, without_driver=True))].append(candidate)
         for condition_key, family in groups.items():
@@ -120,6 +125,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 "risk_vocabulary": {"road_user_type": dict(method.structured_risk_method.severity.road_user_groups),
                                     "collision_type": dict(method.structured_risk_method.severity.collision_types)},
                 "analysis_strategy": PhysicalScenarioAgent.ANALYSIS_STRATEGY,
+                "model_input_status": producer.input_status(first, mf.malfunction_id),
                 "producer_version": PHYSICAL_PLAN_VERSION, "model_catalog_identity": signature(MODEL_CATALOG),
                 "prompt_version": agent.PROMPT_VERSION, "route": route}
             evidence = {"MF.description": {"value": mf.description, "sources": [vars(ref) for ref in mf.sources]},

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from hara_agent.models import MalfunctionCandidate, ScenarioCandidate
+from hara_agent.config.llm_config import LLMConfig
 
 from .scenario_contract import RISK_DIMENSION_VALUES
 from .scenario_evidence import (
@@ -12,8 +13,8 @@ from .scenario_evidence import (
 )
 
 
-DEFAULT_SCENARIO_BATCH_MAX_CHARS = 12000
-DEFAULT_SCENARIO_BATCH_MAX_ITEMS = 12
+DEFAULT_SCENARIO_BATCH_MAX_CHARS = LLMConfig.scenario_batch_max_chars
+DEFAULT_SCENARIO_BATCH_MAX_ITEMS = LLMConfig.scenario_batch_max_items
 
 
 class ScenarioBatchSizeError(ValueError):

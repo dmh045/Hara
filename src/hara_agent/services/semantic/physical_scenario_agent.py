@@ -71,7 +71,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v6-production-representative"
+    PROMPT_VERSION = "post-fault-physical-scenario-v7-joint-geometry"
     ANALYSIS_STRATEGY = (
         "First propose one justified, computable conditional representative for each distinct mechanism. "
         "Preserve the supplied initial state, object and geometry constraints. For missing model inputs, "
@@ -83,6 +83,13 @@ class PhysicalScenarioAgent:
         "any new result; retain the full parameter relationship and range. If no defensible point "
         "exists, keep SYMBOLIC with the useful relationship and exact gap. Python derives all physics "
         "and ratings. No universal speed, acceleration or distance defaults."
+        " Use model_input_status and the selected model_catalog.required together: account for every "
+        "required field by a scoped inherited input or an explicit POINT/RANGE/SYMBOLIC parameter. "
+        "Jointly justify clearance/distance, target geometry and fault dynamics in the first proposal; "
+        "missing measured geometry alone is not a reason to abandon a representative. Explain reference "
+        "points, validity horizon and uncovered conditions. A justified no-contact case is valid. "
+        "Never choose inputs to target a desired rating. SYMBOLIC rationale must explain why a "
+        "representative cannot be defended and the useful conditional relationship."
     )
 
     def __init__(self, client, *, response_checkpoint_dir: Path | None = None):

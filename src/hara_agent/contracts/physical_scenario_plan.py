@@ -20,14 +20,17 @@ PARAMETER_UNITS = {
 }
 MODEL_CATALOG = {
     "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": {
+        "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "relative_distance_m", "longitudinal_acceleration_mps2"],
         "scope": "Straight travel toward a stationary target; first contact before stop; acceleration may be negative or zero. Optional post_fault_speed_cap_kph represents an explicitly remaining independent limiter, not the normal operating speed.",
     },
     "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": {
+        "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "relative_distance_m", "slope_percent", "residual_resistance_mps2"],
         "scope": "Initially stationary ego, gravity down a constant grade toward a stationary target. Grade is rise/run percent; residual resistance includes remaining holding capability.",
     },
     "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": {
+        "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "lateral_clearance_m", "lateral_speed_mps", "lateral_acceleration_mps2"],
         "scope": "Steering-induced deviation while ego is moving longitudinally (speed > 0); stationary side object extended along the longitudinal swept path; lateral first contact, constant longitudinal speed. No longitudinal TTC or steering avoidance rule is inferred.",
     },

@@ -18,8 +18,8 @@ class LLMConfig:
     guideword_thinking: str = "disabled"
     malfunction_thinking: str = "default"
     scenario_thinking: str = "default"
-    scenario_batch_max_chars: int = 12000
-    scenario_batch_max_items: int = 12
+    scenario_batch_max_chars: int = 24000
+    scenario_batch_max_items: int = 2
     scenario_max_split_depth: int = 8
     scenario_causal_evidence_budget: int = 10
     scenario_response_format: str = "none"
@@ -49,10 +49,10 @@ class LLMConfig:
                 f"{prefix}SCENARIO_THINKING", "default"
             ).strip().lower(),
             scenario_batch_max_chars=int(os.getenv(
-                f"{prefix}SCENARIO_BATCH_MAX_CHARS", "12000"
+                f"{prefix}SCENARIO_BATCH_MAX_CHARS", str(cls.scenario_batch_max_chars)
             )),
             scenario_batch_max_items=int(os.getenv(
-                f"{prefix}SCENARIO_BATCH_MAX_ITEMS", "12"
+                f"{prefix}SCENARIO_BATCH_MAX_ITEMS", str(cls.scenario_batch_max_items)
             )),
             scenario_max_split_depth=int(os.getenv(
                 f"{prefix}SCENARIO_MAX_SPLIT_DEPTH", "8"

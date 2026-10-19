@@ -290,6 +290,9 @@ class PhysicalHypothesisInstantiationService:
                     values[field] = parameter["value"]
             elif field in parent.facts:
                 accepted, reason = self._inheritance_reason(parent, h, field, malfunction_id)
+                value = parent.facts[field]
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+                    accepted, reason = False, "PARENT_INPUT_NOT_FINITE_NUMBER"
                 if field not in allowed:
                     accepted, reason = False, "PARAMETER_NOT_USED_BY_MODEL"
                 audit[field] = {"action": "INHERITED" if accepted else "EXCLUDED_FROM_ACTIVE_MODEL", "reason": reason,
@@ -297,6 +300,50 @@ class PhysicalHypothesisInstantiationService:
                 if accepted:
                     values[field] = parent.facts[field]
         return values, audit
+
+    def input_status(self, candidate, malfunction_id):
+        """Request guidance from the same scoped view used by instantiation.
+
+        Missing measurements do not prohibit analytical hypotheses. No value is
+        filled here, and the catalog remains the sole required-field list.
+        """
+        models = {}
+        for model, spec in MODEL_CATALOG.items():
+            h = {"model": model, "parameters": [], "geometry": {
+                "object_id": candidate.facts.get("object_id"),
+                "ego_longitudinal_direction": candidate.facts.get("ego_longitudinal_direction")}}
+            values, audit = self._model_inputs(candidate, h, malfunction_id)
+            models[model] = {
+                "available": {f: {"value": values[f], "unit": PARAMETER_UNITS[f],
+                    "basis": audit[f]["reason"]} for f in spec["required"] if f in values},
+                "needs_hypothesis": [f for f in spec["required"] if f not in values],
+                "excluded_parent_inputs": {f: a["reason"] for f, a in audit.items()
+                    if f in spec["required"] and a["action"] == "EXCLUDED_FROM_ACTIVE_MODEL"},
+                "scope": spec["scope"],
+            }
+        dimensions = candidate.facts.get("method_scenario_dimensions", {})
+        return {"models": models, "known_model_gap": self.known_model_gap(candidate, malfunction_id),
+            "derivable_conditions": {k: candidate.facts[k] for k in (
+                "source_slope_pct", "source_slope_direction", "slope_reference",
+                "ego_speed_constraint") if k in candidate.facts},
+            "selected_constraints": {
+                "initial_speed_range_kph": dimensions.get("EGO_DYNAMICS", {}).get("speed_intersection_kph"),
+                "road_slope": dimensions.get("ROAD", {}).get("method_semantics", {}).get("slope")},
+            "policy": "Use applicable inputs; jointly justify missing geometry and motion, or explicitly explain a symbolic relationship. PENDING assumptions can be computed conditionally. Constraints are not measurements."}
+
+    @staticmethod
+    def known_model_gap(candidate, malfunction_id):
+        """Only an accepted, fixed moving target excludes all current models."""
+        speed = candidate.facts.get("object_speed_kph")
+        if (all(spec.get("target_motion") == "STATIONARY" for spec in MODEL_CATALOG.values())
+                and isinstance(speed, (int, float)) and not isinstance(speed, bool) and math.isfinite(speed) and speed > 0
+                and source_is_accepted_for(candidate.fact_provenance.get("object_speed_kph", {}),
+                    malfunction_id=malfunction_id, scenario_id=candidate.scenario_id)):
+            return {"reason": "FIXED_MOVING_TARGET_OUTSIDE_MODEL_CATALOG", "object_id": candidate.facts.get("object_id"),
+                "object_speed_kph": speed, "models": list(MODEL_CATALOG),
+                "basis": deepcopy(candidate.fact_provenance["object_speed_kph"]),
+                "scope": "Catalog requires a stationary target; keep this hazardous candidate for causal assessment. No risk or causal exclusion is inferred."}
+        return None
 
     def instantiate(self, candidate, malfunction, plan, *, plan_key: str, response_model: str,
                     project_context=None, function=None):
@@ -307,8 +354,21 @@ class PhysicalHypothesisInstantiationService:
             except PhysicalInputConflict as error:
                 diagnostics.append({"hypothesis_id": h["hypothesis_id"], "reason": str(error), **error.details})
                 continue
+            declared = {p["field"] for p in h["parameters"]}
+            missing = set(MODEL_CATALOG[h["model"]]["required"]) - inputs.keys() - declared
+            if missing:
+                diagnostics.append({"hypothesis_id": h["hypothesis_id"],
+                    "reason": "REQUIRED_MODEL_INPUT_OMITTED", "fields": sorted(missing),
+                    "resolution": "Jointly justify geometry and motion, or explicitly declare SYMBOLIC with a reason and scope. Never fill a default."})
+                continue
             samples, sensitivity = self._samples(h, inputs, self.MAX_INSTANCES_PER_PLAN // len(plan.hypotheses))
             sensitivity["model_input_view"] = inheritance
+            sensitivity["input_completeness"] = {
+                "classification": "EXPLAINED_SYMBOLIC_RELATION" if any(p["kind"] == "SYMBOLIC"
+                    for p in h["parameters"] if p["field"] in MODEL_CATALOG[h["model"]]["required"])
+                    else "COMPUTABLE_REPRESENTATIVE",
+                "required": list(MODEL_CATALOG[h["model"]]["required"]),
+                "symbolic_reasons": {p["field"]: p["rationale"] for p in h["parameters"] if p["kind"] == "SYMBOLIC"}}
             for index, values in enumerate(samples):
                 try:
                     results.append(self._instantiate(candidate, malfunction, h, values, plan_key, response_model,

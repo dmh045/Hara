@@ -317,6 +317,9 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             "batch_input_chars": stats["leaf_chars"],
             "initial_batch_input_chars": batch_sizes,
             "max_batch_chars": max(batch_sizes, default=0),
+            "configured_batch_max_chars": self.batch_max_chars,
+            "configured_batch_max_items": self.batch_max_items,
+            "provider_output_token_limit": self.provider_max_tokens,
             "elapsed_seconds": round(elapsed, 3),
             **{key: stats[key] for key in (
                 "output_limit_count", "timeout_count", "schema_error_count",

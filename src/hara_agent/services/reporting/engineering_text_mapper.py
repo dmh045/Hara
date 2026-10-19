@@ -488,6 +488,8 @@ class EngineeringReportTextMapper:
         gap_labels = {
             "PHYSICAL_MODEL_NOT_APPLICABLE": "当前可用物理模型不覆盖所提出的交互条件，该方案未生成碰撞数值",
             "TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH": "所提目标不在故障后的运动路径上，该方案未生成碰撞数值",
+            "FIXED_MOVING_TARGET_OUTSIDE_MODEL_CATALOG": "当前目标已确定处于运动中，现有自主模型仅支持静止目标；保留该危险场景，尚未计算故障轨迹",
+            "REQUIRED_MODEL_INPUT_OMITTED": "物理方案遗漏必需输入且有限纠正后仍未补齐，未形成完整数值工况",
         }
         gaps = dict.fromkeys(gap_labels[item.get("reason")] for item in diagnostics
                             if isinstance(item, Mapping) and item.get("reason") in gap_labels)

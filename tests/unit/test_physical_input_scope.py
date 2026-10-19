@@ -40,9 +40,16 @@ def test_omitted_parameter_inherits_only_applicable_role_and_object(method, phas
     parent.facts['longitudinal_acceleration_mps2'] = 2
     parent.fact_provenance['longitudinal_acceleration_mps2'] = {**source(), 'analysis_value_semantic':phase, 'object_id':obj}
     raw = raw_plan(); raw['hypotheses'][0]['parameters'].pop()
-    child = instantiate(method, raw, parent)[0]
-    assert ('ego_impact_speed_kph' in child.facts) is expected
-    assert ('longitudinal_acceleration_mps2' in child.facts) is expected
+    inputs, _ = PhysicalHypothesisInstantiationService(method)._model_inputs(parent, raw['hypotheses'][0], 'MF')
+    assert ('longitudinal_acceleration_mps2' in inputs) is expected
+    children, errors = produce(method, raw, parent)
+    if expected:
+        assert children[0].facts['longitudinal_acceleration_mps2'] == 2
+        assert 'ego_impact_speed_kph' in children[0].facts and not errors
+    else:
+        assert not children
+        assert errors[0]['reason'] == 'REQUIRED_MODEL_INPUT_OMITTED'
+        assert errors[0]['fields'] == ['longitudinal_acceleration_mps2']
 
 
 def test_method_standing_initial_cannot_silently_change(method):
