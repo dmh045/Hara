@@ -15,6 +15,9 @@ class CheckpointRepository:
     def __init__(self, run_dir: str | Path):
         self.run_dir = Path(run_dir).expanduser().resolve()
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        # Operational timings are not serialized business state. Callers may
+        # sample them for a run-local performance comparison.
+        self.last_save_timings = {}
 
     def path_for(self, run_id: str) -> Path:
         safe_id = "".join(char for char in run_id if char.isalnum() or char in "-_")
@@ -25,7 +28,11 @@ class CheckpointRepository:
     def save(self, state: HARAState) -> Path:
         target = self.path_for(state.run_id)
         # Large full-run states need the fast encoder; whitespace is not state.
-        payload = json.dumps(state.to_dict(), ensure_ascii=False, separators=(",", ":"))
+        started = time.perf_counter()
+        snapshot = state.to_dict()
+        encoded = time.perf_counter()
+        payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+        writing = time.perf_counter()
         handle, temp_name = tempfile.mkstemp(
             prefix=f".{state.run_id}.", suffix=".tmp", dir=str(self.run_dir), text=True
         )
@@ -33,7 +40,9 @@ class CheckpointRepository:
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 stream.write(payload)
                 stream.flush()
+                syncing = time.perf_counter()
                 os.fsync(stream.fileno())
+                synced = time.perf_counter()
             for attempt in range(5):
                 try:
                     os.replace(temp_name, target)
@@ -45,6 +54,11 @@ class CheckpointRepository:
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
+        finished = time.perf_counter()
+        self.last_save_timings = {"state_to_dict_s": encoded - started,
+            "json_encoding_s": writing - encoded, "write_flush_s": syncing - writing,
+            "fsync_s": synced - syncing, "replace_s": finished - synced,
+            "total_s": finished - started, "payload_chars": len(payload)}
         return target
 
     def load(self, run_id: str) -> HARAState:

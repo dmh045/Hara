@@ -208,3 +208,27 @@ def test_unusable_parent_number_is_not_reported_as_complete_input(method, value)
     model = status['models']['CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE']
     assert 'relative_distance_m' in model['needs_hypothesis']
     assert model['excluded_parent_inputs']['relative_distance_m'] == 'PARENT_INPUT_NOT_FINITE_NUMBER'
+
+
+def test_actual_repeated_request_is_not_hidden_as_a_cache_hit(method, tmp_path):
+    repo = CheckpointRepository(tmp_path/'state')
+    writes = 0
+    def interrupt_after_saved_response(state):
+        nonlocal writes
+        repo.save(state)
+        writes += 1
+        if writes == 1:
+            raise RuntimeError('interrupted before plan parse')
+    client = Client([raw_plan(), raw_plan(acceleration=3)])
+    agent = PhysicalScenarioAgent(client)  # Intentionally no durable response cache.
+    with pytest.raises(RuntimeError, match='before plan parse'):
+        run(method, agent, checkpoint=interrupt_after_saved_response)
+    restored = repo.load('geometry-test')
+    state, result = run(method, agent, state=restored, checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert len(client.requests) == len(entry['responses']) == 2
+    assert entry['responses'][0]['response']['data'] == raw_plan()
+    assert entry['responses'][1]['response']['data'] == raw_plan(acceleration=3)
+    assert result['MF'][0].facts['longitudinal_acceleration_mps2'] == 3
+    assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_requests'] == 2
+    assert state.item_definition['physical_analysis_metrics']['token_usage'] == {'prompt_tokens': 22, 'completion_tokens': 14}
