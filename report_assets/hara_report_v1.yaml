@@ -119,6 +119,31 @@ presentation:
           malfunction: MDC未向IPB输出常规泊车制动减速度控制信号或紧急制动信号，制动扭矩输出功能完全丧失
           vehicle_hazard: 泊车过程中车辆无法按预期减速，存在与周边障碍物碰撞的风险
         text: 防止泊车制动能力丧失导致碰撞。
+    scenario_condition_translations:
+      "Parking in a multi-story car park/garage": 多层停车场/车库
+      "Parkplatz / Parkhaus / Garage (V1 usage)": 停车场/停车楼/车库
+      "Reduced friction (µ < 0.8)": 低附着路面（µ < 0.8）
+      "Slight slope ≤ 2% (driving on)": 行驶于轻微坡道（坡度≤2%）
+      "(Left/right) turn (normal distance)": 正常间距下左转/右转
+      "Lane change (normal)": 正常变道
+      "Lane change (risky / forced / avoidance)": 高风险/被迫/避险变道
+      "Parking in/out (V1)": 驶入/驶出车位
+      "Parking/holding with driver in vehicle": 驾驶员在车内停车/驻停
+      "Reversing (v ≤ 10 kph, incl. parking/maneuvering)": 倒车及泊车操纵（速度≤10 km/h）
+      "Reversing incl. maneuvering (V1)": 倒车及车辆操纵
+      "Slow driving / starting (0 < v ≤ 15 kph in V2-Std; source HARA: 0<v<12)": 低速行驶/起步（方法范围0<速度≤15 km/h；来源HARA范围0<速度<12 km/h）
+      "Stop (light/sign/crosswalk) (V1)": 在信号灯/标志/人行横道处停车
+      "Turn across oncoming lane in dense traffic": 密集交通中转弯穿过对向车道
+      "Deceleration emergency braking (> 6.5 m/s²)": 紧急制动减速（减速度>6.5 m/s²）
+      "Deceleration medium (2.44 - 4 m/s²)": 中等减速（减速度2.44–4 m/s²）
+      "Driving (v < 30 kph)": 行驶（速度<30 km/h）
+      "High lateral accel (5 ≤ aY < 7 m/s²)": 高侧向加速度（5≤aY<7 m/s²）
+      "Increased lateral accel (3 ≤ aY < 5 m/s²)": 较高侧向加速度（3≤aY<5 m/s²）
+      "Vehicle ready to start": 车辆准备起步
+      "Occupants (passenger) of own vehicle": 本车乘员
+      "Other road users (cyclists, pedestrians)": 其他道路使用者（骑行者、行人）
+      "Passenger of own and other vehicles": 本车及其他车辆乘员
+      "Persons in a vehicle": 车内人员
     potential_harm_translations:
       "Severe injuries, possibly life-threatening, survival probable": 严重伤害，可能危及生命，但生存可能性较高
       "Light and moderate injuries": 轻度和中度伤害

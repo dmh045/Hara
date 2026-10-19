@@ -747,6 +747,12 @@ class EngineeringReportTextMapper:
                 return "已按来源支持的代表碰撞工况完成 S 评定；未证明所有故障轨迹的速度上界。"
             return "已按当前方法完成 S 评定。"
         production = trace.get("input_production", {})
+        reason = str(trace.get("pending_reason", "") or getattr(evidence, "review_reason", ""))
+        missing = next((text for code, text in (
+            ("MISSING_RELATIVE_SPEED", "缺少该危险事件可用于评定的碰撞相对速度"),
+            ("MISSING_ROAD_USER_TYPE", "缺少交通参与者类型"),
+            ("MISSING_COLLISION_TYPE", "缺少碰撞类型信息"),
+        ) if self._has_reason(reason, code)), "")
         if isinstance(production, Mapping) and production.get("pending_reason"):
             reasons = {
                 "TEMPLATE_MECHANISM_NOT_SUPPORTED": "原模板与当前失效机制不匹配，所供对象/几何条件不能沿用",
@@ -755,14 +761,11 @@ class EngineeringReportTextMapper:
             }
             known = production.get("after", {})
             available = self.known_inputs(known)
-            return f"{reasons.get(production['pending_reason'], '输入生产尚有未决项，具体原因见风险追溯')}；已有 {available or '来源场景条件'}；S 暂未定。"
-        reason = str(trace.get("pending_reason", "") or getattr(evidence, "review_reason", ""))
-        if self._has_reason(reason, "MISSING_RELATIVE_SPEED"):
-            return "缺少该危险事件的实际相对速度，S 暂不评定。"
-        if self._has_reason(reason, "MISSING_ROAD_USER_TYPE"):
-            return "缺少交通参与者类型，S 暂不评定。"
-        if self._has_reason(reason, "MISSING_COLLISION_TYPE"):
-            return "缺少碰撞类型信息，S 暂不评定。"
+            cause = reasons.get(production['pending_reason'], "")
+            explanation = "；".join(part for part in (missing, cause) if part)
+            return f"{explanation or '输入生产尚有未决项，具体原因见风险追溯'}；已有 {available or '来源场景条件'}；S 暂未定。"
+        if missing:
+            return missing + "，S 暂不评定。"
         return "缺少 S 评定所需项目事实，S 暂不评定。"
 
     def exposure_rationale(self, evidence: Any, trace: Mapping[str, Any], *, calculated: bool = False) -> str:
@@ -779,9 +782,16 @@ class EngineeringReportTextMapper:
                     dimensions = item.get("dimensions", item.get("dimension", []))
                     if not isinstance(dimensions, (list, tuple)):
                         dimensions = [dimensions]
-                    labels = [self._chinese_source(trace.get("scenario_terms", {}).get(str(dimension), {}).get("project_value"))
-                        or self._EXPOSURE_DIMENSION_LABELS.get(str(dimension).strip().upper(), "其他场景维度")
-                        for dimension in dimensions if str(dimension).strip()]
+                    labels = []
+                    for dimension in dimensions:
+                        term = trace.get("scenario_terms", {}).get(str(dimension), {})
+                        atom_label = str(term.get("atom_label") or "")
+                        if atom_label and item.get("atom_id") in {term.get("atom_id"), term.get("canonical_atom_id")}:
+                            # The rank belongs to the selected method condition,
+                            # not to the source phrase used to search for it.
+                            labels.append(self.language.get("scenario_condition_translations", {}).get(atom_label, atom_label))
+                        else:
+                            labels.append(self._EXPOSURE_DIMENSION_LABELS.get(str(dimension).strip().upper(), "其他场景维度"))
                     if level:
                         labels = labels or ["其他场景维度"]
                         atoms.append(f"{'/'.join(labels)}={level}")

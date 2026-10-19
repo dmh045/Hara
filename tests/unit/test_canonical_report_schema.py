@@ -54,7 +54,8 @@ def test_projection_separates_harm_and_exposes_human_pending_reasons():
     row = HARAReportProjectionService(schema).project(state, method).rows[0]
     assert row.hazardous_event == "Vehicle enters an unsafe path。"
     assert row.potential_harm == "待S评定完成后确定"
-    assert row.severity_rationale == "缺少该危险事件的实际相对速度，S 暂不评定。"
+    assert "缺少" in row.severity_rationale and "碰撞相对速度" in row.severity_rationale
+    assert "S 暂不评定" in row.severity_rationale
     assert row.exposure_rationale == "暴露度场景维度覆盖规则未定义，E 暂不评定。"
     assert row.controllability_rationale == "未知分支策略未定义，C 暂不评定。"
     assert row.asil_rationale == "S/E/C 未全部确定，ASIL 暂不评定。"

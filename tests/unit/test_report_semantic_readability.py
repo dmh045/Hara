@@ -43,7 +43,7 @@ def test_real_numeric_sample_keeps_scenario_and_explains_actual_scores(active_me
     assert '室外停车场' in row.operational_scenario
     assert '泊车控车' in row.operational_scenario and '驾驶员在驾驶位' in row.operational_scenario
     assert '15.6 km/h' in row.severity_rationale and '追尾' in row.severity_rationale
-    assert '室外停车场=E4' in row.exposure_rationale and 'E3' in row.exposure_rationale
+    assert '停车场/停车楼/车库=E4' in row.exposure_rationale and 'E3' in row.exposure_rationale
     assert '1.59 s' in row.controllability_rationale
     assert 'S1 / E3 / C3' in row.asil_rationale
     assert (row.severity,row.exposure,row.controllability,row.asil) == ('S1','E3','C3','A')

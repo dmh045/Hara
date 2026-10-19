@@ -362,12 +362,8 @@ class HARAReportWorkbookRenderer:
         sheet.column_dimensions["B"].width = 48
         sheet.column_dimensions["C"].width = 85
         for row_number, (label, value) in enumerate(rows, start=5):
-            lines = max(
-                1,
-                (len(str(label)) + 45) // 46,
-                (len(str(value or "")) + 81) // 82,
-            )
-            sheet.row_dimensions[row_number].height = min(120, max(24, 18 * lines))
+            sheet.row_dimensions[row_number].height = max(
+                24, self._estimated_height((label, value), (48, 85), registry))
 
     def _render_support_table(
         self,

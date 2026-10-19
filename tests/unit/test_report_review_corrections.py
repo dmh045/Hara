@@ -56,6 +56,62 @@ def test_incomplete_group_shared_value_and_branch_difference(active_method):
     assert '碰撞分支分布：E2×1' in view.rows[0].exposure_rationale
 
 
+def test_incomplete_group_keeps_different_actual_exposure_bases(active_method):
+    state = mixed_pending_group()
+    trace = {'assessments': []}
+    for i, risk in enumerate(state.risk_results):
+        record = {'malfunction_id': risk.malfunction_id, 'scenario_id': risk.scenario_id,
+                  'risk_scoring_invoked': True}
+        for field in ('severity', 'exposure', 'controllability', 'asil'):
+            evidence = getattr(risk, field)
+            record[field] = {'result': evidence.value, 'status': evidence.status.value}
+        record['exposure'].update(
+            atom_bindings=[{'atom_id': f'place-{i}', 'used': True, 'e_rank': risk.exposure.value, 'dimensions': ['WHERE']}],
+            scenario_terms={'WHERE': {'atom_id': f'place-{i}',
+                'atom_label': '室外停车场' if i < 12 else '地下停车场', 'project_value': '来源允许的停车场'}},
+            aggregation_rule='min_when_unequal')
+        trace['assessments'].append(record)
+    before = deepcopy((state, trace))
+    row = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace).rows[0]
+    assert row.exposure == '待评定'
+    assert '室外停车场=E3' in row.exposure_rationale
+    assert '地下停车场=E2' in row.exposure_rationale
+    assert '不同暴露等级组合取较低等级' in row.exposure_rationale
+    assert '成员依据示例' in row.exposure_rationale
+    assert 'E3×12' in row.exposure_rationale and 'E2×2' in row.exposure_rationale
+    assert (state, trace) == before
+
+
+def test_concrete_severity_gap_is_not_hidden_by_input_production_status():
+    mapper = EngineeringReportTextMapper()
+    trace = {'pending_reason': 'MISSING_RELATIVE_SPEED',
+             'input_production': {'pending_reason': 'AUTONOMOUS_MODEL_UNRESOLVED', 'after': {}}}
+    before = deepcopy(trace)
+    text = mapper.severity_rationale(_pending(), trace)
+    assert '碰撞相对速度' in text and '输入生产尚有未决项' not in text
+    assert trace == before
+    trace['input_production']['pending_reason'] = 'MOTION_MODEL_OR_ENVELOPE_NOT_SOURCED'
+    text = mapper.severity_rationale(_pending(), trace)
+    assert '碰撞相对速度' in text and '适用运动模型或速度包络' in text
+
+
+def test_exposure_rank_labels_the_used_atom_not_the_search_phrase():
+    mapper = EngineeringReportTextMapper(load_report_schema().presentation['language'])
+    trace = {'result': 'E3', 'aggregation_rule': 'e3_e4_mix',
+             'atom_bindings': [{'atom_id': 'FB006', 'used': True, 'E_class': 'E3', 'dimension': ['ROAD']}],
+             'scenario_terms': {'ROAD': {'atom_id': 'FB006', 'atom_label': 'Reduced friction (µ < 0.8)',
+                                        'project_value': '晴朗'}}}
+    before = deepcopy(trace)
+    evidence = EvidenceValue('E3', ReviewStatus.FINALIZED, rule_version='fixture')
+    text = mapper.exposure_rationale(evidence, trace)
+    assert '低附着路面（µ < 0.8）=E3' in text and '晴朗' not in text
+    assert trace == before
+    # A stale label for a different Atom must not explain this Atom's rank.
+    trace['scenario_terms']['ROAD']['atom_id'] = 'different-atom'
+    text = mapper.exposure_rationale(evidence, trace)
+    assert '道路条件=E3' in text and '低附着' not in text
+
+
 def test_summary_separates_review_groups_and_retained_records(tmp_path, active_method):
     schema = load_report_schema()
     view = HARAReportProjectionService(schema).project(mixed_pending_group(), active_method)

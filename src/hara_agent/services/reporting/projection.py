@@ -527,10 +527,12 @@ class HARAReportProjectionService:
         """Display shared observations only; never aggregate an incomplete risk tuple."""
         values, rationales, distributions = {}, {}, {}
         for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL")):
-            counts, branch_counts = Counter(), Counter()
+            counts, branch_counts, bases = Counter(), Counter(), Counter()
             for entry in siblings:
                 states = self._score_states(entry["risk"], entry["trace"], trace_provided=trace_provided)
                 counts[self._display_score(getattr(entry["risk"], field), states[field])] += 1
+                bases[self._score_rationale(field, getattr(entry["risk"], field),
+                    self._display_trace(field, entry["trace"]), states[field])] += 1
                 if entry["trace"].get("risk_scoring_invoked") is not False:
                     branch_counts.update(str(b.get(label) or "待评定") for b in entry["risk"].branch_evaluations)
             common = next(iter(counts)) if len(counts) == 1 else "待评定"
@@ -545,7 +547,13 @@ class HARAReportProjectionService:
                 reason = f"组内 {label} 分布：{distribution}；不存在全组共同的已计算等级，逐成员结果及缺口见场景明细。"
             if branch_counts and set(branch_counts) != set(counts):
                 reason += "碰撞分支分布：" + "、".join(f"{value}×{count}" for value, count in branch_counts.most_common()) + "。"
-            rationales[field + "_rationale"] = reason
+            if len(bases) == 1:
+                basis = next(iter(bases))
+            else:
+                basis = "成员依据示例：" + "；".join(
+                    f"{count} 个成员：{text}" for text, count in bases.most_common(2))
+                basis += "各成员及分支的完整依据见风险追溯。"
+            rationales[field + "_rationale"] = basis + "\n" + reason
         return values, rationales, distributions
 
     @staticmethod
@@ -927,15 +935,6 @@ class HARAReportProjectionService:
                      if headline[0] != "待评定" else "并列最高 ASIL 对应不同元组，各分支依据见场景明细。")
                     for field in ("severity", "exposure", "controllability", "asil")})
             elif partial_rationales:
-                # Keep concrete Pending causes, without presenting the first
-                # member's non-common grade as a group conclusion.
-                for field in ("severity", "exposure", "controllability", "asil"):
-                    if values[field] == "待评定":
-                        reasons = list(dict.fromkeys(self._score_rationale(field, getattr(e["risk"], field),
-                            e["trace"].get(field, {}), _UNCALCULATED) for e in siblings
-                            if not _value(getattr(e["risk"], field))))
-                        if len(reasons) == 1:
-                            partial_rationales[field + "_rationale"] += reasons[0]
                 row = replace(row, **partial_rationales,
                     remark="无最高已知 ASIL；等级格仅显示全组共同值，不代表完整风险元组。" + row.remark)
             rows.append(row)
