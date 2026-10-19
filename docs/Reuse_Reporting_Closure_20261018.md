@@ -41,6 +41,14 @@
 
 定向72 passed；完整1035 passed、1 skipped，compileall、diff与活动模板doctor通过。检查本次触及入口与调用者：既有因果批处理/解析、物理实例化、预算和缓存职责不变，无安全可删实现；本次是有意改变因果任务语义的fix，不声称清理行为等价。
 
+### 全量实测补充：坡向结构的纠错定位
+
+驻车方案出现2组schema纠正耗尽：模型把grade_frame放进condition_changes或数值parameters，原提示输出形状未明确展示该可选结构位置，原参数诊断仅称“Unknown, duplicate or incorrectly dimensioned parameter”，修复返回仍放错位置。另有1组输出4096 token截断。首次返回与错误保留，不做JSON迁移或静默修正。
+
+最小修改仅在既有PhysicalScenarioPlan解析器中指出hypotheses[].grade_frame及所需字段；普通参数错误指出实际字段/单位和已有允许表。有效输入集合、单位、方向、模型和计算完全不变。现有一次schema纠正收到新诊断，纠正请求内容/缓存哈希自然变化；初始v8请求和已验证计划身份不变，不触发全体重新生成。正反例检验两个错误位置、原响应未被修改、正确根位置仍按原契约接受。
+
+通过现有CheckpointRepository为上述3个INVALID执行记录各安排一次有界恢复，记录operational_recovery_history及审计事件；不修改来源、假设内容、评分字段或原始响应。完整原checkpoint在corrected/before_grade_location_recovery/，恢复脚本与清单同目录旁保留。主运行003、原002/4500账本不变，恢复启动时已消耗476次；已验证方案继续复用。代码定向59 passed，完整1037 passed、1 skipped，compileall/diff/doctor通过。恢复结果及全量最终结果在完成后追加。
+
 ## 2026-10-19 参考表／离线样本／真实Provider质量对比收口
 
 本节为最新状态。A基线与SSH核对远端均为 `58657081988ab4b910fbc0b2a42c852a241c5eac`；起始无未提交代码。只读审阅用户提供的IAV参考工作簿全部14个有内容的工作表、最新14身份离线样本、历史全量checkpoint及首次物理返回；保留历史运行及个人配置。本轮用户另行授权20次真实请求，已使用20/20；没有启动全量或续借历史额度。

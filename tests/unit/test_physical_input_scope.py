@@ -89,6 +89,25 @@ def grade_raw(heading='UPHILL', position='REAR', resistance=0):
     return raw
 
 
+@pytest.mark.parametrize('location', ['condition_changes', 'parameters'])
+def test_misplaced_grade_frame_reports_its_actual_contract_path(location):
+    valid = grade_raw()
+    raw = deepcopy(valid)
+    h = raw['hypotheses'][0]
+    frame = h.pop('grade_frame')
+    if location == 'condition_changes':
+        h.setdefault(location, {'initial_state': False, 'target': False,
+                                'rationale': 'same world'})['grade_frame'] = frame
+    else:
+        h[location].append({'field': 'grade_frame', 'unit': 'struct', 'kind': 'SYMBOLIC',
+                            'symbol': json.dumps(frame), 'rationale': 'orientation'})
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match=r'hypotheses\[\]\.grade_frame'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    assert raw == before  # Diagnostics never move or rewrite a model response.
+    assert PhysicalScenarioPlan.from_dict(valid, evidence_ids={'MF.description'}).to_dict() == valid
+
+
 @pytest.mark.parametrize('heading,position,contact,sign', [('UPHILL','REAR',True,-1),('UPHILL','FRONT',False,-1),('DOWNHILL','FRONT',True,1)])
 def test_body_grade_direction_controls_contact(method,heading,position,contact,sign):
     child=instantiate(method,grade_raw(heading,position))[0]

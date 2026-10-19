@@ -36,6 +36,13 @@ MODEL_CATALOG = {
     },
 }
 CONTROL_IDENTITIES = {"drive", "steering", "braking", "parking_hold", "speed_limiter", "remote_control"}
+_GRADE_FRAME_LOCATION = (
+    "grade_frame must be an object at hypotheses[].grade_frame, alongside geometry, "
+    "parameters and condition_changes; not a parameter or condition_changes member. "
+    "Use coordinate_frame, slope_reference, heading_relative_to_downhill, "
+    "downhill_body_direction, orientation_basis, rationale, and optionally "
+    "ego_forward_relative_to_reference. Preserve the proposed orientation; do not invent a new one."
+)
 
 
 def _object(value: Any, required: set[str], optional: set[str] = frozenset()) -> dict:
@@ -85,6 +92,8 @@ class PhysicalScenarioPlan:
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
                     {"condition_changes", "grade_frame"})
             if "condition_changes" in h:
+                if isinstance(h["condition_changes"], dict) and "grade_frame" in h["condition_changes"]:
+                    raise ValueError(_GRADE_FRAME_LOCATION)
                 changes = _object(h["condition_changes"], {"initial_state", "target", "rationale"})
                 if any(type(changes[k]) is not bool for k in ("initial_state", "target")):
                     raise ValueError("Condition changes require explicit boolean flags")
@@ -136,8 +145,11 @@ class PhysicalScenarioPlan:
             for p in params:
                 _object(p, {"field", "unit", "kind", "rationale"}, {"value", "lower", "upper", "symbol"})
                 field = p["field"]
+                if field == "grade_frame":
+                    raise ValueError(_GRADE_FRAME_LOCATION)
                 if field not in PARAMETER_UNITS or field in fields or p["unit"] != PARAMETER_UNITS[field]:
-                    raise ValueError("Unknown, duplicate or incorrectly dimensioned parameter")
+                    raise ValueError(f"Parameter {field!r} must be unique and use its declared unit; "
+                                     f"allowed parameter units: {PARAMETER_UNITS}; received unit={p['unit']!r}")
                 fields.add(field)
                 _text(p["rationale"])
                 payload = {"POINT": {"value"}, "RANGE": {"lower", "value", "upper"},
