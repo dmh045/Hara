@@ -154,6 +154,8 @@ def _prompt_parts(
         "无当前外部目标主张时返回{\"target\":\"OTHER\"}。保留场景的hazardous_event必须结合当前失效和具体场景；Potential Harm"
         "由下游确定性 MethodContract 计算，不在此阶段生成。不得复制其他子系统模板。"
         "risk_dimension_changes必须为JSON object array；每项包含dimension、evidence_refs、reason。"
+        "每项evidence_refs必须非空且引用当前场景已列出的证据；没有可引用证据时不输出该维度，"
+        "不能用空引用补齐驾驶员干预等维度。整组允许为[]，这不改变已支持的因果结论。"
         "dimension必须严格从以下canonical allowed values选择："
         f"{allowed_dimensions}。无变化返回[]；"
         f"causal_chain只包含m_to_b、b_to_i、i_to_h；后续潜在伤害由下游确定性计算；basis_type只能是"

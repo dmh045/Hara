@@ -19,6 +19,25 @@ def real_sample():
     return HARAState.read_committed(fixture['state']), fixture['trace']
 
 
+@pytest.mark.parametrize('validated', [True, False])
+def test_conditional_stationary_start_is_not_reported_as_zero_fault_speed(validated):
+    scenario = SimpleNamespace(facts={
+        'ego_speed_kph': 0, 'ego_impact_speed_kph': 2.724688,
+        'ego_speed_constraint': {'min_kph': 0, 'max_kph': 0},
+        'physical_analysis': {'engineering_approval': 'NOT_GRANTED'},
+    }, fact_provenance={'ego_speed_kph': {
+        'approval': 'PENDING', 'validation_status': 'VALIDATED' if validated else 'PENDING',
+        'analysis_value_semantic': 'PRE_FAULT_OPERATING_SPEED',
+    }})
+    before = deepcopy(scenario)
+    text = EngineeringReportTextMapper.speed_text(scenario)
+    if validated:
+        assert text == '故障前/初始车速：0 km/h；碰撞时本车速度：2.7 km/h'
+    else:
+        assert text == '适用车速范围：0 km/h'
+    assert scenario == before
+
+
 @pytest.mark.parametrize('reason,text', [
     ('PHYSICAL_MODEL_NOT_APPLICABLE', '当前可用物理模型不覆盖'),
     ('TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH', '目标不在故障后的运动路径'),

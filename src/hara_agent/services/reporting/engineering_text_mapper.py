@@ -126,7 +126,14 @@ class EngineeringReportTextMapper:
         if (
             isinstance(point, (int, float)) and not isinstance(point, bool)
             and isinstance(point_provenance, Mapping)
-            and str(point_provenance.get("approval", "")).upper() == "FINALIZED"
+            and (
+                str(point_provenance.get("approval", "")).upper() == "FINALIZED"
+                or (
+                    bool(facts.get("physical_analysis"))
+                    and point_provenance.get("validation_status") == "VALIDATED"
+                    and point_provenance.get("analysis_value_semantic") == "PRE_FAULT_OPERATING_SPEED"
+                )
+            )
         ):
             if point_provenance.get("analysis_value_semantic") == "PRE_FAULT_OPERATING_SPEED":
                 impact = facts.get("ego_impact_speed_kph")

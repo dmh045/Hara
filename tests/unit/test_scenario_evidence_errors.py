@@ -93,6 +93,9 @@ def test_current_contract_limitation_mixed_direct_and_derived_evidence_is_classi
 
 
 @pytest.mark.parametrize(("mutate", "expected"), [
+    (lambda item: item.update({"risk_dimension_changes": [{
+        "dimension": "driver_intervention", "evidence_refs": [], "reason": "driver outside",
+    }]}), ScenarioEvidenceErrorCode.INVALID_RISK_DIMENSION_EVIDENCE),
     (lambda item: item["causal_chain"]["m_to_b"].update({"claim": ""}),
      ScenarioEvidenceErrorCode.EMPTY_HOP_CLAIM),
     (lambda item: item.update({"risk_dimension_changes": [{
