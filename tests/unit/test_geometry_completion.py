@@ -103,6 +103,24 @@ def test_symbolic_geometry_and_no_contact_are_valid_without_correction(method):
     assert 'ttc_s' not in result['MF'][0].facts and 'collision_branches' not in result['MF'][0].facts
 
 
+def test_range_representative_does_not_split_a_regime_twice(method):
+    service = PhysicalHypothesisInstantiationService(method)
+    h = raw_plan(initial=7)['hypotheses'][0]
+    p = h['parameters'][-1]
+    p.update(kind='RANGE', lower=.5, value=1, upper=2)
+    samples, info = service._samples(h, {}, 99)
+    assert {s['longitudinal_acceleration_mps2'] for s in samples} == {.5, 1, 2}
+    assert info['range_invariance_proven'] is False
+    # Actual method/physical boundaries and both neighboring open regimes stay.
+    service.boundaries = lambda values, model: [{'parameter':p['field'], 'boundary':1.25}]
+    samples, _ = service._samples(h, {}, 99)
+    assert {s[p['field']] for s in samples} == {.5, 1, 1.25, 1.625, 2}
+    p.update(lower=-1, value=0, upper=1)
+    service.boundaries = lambda values, model: []
+    samples, _ = service._samples(h, {}, 99)
+    assert {s[p['field']] for s in samples} == {-1, -.5, 0, .5, 1}
+
+
 def test_fixed_moving_target_skips_proposal_without_dropping_causal_identity(method):
     parent = make_candidate()
     parent.facts.update(object_speed_kph=10, object_id='moving-target')

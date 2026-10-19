@@ -74,6 +74,19 @@ def test_coverage_note_does_not_change_risk_or_approval(active_method, real_samp
     assert view.safety_goals == base.safety_goals and state == before
 
 
+def test_partial_real_recovery_never_claims_complete_provider_validation(active_method,real_sample):
+    state,trace=real_sample
+    state.record('real_partial_response_recovery',available_candidates=32,
+        validated_response_identities=14,remaining_unvalidated=18)
+    before=deepcopy(state)
+    view=HARAReportProjectionService(load_report_schema()).project(state,active_method,risk_trace=trace)
+    assert view.summary.scope['run_scope']=='PARTIAL REAL RESPONSE RECOVERY'
+    note=view.summary.scope['scope_note']
+    assert '14 个已通过因果校验' in note and '18 个尚未验证' in note
+    assert '补充风险事实模型阶段未执行' in note
+    assert view.rows[0].asil=='A' and state==before
+
+
 def test_multiple_members_keep_only_shared_raw_conditions_and_all_ratings(active_method, real_sample):
     state, _ = real_sample
     first = state.scenarios[0]

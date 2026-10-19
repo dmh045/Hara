@@ -60,6 +60,7 @@ class HARAReportProjectionService:
         configured = event("bounded_sample_configured")
         replay = event("p7_fixed_population_replay")
         offline_sample = event("offline_source_context_replay")
+        partial_recovery = event("real_partial_response_recovery")
         bounded = bool(configured)
         limits = configured.get("scope", {}) if bounded else {}
         inventory = state.item_definition.get("bounded_sample_inventory", {})
@@ -104,7 +105,7 @@ class HARAReportProjectionService:
             str(item.get("risk_eligibility", {}).get("status", "")).startswith("INELIGIBLE")
             for item in trace_rows
         )
-        return {
+        scope = {
             "run_scope": "OFFLINE SCRIPTED SOURCE SAMPLE" if offline_sample else "OFFLINE FIXED-POPULATION REPLAY" if replay else "BOUNDED ENGINEERING SAMPLE" if bounded else "FULL PROJECT HARA",
             "report_class": (
                 "OFFLINE INTEGRATION SAMPLE" if offline_sample else
@@ -174,6 +175,16 @@ class HARAReportProjectionService:
             "risk_not_invoked_count": sum(not bool(item.get("risk_scoring_invoked")) for item in trace_rows),
             "complete_risk_chain_count": complete_risk_chain_count,
         }
+        if partial_recovery:
+            scope["run_scope"] = "PARTIAL REAL RESPONSE RECOVERY"
+            scope["scope_note"] = (
+                f"真实返回部分恢复：{partial_recovery['available_candidates']} 个生成身份中，"
+                f"{partial_recovery['validated_response_identities']} 个已通过因果校验，"
+                f"{partial_recovery['remaining_unvalidated']} 个尚未验证。"
+                "预算已耗尽，补充风险事实模型阶段未执行；仅用已有来源和条件性输入计算。"
+                "本报告不代表完整真实端到端验证或全项目覆盖。"
+            )
+        return scope
 
     @classmethod
     def _generated_children(

@@ -71,25 +71,19 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v7-joint-geometry"
+    PROMPT_VERSION = "post-fault-physical-scenario-v8-mechanism-representative"
     ANALYSIS_STRATEGY = (
-        "First propose one justified, computable conditional representative for each distinct mechanism. "
-        "Preserve the supplied initial state, object and geometry constraints. For missing model inputs, "
-        "including travel distance and fault motion, propose conditional POINT representatives when "
-        "engineering reasoning supports them, explaining rationale, scope and uncovered conditions. "
-        "These are analysis assumptions, never measurements, approval or capability bounds. "
-        "Add RANGE sensitivity only when it adds a numerical result or changes contact, direction, "
-        "enablement or avoidance. Do not expand other parameters when symbolic geometry prevents "
-        "any new result; retain the full parameter relationship and range. If no defensible point "
-        "exists, keep SYMBOLIC with the useful relationship and exact gap. Python derives all physics "
-        "and ratings. No universal speed, acceleration or distance defaults."
-        " Use model_input_status and the selected model_catalog.required together: account for every "
-        "required field by a scoped inherited input or an explicit POINT/RANGE/SYMBOLIC parameter. "
-        "Jointly justify clearance/distance, target geometry and fault dynamics in the first proposal; "
-        "missing measured geometry alone is not a reason to abandon a representative. Explain reference "
-        "points, validity horizon and uncovered conditions. A justified no-contact case is valid. "
-        "Never choose inputs to target a desired rating. SYMBOLIC rationale must explain why a "
-        "representative cannot be defended and the useful conditional relationship."
+        "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
+        "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
+        "缺少实测距离、加速度或残余阻力时，可以自行选取有场景依据的POINT并解释选值、参考点、"
+        "有效阶段和未覆盖范围。假设不等于测量、批准或车辆能力上界，不设通用数值。"
+        "仅当连条件性代表也无法合理成立时保留SYMBOLIC，说明具体相容性/模型障碍及参数关系；"
+        "仅说原文未提供实测值不是充分理由。无接触代表同样有效，不以得到某个评级为选值目标。"
+        "默认只给代表点；只有来源明确要求范围，或能指出接触、停止、方向、使能或规避条件的"
+        "具体变化时才增加RANGE。数值随参数连续变化本身不是展开理由。符号几何下不展开无新结果的范围。"
+        "额外假设须属于当前失效实际引起的不同危险机制，不附加另一个独立故障；"
+        "例如纵向扭矩超量不能凭空附加左右扭矩不对称或转向故障，驻车失效不额外生成无因果依据的行驶加速。"
+        "计算与评级全部由Python完成。"
     )
 
     def __init__(self, client, *, response_checkpoint_dir: Path | None = None):
@@ -130,6 +124,10 @@ class PhysicalScenarioAgent:
             "不得把假设声称为原文事实、车辆真实能力或可信上界。不得输出 S/E/C/ASIL、批准状态、"
             "碰撞速度、TTC、collision_branches 或 Atom ID。程序会计算这些量。"
             "优先保留已给定的对象类别和运行条件；新对象需说明适用性，不得扩大 ODD。"
+            "对象维度NOT_APPLICABLE/未选择并不表示来源证明周围没有对象；可提出ODD内明确的条件性对象，"
+            "声明condition_changes.target=true并重新绑定。只有来源明确禁止时才不能这样做。"
+            "对象描述必须与road_user_type一致：VEHICLE只表示车辆，不能同时泛指墙、立柱或任意障碍物。"
+            "已有同一目标的collision_type、位置、距离必须保留，不能因为某枚举更常见就覆盖已选条件。"
             "正常速度约束仅约束初始速度；故障可加速、恒速或减速。区分失效控制与剩余控制，"
             "不得依赖已失效的控制消除危险。坡道溜车初速为 0，使用来源坡度和假设残余阻力。"
             "侧向模型只支持沿纵向运动路径延伸的静止侧向目标，不能假装成纵向 TTC。"

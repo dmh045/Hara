@@ -204,7 +204,9 @@ class PhysicalHypothesisInstantiationService:
         for p in h["parameters"]:
             if p["kind"] != "RANGE":
                 continue
-            cuts = {p["lower"], p["upper"], p["value"]}
+            # A representative is a sample, not a new regime boundary. Splitting
+            # its containing interval again created two arbitrary extra worlds.
+            cuts = {p["lower"], p["upper"]}
             cuts.update(row["boundary"] for row in boundaries
                         if "boundary" in row and row["parameter"] == p["field"] and p["lower"] <= row["boundary"] <= p["upper"])
             # Unknown contact geometry cannot turn same-regime parameter
@@ -218,7 +220,9 @@ class PhysicalHypothesisInstantiationService:
             cuts = sorted(cuts)
             # One factor at a time; retain table boundaries and neighboring
             # open regions without a multidimensional Cartesian expansion.
-            for value in [p["lower"], p["upper"], *cuts, *[(a + b) / 2 for a, b in zip(cuts, cuts[1:])]]:
+            interiors = [(a + b) / 2 for a, b in zip(cuts, cuts[1:])
+                         if not a < p["value"] < b]
+            for value in [p["lower"], p["upper"], *cuts, *interiors]:
                 sample = {**values, p["field"]: value}
                 if sample not in samples:
                     if symbolic_geometry and not critical:

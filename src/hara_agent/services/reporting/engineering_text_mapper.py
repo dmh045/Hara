@@ -794,7 +794,7 @@ class EngineeringReportTextMapper:
                             labels.append(self._EXPOSURE_DIMENSION_LABELS.get(str(dimension).strip().upper(), "其他场景维度"))
                     if level:
                         labels = labels or ["其他场景维度"]
-                        atoms.append(f"{'/'.join(labels)}={level}")
+                        atoms.append(f"{'/'.join(dict.fromkeys(labels))}={level}")
             coupling = trace.get("dependency_coupling", {})
             coupling = coupling if isinstance(coupling, Mapping) else {}
             branch = str(trace.get("aggregation_rule", coupling.get("policy_branch", "")) or "")
