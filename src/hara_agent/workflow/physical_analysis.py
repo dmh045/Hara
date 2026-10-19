@@ -8,6 +8,7 @@ from threading import Lock
 from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
+from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
 
 
 def _construct_parallel(state, candidates, malfunctions, *, method, agent, project_facts,
@@ -52,7 +53,6 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
                 if value.get("context", {}).get("malfunction", {}).get("malfunction_id") == mf.malfunction_id})
         local = HARAState(state.run_id, functions=state.functions, item_definition={
             "physical_analysis_plans": local_cache,
-            "physical_validation_policy": state.item_definition.get("physical_validation_policy", ""),
         })
         result = construct_physical_scenarios(local,
             {mf.malfunction_id: deepcopy(candidates[mf.malfunction_id])}, [mf], method=method,
@@ -119,7 +119,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 "method_version": [method.contract_version, method.compiler_version],
                 "risk_vocabulary": {"road_user_type": dict(method.structured_risk_method.severity.road_user_groups),
                                     "collision_type": dict(method.structured_risk_method.severity.collision_types)},
-                "validation_sampling_policy": state.item_definition.get("physical_validation_policy", ""),
+                "analysis_strategy": PhysicalScenarioAgent.ANALYSIS_STRATEGY,
                 "producer_version": PHYSICAL_PLAN_VERSION, "model_catalog_identity": signature(MODEL_CATALOG),
                 "prompt_version": agent.PROMPT_VERSION, "route": route}
             evidence = {"MF.description": {"value": mf.description, "sources": [vars(ref) for ref in mf.sources]},

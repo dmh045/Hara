@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import re
+from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 from hara_agent.models import (
@@ -17,6 +19,62 @@ from .parsing import parse_confidence
 
 class ItemDefinitionNormalizer:
     """Normalize the canonical item-artifact payload into typed project facts."""
+
+    @staticmethod
+    def normalize_source_scope(facts: ItemDefinitionFacts, blocks: list, source_id: str) -> ItemDefinitionFacts:
+        """Recover explicit structured environmental rows, without inventing facts.
+
+        Only complete literal table cells under an environmental/ODD heading
+        qualify. Unrecognized/qualified prose stays with semantic extraction.
+        These limits describe allowed ODD, never the actual grade or heading.
+        """
+        records = deepcopy(facts.odd_scope_evidence)
+        locations = list(facts.odd_locations)
+        road_types = list(facts.odd_road_types)
+        for block in blocks:
+            value = block if isinstance(block, dict) else vars(block)
+            if any(any(word in str(part).casefold() for word in ("示例", "参考", "example", "reference"))
+                   for part in value.get("section_path", [])):
+                continue
+            if value.get("kind") != "table_row" or not any(
+                    str(part).strip().casefold() in {"环境条件", "运行设计域", "odd", "operational design domain"}
+                    for part in value.get("section_path", [])):
+                continue
+            cells = list(dict.fromkeys(cell.strip() for cell in value.get("text", "").split("|") if cell.strip()))
+            if len(cells) != 2:
+                continue
+            label, text = cells
+            source = dict(source_type="item_definition", source_id=source_id,
+                          location=value.get("location", ""), excerpt=value["text"])
+            if label in {"停车场", "场所", "运行场所"}:
+                parts = [part.strip() for part in re.split(r"[，,、；;]", text)]
+                if not parts or not all(re.fullmatch(r"(?:室内|室外|地下|地上)停车场", p) for p in parts):
+                    continue
+                # The table explicitly declares these as alternatives to the
+                # generic heading. Preserve that hierarchy in the evidence.
+                locations = list(dict.fromkeys([*locations, *parts]))
+                road_types = [p for p in road_types if p not in parts]
+                record = dict(field="odd_locations", parent_label=label, values=parts, sources=[source])
+            elif label in {"停车位类型", "停车位样式", "标线车位类型", "空间车位类型"}:
+                parts = [part.strip() for part in re.split(r"[，,、；;]", text)]
+                if not parts or not all(re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{1,16}", p)
+                        and not any(word in p for word in ("禁止", "不支持", "不允许", "示例", "例如", "未知", "待定")) for p in parts):
+                    continue
+                road_types = list(dict.fromkeys([*road_types, *parts]))
+                record = dict(field="odd_road_types", parent_label=label, values=parts, sources=[source])
+            elif label in {"上下坡", "坡度", "纵向坡度"}:
+                parts = [part.strip() for part in re.split(r"[，,、；;]", text)]
+                matches = [re.fullmatch(r"(上坡|下坡)\s*(\d+(?:\.\d+)?)\s*%", p) for p in parts]
+                if not matches or not all(matches) or not all(math.isfinite(float(m[2])) for m in matches):
+                    continue
+                record = dict(field="odd_grade_limits", quantity_semantic="ALLOWED_ODD_RANGE",
+                    limits=[dict(direction=m[1], upper_pct=float(m[2]), unit="percent",
+                                 reference_direction="UNSPECIFIED") for m in matches], sources=[source])
+            else:
+                continue
+            if record not in records:
+                records.append(record)
+        return replace(facts, odd_locations=locations, odd_road_types=road_types, odd_scope_evidence=records)
 
     @staticmethod
     def _parse_with_warnings(

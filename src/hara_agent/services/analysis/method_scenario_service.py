@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import asdict, replace
 from collections.abc import Callable
 from typing import Any
@@ -213,13 +214,17 @@ class MethodScenarioCandidateService:
         name = dimension.canonical_name
         if dimension.semantics == "VDA702_ATOM_ID_LABEL":
             if name == "WHERE":
-                # Road/parking-space types qualify the source scope; they
-                # are not additional site locations when locations exist.
-                values = self._unique(facts.odd_locations or facts.odd_road_types)
+                from .scenario_selection_quality import explicit_environment
+                qualifiers = [v for v in facts.odd_road_types if explicit_environment(v)]
+                values = self._unique([*facts.odd_locations, *qualifiers] or facts.odd_road_types)
+                # Refine a generic parking scope using its explicit indoor /
+                # outdoor alternatives, while retaining unrelated locations.
+                parent_labels = {record["parent_label"] for record in facts.odd_scope_evidence
+                                 if record.get("field") == "odd_locations"
+                                 and set(record.get("values", [])) <= set(values)}
+                values = [v for v in values if v not in parent_labels]
             elif name == "ROAD":
-                values = self._unique([
-                    *facts.odd_weather_conditions, *facts.odd_road_surfaces,
-                ])
+                values = self._unique(facts.odd_road_surfaces)
             elif name == "EGO_ACTION":
                 values = self._unique([operating_mode])
             elif name == "EGO_DYNAMICS":
@@ -665,6 +670,8 @@ class MethodScenarioCandidateService:
                 "method_scenario_dimensions": bindings,
                 "operating_mode": operating_mode,
                 "source_road_type_scope": self._unique(project_facts.odd_road_types),
+                "source_weather_scope": self._unique(project_facts.odd_weather_conditions),
+                "odd_scope_evidence": deepcopy(project_facts.odd_scope_evidence),
             }
             if speed_resolution.resolution_source == "ExplicitProjectInput":
                 facts["ego_speed_kph"] = speed_resolution.resolved_value

@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -332,6 +332,7 @@ class ScenarioRiskFactAgent:
             "llm_call_count": sum(item["llm_call_count"] for item in batch_audits),
             "response_checkpoint_hits": sum(item.get("response_checkpoint_hits", 0) for item in batch_audits),
             "batch_cache_hit_count": cache_hits,
+            "scoped_absence_reuse_count": sum(item.get("scoped_absence_reuse_count", 0) for item in batch_audits),
             "validation_failure_count": sum(
                 item.get("validation_failure_count", 0) for item in batch_audits
             ),
@@ -366,38 +367,98 @@ class ScenarioRiskFactAgent:
         facts: list[RiskFact] = []
         audits: list[dict[str, Any]] = []
         cache_hits = 0
+        scoped_cache = batch_cache if batch_cache is not None else {}
+        absences = {key: value for entry in scoped_cache.values()
+                    if isinstance(entry, dict) and entry.get("cache_version") == SCENARIO_RISK_FACT_BATCH_CACHE_VERSION
+                    for key, value in entry.get("source_absences", {}).items()}
         batches = [(pairs[start:start + max(1, self.batch_max_results // len(needed))], needed)
                    for needed, pairs in groups.values()
                    for start in range(0, len(pairs), max(1, self.batch_max_results // len(needed)))]
-        for batch_pairs, specs in batches:
-            cache_key = self._batch_cache_key(batch_pairs, specs)
-            cached = self._load_batch_cache(
-                (batch_cache or {}).get(cache_key), batch_pairs,
-            )
-            if cached is not None:
-                batch_facts, batch_audit = cached
-                # The cache entry retains historical usage; this invocation
-                # does not make those requests or restore their raw responses.
-                batch_audit["llm_call_count"] = 0
-                batch_audit["response_checkpoint_hits"] = 0
-                batch_audit["usage"] = {"primary": {"batch_checkpoint_hit": True,
-                    "prompt_tokens": 0, "completion_tokens": 0}, "repair": {}}
-                cache_hits += 1
-            else:
-                batch_facts, batch_audit = self._interpret_batch(batch_pairs, specs)
-                entry = {
-                    "cache_version": SCENARIO_RISK_FACT_BATCH_CACHE_VERSION,
-                    "cache_key": cache_key,
-                    "facts": [asdict(item) for item in batch_facts],
-                    "audit": batch_audit,
-                }
-                if batch_cache is not None:
-                    batch_cache[cache_key] = entry
-                if on_batch is not None:
-                    on_batch(cache_key, entry)
-            facts.extend(batch_facts)
-            audits.append(batch_audit)
+        pending_batches = []
+        for batch_pairs, batch_specs in batches:
+            if self._load_batch_cache(scoped_cache.get(self._batch_cache_key(batch_pairs, batch_specs)), batch_pairs) is not None:
+                found, audit, hit = self._interpret_cached_batch(batch_pairs, batch_specs, scoped_cache, on_batch)
+                facts.extend(found); audits.append(audit); cache_hits += hit
+                absences.update(self._source_absences(batch_pairs, batch_specs, audit))
+                continue
+            # Consult again after each completed batch: a NOT_FOUND response
+            # is reusable only for this exact query, source set and world.
+            remaining = {}
+            for pair in batch_pairs:
+                needed = []
+                for spec in batch_specs:
+                    key = self._absence_key(pair, spec)
+                    entry = absences.get(key, {})
+                    if isinstance(entry, dict) and entry.get("scope_key") == key and entry.get("status") == "ABSENT_IN_EVIDENCE":
+                        audits.append({"model": "", "request_id": "", "usage": {},
+                            "coverage_repair_count": 0, "llm_call_count": 0,
+                            "scoped_absence_reuse_count": 1, "scope_key": key,
+                            "not_found_keys": [[pair["malfunction_id"], pair["scenario_id"], spec.fact_type.value]]})
+                    else:
+                        needed.append(spec)
+                if needed:
+                    group = tuple(spec.fact_type for spec in needed)
+                    remaining.setdefault(group, (needed, []))[1].append(pair)
+            pending_batches.extend((pairs, specs) for specs, pairs in remaining.values())
+            # Drain within the outer loop so subsequent batches see saved
+            # negative evidence. Existing batch and raw-response caches stay
+            # authoritative for ordinary responses and interrupted requests.
+            for remaining_pairs, remaining_specs in pending_batches:
+                batch_facts, batch_audit, hit = self._interpret_cached_batch(
+                    remaining_pairs, remaining_specs, scoped_cache, on_batch)
+                facts.extend(batch_facts)
+                audits.append(batch_audit)
+                cache_hits += hit
+                absences.update(self._source_absences(remaining_pairs, remaining_specs, batch_audit))
+            pending_batches.clear()
         return facts, audits, cache_hits
+
+    def _absence_key(self, pair, spec):
+        # Keep every world/phase/object/provenance field and model identity.
+        # Only the local query identity is irrelevant to searching the same
+        # source set. Embedded scope references intentionally remain exact.
+        equivalent = {**pair, "scenario_id": "$SCENARIO",
+                      "candidate": replace(pair["candidate"], scenario_id="$SCENARIO")}
+        return "source-absence-v1:" + self._batch_cache_key([equivalent], [spec])
+
+    def _source_absences(self, pairs, specs, audit):
+        absent = {tuple(key) for key in audit.get("not_found_keys", [])}
+        records = {}
+        for pair in pairs:
+            for spec in specs:
+                if (pair["malfunction_id"], pair["scenario_id"], spec.fact_type.value) in absent:
+                    key = self._absence_key(pair, spec)
+                    records[key] = {"scope_key": key, "status": "ABSENT_IN_EVIDENCE",
+                                    "source_identity": [pair["malfunction_id"], pair["scenario_id"]]}
+        return records
+
+    def _interpret_cached_batch(self, batch_pairs, specs, batch_cache, on_batch):
+        cache_key = self._batch_cache_key(batch_pairs, specs)
+        cached = self._load_batch_cache(
+            (batch_cache or {}).get(cache_key), batch_pairs,
+        )
+        if cached is not None:
+            batch_facts, batch_audit = cached
+            # The cache entry retains historical usage; this invocation
+            # does not make those requests or restore their raw responses.
+            batch_audit["llm_call_count"] = 0
+            batch_audit["response_checkpoint_hits"] = 0
+            batch_audit["usage"] = {"primary": {"batch_checkpoint_hit": True,
+                "prompt_tokens": 0, "completion_tokens": 0}, "repair": {}}
+        else:
+            batch_facts, batch_audit = self._interpret_batch(batch_pairs, specs)
+            entry = {
+                "cache_version": SCENARIO_RISK_FACT_BATCH_CACHE_VERSION,
+                "cache_key": cache_key,
+                "facts": [asdict(item) for item in batch_facts],
+                "audit": batch_audit,
+                "source_absences": self._source_absences(batch_pairs, specs, batch_audit),
+            }
+            if batch_cache is not None:
+                batch_cache[cache_key] = entry
+            if on_batch is not None:
+                on_batch(cache_key, entry)
+        return batch_facts, batch_audit, int(cached is not None)
 
     def _batch_cache_key(
         self,

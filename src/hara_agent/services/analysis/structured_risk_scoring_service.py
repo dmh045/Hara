@@ -176,7 +176,21 @@ class StructuredRiskScoringService:
 
     def _score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
         result = self._calculate(scenario, hazard_event)
-        if scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
+        control = result["controllability"]
+        override_match = control.get("decision_status") == "OVERRIDE_MATCH" and control.get("engineering_rule_id") in {
+            rule.rule_id for rule in self.structured.controllability_overrides}
+        if (override_match and scenario.get("physical_analysis")
+                and scenario.get("emergency_braking_available") is False
+                and scenario.get("remote_intervention_available") is True):
+            # A remote command does not restore a failed braking actuator.
+            # Re-evaluate the existing override with that positive capability
+            # unavailable: another independently supported evasion path may
+            # still satisfy the same approved rule. No new C rule is added.
+            independent = self.controllability.lookup(self.inputs.controllability(
+                str(scenario.get("malfunction_id", "UNKNOWN")), str(scenario.get("scenario_id", "UNKNOWN")),
+                {**scenario, "remote_intervention_available": None}), self.structured)
+            override_match = independent.decision_status == "OVERRIDE_MATCH" and independent.rule_id == control["engineering_rule_id"]
+        if scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT" and not override_match:
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
@@ -185,7 +199,7 @@ class StructuredRiskScoringService:
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
         if (scenario.get("physical_analysis") and scenario.get("emergency_braking_available") is False
-                and result["controllability"].get("selected_profile_id")):
+                and result["controllability"].get("selected_profile_id") and not override_match):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED",
                 decision_status="MODEL_DEPENDENCY_UNRESOLVED", engineering_rule_id="",
@@ -333,7 +347,9 @@ class StructuredRiskScoringService:
             **self._controllability_extra(c),
         )
         controllability["avoidance_paths"] = {
-            "braking": {"profile_id": c.profile_id, "status": c.status.value, "result": c.value},
+            "method_override" if c.decision_status == "OVERRIDE_MATCH" else "braking": {
+                "profile_id": c.profile_id, "rule_id": c.rule_id,
+                "status": c.status.value, "result": c.value},
             "steering": {
                 "status": "UNAVAILABLE_FAILED_CONTROL" if scenario.get("steering_control_available") is False
                           else "PENDING_METHOD_SEMANTICS",

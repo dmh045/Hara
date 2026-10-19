@@ -186,6 +186,8 @@ class PhysicalHypothesisInstantiationService:
                 texts += ["存在残余限速时，上式仅用于达到限速前；若a>0且v_cap≥v0，t_cap=(v_cap−v0)/a，d_cap=(v_cap²−v0²)/(2a)。",
                           "d>d_cap时v_impact=3.6·v_cap，T=t_cap+(d−d_cap)/v_cap；v_cap使用m/s且须大于0。"]
         return [{"model": model, "relations": texts, "known_inputs": dict(values), "symbolic_parameters": symbols,
+                 "parameter_ranges": {p["field"]: {k: p[k] for k in ("lower", "value", "upper", "unit")}
+                                      for p in h["parameters"] if p["kind"] == "RANGE"},
                  "geometry": dict(h["geometry"]), "calculation_nature": "CONDITIONAL", "numeric_rating_produced": False}]
 
     def _samples(self, h, existing, limit):
@@ -196,22 +198,39 @@ class PhysicalHypothesisInstantiationService:
                 values.pop(p["field"], None)
         boundaries = self.boundaries({**values, **h["geometry"]}, h["model"])
         samples = [values]
+        symbolic_geometry = any(p["kind"] == "SYMBOLIC" and p["field"] in {
+            "relative_distance_m", "lateral_clearance_m"} for p in h["parameters"])
+        deferred_symbolic = []
         for p in h["parameters"]:
             if p["kind"] != "RANGE":
                 continue
             cuts = {p["lower"], p["upper"], p["value"]}
             cuts.update(row["boundary"] for row in boundaries
                         if "boundary" in row and row["parameter"] == p["field"] and p["lower"] <= row["boundary"] <= p["upper"])
+            # Unknown contact geometry cannot turn same-regime parameter
+            # samples into numeric contact results. Keep the entire relation,
+            # but preserve stop/reversal/onset boundaries as distinct worlds.
+            critical = [row["boundary"] for row in boundaries if "boundary" in row
+                        and row["parameter"] == p["field"] and p["lower"] <= row["boundary"] <= p["upper"]]
+            if p["lower"] <= 0 <= p["upper"]:
+                critical.append(0)
+                cuts.add(0)
             cuts = sorted(cuts)
             # One factor at a time; retain table boundaries and neighboring
             # open regions without a multidimensional Cartesian expansion.
             for value in [p["lower"], p["upper"], *cuts, *[(a + b) / 2 for a, b in zip(cuts, cuts[1:])]]:
                 sample = {**values, p["field"]: value}
                 if sample not in samples:
-                    samples.append(sample)
+                    if symbolic_geometry and not critical:
+                        if sample not in deferred_symbolic:
+                            deferred_symbolic.append(sample)
+                    else:
+                        samples.append(sample)
         return samples[:limit], {
             "sampling": "REPRESENTATIVE_AND_ONE_FACTOR_BOUNDARIES", "planned_point_count": len(samples),
-            "deferred_points": samples[limit:], "method_boundaries": boundaries,
+            "deferred_points": samples[limit:] + deferred_symbolic, "method_boundaries": boundaries,
+            "symbolic_geometry_deferred_count": len(deferred_symbolic),
+            "deferral_basis": "FULL_PARAMETER_RELATION_RETAINED_NO_NEW_NUMERIC_CONTACT_RESULT" if deferred_symbolic else "",
             "parameter_relations": self.parameter_relations(values, h),
             "range_invariance_proven": False, "vehicle_upper_bound_proven": False,
         }
@@ -455,9 +474,16 @@ class PhysicalHypothesisInstantiationService:
         project_slope_max = ConstrainedScenarioSynthesisService._project_slope_max(project_context or {})
         if slope is not None and project_slope_max is not None and slope > project_slope_max:
             raise ValueError("SLOPE_OUTSIDE_PROJECT_ODD")
-        road_range = parent.facts.get("method_scenario_dimensions", {}).get("ROAD", {}).get("method_semantics", {}).get("slope", {}).get("range_pct")
-        if slope is not None and road_range and not road_range[0] <= slope <= road_range[1]:
-            raise ValueError("SLOPE_CONFLICTS_WITH_SELECTED_ROAD_ATOM")
+        boundary = parent.facts.get("source_slope_pct")
+        if slope is not None and boundary is not None and parent.facts.get("source_grade_semantic") == "ALLOWED_ODD_BOUNDARY_REPRESENTATIVE" and slope != boundary:
+            raise PhysicalInputConflict("SLOPE_CONFLICTS_WITH_SELECTED_BOUNDARY", "slope_percent", boundary, slope)
+        road_slope = parent.facts.get("method_scenario_dimensions", {}).get("ROAD", {}).get("method_semantics", {}).get("slope", {})
+        road_range = road_slope.get("range_pct", [road_slope.get("pct_min"), road_slope.get("pct_max")])
+        if slope is not None and road_slope:
+            lower, upper = road_range
+            if (lower is not None and (slope < lower or slope == lower and not road_slope.get("min_inclusive", True))
+                    or upper is not None and (slope > upper or slope == upper and not road_slope.get("max_inclusive", True))):
+                raise ValueError("SLOPE_CONFLICTS_WITH_SELECTED_ROAD_ATOM")
         if h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" and initial != 0:
             raise ValueError("ROLLAWAY_REQUIRES_STATIONARY_INITIAL_STATE")
         grade_mapping = self._grade_mapping(parent, h) if h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" else {}

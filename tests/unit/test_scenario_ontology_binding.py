@@ -98,7 +98,8 @@ def test_baseline_uses_primary_dimension_anchor_not_unconstrained_cartesian_prod
         assert bindings["EGO_X_ROAD"]["unresolved_reason"] == "NO_ITEM_FACT"
         assert bindings["TRAFFIC_PATTERN"]["unresolved_reason"] == "NO_ITEM_FACT"
         assert bindings["OBJECT"]["unresolved_reason"] == "NO_ITEM_FACT"
-        assert bindings["ROAD"]["unresolved_reason"] == "AMBIGUOUS_BINDING"
+        # Weather alternatives are not road/friction facts.
+        assert bindings["ROAD"]["unresolved_reason"] == "NO_ITEM_FACT"
         assert bindings["EGO_DYNAMICS"]["resolution_status"] == "AMBIGUOUS"
         assert bindings["EGO_DYNAMICS"]["unresolved_reason"] == "MULTI_ATOM_RANGE_AMBIGUITY"
         assert not bindings["EGO_DYNAMICS"]["atom_id"]

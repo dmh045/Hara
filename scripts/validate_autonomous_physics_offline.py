@@ -131,7 +131,10 @@ class OfflinePhysicalClient:
 
 
 def source_state(saved, method, item, run_id):
-    selection = select_source_blocks(DocumentReader().read(item).blocks, method.metadata.get("project_analysis_policy", {}))
+    from hara_agent.models import ItemDefinitionFacts
+    from hara_agent.services.semantic.item_definition_agent import ItemDefinitionNormalizer
+    document = DocumentReader().read(item)
+    selection = select_source_blocks(document.blocks, method.metadata.get("project_analysis_policy", {}))
     chosen = {"MF-F01-001", "MF-F02-002", "MF-F03-002", "MF-F08-001"}
     malfunctions = [m for m in saved["malfunctions"] if m["malfunction_id"] in chosen]
     function_ids = {m["function_id"] for m in malfunctions}
@@ -139,6 +142,8 @@ def source_state(saved, method, item, run_id):
     typed["risk_facts"] = [f for f in typed["risk_facts"] if "scenario_id" not in f.get("context", {})]
     fact_ids = {f["fact_id"] for f in typed["risk_facts"]}
     typed["method_risk_fact_bindings"] = [b for b in typed["method_risk_fact_bindings"] if b["source_fact_id"] in fact_ids]
+    typed = asdict(ItemDefinitionNormalizer.normalize_source_scope(
+        ItemDefinitionFacts.from_dict(typed), document.blocks, document.source_id))
     state = HARAState(run_id, stage=WorkflowStage.MALFUNCTIONS,
         item_definition={"typed": typed, "source_path": str(item), "source_selection": selection.to_dict()},
         functions=[f for f in saved["functions"] if f["function_id"] in function_ids], malfunctions=malfunctions,

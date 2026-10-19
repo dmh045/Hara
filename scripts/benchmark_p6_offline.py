@@ -18,6 +18,11 @@ from types import SimpleNamespace
 from openpyxl import load_workbook
 
 from hara_agent.method_sources import MethodSourceResolver
+from hara_agent.application import HARAApplication
+from hara_agent.config import RunConfig
+from hara_agent.workflow import HARAState
+from hara_agent.services.extraction import DocumentReader
+from hara_agent.services.semantic.item_definition_agent import ItemDefinitionNormalizer
 from hara_agent.models import ItemDefinitionFacts, MalfunctionCandidate, ReviewStatus, SourceRef
 from hara_agent.services.analysis import MethodScenarioCandidateService, ProjectFactResolver
 from hara_agent.services.analysis.exposure_input_readiness_service import ExposureInputReadinessService, READY_STATUSES
@@ -58,7 +63,7 @@ def historical_audit(saved: dict, review: Path, corrected_report: Path | None) -
         branch = candidate.get('analysis_instance', {}).get('driver_configuration_branch', {})
         if branch.get('driver_position'):
             facts['driver_position'] = branch['driver_position']
-        obj = SimpleNamespace(facts=facts, operating_mode=candidate['operating_mode'],
+        obj = SimpleNamespace(scenario_id=sid, facts=facts, operating_mode=candidate['operating_mode'],
                               fact_provenance=candidate.get('fact_provenance', {}))
         pairs.append((mf, sid))
         exact[(mf, signature(scenario_conditions(obj)))] += 1
@@ -107,7 +112,7 @@ def historical_audit(saved: dict, review: Path, corrected_report: Path | None) -
 
 
 def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: Path,
-        corrected_report: Path | None = None) -> dict:
+        corrected_report: Path | None = None, item: Path | None = None) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     with checkpoint.open('rb') as stream:
         before_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -122,12 +127,25 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
     fact_ids = {fact['fact_id'] for fact in typed['risk_facts']}
     typed['method_risk_fact_bindings'] = [b for b in typed['method_risk_fact_bindings'] if b['source_fact_id'] in fact_ids]
     project = ItemDefinitionFacts.from_dict(typed)
+    if item is not None:
+        document = DocumentReader().read(item)
+        project = ItemDefinitionNormalizer.normalize_source_scope(project, document.blocks, document.source_id)
     service = MethodScenarioCandidateService(method)
     mode = next(s['operating_mode'] for s in saved['scenarios'] if s.get('operating_mode'))
     speed = ProjectFactResolver().resolve_speed_context(project, mode)
     functions = {f['function_id']: selection_function(f) for f in saved['functions']}
     parents, parent_audit = service.generate(project_facts=project, operating_mode=mode,
                                            speed_resolution=speed, functions=list(functions.values()))
+    if item is not None:
+        # Exercise the ordinary application boundary with the same saved
+        # extraction and explicit source normalization; no client is created.
+        state = HARAState(run_id="offline-coverage", item_definition={"typed": asdict(project)},
+                          functions=saved['functions'])
+        application = HARAApplication(RunConfig(item_path=item, template_path=None, run_dir=output,
+            output_path=output / 'unused.xlsx',
+            method_baseline_path=method_baseline, report_template_path=report_template,
+            operating_mode=mode, allow_draft=True), None)
+        parents, parent_audit = application.prepare_scenario_candidates(state, service)
     readiness = ExposureInputReadinessService(method)
     counts, e_reasons, e_values, ready_e_values, dimensional = Counter(), Counter(), Counter(), Counter(), Counter()
     source_locations, source_roads, where_atoms, road_atoms = Counter(), Counter(), Counter(), Counter()
@@ -210,6 +228,7 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
                               'ready_e_preview_values': dict(ready_e_values),
                               'dimension_statuses': dict(dimensional), 'generated_parent_count': len(parents)},
         'source_coverage': {'locations': dict(source_locations), 'road_contexts': dict(source_roads),
+                            'scope_evidence': project.odd_scope_evidence,
                             'permitted_road_types': list(project.odd_road_types),
                             'road_type_coverage_status': 'SOURCE_SCOPE_PRESERVED; RISK_EQUIVALENCE_NOT_PROVEN',
                             'WHERE': dict(where_atoms), 'ROAD': dict(road_atoms),
@@ -236,5 +255,6 @@ if __name__ == '__main__':
     parser.add_argument('--report-template', type=Path, default=Path('references/HARA_Template_AI_20260327.xlsx'))
     parser.add_argument('--output', type=Path, default=Path('output/p6'))
     parser.add_argument('--corrected-report', type=Path)
+    parser.add_argument('--item', type=Path, help='Reapply production source-scope normalization to the original Item')
     args = parser.parse_args()
-    run(args.checkpoint, args.method_baseline, args.report_template, args.output, args.corrected_report)
+    run(args.checkpoint, args.method_baseline, args.report_template, args.output, args.corrected_report, args.item)

@@ -42,8 +42,6 @@ class SavedPhysicalProposalClient(OfflinePhysicalClient):
         self.next_index = defaultdict(int)
         for entry in json.loads(checkpoint.read_text())['item_definition']['physical_analysis_plans'].values():
             context = entry['context']
-            if 'v3-' not in context['prompt_version']:
-                continue
             key = (context['malfunction']['malfunction_id'], signature(context['conditions']))
             self.records[key] = entry['responses']
 
@@ -123,18 +121,11 @@ def prepare(source, output, run_id, limit, *, families=None, driver_position=Non
             expected_first_physical_proposals=sum(case['label'] != 'braking' for case in cases))
     if driver_position:
         plan['driver_position']=driver_position
-    if numeric_representative:
-        plan['numeric_representative']=True
-        plan['range_policy']=(
-            'One representative hypothesis first. Validation objective: one conditional numeric end-to-end case. '
-            'Preserve the supplied initial state and select a compatible object, geometry and supported motion model. '
-            'For required model inputs lacking measurements, propose justified conditional POINT representatives '
-            'when engineering reasoning supports them, including travel distance and fault motion parameters. '
-            'Explain each rationale, applicability and uncovered conditions. These are analytical assumptions, '
-            'not project measurements, engineering approval or true capability bounds. Do not invent a maximum speed. '
-            'If no defensible representative can be proposed, retain SYMBOLIC and explain the exact gap. '
-            'Return one hypothesis, no range Cartesian expansion. Python computes impact speed, time and ratings.')
-    state.item_definition['physical_validation_policy']=plan['range_policy']
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    plan['range_policy'] = PhysicalScenarioAgent.ANALYSIS_STRATEGY
+    # Retain the CLI flag for documented invocations; it no longer changes
+    # production semantics or inserts a sample-only prompt into the checkpoint.
+    plan['numeric_representative_requested'] = numeric_representative
     return state,config,plan
 
 
@@ -151,8 +142,8 @@ def main():
     parser.add_argument('--symbolic-drive',action='store_true',help='Offline fixture only; exercises symbolic proposal through reporting')
     parser.add_argument('--families',nargs='+',choices=FAMILIES,help='Narrow existing production sample selection; e.g. drive selects its two driver identities')
     parser.add_argument('--driver-position',choices=('in_driver_seat','outside_driver_seat'),help='Select an existing generated driver identity, without changing its facts')
-    parser.add_argument('--numeric-representative',action='store_true',help='Ask the physical Agent for a justified conditional point case; never inject parameter values')
-    parser.add_argument('--replay-physical-checkpoint', type=Path, help='Offline only: unmodified saved v3 physical replies; causal/fact replies remain scripted')
+    parser.add_argument('--numeric-representative',action='store_true',help='Compatibility flag: ordinary production now uses the same justified representative strategy')
+    parser.add_argument('--replay-physical-checkpoint', type=Path, help='Offline only: unmodified saved physical replies for exactly matching source conditions; causal/fact replies remain scripted')
     args=parser.parse_args()
     if args.symbolic_drive and not args.offline:
         parser.error('--symbolic-drive is an offline fixture option')

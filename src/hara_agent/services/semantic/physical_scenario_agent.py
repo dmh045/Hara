@@ -71,7 +71,19 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v5-explicit-model-gap"
+    PROMPT_VERSION = "post-fault-physical-scenario-v6-production-representative"
+    ANALYSIS_STRATEGY = (
+        "First propose one justified, computable conditional representative for each distinct mechanism. "
+        "Preserve the supplied initial state, object and geometry constraints. For missing model inputs, "
+        "including travel distance and fault motion, propose conditional POINT representatives when "
+        "engineering reasoning supports them, explaining rationale, scope and uncovered conditions. "
+        "These are analysis assumptions, never measurements, approval or capability bounds. "
+        "Add RANGE sensitivity only when it adds a numerical result or changes contact, direction, "
+        "enablement or avoidance. Do not expand other parameters when symbolic geometry prevents "
+        "any new result; retain the full parameter relationship and range. If no defensible point "
+        "exists, keep SYMBOLIC with the useful relationship and exact gap. Python derives all physics "
+        "and ratings. No universal speed, acceleration or distance defaults."
+    )
 
     def __init__(self, client, *, response_checkpoint_dir: Path | None = None):
         self.client = client
@@ -102,8 +114,7 @@ class PhysicalScenarioAgent:
             "RANGE始终满足lower<=value<=upper，包括负数，例如-8<=-7<=-6.5，不能按绝对值排列。"
             "basis_refs只能选basis_ref_ids中的完整ID，不得把它扩展成未提供的字段路径。"
             "failed_controls/remaining_controls只能选control_identities中的完整键。"
-            "遵守validation_sampling_policy；若要求One representative hypothesis first，只返回一个代表假设，"
-            "优先点值或符号，其他变体列为未覆盖，不展开范围或多个模型。"
+            "遵守analysis_strategy；先形成有依据的可计算代表工况，确实不能合理定点才保留符号关系。"
             "你是故障后物理场景分析员。使用给定项目事实、来源限定、FM、Atom 和已确认方法约束，"
             "提出 1–3 个有工程意义的条件性物理假设；原文未提供故障加速度并不禁止提出分析假设。"
             "若目录中没有能表示当前危险机制的模型，返回hypotheses空数组，并在uncovered_conditions具体说明模型缺口。"

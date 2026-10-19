@@ -307,6 +307,7 @@ def test_scenario_risk_fact_completed_batch_is_reused_from_cache():
 
     assert client.calls == 1
     assert len(cache) == 1
+    assert len(next(iter(cache.values()))['source_absences']) == 1
     assert second_audit["batch_cache_hit_count"] == 1
     assert second_audit["llm_call_count"] == 0
     assert next(iter(cache.values()))["audit"]["llm_call_count"] == 1
@@ -393,7 +394,8 @@ def test_scenario_risk_fact_agent_batches_by_expected_result_count():
 
     source = SourceRef("item_definition", "item.docx", "p1", "collision")
     candidates = [
-        ScenarioCandidate(scenario_id, "road", "collision", "detail", sources=[source])
+        ScenarioCandidate(scenario_id, "road", "collision", "detail", sources=[source],
+                          facts={"object_id": "object-" + scenario_id})
         for scenario_id in ("SCN-1", "SCN-2")
     ]
     malfunction = MalfunctionCandidate(

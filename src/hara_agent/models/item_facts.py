@@ -73,6 +73,7 @@ class ItemDefinitionFacts:
     sources: list[SourceRef] = field(default_factory=list)
     status: ReviewStatus = ReviewStatus.PENDING
     confidence: float = 0.0
+    odd_scope_evidence: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ItemDefinitionFacts":

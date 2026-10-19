@@ -117,8 +117,8 @@ def explicit_environment(text: str) -> set[str]:
     """
     folded = text.casefold()
     return {name for name, terms in {
-        "INDOOR": ("室内", "underground", "multi-story", "multistorey", "parking in garage"),
-        "OUTDOOR": ("室外", "outdoor", "open-air", "open air"),
+        "INDOOR": ("室内", "地下", "indoor", "underground", "multi-story", "multistorey", "parking in garage"),
+        "OUTDOOR": ("室外", "地上", "outdoor", "open-air", "open air"),
     }.items() if any(term in folded for term in terms)}
 
 
@@ -413,7 +413,6 @@ class ScenarioSemanticQueryBuilder:
             if category.startswith("LOCATION_")
         }
         odd_road_text = _json_text({
-            "odd_weather_conditions": project_context.get("odd_weather_conditions", []),
             "odd_road_surfaces": project_context.get("odd_road_surfaces", []),
         })
         return {

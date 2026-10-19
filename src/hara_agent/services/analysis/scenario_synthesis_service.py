@@ -409,6 +409,14 @@ class ConstrainedScenarioSynthesisService:
         explicit = project_context.get("slope_max_pct")
         if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
             return float(explicit)
+        source_bounds = [limit["upper_pct"]
+                         for record in project_context.get("odd_scope_evidence", [])
+                         if record.get("field") == "odd_grade_limits"
+                         for limit in record.get("limits", [])]
+        if source_bounds:
+            # The directional bounds remain on each generated context. This
+            # global filter only rejects atoms outside both allowed ranges.
+            return max(source_bounds)
         text = json.dumps(project_context, ensure_ascii=False, sort_keys=True)
         matches = re.findall(
             r"(?:不超过|不高于|最大(?:坡度)?|至多|≤|<=)\s*(\d+(?:\.\d+)?)\s*%",
@@ -640,6 +648,8 @@ class ConstrainedScenarioSynthesisService:
             return False, reason
         slope_point = parent.facts.get("source_slope_pct")
         slope = atom.get("physical_semantics", {}).get("slope", {})
+        if isinstance(slope_point, (int, float)) and "ROAD" in filled and not slope:
+            return False, "PARENT_SLOPE_NOT_REPRESENTED"
         if isinstance(slope_point, (int, float)) and isinstance(slope, dict) and slope:
             bounds = slope.get("range_pct", [slope.get("pct_min"), slope.get("pct_max")])
             lower, upper = bounds
@@ -1470,8 +1480,28 @@ class ConstrainedScenarioSynthesisService:
         # Cover explicit source slope boundaries one axis at a time. This is
         # not a seven-dimension product or a selection based on Exposure rank.
         contexts = [parent]
+        source_limits = [record for record in project_context.get("odd_scope_evidence", [])
+                         if record.get("field") == "odd_grade_limits"]
+        query = ScenarioSemanticQueryBuilder.build(malfunction=malfunction, parent=parent, assessment={},
+            project_context=project_context, fm_template=self._fm_template_evidence(malfunction, parent), function=function)
+        slope_relevant = bool(set(query.get("action_categories", [])) & {
+            "ACTION_HOLD", "ACTION_STOP", "ACTION_ACCELERATE", "ACTION_REVERSE", "ACTION_TURN"})
+        if include_source_boundaries and slope_relevant and parent.facts.get("source_slope_pct") is None:
+            for record in source_limits:
+                for limit in record["limits"]:
+                    facts = deepcopy(parent.facts)
+                    facts.update(road_surface_conditions=f"{limit['direction']}{limit['upper_pct']:g}%",
+                        source_slope_pct=limit["upper_pct"], source_slope_direction=limit["direction"],
+                        slope_reference=limit["reference_direction"],
+                        source_grade_semantic="ALLOWED_ODD_BOUNDARY_REPRESENTATIVE")
+                    provenance = deepcopy(parent.fact_provenance)
+                    for field in ("road_surface_conditions", "source_slope_pct", "source_slope_direction"):
+                        provenance[field] = {"provenance": "SCENARIO_DEFINED", "approval": "PENDING",
+                            "selection_basis": "ALLOWED_ODD_BOUNDARY_REPRESENTATIVE",
+                            "source_refs": deepcopy(record["sources"])}
+                    contexts.append(replace(parent, facts=facts, fact_provenance=provenance))
         if (include_source_boundaries and parent.facts.get("source_slope_pct") is None
-                and not parent.facts.get("road_surface_conditions")):
+                and not parent.facts.get("road_surface_conditions") and not source_limits):
             for text in dict.fromkeys(project_context.get("odd_road_surfaces", [])):
                 match = re.search(r"(上坡|下坡)\s*(\d+(?:\.\d+)?)\s*%", str(text))
                 if not match:
@@ -1522,7 +1552,7 @@ class ConstrainedScenarioSynthesisService:
             malfunction=malfunction, parent=parent, assessment={},
             project_context=project_context, function=function,
         )
-        assignments = self.logical_selection_assignments(synthesis_input, limit=1)
+        assignments = self.logical_selection_assignments(synthesis_input)
         audit = {
             "parent_scenario_id": parent.scenario_id,
             "semantic_group_id": synthesis_input.semantic_group_id,
@@ -1541,6 +1571,12 @@ class ConstrainedScenarioSynthesisService:
         }
         if not assignments:
             return [], {**audit, "status": "NO_VALID_COVERAGE_ASSIGNMENT"}
+        # Among already valid bounded assignments prefer coverage of distinct
+        # environmental conditions, without adding another Cartesian product.
+        def environmental_coverage(assignment):
+            expanded = [self.expand_logical_atom_ids(synthesis_input, ids) for ids in assignment]
+            return sum(len({tuple(row.get(dimension, ())) for row in expanded}) for dimension in ("WHERE", "ROAD"))
+        chosen = max(assignments, key=environmental_coverage)
         # Reuse the exact validation boundary used for bounded semantic
         # selection; no parallel atom/constraint or scoring implementation.
         payload = {"variants": [{
@@ -1548,7 +1584,7 @@ class ConstrainedScenarioSynthesisService:
             "selected_atom_ids": list(atom_ids),
             "semantic_rationale": "Deterministic structured shortlist and coverage plan; causal applicability remains to be validated.",
             "context_refs": ["PROJECT.ODD", "MF.description", "MF.functional_effect", "METHOD.scenario_atom_catalog"],
-        } for intent, atom_ids in zip(synthesis_input.coverage_plan.variant_intents, assignments[0])]}
+        } for intent, atom_ids in zip(synthesis_input.coverage_plan.variant_intents, chosen)]}
         selections = self.validate_provider_payload(synthesis_input, payload)
         children, deferred = [], []
         primary = synthesis_input.coverage_plan.primary_variation_dimensions
@@ -1594,6 +1630,8 @@ class ConstrainedScenarioSynthesisService:
             "weather_conditions": parent.facts.get("weather_conditions", ""),
             "source_slope_pct": parent.facts.get("source_slope_pct"),
             "source_slope_direction": parent.facts.get("source_slope_direction"),
+            "slope_reference": parent.facts.get("slope_reference"),
+            "source_grade_semantic": parent.facts.get("source_grade_semantic"),
             "permitted_road_types": parent.facts.get("source_road_type_scope"),
         }.items() if value is not None and value != ""}
 

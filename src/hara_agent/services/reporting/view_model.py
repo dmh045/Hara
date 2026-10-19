@@ -116,6 +116,22 @@ class GeneratedChildView:
 
 
 @dataclass(frozen=True)
+class FunctionView:
+    function_id: str
+    name: str
+    output: str
+    status: str
+    malfunctions: int
+    analyzed: int
+    retained: int
+    excluded: int
+    pending: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {item.name: getattr(self, item.name) for item in fields(self)}
+
+
+@dataclass(frozen=True)
 class MalfunctionView:
     malfunction_id: str
     function_id: str
@@ -200,6 +216,7 @@ class HARAReportViewModel:
     generated_children: tuple[GeneratedChildView, ...] = ()
     malfunction_inventory: tuple[MalfunctionView, ...] = ()
     item_facts: tuple[tuple[str, str], ...] = ()
+    function_inventory: tuple[FunctionView, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,6 +230,7 @@ class HARAReportViewModel:
             "generated_children": [item.to_dict() for item in self.generated_children],
             "malfunction_inventory": [item.to_dict() for item in self.malfunction_inventory],
             "item_facts": list(self.item_facts),
+            "function_inventory": [item.to_dict() for item in self.function_inventory],
             "schema_hash": self.schema_hash,
             "method_contract_hash": self.method_contract_hash,
             "style_template_hash": self.style_template_hash,
@@ -220,6 +238,6 @@ class HARAReportViewModel:
 
 
 __all__ = [
-    "AuditReferenceView", "GeneratedChildView", "HARAReportRowView", "HARAReportViewModel",
+    "AuditReferenceView", "FunctionView", "GeneratedChildView", "HARAReportRowView", "HARAReportViewModel",
     "MalfunctionView", "MethodBasisView", "SafetyGoalView", "ScenarioDetailView", "SummaryView",
 ]

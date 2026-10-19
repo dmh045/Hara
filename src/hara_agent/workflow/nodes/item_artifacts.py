@@ -29,7 +29,7 @@ from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
 from .parallel import ordered_parallel_map
 
 
-ARTIFACT_SCHEMA_VERSION = "validated-item-artifact-v9-source-selection"
+ARTIFACT_SCHEMA_VERSION = "validated-item-artifact-v10-explicit-odd-scope"
 
 
 def _speed_extraction_modes(
@@ -441,6 +441,7 @@ def extract_item_artifacts(
                 targeted_audits.append(audit)
             cache_save_elapsed += targeted_save_elapsed[0]
         facts = _merge_targeted_project_facts(facts, targeted_payloads)
+    facts = ItemDefinitionNormalizer.normalize_source_scope(facts, blocks, source_id)
     # Approved input is accepted after bounded normalization.  Missing core
     # facts and degraded repairs remain fail-closed at the specific boundary.
     facts.status = (

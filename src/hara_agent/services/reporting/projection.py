@@ -14,7 +14,7 @@ from .engineering_text_mapper import EngineeringReportTextMapper
 from .quantity_format import boundary_notes
 from .report_schema import ReportSchema
 from .view_model import (
-    AuditReferenceView, GeneratedChildView, HARAReportRowView, HARAReportViewModel,
+    AuditReferenceView, FunctionView, GeneratedChildView, HARAReportRowView, HARAReportViewModel,
     MalfunctionView, MethodBasisView, SafetyGoalView, ScenarioDetailView, SummaryView,
 )
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
@@ -937,6 +937,12 @@ class HARAReportProjectionService:
             elif partial_rationales:
                 row = replace(row, **partial_rationales,
                     remark="无最高已知 ASIL；等级格仅显示全组共同值，不代表完整风险元组。" + row.remark)
+            if len(siblings) > 1 and highest_members:
+                # A deciding tuple does not erase other known member grades.
+                _, _, distribution = self._common_partial_grades(siblings, trace_provided=risk_trace is not None)
+                row = replace(row, remark=row.remark + "；成员等级分布：" + "；".join(
+                    f"{label}: " + "、".join(f"{grade}×{count}" for grade, count in distribution[field]["members"].items())
+                    for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL"))))
             rows.append(row)
             group_source_counts[str(representative["base_key"][0])] += 1
 
@@ -1176,20 +1182,24 @@ class HARAReportProjectionService:
             from hara_agent.services.analysis.asil_service import MethodContractASILService
             asil_order = (MethodContractASILService(method).result_order()
                           if getattr(method, "engineering_rules_compiled", False) else [])
+            member_states = {entry["risk"].assessment_id: self._score_states(
+                entry["risk"], entry["trace"], trace_provided=risk_trace is not None) for entry in members}
             known_asils = [entry["risk"].branch_summary.get("highest_known_asil") or
-                (_value(entry["risk"].asil) if _status(entry["risk"].asil) == "FINALIZED" else "") for entry in members]
+                self._display_score(entry["risk"].asil, member_states[entry["risk"].assessment_id]["asil"]) for entry in members]
             known_asils = [value for value in known_asils if value in asil_order]
             known_s = [entry["risk"].branch_summary.get("severity_maximum") or
-                (_value(entry["risk"].severity) if _status(entry["risk"].severity) == "FINALIZED" else "") for entry in members]
+                self._display_score(entry["risk"].severity, member_states[entry["risk"].assessment_id]["severity"]) for entry in members]
             s_order = list(method.asil.severity_levels) if hasattr(method, "asil") else []
             known_s = [value for value in known_s if value in s_order]
-            conditional_count = sum(bool(entry["scenario"].facts.get("physical_analysis")) for entry in members)
+            conditional_count = sum(_TRIAL in states.values() for states in member_states.values())
             distributions.append(("包含条件性试算；已知最大 S=" if conditional_count else "已知最大 S=") + (max(known_s, key=s_order.index) if known_s else "Pending")
                 + "；已知最高 ASIL=" + (max(known_asils, key=asil_order.index) if known_asils else "Pending")
                 + ("；仅限所列假设，未证明全范围上界" if conditional_count else "；仅汇总已验证子结果，未决分支另列"))
             for dimension in ("severity", "exposure", "controllability", "asil"):
-                distribution = Counter((_value(getattr(entry["risk"], dimension)) if _status(getattr(entry["risk"], dimension)) == "FINALIZED" else "Pending") for entry in members)
+                distribution = Counter(self._display_score(getattr(entry["risk"], dimension), member_states[entry["risk"].assessment_id][dimension]) for entry in members)
                 distributions.append(f"{dimension}: " + ", ".join(f"{key}×{value}" for key, value in sorted(distribution.items())))
+                statuses = Counter(member_states[entry["risk"].assessment_id][dimension] for entry in members)
+                distributions.append("评定性质：" + "、".join(f"{status}×{count}" for status, count in statuses.items()))
             pending_reasons = Counter(
                 entry["trace"].get("physical_input_production", {}).get("pending_reason") or
                 entry["trace"].get("controllability", {}).get("input_diagnostic", {}).get("reason", "")
@@ -1216,6 +1226,15 @@ class HARAReportProjectionService:
                 risk_distribution="\n".join(distributions),
                 pending_summary="\n".join(f"{reason or '待因果/方法证据'}: {count}" for reason, count in pending_reasons.items()),
             ))
+        function_inventory = []
+        for function in state.functions:
+            children_for_function = [item for item in inventory if item.function_id == str(function.get("function_id", ""))]
+            retained, excluded, pending = (sum(getattr(item, field) for item in children_for_function)
+                                           for field in ("retained", "excluded", "pending"))
+            function_inventory.append(FunctionView(str(function.get("function_id", "")),
+                str(function.get("name", "")), str(function.get("output", "")),
+                str(function.get("status", "未记录审核状态")), len(children_for_function),
+                retained + excluded + pending, retained, excluded, pending))
         return HARAReportViewModel(
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,
             method_hash, style_template_hash, tuple(details), projection_metrics,
@@ -1226,6 +1245,7 @@ class HARAReportProjectionService:
                       ("odd_road_types", "允许道路/车位"), ("odd_weather_conditions", "天气"),
                       ("odd_road_surfaces", "路面"))
                   if (value := state.item_definition.get("typed", {}).get(field))),
+            tuple(function_inventory),
         )
 
 

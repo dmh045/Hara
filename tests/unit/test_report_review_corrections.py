@@ -112,6 +112,38 @@ def test_exposure_rank_labels_the_used_atom_not_the_search_phrase():
     assert '道路条件=E3' in text and '低附着' not in text
 
 
+def test_full_function_inventory_includes_functions_without_risk_rows(active_method):
+    state = mixed_pending_group()
+    state.functions.append({'function_id': 'excluded-function', 'name': '仅排除的功能', 'output': '信号', 'status': 'PENDING'})
+    state.malfunctions.append({'function_id': 'excluded-function', 'malfunction_id': 'excluded-mf', 'description': '失效'})
+    trace = {'assessments': [dict(malfunction_id='excluded-mf', scenario_id='excluded-scene',
+                                risk_eligibility={'status': 'INELIGIBLE_CAUSAL'}, risk_scoring_invoked=False)]}
+    # This fixture has no scored trace: derive the complete upstream inventory
+    # independently of the rendered HARA rows, then check exclusion accounting.
+    state.risk_results = []
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace)
+    assert len(view.function_inventory) == len(state.functions)
+    function = next(f for f in view.function_inventory if f.function_id == 'excluded-function')
+    assert (function.malfunctions, function.analyzed, function.retained, function.excluded, function.pending) == (1, 1, 0, 1, 0)
+    assert function.status == 'PENDING' and not view.rows
+    assert state == before
+
+
+def test_malfunction_distribution_keeps_numeric_pending_and_known_severity(active_method):
+    state = mixed_pending_group()
+    state.risk_results[0].severity = EvidenceValue('S3', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    state.risk_results[0].exposure = EvidenceValue('E3', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    inventory = next(m for m in view.malfunction_inventory if m.malfunction_id == state.risk_results[0].malfunction_id)
+    assert '已知最大 S=S3' in inventory.risk_distribution
+    assert 'S3×1' in inventory.risk_distribution and '待审试算×1' in inventory.risk_distribution
+    assert 'E3×12' in inventory.risk_distribution
+    assert 'S3×1' in view.rows[0].severity_rationale
+    assert state == before
+
+
 def test_summary_separates_review_groups_and_retained_records(tmp_path, active_method):
     schema = load_report_schema()
     view = HARAReportProjectionService(schema).project(mixed_pending_group(), active_method)

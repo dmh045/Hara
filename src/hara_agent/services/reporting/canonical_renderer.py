@@ -232,7 +232,9 @@ class HARAReportWorkbookRenderer:
             )
             self._render_records(
                 sheets["02_Functions"], "Functions", registry,
-                ("Function ID", "Function", "Output", "Status"), self._functions(view_model),
+                ("Function ID", "Function", "Output", "来源审核状态", "失效数", "已分析数", "保留数", "排除数", "因果未决数"),
+                self._functions(view_model),
+                width_source_columns=(1, 2, 7, 16, 13, 13, 13, 13, 13),
             )
             self._render_records(
                 sheets["03_Malfunctions"], "Malfunctions", registry,
@@ -759,10 +761,7 @@ class HARAReportWorkbookRenderer:
 
     @staticmethod
     def _functions(view_model: HARAReportViewModel) -> list[tuple[Any, ...]]:
-        seen: dict[str, tuple[Any, ...]] = {}
-        for row in view_model.rows:
-            seen.setdefault(row.function_id, (row.function_id, row.function_name, row.function_output, "SOURCE-LINKED"))
-        return list(seen.values())
+        return [tuple(item.to_dict().values()) for item in view_model.function_inventory]
 
     @staticmethod
     def _malfunctions(view_model: HARAReportViewModel) -> list[tuple[Any, ...]]:
