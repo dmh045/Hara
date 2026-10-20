@@ -1424,8 +1424,9 @@ class YamlBaselineCompiler:
                 severity=CompilerDiagnosticSeverity.WARNING,
                 code=CompilerDiagnosticCode.FTTI_METHOD_UNCOMPILED,
                 message=(
-                    "FTTI YAML assets are hash-bound but formula routing and the audited "
-                    "formula registry are not yet connected to runtime scoring."
+                    "FTTI YAML assets are hash-bound but are not an executable FTTI method: "
+                    "fault onset, hazard criterion and safe-state response budgets are unresolved. "
+                    "Trajectory timing evidence alone must not be promoted to FTTI."
                 ),
                 source_refs=(self._source(
                     source_hash, source_paths["ftti_formulas"], "formulas",

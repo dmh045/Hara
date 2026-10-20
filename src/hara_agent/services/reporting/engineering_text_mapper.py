@@ -683,6 +683,10 @@ class EngineeringReportTextMapper:
                 "wording_id": matches[0]["id"] if unambiguous else "grounded_behavior_excerpt",
                 "basis": basis})
         texts = list(dict.fromkeys(record["display_text"].rstrip("。；") for record in records))
+        # A supported complete short intent subsumes its repeated elaboration.
+        # Do not use a common character prefix (it may cut away a negation).
+        texts = [text for text in texts if not any(
+            text != other and text.startswith(other) for other in texts)]
         return {"text": "；".join(texts) + "。" if texts else original,
                 "members": records, "nature": "DISPLAY_ONLY_NO_ENGINEERING_APPROVAL"}
 
@@ -693,14 +697,27 @@ class EngineeringReportTextMapper:
         This is source-clause compression. Unknown wording stays as the original
         goal rather than manufacturing an intent from a guideword or parameters.
         """
-        for field in ("vehicle_hazard", "functional_effect", "hazardous_event"):
+        hazard = str(member.get("vehicle_hazard", ""))
+        # An "or" in the parent hazard names different mechanisms. The concrete
+        # event, rather than the first parent alternative, determines this member.
+        alternatives = bool(re.search(r"[，；。]\s*或|或者|\bor\b", hazard))
+        fields = ("hazardous_event",) if alternatives else (
+            "vehicle_hazard", "functional_effect", "hazardous_event")
+        for field in fields:
             source = str(member.get(field, "")).strip()
             clauses = [c.strip(" 。；，") for c in re.split(r"[，；。]|(?:从而|导致|造成|引发)", source) if c.strip()]
             for clause in clauses:
                 # Do not turn a negated or uncertain harm claim into an intent.
                 if re.search(r"未发生|未出现|未产生|不会|不导致|不造成|不引发|无碰撞|无接触|不能确认|待确定|未知|可能受伤|存在.*风险", clause):
                     continue
-                if re.search(r"非预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度", clause):
+                if field == "hazardous_event":
+                    # Drop an explicit scene prefix, not arbitrary numbers: a
+                    # parameter-bearing sentence otherwise remains in evidence.
+                    clause = re.sub(r"^.*(?:行驶时|过程中|场景下)[，、]?", "", clause)
+                    clause = re.sub(r"^.*?因(?=.+(?:失效|失去|无法|卡死|异常))", "", clause)
+                if re.search(r"\d", clause):
+                    continue
+                if re.search(r"非预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)", clause):
                     clause = re.sub(r"^(?:发生|出现|产生)", "", clause)
                     clause = re.sub(r"^(?:车辆|本车)(?:发生|出现)", "车辆", clause)
                     return "防止" + clause + "。", {field: source, "selected_behavior": clause,
@@ -730,10 +747,14 @@ class EngineeringReportTextMapper:
             parts.append("接触时间待定")
         return "；".join(parts)
 
-    def potential_harm(self, value: Any, *, severity: Any) -> str:
+    def potential_harm(self, value: Any, *, severity: Any, method_description: str = "") -> str:
         if str(value or "").strip():
             return self.language.get("potential_harm_translations", {}).get(str(value), str(value))
         if getattr(severity, "value", None):
+            if method_description:
+                description = self.language.get("potential_harm_translations", {}).get(
+                    method_description, method_description)
+                return f"按当前 S 分档：{description}"
             return "伤害描述待确定"
         if _status(severity) != "FINALIZED":
             return "待S评定完成后确定"
@@ -881,13 +902,31 @@ class EngineeringReportTextMapper:
         grades = trace.get("branch_grades", trace)
         if getattr(evidence, "value", None) and all(grades.get(k) for k in ("S", "E", "C")):
             return "同一危险分支的 " + " / ".join(str(grades[k]) for k in ("S", "E", "C")) + f" 对应 ASIL {evidence.value}。"
+        if getattr(evidence, "value", None):
+            known = " / ".join(str(grades[k]) for k in ("S", "E", "C") if grades.get(k))
+            missing = "/".join(k for k in ("S", "E", "C") if not grades.get(k))
+            return (f"已记录的分支 ASIL 为 {evidence.value}；已有 {known or '分支结果'}，"
+                    f"{missing} 仍未评定；该结果不表示所有维度均已完成，方法依据见追溯。")
         if _status(evidence) == "FINALIZED":
             return "已按当前 ASIL 矩阵完成评定。"
         return "S/E/C 未全部确定，ASIL 暂不评定。"
 
     @staticmethod
-    def ftti_rationale() -> str:
-        return "当前运行未启用 FTTI 计算。"
+    def ftti_rationale(timing_inputs: list[Mapping[str, Any]] | None = None) -> str:
+        timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]
+        available = [item for item in timings if item.get("contact_time_s") is not None]
+        if not available:
+            return "缺少可用的接触时间；故障起点、危险判据及安全处置时间预算尚未确定，FTTI 待定。"
+        kinds = {item.get("contact_time_kind") for item in available}
+        label = "侧向首次接触" if kinds == {"first_contact_time_s"} else "轨迹接触"
+        values = [item["contact_time_s"] for item in available]
+        interval = (quantity_range(min(values), max(values), "s") if min(values) != max(values)
+                    else quantity(values[0], "s") + " s")
+        origin = ("从各模型初始状态计时" if all(
+            item.get("time_origin") == "MODEL_INITIAL_STATE" for item in available)
+            else "计时起点以各成员来源为准")
+        return (f"已有{label}时间 {interval}（{origin}）；"
+                "尚未绑定故障起点及危险判据，不能作为 FTTI；安全处置及时间预算待确定。")
 
 
 __all__ = ["EngineeringReportTextMapper"]

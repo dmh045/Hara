@@ -169,6 +169,137 @@ def test_negative_sg_claim_never_becomes_unsupported_collision_or_action():
     assert result['members'][0]['basis']['original_goal'] == '现有安全意图'
 
 
+def test_v8_member_intents_do_not_select_other_parent_branch_or_parameters():
+    fixture = json.loads((Path(__file__).parents[1] / 'fixtures/report_v8_safety_intents.json').read_text())
+    mapper = EngineeringReportTextMapper()
+    expected = {
+        'SG-METHOD-DBF8EE1CDE': '防止驻车制动请求卡死在释放状态。',
+        'SG-METHOD-5725DFEFFD': '防止本应关闭的车辆功能持续运行。',
+        'SG-METHOD-77060B1CDE': '防止车辆加速响应滞后。',
+    }
+    for goal in fixture['goals']:
+        before = deepcopy(goal)
+        presentation = mapper.safety_goal_presentation(goal['members'], goal['original'])
+        assert presentation['text'] == expected[goal['sg_id']]
+        assert len(presentation['members']) == len(goal['members'])
+        assert goal == before
+
+
+def test_alternative_intents_keep_both_actual_branches_and_negative_evidence():
+    mapper = EngineeringReportTextMapper()
+    members = [
+        {'vehicle_hazard': '需解锁时无法解锁，或需锁止时无法锁止',
+         'hazardous_event': '驻车结束后，执行器无法解锁'},
+        {'vehicle_hazard': '需解锁时无法解锁，或需锁止时无法锁止',
+         'hazardous_event': '停车场内，执行器无法锁止'},
+    ]
+    text = mapper.safety_goal_presentation(members, '原文')['text']
+    assert '执行器无法解锁' in text and '执行器无法锁止' in text
+    members[0]['hazardous_event'] = '未发生无法解锁'
+    result = mapper.safety_goal_presentation(members[:1], '原文')
+    assert result['text'] == '原文。'
+
+
+def test_summary_timing_and_harm_projection_keeps_raw_conditional_state(active_method, real_sample):
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    state, trace = real_sample
+    state.risk_results[0].potential_harm = ''
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace)
+    scope = view.summary.scope
+    assert scope['numeric_risk_chain_count'] == scope['numeric_asil_count'] == 1
+    assert scope['complete_risk_chain_count'] == 0
+    assert view.rows[0].potential_harm.startswith('按当前 S 分档：')
+    assert view.safety_goals[0].status == '条件性草稿'
+    assert view.rows[0].ftti == '待确定'
+    assert '不能作为 FTTI' in view.rows[0].ftti_rationale
+    assert '1.59' in view.rows[0].ftti_rationale
+    assert state == before
+    for key in ('ttc_s', 'first_contact_time_s'):
+        scenario = {key: .154286, 'object_id': 'target', '_fact_provenance': {
+            key: {'assessment_reference': 'MODEL_INITIAL_STATE', 'provenance': 'DERIVED'}}}
+        result = RiskCalculationInputService().ftti('MF', 'SCN', 'A', scenario)
+        assert result.contact_time_s == .154286
+        assert result.contact_time_kind == key
+        assert result.hazard_time_limit_s is None
+        assert result.safe_state_transition_time_s is None
+        assert result.time_origin == 'MODEL_INITIAL_STATE'
+        assert result.evidence_refs == (f'DERIVED.{key}',)
+        assert result.status.value == 'PENDING_METHOD_SEMANTICS'
+
+
+def test_unresolved_risk_intents_use_production_aggregation_without_approval(active_method, real_sample):
+    from hara_agent.services.analysis.method_safety_goal_service import MethodSafetyGoalService
+    from hara_agent.workflow.nodes.safety_goals import aggregate_safety_goals
+    state, _ = real_sample
+    original_id = state.risk_results[0].safety_goal_id
+    original_text = state.item_definition['safety_goal_catalog'][original_id]['original_safety_goal']
+    state.risk_results[0].asil = EvidenceValue(None, ReviewStatus.PENDING)
+    ratings = deepcopy(state.risk_results[0])
+    aggregate_safety_goals(state, MethodSafetyGoalService(active_method))
+    assert state.risk_results[0] == ratings
+    assert state.risk_results[0].safety_goal_id == original_id
+    assert state.item_definition['safety_goal_catalog'][original_id]['original_safety_goal'] == original_text
+    assert len(state.safety_goals) == 1
+    assert state.safety_goals[0].max_asil == ''
+    assert state.safety_goals[0].status is ReviewStatus.PENDING
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert view.safety_goals[0].max_asil == '待评定'
+    assert view.safety_goals[0].status == '待审核'
+
+
+def test_source_conditions_keep_pending_separate_from_exclusion(active_method, real_sample):
+    state, trace = real_sample
+    mid = state.malfunctions[0]['malfunction_id']
+    fid = state.malfunctions[0]['function_id']
+    generated = []
+    for sid, status, reason, location in (
+        ('pending', 'PENDING_FEASIBILITY', 'PENDING_CAUSAL_EVIDENCE', '室外停车场'),
+        ('excluded', 'INELIGIBLE_CAUSAL', 'CAUSAL_LINK_FALSE', '室内停车场'),
+    ):
+        trace['assessments'].append({
+            'scenario_id': sid, 'malfunction_id': mid,
+            'risk_eligibility': {'status': status, 'reason_codes': [reason]},
+            'risk_scoring_invoked': False})
+        generated.append({'scenario_id': sid, 'facts': {
+            'source_operating_conditions': {'operating_scenario': location}}})
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(
+        state, active_method, risk_trace=trace, generated_scenarios=generated)
+    rows = {row.scenario_id: row for row in view.generated_children}
+    assert rows['pending'].causal_disposition == 'PENDING_CAUSAL'
+    assert rows['excluded'].causal_disposition == 'EXCLUDED_FROM_RISK'
+    assert rows['pending'].function_id == rows['excluded'].function_id == fid
+    assert rows['pending'].source_conditions == '来源场所：室外停车场'
+    assert rows['pending'].disposition_reason == 'PENDING_CAUSAL_EVIDENCE'
+    assert state == before
+
+
+def test_partial_qm_remains_a_calculated_result_with_independent_c_and_review_state(active_method, real_sample):
+    from hara_agent.services.analysis.risk_execution_trace_service import RiskExecutionTraceService
+    state, _ = real_sample
+    risk = state.risk_results[0]
+    risk.severity = EvidenceValue('S0', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    risk.controllability = EvidenceValue(None, ReviewStatus.PENDING, review_reason='METHOD_GAP')
+    risk.asil = EvidenceValue('QM', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    risk.branch_evaluations = []
+    risk.branch_summary = {}
+    before = deepcopy(risk)
+    trace = RiskExecutionTraceService()._asil_trace(risk)
+    assert trace['status'] == 'CALCULATED_PENDING_REVIEW'
+    assert trace['review_status'] == 'PENDING'
+    assert trace['C'] is None and trace['pending_reason'] == ''
+    assert HARAReportProjectionService._score_state(risk.asil, trace, scoring_invoked=True) == '待审试算'
+    text = EngineeringReportTextMapper().asil_rationale(risk.asil, trace)
+    assert 'QM' in text and 'S0' in text and 'C 仍未评定' in text
+    assert 'ASIL 暂不评定' not in text
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert (view.rows[0].severity, view.rows[0].controllability, view.rows[0].asil) == ('S0', '待评定', 'QM')
+    assert '其余维度的全部组合均对应 QM' in view.rows[0].asil_rationale
+    assert 'C 本身仍待评定' in view.rows[0].asil_rationale
+    assert risk == before
+
+
 def test_display_uses_the_deciding_branch_physics_not_parent_max_s(active_method,real_sample):
     state,trace=real_sample
     risk=state.risk_results[0]
@@ -185,4 +316,8 @@ def test_display_uses_the_deciding_branch_physics_not_parent_max_s(active_method
     assert '29.5' in row.severity_rationale and '15.6' not in row.severity_rationale
     assert '0.85' in row.controllability_rationale
     assert 'S2 / E4 / C3' in row.asil_rationale
+    assert '0.85' in row.ftti_rationale and '1.59' in row.ftti_rationale
+    timing = view.projection_metrics['ftti_timing_inputs'][0]
+    assert timing['contact_time_s'] is None
+    assert {b['branch_id'] for b in timing['branch_timings']} == {low['branch_id'], high['branch_id']}
     assert state==before

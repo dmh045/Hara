@@ -265,7 +265,7 @@ def test_T28_conditional_qm_and_pending_goal_retain_independent_status(active_me
     state.item_definition['safety_goal_catalog']={'SG-1':{'original_safety_goal':'原始安全意图文本'}}
     view=HARAReportProjectionService(load_report_schema()).project(state,active_method)
     assert view.safety_goals[0].max_asil=='QM'
-    assert view.safety_goals[0].status=='离线/条件性草稿'
+    assert view.safety_goals[0].status=='条件性草稿'
     assert view.safety_goals[0].original_text=='原始安全意图文本'
     assert '未计算成员' in view.projection_metrics['safety_goal_scope_note']
     assert state.risk_results[0].asil.status is ReviewStatus.PENDING

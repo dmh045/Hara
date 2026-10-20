@@ -121,17 +121,50 @@ class RiskCalculationInputService:
             ),
         )
 
-    @staticmethod
     def ftti(
-        malfunction_id: str, scenario_id: str, asil: str,
+        self, malfunction_id: str, scenario_id: str, asil: str,
+        scenario: dict[str, Any] | None = None,
+        branches: list[dict[str, Any]] | None = None,
     ) -> FTTIAssessmentInput:
+        scenario = scenario or {}
+        # Keep the calculator's kind and time origin. Neither longitudinal TTC
+        # nor lateral first contact establishes fault onset or the hazard criterion.
+        key = next((key for key in ("first_contact_time_s", "ttc_s")
+                    if self._number(scenario.get(key)) is not None), "")
+        metadata = scenario.get("_fact_provenance", {}).get(key, {})
+        branch_timings = []
+        for branch in branches or []:
+            branch_key = next((field for field in ("first_contact_time_s", "ttc_s")
+                               if self._number(branch.get(field)) is not None), "")
+            branch_timings.append({
+                "branch_id": branch.get("branch_id", ""), "impact_time_id": branch.get("impact_time_id", ""),
+                "contact_time_s": self._number(branch.get(branch_key)),
+                "contact_time_kind": branch_key,
+                "source_ref": branch.get("risk_context", {}).get(branch_key, {}).get("source_ref"),
+            })
+        # A parent time cannot replace a missing or different object's branch
+        # time. Retain the actual branch identities, including unresolved ones.
+        if branches:
+            key, metadata = "", {}
         return FTTIAssessmentInput(
             malfunction_id=malfunction_id,
             scenario_id=scenario_id,
             asil=asil,
+            contact_time_s=self._number(scenario.get(key)),
+            contact_time_kind=key,
+            physical_model=str(scenario.get("fault_motion_model", "")),
+            object_id=str(scenario.get("object_id", "")) if not branches else "",
+            time_origin=str(metadata.get("assessment_reference", "")),
+            branch_timings=tuple(branch_timings),
+            evidence_refs=((f"DERIVED.{key}" if metadata.get("provenance") == "DERIVED"
+                            else f"SCN.{key}",) if key else ()),
             status=CalculationStatus.PENDING_METHOD_SEMANTICS,
             reason=(
-                "ASIL is available as an upstream result, but the active MethodContract "
-                "does not yet compile FTTI inputs, budgets and formulas."
+                "Trajectory contact time is available as timing evidence; " if key or any(
+                    row["contact_time_s"] is not None for row in branch_timings) else
+                "No numerical trajectory contact time is available; "
+            ) + (
+                "FTTI remains unresolved: the active MethodContract has no validated "
+                "fault-onset-to-hazard criterion or safe-state response budget."
             ),
         )

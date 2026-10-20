@@ -344,7 +344,10 @@ class HARAReportWorkbookRenderer:
                 "causal_retained_count", "causal_excluded_count", "causal_pending_count"
             ))),
             ("Risk scoring invoked / not invoked", f"{shown(scope.get('risk_scored_count'))} / {shown(scope.get('risk_not_invoked_count'))}"),
-            ("Complete S/E/C/ASIL chain", shown(scope.get("complete_risk_chain_count"))),
+            ("S/E/C/ASIL 四项已有数值（含条件性）", shown(scope.get("numeric_risk_chain_count"))),
+            ("已有 ASIL 数值（含条件性）", shown(scope.get("numeric_asil_count"))),
+            ("已有 ASIL、S/E/C 未全部具备数值", shown(scope.get("asil_without_complete_sec_count"))),
+            ("四项均按既有依据完成（不含条件性试算）", shown(scope.get("complete_risk_chain_count"))),
             ("主表审核组数（04_HARA）", len(view_model.rows)),
             ("风险记录数", values["eligible_hazardous_event_count"]),
             ("场景明细成员数", len(view_model.scenario_details)),
@@ -691,7 +694,7 @@ class HARAReportWorkbookRenderer:
                     child.malfunction_id,
                     child.scenario_id,
                     item.hazardous_event_id if item else "",
-                    hara_row.function_id if hara_row else "",
+                    hara_row.function_id if hara_row else child.function_id,
                     item.assessment_status if item else child.causal_disposition,
                     item.clarification_ids if item else "",
                     child.semantic_group_id or (item.semantic_group_id if item else ""),
@@ -709,6 +712,8 @@ class HARAReportWorkbookRenderer:
                     child.driver_branch,
                     child.causal_disposition,
                     child.risk_scoring_invoked,
+                    child.source_conditions,
+                    child.disposition_reason,
                 ))
         else:
             records = [(
@@ -719,7 +724,7 @@ class HARAReportWorkbookRenderer:
                 item.parent_scenario_id, item.variant, item.selected_atom_ids,
                 item.source_references, item.method_hash, item.report_schema_hash,
                 item.style_template_hash, item.risk_trace_reference,
-                "", "", "",
+                "", "", "", "", "",
             ) for item in view_model.audit_references]
         self._render_records(
             sheet, "Audit and Traceability", registry,
@@ -730,12 +735,12 @@ class HARAReportWorkbookRenderer:
                 "Variant", "Selected Atom IDs", "Source References",
                 "Method hash", "Report schema hash", "Style template hash",
                 "Risk execution trace", "Driver Branch", "Causal Disposition",
-                "Risk Scoring Invoked",
+                "Risk Scoring Invoked", "Source Operating Conditions", "Disposition Reason",
             ),
             records,
             width_source_columns=(
                 1, 2, 1, 7, 10, 16, 2, 5,
-                5, 14, 11, 7, 11, 11, 11, 16, 14, 16, 11,
+                5, 14, 11, 7, 11, 11, 11, 16, 14, 16, 11, 7, 16,
             ),
         )
 

@@ -734,6 +734,13 @@ class FTTIAssessmentInput:
     evidence_refs: tuple[str, ...] = ()
     status: CalculationStatus = CalculationStatus.PENDING_METHOD_SEMANTICS
     reason: str = ""
+    # Trajectory timing evidence is not a validated fault-to-hazard limit.
+    contact_time_s: float | None = None
+    contact_time_kind: str = ""
+    physical_model: str = ""
+    object_id: str = ""
+    time_origin: str = ""
+    branch_timings: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.malfunction_id or not self.scenario_id or not self.reason.strip():
@@ -741,6 +748,7 @@ class FTTIAssessmentInput:
         for value in (
             self.hazard_time_limit_s, self.detection_time_s,
             self.reaction_time_s, self.safe_state_transition_time_s,
+            self.contact_time_s,
         ):
             if value is not None and value < 0:
                 raise ValueError("FTTIAssessmentInput times cannot be negative")

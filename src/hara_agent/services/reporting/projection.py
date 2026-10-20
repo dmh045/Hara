@@ -18,6 +18,7 @@ from .view_model import (
     MalfunctionView, MethodBasisView, SafetyGoalView, ScenarioDetailView, SummaryView,
 )
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
+from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
 
 
 def _value(evidence: Any) -> str:
@@ -36,6 +37,7 @@ _UNCALCULATED = "未计算"
 _TRIAL_MARKERS = (
     "CONDITIONAL_TRIAL", "CANDIDATE_DEFAULT", "CANDIDATE_POLICY",
     "TRIAL_PENDING", "PENDING_ANALYSIS_ASSUMPTION", "待审试算", "条件性",
+    "CALCULATED_PENDING_REVIEW",
 )
 
 
@@ -191,6 +193,7 @@ class HARAReportProjectionService:
         cls,
         trace_rows: list[Mapping[str, Any]],
         generated_scenarios: list[Mapping[str, Any]],
+        malfunctions: Mapping[str, Any],
     ) -> tuple[GeneratedChildView, ...]:
         candidates = {
             str(item.get("scenario_id", "")): item
@@ -217,6 +220,12 @@ class HARAReportProjectionService:
                 else "EXCLUDED_FROM_RISK" if eligibility_status.startswith("INELIGIBLE")
                 else "PENDING_CAUSAL"
             )
+            source = candidate.get("facts", {}).get("source_operating_conditions", {})
+            source_text = "；".join(
+                f"{label}：{source[key]}" for key, label in (
+                    ("operating_scenario", "来源场所"), ("road_type", "来源道路/车位"),
+                    ("source_slope_direction", "来源坡向"), ("source_slope_pct", "坡度百分比"))
+                if source.get(key) not in (None, ""))
             children.append(GeneratedChildView(
                 scenario_id=scenario_id,
                 parent_scenario_id=str(
@@ -228,6 +237,9 @@ class HARAReportProjectionService:
                 causal_disposition=disposition,
                 risk_scoring_invoked=bool(row.get("risk_scoring_invoked")),
                 selected_atom_ids=cls._selected_atom_ids(candidate),
+                function_id=str(malfunctions.get(str(row.get("malfunction_id", "")), {}).get("function_id", "")),
+                source_conditions=source_text,
+                disposition_reason="; ".join(str(reason) for reason in eligibility.get("reason_codes", [])),
             ))
         return tuple(children)
 
@@ -832,8 +844,9 @@ class HARAReportProjectionService:
         audit: list[AuditReferenceView] = []
         variant_counts: Counter[str] = Counter()
         from hara_agent.services.analysis.asil_service import MethodContractASILService
-        asil_order = (MethodContractASILService(method).result_order()
-                      if getattr(method, "engineering_rules_compiled", False) else [])
+        asil_service = (MethodContractASILService(method)
+                        if getattr(method, "engineering_rules_compiled", False) else None)
+        asil_order = asil_service.result_order() if asil_service else []
         goal_presentations = {goal.sg_id: self.text.safety_goal_presentation([
             {"scenario_id": risk.scenario_id, "malfunction_id": risk.malfunction_id,
              "malfunction": str(malfunctions.get(risk.malfunction_id, {}).get("description", "")),
@@ -845,6 +858,18 @@ class HARAReportProjectionService:
             for risk in state.risk_results if risk.safety_goal_id == goal.sg_id
         ], goal.text) for goal in state.safety_goals}
         goal_texts = {sg_id: result["text"] for sg_id, result in goal_presentations.items()}
+        severity_descriptions = ({level.level: level.description for level in method.severity.scale.levels}
+                                 if hasattr(method, "severity") else {})
+        timing_inputs = {
+            (risk.malfunction_id, risk.scenario_id): RiskCalculationInputService().ftti(
+                risk.malfunction_id, risk.scenario_id, _value(risk.asil),
+                {**scenarios[risk.scenario_id].facts,
+                 "_fact_provenance": scenarios[risk.scenario_id].fact_provenance}
+                if risk.scenario_id in scenarios else {},
+                risk.branch_evaluations,
+            ).to_dict()
+            for risk in state.risk_results
+        }
         partial_group_distributions = {}
         for offset, siblings in enumerate(ordered_groups, start=1):
             siblings.sort(key=self._representative_rank)
@@ -899,7 +924,11 @@ class HARAReportProjectionService:
                 operational_scenario=operational,
                 scenario_detail=detail,
                 hazardous_event=self.text.hazardous_event(risk.hazardous_event),
-                potential_harm=self.text.potential_harm(risk.potential_harm, severity=risk.severity),
+                potential_harm=self.text.potential_harm(
+                    risk.potential_harm if not headline or values["severity"] == _value(risk.severity) else "",
+                    severity=(replace(risk.severity, value=values["severity"])
+                              if values["severity"] in severity_descriptions else risk.severity),
+                    method_description=severity_descriptions.get(values["severity"], "")),
                 severity=values["severity"],
                 severity_rationale=self._score_rationale(
                     "severity", risk.severity, severity_trace, score_states["severity"],
@@ -920,7 +949,9 @@ class HARAReportProjectionService:
                     score_states["asil"],
                 ),
                 ftti="待确定",
-                ftti_rationale=self.text.ftti_rationale(),
+                ftti_rationale=self.text.ftti_rationale([
+                    timing_inputs[(e["risk"].malfunction_id, e["risk"].scenario_id)]
+                    for e in siblings]),
                 sg_id=risk.safety_goal_id,
                 safety_goal=goal_texts.get(risk.safety_goal_id, ""),
                 safe_state=next((goal.safe_state if goal.status.value == "FINALIZED" else "待确定" for goal in state.safety_goals if goal.sg_id == risk.safety_goal_id), "待确定"),
@@ -948,6 +979,22 @@ class HARAReportProjectionService:
             elif partial_rationales:
                 row = replace(row, **partial_rationales,
                     remark="无最高已知 ASIL；等级格仅显示全组共同值，不代表完整风险元组。" + row.remark)
+            if (values["severity"] == "待评定" and any(_value(e["risk"].severity) for e in siblings)
+                    and (len(siblings) > 1 or len(risk.branch_evaluations) > 1)):
+                row = replace(row, potential_harm="伤害类别按各成员 S 分档分别查阅方法依据；未完成成员仍待定。")
+            if asil_service and row.asil in asil_order:
+                known = {field: getattr(row, field) for field in ("severity", "exposure", "controllability")
+                         if getattr(row, field) != "待评定"}
+                if len(known) < 3:
+                    # Explain a stored partial result using the active matrix.
+                    # This read-only proof does not supply a missing grade.
+                    result, _ = asil_service.partial_zero_decision(known)
+                    if result == row.asil:
+                        missing = "/".join(label for field, label in (
+                            ("severity", "S"), ("exposure", "E"), ("controllability", "C")) if field not in known)
+                        row = replace(row, asil_rationale=(
+                            f"已有 {' / '.join(known.values())}；活动矩阵中其余维度的全部组合均对应 {result}。"
+                            f"{missing} 本身仍待评定，该矩阵结论不补齐缺失维度。"))
             if len(siblings) > 1 and highest_members:
                 # A deciding tuple does not erase other known member grades.
                 _, _, distribution = self._common_partial_grades(siblings, trace_provided=risk_trace is not None)
@@ -1047,6 +1094,12 @@ class HARAReportProjectionService:
             for entry in entries
         )
         scope = self._run_scope(state, trace_rows, complete_risk_chain_count)
+        scope["numeric_risk_chain_count"] = sum(
+            all(value != _UNCALCULATED for value in self._score_states(
+                entry["risk"], entry["trace"], trace_provided=risk_trace is not None).values())
+            for entry in entries)
+        scope["numeric_asil_count"] = score_counts["asil"][_CALCULATED] + score_counts["asil"][_TRIAL]
+        scope["asil_without_complete_sec_count"] = scope["numeric_asil_count"] - scope["numeric_risk_chain_count"]
         coverage_notes = (run_summary or {}).get("input_coverage_notes", [])
         if coverage_notes:
             if not isinstance(coverage_notes, list) or any(not isinstance(note, str) for note in coverage_notes):
@@ -1105,7 +1158,7 @@ class HARAReportProjectionService:
             exposure=("基于活动项目方法；E 聚合政策与未定源值参与性见风险轨迹，不等同通用标准规定"),
             controllability="基于 MethodContract 的可控性模型；TTC 证据保持可追溯",
             asil="当前 MethodContract 矩阵",
-            ftti="方法源已提供；运行时未启用",
+            ftti="已接入轨迹接触时间证据；正式 FTTI 的故障起点、危险判据及处置预算尚未形成活动方法",
         )
         offline_goals = any(event.get("event") == "offline_source_context_replay" for event in state.audit_trail)
         conditional_goal_ids = {risk.safety_goal_id for risk in state.risk_results
@@ -1117,7 +1170,8 @@ class HARAReportProjectionService:
                 "；".join(dict.fromkeys(str(malfunctions.get(risk.malfunction_id, {}).get("vehicle_level_hazard", ""))
                     for risk in state.risk_results if risk.safety_goal_id == goal.sg_id)),
                 original_text=state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("original_safety_goal", goal.text),
-                status="离线/条件性草稿" if offline_goals or goal.sg_id in conditional_goal_ids
+                status="离线模拟草稿" if offline_goals
+                    else "条件性草稿" if goal.sg_id in conditional_goal_ids
                     else "历史草稿" if any(event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail)
                     else ("待审核" if goal.status.value != "FINALIZED" else "已审核"))
             for goal in state.safety_goals
@@ -1125,12 +1179,15 @@ class HARAReportProjectionService:
         divergence_groups = sum(max(0, len(events) - 1) for events in base_events.values())
         speed_values = [item.speed_constraint for item in details if item.speed_constraint]
         projection_metrics = {
-            "safety_goal_scope_note": "最高 ASIL 仅覆盖本次已计算成员；未计算成员不包含在该最大值中。" + (" 本页为离线/条件性草稿，不与历史目标累计。" if offline_goals or conditional_goal_ids else ""),
+            "safety_goal_scope_note": "最高 ASIL 仅覆盖本次已计算成员；未计算成员不包含在该最大值中。"
+                + (" 本页使用离线模拟响应。" if offline_goals else "")
+                + (" 条件性数值仍待工程确认。" if conditional_goal_ids else ""),
             "safety_goal_stage_completed": any(event.get("event") == "safety_goals_aggregated"
                                                for event in state.audit_trail),
             "display_review_groups": len(rows),
             "safety_goal_text_mapping": [goal.to_dict() for goal in goals],
             "safety_goal_display_evidence": goal_presentations,
+            "ftti_timing_inputs": list(timing_inputs.values()),
             "partial_group_grade_distributions": partial_group_distributions,
             "collision_branch_rows": sum(len(risk.branch_evaluations) for risk in state.risk_results),
             "child_scenario_rows": len(details),
@@ -1177,7 +1234,8 @@ class HARAReportProjectionService:
                 for field in score_counts
             },
         }
-        children = self._generated_children(trace_rows, generated_scenarios or [])
+        children = self._generated_children(trace_rows, generated_scenarios or [], malfunctions)
+        projection_metrics["source_condition_dispositions"] = [child.to_dict() for child in children]
         disposition_counts: dict[str, Counter] = defaultdict(Counter)
         for child in children:
             disposition_counts[child.malfunction_id][child.causal_disposition] += 1

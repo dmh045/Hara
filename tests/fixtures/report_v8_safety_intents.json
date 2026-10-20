@@ -1,0 +1,180 @@
+{
+  "source_run_id": "full-hara-20261019-003",
+  "checkpoint_sha256": "c72cd3db177dd7d0991feabb27b3ed1de8f5e17add60c0006ed5f7890ab13031",
+  "goals": [
+    {
+      "sg_id": "SG-METHOD-5725DFEFFD",
+      "original": "防止驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态。",
+      "members": [
+        {
+          "scenario_id": "SCN-ANALYTICAL-205DBC71886C691E-PH-92bb8f85a6dd7457",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "AVP停车场自构图区域内泊车控车模式下，功能关闭失效导致车辆保持开启并以约7 km/h持续向前行驶，与前方静止车辆类障碍物发生前向碰撞的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-6047C712BA7F8331-PH-314a7044bc76ecd1",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "AVP停车场自构图区域内泊车控车模式下，功能关闭失效导致车辆保持开启并以约7 km/h持续向前行驶，与前方静止车辆类障碍物发生前向碰撞，且驾驶员在车外无法直接车内干预的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-EF161A4509B7A33A-PH-b98d748a7eec398c",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "在AVP可用的停车场自构图区域内泊车倒车时，因功能关闭失效车辆维持7 km/h倒车速度，与后方静止车辆发生追尾接触的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-EF161A4509B7A33A-PH-64473a0fd120c1a3",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "在AVP可用的停车场自构图区域内泊车倒车时，因功能关闭失效车辆维持7 km/h倒车速度，与后方静止车辆发生追尾接触的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-EF161A4509B7A33A-PH-dda3a6051e71fdd7",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "在AVP可用的停车场自构图区域内泊车倒车时，功能关闭失效导致车辆持续以7 km/h倒车，与后方静止车辆发生接触的危险状态"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-9C790A9F9D76CD4E-PH-2081d25935ed4196",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "在AVP可用的停车场自构图区域内泊车倒车时，功能关闭失效导致车辆持续以7 km/h倒车，与后方静止车辆发生接触的危险状态"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-9C790A9F9D76CD4E-PH-93f92e7b28082857",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "AVP停车场自构图区域内泊车倒车时，功能关闭失效导致车辆持续以7 km/h倒车，与后方1 m处静止车辆发生追尾接触的危险状态"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-9C790A9F9D76CD4E-PH-dc82abdff1c26bd9",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "AVP停车场自构图区域内泊车倒车时，功能关闭失效导致车辆持续以7 km/h倒车，与后方5 m处静止车辆发生追尾接触的危险状态"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-4CC376B645FCA7FE-PH-c52b2c96d10310ea",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "AVP停车场泊车控车模式下，关闭功能失效导致车辆保持开启并以7 km/h纵向向前运动，与前方静止车辆发生正面接触的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-0B779B9664138F2A-PH-d38727eb6a4e30d7",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "AVP停车场泊车控车模式下，关闭功能失效导致车辆保持开启并以7 km/h纵向向前运动，与前方静止车辆发生正面接触的危险状态；驾驶员在车外，无法直接车内接管。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-24366DF5326BA83D-PH-a4681285a7e9c234",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "停车场泊车控车模式下，功能关闭失效导致车辆保持开启并以约7km/h恒速向前行驶，与前方5m处静止车辆发生正面接触的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-9B38CE09AB2EAD84-PH-58f47337649fb7b8",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "停车场泊车控车模式下，功能关闭失效导致车辆保持开启并以约7km/h恒速向前行驶，与前方5m处静止车辆发生正面接触的危险状态；驾驶员位于车外。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-DDFF4A36AC701B22-PH-6cfcb60391429172",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "室内停车场泊车控车模式下，功能关闭失效导致车辆保持向前匀速行驶，与前方静止车辆类障碍物发生正面碰撞的危险状态"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-216E7AAB54122332-PH-d4e7b09d6e000e90",
+          "malfunction": "驾驶员触发功能开关后，关闭功能完全无响应，功能未进入关闭状态",
+          "vehicle_hazard": "本应关闭的车辆功能持续运行，可能干扰驾驶员预期的车辆操控逻辑",
+          "hazardous_event": "室内停车场泊车控车模式下，功能关闭失效导致车辆保持向前匀速行驶，与前方静止车辆类障碍物发生正面碰撞的危险状态"
+        }
+      ]
+    },
+    {
+      "sg_id": "SG-METHOD-77060B1CDE",
+      "original": "防止MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出。",
+      "members": [
+        {
+          "scenario_id": "SCN-ANALYTICAL-5CD173CFB79FC257-PH-b68c8d4694fcf626",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "AVP停车场低速向前行驶场景中，驱动扭矩延迟输出导致车辆加速响应滞后，车辆以较小纵向加速度持续接近前方静止车辆并发生正面接触的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-B6D4637D0E7A1276-PH-5c110a26c9296a04",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "AVP停车场低速向前行驶场景中，驱动扭矩延迟输出导致车辆加速响应滞后，车辆以较小纵向加速度持续接近前方静止车辆并发生正面接触的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-6B77CE1B821E6559-PH-80c9c1a6c8b978a0",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "AVP停车场泊车控车模式下，车辆因驱动扭矩延迟加速响应滞后，以约7kph速度与前方静止车辆发生正面接触。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-85CBC2CED934B74C-PH-5c82c1424e1e734c",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "AVP停车场泊车控车模式下，车辆因驱动扭矩延迟加速响应滞后，以约7kph速度与前方静止车辆发生正面接触。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-F0730656CDE01330-PH-4ff440a69ab08d65",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "AVP停车场自构图区域内低速纵向行驶时，因MDC扭矩控制信号输出延迟、VDC延迟执行扭矩输出导致车辆加速响应滞后，持续接近前方静止车辆并发生接触的危险事件"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-C2F353365802899E-PH-1ee45d79d02b07d1",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "AVP停车场自构图区域内低速纵向行驶时，因MDC扭矩控制信号输出延迟、VDC延迟执行扭矩输出导致车辆加速响应滞后，持续接近前方静止车辆并发生接触的危险事件"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-838BE633D206D8AB-PH-88a8a6da53257d8f",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "停车场低速纵向行驶场景中，因驱动扭矩延迟输出导致加速响应滞后，车辆以约7kph速度与前方静止车辆发生正面接触的危险状态。"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-18314A0BB5BB7010-PH-3a3dded81421ee0e",
+          "malfunction": "MDC晚于设计时机输出轮端扭矩控制信号，VDC延迟执行扭矩输出",
+          "vehicle_hazard": "车辆加速响应滞后，在超车、汇入车流等场景下无法及时达到预期车速",
+          "hazardous_event": "停车场低速纵向行驶场景中，因驱动扭矩延迟输出导致加速响应滞后，车辆以约7kph速度与前方静止车辆发生正面接触的危险状态。"
+        }
+      ]
+    },
+    {
+      "sg_id": "SG-METHOD-DBF8EE1CDE",
+      "original": "防止MDC输出的驻车制动请求状态卡死，EPB维持当前拉起/释放状态不更新。",
+      "members": [
+        {
+          "scenario_id": "SCN-ANALYTICAL-F77B773106E0E616-PH-c9463929513086dd",
+          "malfunction": "MDC输出的驻车制动请求状态卡死，EPB维持当前拉起/释放状态不更新",
+          "vehicle_hazard": "需解除驻车时无法释放导致车辆无法正常行驶，或需驻车时无法拉起导致溜车",
+          "hazardous_event": "室外停车场泊车控车阶段，车辆以约7km/h向前行驶时驻车制动请求卡死在释放状态无法驻车减速，与前方静止车辆发生正面接触"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-26BD340AC3F1CBC5-PH-8bbbdb26b6c49f71",
+          "malfunction": "MDC输出的驻车制动请求状态卡死，EPB维持当前拉起/释放状态不更新",
+          "vehicle_hazard": "需解除驻车时无法释放导致车辆无法正常行驶，或需驻车时无法拉起导致溜车",
+          "hazardous_event": "室外停车场泊车控车阶段，车辆以约7km/h向前行驶时驻车制动请求卡死在释放状态无法驻车减速，与前方静止车辆发生正面接触"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-2F7D8218236906C6-PH-1a45c1a654593201",
+          "malfunction": "MDC输出的驻车制动请求状态卡死，EPB维持当前拉起/释放状态不更新",
+          "vehicle_hazard": "需解除驻车时无法释放导致车辆无法正常行驶，或需驻车时无法拉起导致溜车",
+          "hazardous_event": "室内停车场泊车过程中，驻车制动请求卡死在释放状态导致EPB无法响应驻车需求，车辆以约7km/h向前行驶并与前方静止障碍物发生正面碰撞的危险事件"
+        },
+        {
+          "scenario_id": "SCN-ANALYTICAL-0E576C5C409DB157-PH-be65db795b324897",
+          "malfunction": "MDC输出的驻车制动请求状态卡死，EPB维持当前拉起/释放状态不更新",
+          "vehicle_hazard": "需解除驻车时无法释放导致车辆无法正常行驶，或需驻车时无法拉起导致溜车",
+          "hazardous_event": "室内停车场泊车过程中，驻车制动请求卡死在释放状态导致EPB无法响应驻车需求，车辆以约7km/h向前行驶并与前方静止障碍物发生正面碰撞的危险事件"
+        }
+      ]
+    }
+  ]
+}

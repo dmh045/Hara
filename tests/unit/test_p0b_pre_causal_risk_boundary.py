@@ -185,6 +185,15 @@ def test_potential_harm_is_resolved_from_method_severity_semantics():
     assert resolved.potential_harm
     assert resolved.status.value == "FINALIZED"
     assert resolved.rule_id
+    conditional = PotentialHarmResolver().resolve(
+        method=method,
+        severity_result={**scored["severity"], "engineering_status": "PENDING"},
+        scenario=scenario, registry=registry,
+    )
+    assert conditional.potential_harm == resolved.potential_harm
+    assert conditional.source_refs == resolved.source_refs
+    assert conditional.status.value == "PENDING_INPUT"
+    assert "Conditional Severity" in conditional.reason
 
 
 def test_causal_prompt_uses_bounded_view_and_excludes_downstream_method_metadata():

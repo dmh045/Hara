@@ -133,7 +133,7 @@ def test_complete_structured_execution_trace_is_observational():
         severity=SimpleNamespace(value=scored["severity"]["severity_score"]),
         exposure=SimpleNamespace(value=scored["exposure"]["exposure_score"]),
         controllability=SimpleNamespace(value=scored["controllability"]["controllability_score"]),
-        asil=SimpleNamespace(value="A", status=SimpleNamespace(value="FINALIZED"), sources=[]),
+        asil=SimpleNamespace(value="A", status=SimpleNamespace(value="FINALIZED"), sources=[], review_reason=""),
     )
     trace = RiskExecutionTraceService(method).project(
         run_id="trace", assessments=[_assessment()], candidates=[], committed=True,
@@ -375,7 +375,7 @@ def test_missing_causal_evidence_is_reported_pending_not_excluded():
     )
     assert scope["causal_excluded_count"] == 0
     assert scope["causal_pending_count"] == 1
-    children = HARAReportProjectionService._generated_children(trace["assessments"], [])
+    children = HARAReportProjectionService._generated_children(trace["assessments"], [], {})
     assert children[0].causal_disposition == "PENDING_CAUSAL"
 
 

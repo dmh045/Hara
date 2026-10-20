@@ -9,7 +9,7 @@ def aggregate_safety_goals(
     state: HARAState,
     catalog: SafetyGoalService,
 ) -> HARAState:
-    """Derive and aggregate non-QM safety intents through the active service."""
+    """Keep non-QM and unresolved safety intents visible without approving them."""
     malfunctions = {
         str(item.get("malfunction_id", "")): item for item in state.malfunctions
     }
@@ -21,7 +21,7 @@ def aggregate_safety_goals(
     scenarios = {item.scenario_id: item for item in state.scenarios}
 
     for risk in state.risk_results:
-        if risk.asil.value not in {"A", "B", "C", "D"}:
+        if risk.asil.value == "QM":
             continue
         malfunction = malfunctions.get(risk.malfunction_id)
         if malfunction is None:
@@ -40,7 +40,7 @@ def aggregate_safety_goals(
                 if risk.scenario_id in scenarios else ""
             ),
             hazard_event=risk.hazardous_event,
-            asil=str(risk.asil.value),
+            asil=str(risk.asil.value or ""),
         )
         sg_id = registration["sg_id"]
         risk.safety_goal_id = sg_id
@@ -53,7 +53,14 @@ def aggregate_safety_goals(
         ])
 
     goals = []
-    for sg_id, value in catalog.to_dict().items():
+    prior_catalog = state.item_definition.get("safety_goal_catalog", {})
+    current_catalog = catalog.to_dict()
+    for sg_id, value in current_catalog.items():
+        # Adding unresolved members must not replace the recorded original
+        # description with whichever new member happens to be encountered first.
+        original = prior_catalog.get(sg_id, {}).get("original_safety_goal")
+        if original:
+            value["original_safety_goal"] = original
         statuses = risk_status_by_goal[sg_id]
         finalized = catalog.is_approved and all(
             status in {ReviewStatus.FINALIZED, ReviewStatus.NOT_APPLICABLE}
@@ -78,7 +85,7 @@ def aggregate_safety_goals(
                 ),
             })
 
-    state.item_definition["safety_goal_catalog"] = catalog.to_dict()
+    state.item_definition["safety_goal_catalog"] = current_catalog
     state.safety_goals = goals
     state.stage = WorkflowStage.QUALITY_GATE
     state.record(
@@ -87,6 +94,7 @@ def aggregate_safety_goals(
             risk.asil.value in {"A", "B", "C", "D"}
             for risk in state.risk_results
         ),
+        unresolved_risk_count=sum(not risk.asil.value for risk in state.risk_results),
         safety_goal_count=len(goals),
     )
     return state

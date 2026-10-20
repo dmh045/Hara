@@ -110,6 +110,9 @@ class GeneratedChildView:
     causal_disposition: str
     risk_scoring_invoked: bool
     selected_atom_ids: str = ""
+    function_id: str = ""
+    source_conditions: str = ""
+    disposition_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}

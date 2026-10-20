@@ -332,10 +332,14 @@ class RiskExecutionTraceService:
         values = (risk.severity.value, risk.exposure.value, risk.controllability.value)
         valid = values[0] in {"S0", "S1", "S2", "S3"} and values[1] in {"E0", "E1", "E2", "E3", "E4"} and values[2] in {"C0", "C1", "C2", "C3"}
         return {
-            "executor": "MethodContractASILService", "status": "FINALIZED" if risk.asil.status.value == "FINALIZED" else "PENDING_UPSTREAM_RISK_VALUE",
+            "executor": "MethodContractASILService", "status": (
+                "FINALIZED" if risk.asil.status.value == "FINALIZED" else
+                "CALCULATED_PENDING_REVIEW" if risk.asil.value else "PENDING_UPSTREAM_RISK_VALUE"),
             "S": values[0], "E": values[1], "C": values[2], "matrix_key": "_".join(values) if valid else "",
             "matrix_rule": risk.asil.sources[0].location if risk.asil.sources else "", "result": risk.asil.value,
-            "pending_reason": "" if risk.asil.status.value == "FINALIZED" else "missing=" + ",".join(name for name, value, allowed in (("S", values[0], {"S0", "S1", "S2", "S3"}), ("E", values[1], {"E0", "E1", "E2", "E3", "E4"}), ("C", values[2], {"C0", "C1", "C2", "C3"})) if value not in allowed),
+            "pending_reason": "" if risk.asil.value else "missing=" + ",".join(name for name, value, allowed in (("S", values[0], {"S0", "S1", "S2", "S3"}), ("E", values[1], {"E0", "E1", "E2", "E3", "E4"}), ("C", values[2], {"C0", "C1", "C2", "C3"})) if value not in allowed),
+            "review_status": risk.asil.status.value,
+            "review_reason": risk.asil.review_reason,
         }
 
     def project(

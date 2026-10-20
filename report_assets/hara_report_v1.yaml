@@ -145,6 +145,8 @@ presentation:
       "Passenger of own and other vehicles": 本车及其他车辆乘员
       "Persons in a vehicle": 车内人员
     potential_harm_translations:
+      "No injuries": 无伤害
+      "Life-threatening (survival uncertain) or fatal injuries": 危及生命（生存可能性不确定）或致命伤害
       "Severe injuries, possibly life-threatening, survival probable": 严重伤害，可能危及生命，但生存可能性较高
       "Light and moderate injuries": 轻度和中度伤害
   main_hara:

@@ -125,7 +125,9 @@ class PotentialHarmResolver:
             and bool(refs)
         )
         return PotentialHarmResolution(
-            potential_harm=description if final else "",
+            # A calculated, conditional S still has the method's injury-class
+            # meaning.  Availability of that meaning is not engineering approval.
+            potential_harm=description,
             rule_id=rule_id,
             inputs_used=tuple(dict.fromkeys(inputs_used)),
             evidence_refs=tuple(dict.fromkeys(refs)),
@@ -134,6 +136,7 @@ class PotentialHarmResolver:
             reason=(
                 "Resolved canonical potential-harm semantics from the active Severity scale."
                 if final else
-                "Potential Harm requires finalized Severity, method semantics and source-linked inputs."
+                "Conditional Severity class description from the active method; "
+                "not a confirmed injury outcome or engineering approval."
             ),
         )

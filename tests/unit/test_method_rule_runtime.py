@@ -235,6 +235,13 @@ def test_synthetic_causal_hara_regression_preserves_scoring_goal_gate_and_draft(
     assert "ttc_s" in calculation["controllability_input"]["inputs_used"]
     assert calculation["ftti_input"]["asil"] == "B"
     assert calculation["ftti_input"]["status"] == "PENDING_METHOD_SEMANTICS"
+    assert calculation["ftti_input"]["contact_time_s"] == 2.0
+    assert calculation["ftti_input"]["hazard_time_limit_s"] is None
+    assert risk.potential_harm == next(level.description for level in method.severity.scale.levels
+                                       if level.level == risk.severity.value)
+    assert calculation["potential_harm"]["potential_harm"] == risk.potential_harm
+    assert calculation["potential_harm"]["status"] == "PENDING_INPUT"
+    assert calculation["potential_harm"]["source_refs"]
 
     aggregate_safety_goals(result, MethodSafetyGoalService(method))
     pass_quality_gate(result)

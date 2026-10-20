@@ -645,7 +645,7 @@ def score_structured_scenarios(
                 if risk_context is not None and risk_context_service is not None else {}
             ),
             "ftti_input": calculation_inputs.ftti(
-                malfunction_id, scenario_id, asil_value,
+                malfunction_id, scenario_id, asil_value, scenario, risk.branch_evaluations,
             ).to_dict(),
             "potential_harm": harm.to_dict() if harm is not None else {
                 "status": "PENDING_METHOD_SEMANTICS",
