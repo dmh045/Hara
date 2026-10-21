@@ -2,6 +2,7 @@
 from collections import Counter
 from copy import deepcopy
 
+import pytest
 from openpyxl import load_workbook
 
 from hara_agent.models import EvidenceValue, ReviewStatus, SafetyGoal
@@ -193,3 +194,105 @@ def test_harm_translation_preserves_qualifiers_without_inferring_missing_harm():
     assert '可能危及生命' in text and '生存可能性较高' in text
     assert mapper.potential_harm('unknown source phrase', severity=_pending()) == 'unknown source phrase'
     assert mapper.potential_harm('', severity=_pending()) == '待S评定完成后确定'
+
+
+@pytest.mark.parametrize('known,pending', [(4, 4), (4, 20), (8, 14)])
+def test_qm_with_unresolved_members_is_not_a_group_qm(active_method, known, pending):
+    state = mixed_pending_group()
+    source, assessment = state.scenarios[0], state.risk_results[0]
+    causal = state.item_definition['scenario_assessments'][0]
+    state.item_definition['scenario_assessments'] = []
+    state.scenarios, state.risk_results = [], []
+    for i in range(known + pending):
+        child, risk = deepcopy(source), deepcopy(assessment)
+        child.scenario_id = risk.scenario_id = f'SCN-{i}'
+        risk.assessment_id = f'RA-{i}'
+        if i < known:
+            risk.severity = EvidenceValue('S0', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+            risk.asil = EvidenceValue('QM', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+        state.scenarios.append(child)
+        state.risk_results.append(risk)
+        state.item_definition['scenario_assessments'].append({**deepcopy(causal), 'scenario_id': child.scenario_id})
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert len(view.rows) == 1
+    row = view.rows[0]
+    assert row.asil == '待评定'
+    assert f'QM×{known}' in row.remark and f'待评定×{pending}' in row.remark
+    assert '不能认定全组 QM' in row.asil_rationale
+    assert Counter(d.asil for d in view.scenario_details) == {'QM': known, '待评定': pending}
+    assert state == before
+
+
+@pytest.mark.parametrize('known_grade,pending', [('QM', False), ('A', True)])
+def test_group_qm_policy_keeps_known_matrix_results(active_method, known_grade, pending):
+    state = mixed_pending_group()
+    for i, risk in enumerate(state.risk_results):
+        if not pending or i == 0:
+            risk.asil = EvidenceValue(known_grade, ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert view.rows[0].asil == known_grade  # C missing alone does not invalidate known QM.
+    assert state == before
+
+
+def test_qm_group_keeps_unresolved_collision_branch_visible(active_method):
+    state = mixed_pending_group()
+    for risk in state.risk_results:
+        risk.asil = EvidenceValue('QM', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    state.risk_results[0].branch_evaluations = [
+        {'S': 'S0', 'E': 'E3', 'C': None, 'ASIL': 'QM'},
+        {'S': 'S1', 'E': 'E3', 'C': None, 'ASIL': None},
+    ]
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert view.rows[0].asil == '待评定'
+    assert '碰撞分支' in view.rows[0].asil_rationale
+    assert state == before
+
+
+@pytest.mark.parametrize('goal_ids', [('SG-A',), ('SG-A', 'SG-B')])
+def test_group_sg_links_include_nonrepresentatives_without_creating_qm_goals(active_method, tmp_path, goal_ids):
+    state = mixed_pending_group()
+    state.risk_results[0].asil = EvidenceValue('QM', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    state.safety_goals = []
+    for i, sg_id in enumerate(goal_ids, start=1):
+        risk = state.risk_results[i]
+        risk.safety_goal_id = sg_id
+        state.safety_goals.append(SafetyGoal(sg_id, f'原目标{i}', '待确定', '', [risk.scenario_id], ReviewStatus.PENDING))
+    # Repeated references identify one existing goal, never another goal.
+    state.risk_results[-1].safety_goal_id = goal_ids[0]
+    before = deepcopy(state)
+    schema = load_report_schema()
+    view = HARAReportProjectionService(schema).project(state, active_method)
+    row = view.rows[0]
+    assert row.sg_id.splitlines() == list(goal_ids)
+    for goal in view.safety_goals:
+        assert goal.safety_goal in row.safety_goal
+        if len(goal_ids) > 1:
+            assert f'{goal.sg_id}：' in row.safety_goal and f'{goal.sg_id}：' in row.safe_state
+    members = view.projection_metrics['grouping_map'][0]['member_ratings']
+    assert {m['scenario_id']: m['safety_goal_id'] for m in members} == {
+        risk.scenario_id: risk.safety_goal_id for risk in state.risk_results}
+    output = tmp_path / 'group_sg.xlsx'
+    HARAReportWorkbookRenderer().render(view, 'references/HARA_Template_AI_20260327.xlsx', output, schema)
+    workbook = load_workbook(output)
+    main_text = '\n'.join(str(cell.value) for cells in workbook['04_HARA'] for cell in cells if cell.value)
+    for sg_id in goal_ids:
+        assert sg_id in main_text
+    assert not state.risk_results[0].safety_goal_id
+    assert state == before
+
+
+def test_ftti_extrema_describe_discrete_contact_samples_only():
+    timings = [{'branch_timings': [
+        {'contact_time_s': 0.154286, 'contact_time_kind': 'ttc_s', 'time_origin': 'MODEL_INITIAL_STATE'},
+        {'contact_time_s': 3.0, 'contact_time_kind': 'ttc_s', 'time_origin': 'MODEL_INITIAL_STATE'},
+        {'contact_time_s': None},
+    ]}]
+    before = deepcopy(timings)
+    text = EngineeringReportTextMapper.ftti_rationale(timings)
+    assert '最小 0.15 s' in text and '最大 3 s' in text
+    assert '已计算样本' in text and '连续' in text and '不能作为 FTTI' in text
+    assert '[' not in text and '端点包含性' not in text
+    assert timings == before

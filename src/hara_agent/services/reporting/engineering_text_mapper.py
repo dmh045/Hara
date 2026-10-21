@@ -920,12 +920,13 @@ class EngineeringReportTextMapper:
         kinds = {item.get("contact_time_kind") for item in available}
         label = "侧向首次接触" if kinds == {"first_contact_time_s"} else "轨迹接触"
         values = [item["contact_time_s"] for item in available]
-        interval = (quantity_range(min(values), max(values), "s") if min(values) != max(values)
-                    else quantity(values[0], "s") + " s")
+        extent = (f"最小 {quantity(min(values), 's')} s、最大 {quantity(max(values), 's')} s"
+                  "（仅为已计算样本统计，不代表连续可达范围）" if min(values) != max(values)
+                  else quantity(values[0], "s") + " s")
         origin = ("从各模型初始状态计时" if all(
             item.get("time_origin") == "MODEL_INITIAL_STATE" for item in available)
             else "计时起点以各成员来源为准")
-        return (f"已有{label}时间 {interval}（{origin}）；"
+        return (f"已有{label}时间 {extent}（{origin}）；"
                 "尚未绑定故障起点及危险判据，不能作为 FTTI；安全处置及时间预算待确定。")
 
 

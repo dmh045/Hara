@@ -746,3 +746,46 @@ A 基线为 `022f799`，结合《v8结果与报告展示核查.md》《v8_逐行
 **已证明**：普通生产节点与现有真实结果的零Provider重导均使用本轮修复；报告数值/审批区分、三个SG反例、未决SG可见性及物理时间证据接线通过。**未证明**：全ODD/所有危险机制充分覆盖、侧向等缺口的方法有效性、正式FTTI/Safe State、再次真实全量的质量和耗时。本轮代码具备继续诊断的技术入口，但不构成完整工程验收；当前没有新付费/全量预算。
 
 最终验证：`pytest -q -ra` 为 **1044 passed、1 skipped（78.18s）**，唯一跳过为既有 `test_historical_scenario_guard.py` 的 opt-in 历史保护测试。`compileall -q src scripts`、`git diff --check`通过；活动manifest/模板的doctor为 `ready_for_draft=true`、`ready_for_release=false`，保留FTTI等既有未编译诊断，无新增发布批准。主表等级前后变化0；分支时间证据不会用父时间补回另一接触身份。实际FTTI方法、缺C方法及新真实验证仍未关闭。
+
+## 2026-10-21：混合 QM／未决审核组与 SG 关联定向收口
+
+### 实施起点与同一关闭清单
+
+A 为本地及 GitHub master `21f964e3019b8a8dfd99e2717af33e745ddf1437`。本轮只修改 `HARAReportProjectionService` 和 `EngineeringReportTextMapper.ftti_rationale`，保留代表成员选择、物理计算、因果、评分、来源和工程审批。普通 `analyze` 的 `HARAExcelRenderer.render` 与离线重导都调用同一投影服务。
+
+| 对应项 | 根因和必要变化 | 验证与边界 |
+|---|---|---|
+| R1 组级 ASIL | 最高已知成员为 QM 时，旧主表直接显示 QM，掩盖其余成员 ASIL 未决。复用已有成员／碰撞分支等级分布，仅将这种混合组的主表 ASIL 显示为“待评定”；备注保留 QM 和未决计数，依据明确不能认定全组 QM。 | 三个 v8 组全部命中；完整分支元组不变。全组 ASIL 已知 QM、仅 C 缺失时仍显示 QM；A 与未决混合时保留既有最高已知展示，不扩大本次策略。 |
+| R3 SG 关联 | 原主表 SG 只来自代表成员，代表恰为无 SG 的 QM 成员时，其余成员的既有 SG 被隐藏。现在按组内实际风险关联汇总、去重并换行展示不同 ID；多 SG 正文和 Safe State 分别标注各自 ID。现有 grouping_map 增加逐成员 SG ID，便于回查。 | 三个遗漏 SG 均恢复关联；QM 成员没有新增 SG。不同 SG 测试确认各自身份与文本保留，没有创建合并目标。 |
+| R5 时间说明 | 旧文案把不同已计算样本的最小／最大接触时间写成闭区间，并附“端点包含性”，容易被当作连续范围或 FTTI。 | 改为“最小…、最大…（仅为已计算样本统计，不代表连续可达范围）”。所有时间原值与来源不变，FTTI 格仍“待确定”，未启用任何 FTTI 公式或处置预算。 |
+
+### 三个审核组前后对照
+
+| 审核组 | 原成员 ASIL 分布（未改） | 主表 ASIL 修复前 | 主表 ASIL 修复后 | 恢复的实际 SG |
+|---|---|---|---|---|
+| HARA_040 | QM×4、待评定×4 | QM | 待评定 | SG-METHOD-F7092AAB59 |
+| HARA_042 | QM×4、待评定×20 | QM | 待评定 | SG-METHOD-F528E53984 |
+| HARA_046 | QM×8、待评定×14 | QM | 待评定 | SG-METHOD-7E00FF2B8A |
+
+| 既有 SG ID | 修复前主表关联 | 修复后主表关联 | 既有实际关联风险数 |
+|---|---|---|---|
+| SG-METHOD-F7092AAB59 | 无 | HARA_040 | 4 |
+| SG-METHOD-F528E53984 | 无 | HARA_042 | 20 |
+| SG-METHOD-7E00FF2B8A | 无 | HARA_046 | 14 |
+
+### 原 v8 checkpoint 重导及不变性
+
+- 输出：`output/v8_qm_sg_projection_20261021/HARA_V8_QM_SG_Revised_20261021.xlsx`；SHA-256：`bf30bc835d3f38b04a7391285e40a4baf6a69ae6c7f81e48b6a6dcd71bfff97e`。
+- 使用原 `full-hara-20261019-003` checkpoint。为与 `21f964e` 的上一版报告同条件比较，沿用上一轮已存在的生产 SG 聚合，复现相同的44个目标及493条未决关联；逐项断言与上一轮 `safety_goal_catalog.json`、`new_pending_goal_links.json` 一致。**本轮新增目标和风险→SG关联均为0**，原checkpoint中的29个SG身份、最高ASIL、审批保留。
+- 对投影前后整个内存状态和风险trace作指纹对比；1000条风险的原始S/E/C/ASIL、身份、来源、审批以及全部分支评级不变。场景明细、SG页、摘要、方法哈希不变。60个主表组、1000个明细成员、44个SG；无主表关联的SG由3降到0。
+- Excel重开逐单元格比较：仅 `04_HARA` 53个单元格变化，分别为41个FTTI说明、3个ASIL、3个ASIL依据、3个SG ID和3个SG正文。其他表的值／公式、所有单元格样式、工作表顺序及合并区域均未改动；原checkpoint、原v8 Excel和上一轮修订Excel的文件哈希保持。
+- `verification.json`、`field_comparison.json`、`cell_comparison.json`、`report_projection.json`保存复核结果和全部成员映射。`qa/`保存三个组及040前后只读截图，已目视检查。`rebuild_validation.py`仅位于此次输出目录，不新增生产脚本或报告器。
+- 实际新Provider请求 **0**、Token **0**；未启动全量，未修改任何历史账本或checkpoint。
+
+### 回归、冗余检查与提交
+
+定向回归 **95 passed**；全量 `pytest -q -ra` 为 **1053 passed、1 skipped（78.63s）**。唯一跳过仍是未启用 `HARA_RUN_HISTORICAL_GUARDS` 的既有历史保护测试，不作为真实Provider验证。`compileall -q src scripts`、`git diff --check`通过。活动manifest／模板doctor：草稿就绪、正式发布未就绪；`FTTI_METHOD_UNCOMPILED`及原有工程审批要求保留。
+
+交付前检查了投影、文本映射、正式／离线导出、ReportSchema、视图序列化、SG聚合及直接测试／技能引用：原代表成员选择仍负责S/E/C同分支依据，SG汇总在既有投影中完成，等级分布复用原实现；渲染器只写投影字符串，无额外评分、请求、缓存或预算副作用。FTTI输入服务仍只提供时间证据，未引入新的方法执行路径。旧checkpoint已实际读取并重导，新增SG映射仅为报告审计字段，不改变checkpoint契约。
+
+未发现能在本轮证明安全可删的重复生产职责，故不做C清理提交，也不删除既有显式模板路径或历史兼容入口。本轮B单独以 `fix:` 提交，可独立回滚；用户的阶段文档重命名、参考工作簿和个人配置均不纳入提交。此轮关闭上述报告投影问题，不代表补齐C方法、正式FTTI或全ODD工程验收，不新增真实验证或全量预算。
