@@ -164,7 +164,8 @@ class RiskCalculationInputService:
                     row["contact_time_s"] is not None for row in branch_timings) else
                 "No numerical trajectory contact time is available; "
             ) + (
-                "FTTI remains unresolved: the active MethodContract has no validated "
-                "fault-onset-to-hazard criterion or safe-state response budget."
+                "FTTI calculation is not implemented in the active MethodContract/runtime; "
+                "the stored timing is evidence only. Formula semantics and response-path "
+                "applicability must be resolved before execution, not filled with default user inputs."
             ),
         )

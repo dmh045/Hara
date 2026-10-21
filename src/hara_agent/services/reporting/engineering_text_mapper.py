@@ -880,6 +880,10 @@ class EngineeringReportTextMapper:
                 return "、".join(available) + f"；按适用干预条件评为 {evidence.value}。"
         if _status(evidence) == "FINALIZED":
             return "已按当前方法完成 C 评定。"
+        if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED"}:
+            reason = self.controllability_branch({"controllability": trace})
+            available = self.known_inputs(trace.get("known_physical_inputs", {}))
+            return reason + (f"；已有 {available}" if available else "") + "；C 暂未定。"
         diagnostic = trace.get("input_diagnostic", {})
         if isinstance(diagnostic, Mapping) and diagnostic.get("reason"):
             labels = {

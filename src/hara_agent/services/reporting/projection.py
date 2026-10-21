@@ -194,6 +194,7 @@ class HARAReportProjectionService:
         trace_rows: list[Mapping[str, Any]],
         generated_scenarios: list[Mapping[str, Any]],
         malfunctions: Mapping[str, Any],
+        causal_by_pair: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
     ) -> tuple[GeneratedChildView, ...]:
         candidates = {
             str(item.get("scenario_id", "")): item
@@ -226,6 +227,7 @@ class HARAReportProjectionService:
                     ("operating_scenario", "来源场所"), ("road_type", "来源道路/车位"),
                     ("source_slope_direction", "来源坡向"), ("source_slope_pct", "坡度百分比"))
                 if source.get(key) not in (None, ""))
+            causal = (causal_by_pair or {}).get((str(row.get("malfunction_id", "")), scenario_id), {})
             children.append(GeneratedChildView(
                 scenario_id=scenario_id,
                 parent_scenario_id=str(
@@ -239,7 +241,8 @@ class HARAReportProjectionService:
                 selected_atom_ids=cls._selected_atom_ids(candidate),
                 function_id=str(malfunctions.get(str(row.get("malfunction_id", "")), {}).get("function_id", "")),
                 source_conditions=source_text,
-                disposition_reason="; ".join(str(reason) for reason in eligibility.get("reason_codes", [])),
+                disposition_reason=str(causal.get("rationale") or "") or
+                    "; ".join(str(reason) for reason in eligibility.get("reason_codes", [])),
             ))
         return tuple(children)
 
@@ -1249,7 +1252,7 @@ class HARAReportProjectionService:
                 for field in score_counts
             },
         }
-        children = self._generated_children(trace_rows, generated_scenarios or [], malfunctions)
+        children = self._generated_children(trace_rows, generated_scenarios or [], malfunctions, causal_by_pair)
         projection_metrics["source_condition_dispositions"] = [child.to_dict() for child in children]
         disposition_counts: dict[str, Counter] = defaultdict(Counter)
         for child in children:
@@ -1282,11 +1285,15 @@ class HARAReportProjectionService:
                 statuses = Counter(member_states[entry["risk"].assessment_id][dimension] for entry in members)
                 distributions.append("评定性质：" + "、".join(f"{status}×{count}" for status, count in statuses.items()))
             pending_reasons = Counter(
-                entry["trace"].get("physical_input_production", {}).get("pending_reason") or
-                entry["trace"].get("controllability", {}).get("input_diagnostic", {}).get("reason", "")
-                for entry in members if entry["risk"].asil.status.value != "FINALIZED"
+                self._score_rationale(field, getattr(entry["risk"], field),
+                    self._display_trace(field, entry["trace"]), _UNCALCULATED)
+                for entry in members for field in ("severity", "exposure", "controllability", "asil")
+                if member_states[entry["risk"].assessment_id][field] == _UNCALCULATED
             )
-            coverage = [f"{len(members)} 个独立子结果；完整条件见场景明细"]
+            if not members:
+                distributions = ["未进入风险评分；因果判定及具体理由见生成子场景审计。"]
+            coverage = [f"{len(members)} 个风险结果；完整条件见场景明细" if members
+                        else "未保留风险；已判定条件和具体原因见生成子场景审计"]
             for label, field in (("对象", "road_user_type"), ("目标方位", "object_position"),
                                  ("自车方向", "ego_longitudinal_direction"), ("驾驶员", "driver_position")):
                 values = sorted({str(entry["scenario"].facts[field]) for entry in members if field in entry["scenario"].facts})

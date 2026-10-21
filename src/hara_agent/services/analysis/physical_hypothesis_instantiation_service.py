@@ -620,8 +620,14 @@ class PhysicalHypothesisInstantiationService:
             provenance["ego_speed_kph"] = {**provenance["ego_speed_kph"], "analysis_value_semantic": "PRE_FAULT_OPERATING_SPEED"}
         if "steering" in [control.lower() for control in h["failed_controls"]]:
             facts["steering_control_available"], provenance["steering_control_available"] = False, deepcopy(meta)
-        if "braking" in h["failed_controls"]:
+        if {"braking", "driver_braking"} & set(h["failed_controls"]):
             facts["emergency_braking_available"], provenance["emergency_braking_available"] = False, deepcopy(meta)
+        elif "driver_braking" in h["remaining_controls"]:
+            if (facts.get("emergency_braking_available") is False and source_is_accepted_for(
+                    provenance.get("emergency_braking_available", {}),
+                    malfunction_id=malfunction.malfunction_id, scenario_id=sid)):
+                raise PhysicalInputConflict("CONFLICT_WITH_SELECTED_CONDITION", "emergency_braking_available", False, True)
+            facts["emergency_braking_available"], provenance["emergency_braking_available"] = True, deepcopy(meta)
         info = {"version": PHYSICAL_PLAN_VERSION, "plan_key": plan_key, "hypothesis_id": hypothesis_id,
             "hypothesis": h, "sample_parameters": values, "sensitivity": sensitivity,
             "response_model": model_name, "calculation_nature": "CONDITIONAL", "engineering_approval": "NOT_GRANTED",

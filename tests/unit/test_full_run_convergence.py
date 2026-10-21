@@ -221,3 +221,67 @@ def test_scoped_source_absence_reuse_and_invalidation(change, tmp_path):
     assert audit['scoped_absence_reuse_count'] == (1 if change == 'none' else 0)
     assert audit['resolution_counts']['ABSENT_IN_EVIDENCE'] == 1
     assert audit['fact_resolutions'][0]['scenario_id'] == 'B'
+
+
+@pytest.mark.parametrize('remaining,normal_capability,expected', [
+    (['driver_braking'], None, 'C3'), ([], None, ''), ([], True, ''),
+])
+def test_brake_command_failure_has_explicit_independent_driver_path(method, remaining, normal_capability, expected):
+    """Ordinary workflow produces the capability; no scoring fields are prefilled."""
+    fault = replace(mf(), description='MDC制动减速度控制指令未按要求输出',
+                    functional_effect='自动泊车制动请求丢失')
+    raw = raw_plan(initial=7, acceleration=0)
+    hypothesis = raw['hypotheses'][0]
+    hypothesis.update(failed_controls=['automatic_braking_command'], remaining_controls=remaining,
+        rationale='自动制动指令失效；本条件性工况明确保留独立驾驶员制动通道' if remaining else
+                  '自动制动指令失效；未证明独立驾驶员制动通道仍可使用')
+    class Client:
+        def complete_json(self, request):
+            assert 'automatic_braking_command' in request.system_prompt
+            assert 'driver_braking' in request.system_prompt
+            return LLMResponse(deepcopy(raw), 'offline-scoped-control-counterexample')
+    state = HARAState('offline-control-scope', functions=[{'function_id': 'F'}])
+    parent = make_candidate(7)
+    if normal_capability is not None:
+        from test_p7_closure import source
+        parent.facts['emergency_braking_available'] = normal_capability
+        parent.fact_provenance['emergency_braking_available'] = source()
+    cases = construct_physical_scenarios(state, {'MF': [parent]}, [fault],
+        method=method, agent=PhysicalScenarioAgent(Client()), project_facts=None)
+    child = cases['MF'][0]
+    assert child.facts['physical_analysis']['hypothesis']['failed_controls'] == ['automatic_braking_command']
+    assert child.facts.get('emergency_braking_available') is (True if remaining else normal_capability)
+    if remaining:
+        assert child.fact_provenance['emergency_braking_available']['approval'] == 'PENDING'
+    result = score(method, child)
+    assert result['controllability']['controllability_score'] == expected
+    assert result['controllability']['engineering_status'] == 'PENDING'
+    assert all(row['C'] == expected for row in result['branch_evaluations'])
+    assert child.facts['ttc_s'] == pytest.approx(2 / (7 / 3.6), abs=1e-6)
+    if not expected:
+        assert result['controllability']['pending_reason'] == 'FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED'
+
+
+def test_failed_braking_actuator_cannot_claim_remaining_driver_braking():
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = raw_plan()
+    raw['hypotheses'][0].update(failed_controls=['braking'], remaining_controls=['driver_braking'])
+    with pytest.raises(ValueError, match='failed braking'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+
+
+def test_conditional_driver_braking_does_not_override_known_failed_capability(method):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    from test_p7_closure import source
+    raw = raw_plan()
+    raw['hypotheses'][0].update(failed_controls=['automatic_braking_command'], remaining_controls=['driver_braking'])
+    candidate = make_candidate()
+    candidate.facts['emergency_braking_available'] = False
+    candidate.fact_provenance['emergency_braking_available'] = source()
+    before = deepcopy(candidate)
+    children, errors = PhysicalHypothesisInstantiationService(method).instantiate(candidate, mf(),
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'}),
+        plan_key='offline-control-conflict', response_model='offline')
+    assert not children and errors[0]['reason'] == 'CONFLICT_WITH_SELECTED_CONDITION:emergency_braking_available'
+    assert candidate == before

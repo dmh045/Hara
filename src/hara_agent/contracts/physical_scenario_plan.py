@@ -35,7 +35,10 @@ MODEL_CATALOG = {
         "scope": "Steering-induced deviation while ego is moving longitudinally (speed > 0); stationary side object extended along the longitudinal swept path; lateral first contact, constant longitudinal speed. No longitudinal TTC or steering avoidance rule is inferred.",
     },
 }
-CONTROL_IDENTITIES = {"drive", "steering", "braking", "parking_hold", "speed_limiter", "remote_control"}
+# Legacy "braking" means the braking capability itself. Command-path failure
+# and an independently available driver path need separate identities.
+CONTROL_IDENTITIES = {"drive", "steering", "braking", "automatic_braking_command", "driver_braking",
+                      "parking_hold", "speed_limiter", "remote_control"}
 _GRADE_FRAME_LOCATION = (
     "grade_frame must be an object at hypotheses[].grade_frame, alongside geometry, "
     "parameters and condition_changes; not a parameter or condition_changes member. "
@@ -128,6 +131,8 @@ class PhysicalScenarioPlan:
                 raise ValueError("Control identities must be " + ", ".join(sorted(CONTROL_IDENTITIES)))
             if set(h["failed_controls"]) & set(h["remaining_controls"]):
                 raise ValueError("A failed control cannot be a remaining control")
+            if "braking" in h["failed_controls"] and "driver_braking" in h["remaining_controls"]:
+                raise ValueError("A failed braking capability cannot provide remaining driver braking")
             g = _object(h["geometry"], {"road_user_type", "collision_type", "object_position",
                 "ego_longitudinal_direction", "object_extent", "object_id"})
             for value in g.values():

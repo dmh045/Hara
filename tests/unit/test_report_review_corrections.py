@@ -296,3 +296,64 @@ def test_ftti_extrema_describe_discrete_contact_samples_only():
     assert '已计算样本' in text and '连续' in text and '不能作为 FTTI' in text
     assert '[' not in text and '端点包含性' not in text
     assert timings == before
+
+
+@pytest.mark.parametrize('decision,expected', [
+    ('MODEL_NOT_APPLICABLE', '当前方法无适用 C 规则'),
+    ('MODEL_DEPENDENCY_UNRESOLVED', 'C 方法依赖尚未成立'),
+])
+def test_control_method_gap_is_not_reported_as_missing_geometry(decision, expected):
+    trace = {'decision_status': decision, 'input_diagnostic': {'reason': 'MISSING_DISTANCE'},
+             'known_physical_inputs': {'ttc_s': 1.2345}}
+    before = deepcopy(trace)
+    text = EngineeringReportTextMapper().controllability_rationale(_pending(), trace)
+    assert expected in text and '缺相对距离' not in text
+    assert '1.23' in text and trace == before
+
+
+def test_conditional_numeric_results_are_not_missing_inputs_in_inventory(active_method):
+    state = mixed_pending_group()
+    for risk in state.risk_results:
+        for field, value in (('severity', 'S1'), ('exposure', 'E3'), ('controllability', 'C3'), ('asil', 'A')):
+            setattr(risk, field, EvidenceValue(value, ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL'))
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    inventory = view.malfunction_inventory[0]
+    assert inventory.pending_summary == ''
+    assert '条件性试算' in inventory.risk_distribution
+    assert state == before
+
+
+def test_inventory_uses_missing_dimension_method_reason(active_method):
+    state = mixed_pending_group()
+    trace = {'assessments': []}
+    for risk in state.risk_results:
+        row = dict(malfunction_id=risk.malfunction_id, scenario_id=risk.scenario_id, risk_scoring_invoked=True)
+        for field in ('severity', 'exposure', 'controllability', 'asil'):
+            evidence = getattr(risk, field)
+            row[field] = dict(result=evidence.value, status=evidence.status.value)
+        row['controllability'].update(decision_status='MODEL_NOT_APPLICABLE', input_diagnostic={'reason': 'TTC_AVAILABLE'})
+        trace['assessments'].append(row)
+    before = deepcopy((state, trace))
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace)
+    assert '当前方法无适用 C 规则' in view.malfunction_inventory[0].pending_summary
+    assert 'TTC_AVAILABLE' not in view.malfunction_inventory[0].pending_summary
+    assert (state, trace) == before
+
+
+def test_excluded_function_keeps_actual_causal_reason_without_missing_risk_claim(active_method):
+    state = mixed_pending_group()
+    risk = state.risk_results[0]
+    state.risk_results = []
+    rationale = '缺少证据表明该额外开启的功能会触发纵向加速。'
+    state.item_definition['scenario_assessments'][0]['rationale'] = rationale
+    trace = {'assessments': [dict(malfunction_id=risk.malfunction_id, scenario_id=risk.scenario_id,
+        risk_scoring_invoked=False, risk_eligibility={'status': 'INELIGIBLE_CAUSAL', 'reason_codes': ['CAUSAL_GAP']})]}
+    before = deepcopy((state, trace))
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace)
+    assert view.generated_children[0].disposition_reason == rationale
+    inventory = view.malfunction_inventory[0]
+    assert inventory.disposition == 'EXCLUDED_FROM_RISK' and inventory.excluded == 1
+    assert '未进入风险评分' in inventory.risk_distribution
+    assert '待评定' not in inventory.risk_distribution and 'Pending' not in inventory.risk_distribution
+    assert (state, trace) == before

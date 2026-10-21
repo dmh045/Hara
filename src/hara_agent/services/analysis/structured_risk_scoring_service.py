@@ -177,10 +177,16 @@ class StructuredRiskScoringService:
     def _score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
         result = self._calculate(scenario, hazard_event)
         control = result["controllability"]
+        hypothesis = scenario.get("physical_analysis", {}).get("hypothesis", {})
+        failed_controls = hypothesis.get("failed_controls", [])
+        braking_path_unresolved = scenario.get("emergency_braking_available") is False or (
+            "automatic_braking_command" in failed_controls and (
+                "driver_braking" not in hypothesis.get("remaining_controls", [])
+                or scenario.get("emergency_braking_available") is not True))
         override_match = control.get("decision_status") == "OVERRIDE_MATCH" and control.get("engineering_rule_id") in {
             rule.rule_id for rule in self.structured.controllability_overrides}
         if (override_match and scenario.get("physical_analysis")
-                and scenario.get("emergency_braking_available") is False
+                and braking_path_unresolved
                 and scenario.get("remote_intervention_available") is True):
             # A remote command does not restore a failed braking actuator.
             # Re-evaluate the existing override with that positive capability
@@ -198,12 +204,12 @@ class StructuredRiskScoringService:
         if scenario.get("physical_object_exposure_unresolved"):
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
-        if (scenario.get("physical_analysis") and scenario.get("emergency_braking_available") is False
+        if (scenario.get("physical_analysis") and braking_path_unresolved
                 and result["controllability"].get("selected_profile_id") and not override_match):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED",
                 decision_status="MODEL_DEPENDENCY_UNRESOLVED", engineering_rule_id="",
-                reasoning="The failed braking control cannot establish an available braking avoidance path.")
+                reasoning="The failed braking path cannot establish an independent available braking avoidance path.")
         return result
 
     def _calculate(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:

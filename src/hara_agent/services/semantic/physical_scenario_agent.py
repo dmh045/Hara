@@ -71,7 +71,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v8-mechanism-representative"
+    PROMPT_VERSION = "post-fault-physical-scenario-v9-braking-path-scope"
     ANALYSIS_STRATEGY = (
         "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
@@ -129,6 +129,11 @@ class PhysicalScenarioAgent:
             "对象描述必须与road_user_type一致：VEHICLE只表示车辆，不能同时泛指墙、立柱或任意障碍物。"
             "已有同一目标的collision_type、位置、距离必须保留，不能因为某枚举更常见就覆盖已选条件。"
             "正常速度约束仅约束初始速度；故障可加速、恒速或减速。区分失效控制与剩余控制，"
+            "自动制动指令异常用automatic_braking_command，不能直接等同整个braking能力失效；"
+            "驾驶员制动路径用driver_braking。结合Item的接口、接管条件和本次失效作用范围，"
+            "说明独立驾驶员制动路径是否仍可用；允许明确标识的条件性独立路径假设，"
+            "但正常状态下可踩制动退出AVP，并不证明故障后制动通道一定独立有效。"
+            "不能仅为得到C值声称remaining_controls；不支持的独立性留在未覆盖条件。"
             "不得依赖已失效的控制消除危险。坡道溜车初速为 0，使用来源坡度和假设残余阻力。"
             "侧向模型只支持沿纵向运动路径延伸的静止侧向目标，不能假装成纵向 TTC。"
             "所有支持模型当前只计算静止目标，移动目标列为未覆盖。"
