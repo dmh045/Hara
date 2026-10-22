@@ -45,6 +45,37 @@ def test_incomplete_group_does_not_display_first_member_noncommon_e(active_metho
     assert state == before
 
 
+def test_pending_asil_explains_same_branch_matrix_without_assigning_c(active_method):
+    state = mixed_pending_group()
+    risk = state.risk_results[0]
+    risk.severity = EvidenceValue('S3', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    risk.exposure = EvidenceValue('E3', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    detail = next(d for d in view.scenario_details if d.scenario_id == risk.scenario_id)
+    assert detail.asil == detail.controllability == '待评定'
+    assert 'S3/E3' in detail.pending_reasons and 'C3→C' in detail.pending_reasons
+    assert '未选择C' in detail.pending_reasons
+    assert '14条风险明细组织为1个审核组' in view.projection_metrics['grouping_explanation']
+    assert state == before
+
+
+def test_existing_safe_state_draft_survives_projection_and_reaggregation(active_method):
+    from hara_agent.services.analysis import MethodSafetyGoalService
+    from hara_agent.workflow.nodes.safety_goals import aggregate_safety_goals
+    state = mixed_pending_group()
+    aggregate_safety_goals(state, MethodSafetyGoalService(active_method))
+    goal = state.safety_goals[0]
+    goal.safe_state = '车辆停止并保持静止'
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert view.safety_goals[0].safe_state == '候选：车辆停止并保持静止'
+    assert goal.status is ReviewStatus.PENDING and state == before
+    aggregate_safety_goals(state, MethodSafetyGoalService(active_method))
+    assert state.safety_goals[0].safe_state == goal.safe_state
+    assert state.safety_goals[0].status is ReviewStatus.PENDING
+
+
 def test_incomplete_group_shared_value_and_branch_difference(active_method):
     state = mixed_pending_group()
     for risk in state.risk_results:

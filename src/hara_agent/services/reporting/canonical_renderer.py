@@ -351,6 +351,7 @@ class HARAReportWorkbookRenderer:
             ("主表审核组数（04_HARA）", len(view_model.rows)),
             ("风险记录数", values["eligible_hazardous_event_count"]),
             ("场景明细成员数", len(view_model.scenario_details)),
+            ("主表与明细的对应方式", (view_model.projection_metrics or {}).get("grouping_explanation", "")),
             ("Method source", values["method_source"]),
             ("Method hash", values["method_hash"]), ("Report schema", values["report_schema"]),
             ("Report schema version", values["report_schema_version"]),
@@ -652,7 +653,7 @@ class HARAReportWorkbookRenderer:
         self._set_title(sheet, "A1:G1", "A1", "Hazards and Safety Goals", registry, "safety_goal_title")
         note = (view_model.projection_metrics or {}).get("safety_goal_scope_note", "最高 ASIL 仅覆盖已计算成员。")
         self._set_title(sheet, "A2:G2", "A2", note, registry, "safety_goal_data")
-        sheet.row_dimensions[2].height = 36
+        sheet.row_dimensions[2].height = 54
         headers = ("HZ-ID", "Hazard", "SG-ID", "Safety Goal", "Safety State", "最高已计算 ASIL", "结果性质")
         width_sources = (1, 6, 18, 19, 20, 17, 16)
         for column, header in enumerate(headers, start=1):

@@ -19,6 +19,7 @@ def aggregate_safety_goals(
     scenario_ids_by_goal: dict[str, list[str]] = {}
     risk_status_by_goal: dict[str, list[ReviewStatus]] = {}
     scenarios = {item.scenario_id: item for item in state.scenarios}
+    previous_goals = {goal.sg_id: goal for goal in state.safety_goals}
 
     for risk in state.risk_results:
         if risk.asil.value == "QM":
@@ -30,6 +31,18 @@ def aggregate_safety_goals(
         if function is None:
             raise ValueError(f"Safety Goal聚合缺少Function外键: {malfunction.get('function_id')!r}")
         function_name = str(function.get("name", ""))
+        scenario = scenarios.get(risk.scenario_id)
+        analysis = scenario.facts.get("physical_analysis", {}) if scenario else {}
+        proposal = analysis.get("hypothesis", {}).get("safe_state_proposal")
+        if proposal:
+            # A driver-only proposal does not apply to an outside-driver child.
+            # The proposal remains in the saved plan for audit, not a new fact.
+            if ("driver_braking" in proposal["required_controls"]
+                    and scenario.facts.get("driver_in_vehicle") is not True):
+                proposal = None
+            else:
+                proposal = {**proposal, "plan_key": analysis["plan_key"],
+                            "hypothesis_id": analysis["hypothesis_id"]}
         registration = catalog.register_intent(
             function_name=function_name,
             malfunction=str(malfunction.get("description", "")),
@@ -41,6 +54,7 @@ def aggregate_safety_goals(
             ),
             hazard_event=risk.hazardous_event,
             asil=str(risk.asil.value or ""),
+            safe_state_proposal=proposal,
         )
         sg_id = registration["sg_id"]
         risk.safety_goal_id = sg_id
@@ -61,8 +75,16 @@ def aggregate_safety_goals(
         original = prior_catalog.get(sg_id, {}).get("original_safety_goal")
         if original:
             value["original_safety_goal"] = original
+        previous = previous_goals.get(sg_id)
+        if previous and previous.safe_state not in {"", "待确定", "待评定", "Pending"}:
+            # Re-aggregation must not erase an existing engineering proposal.
+            # Preserve its recorded scope instead of applying it to new members.
+            value["prior_safe_state"] = {"description": previous.safe_state,
+                "scenario_ids": previous.associated_scenario_ids, "status": previous.status.value}
+            if not value.get("safe_state_candidates"):
+                value["safety_state"] = previous.safe_state
         statuses = risk_status_by_goal[sg_id]
-        finalized = catalog.is_approved and all(
+        finalized = catalog.is_approved and not value.get("safe_state_candidates") and all(
             status in {ReviewStatus.FINALIZED, ReviewStatus.NOT_APPLICABLE}
             for status in statuses
         )

@@ -170,6 +170,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                         "relative_distance_m", "steering_control_available", "emergency_braking_available"}],
                 "method_identity": {k: method.metadata.get(k) for k in ("method_source_hash", "project_analysis_policy")},
                 "method_version": [method.contract_version, method.compiler_version],
+                "intervention_inputs": sorted({condition.field for rule in method.structured_risk_method.controllability_overrides
+                                               for condition in (*rule.all_of, *rule.any_of)}),
                 "risk_vocabulary": {"road_user_type": dict(method.structured_risk_method.severity.road_user_groups),
                                     "collision_type": dict(method.structured_risk_method.severity.collision_types)},
                 "analysis_strategy": PhysicalScenarioAgent.ANALYSIS_STRATEGY,

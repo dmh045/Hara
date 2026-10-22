@@ -582,6 +582,47 @@ class HARAReportProjectionService:
             rationales[field + "_rationale"] = basis + "\n" + reason
         return values, rationales, distributions
 
+    def _missing_asil_explanation(self, risk: Any, trace: Mapping, method: Any, *, detail: bool = True) -> str:
+        """Explain incomplete tuples using the active matrix, without assigning C."""
+        if _value(risk.asil):
+            return ""
+        missing = [label for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"))
+                   if not _value(getattr(risk, field))]
+        reasons = [self._score_rationale(field, getattr(risk, field),
+                   trace.get(field, {}) if detail else {**trace.get(field, {}), "known_physical_inputs": {}}, _UNCALCULATED)
+                   for field in ("severity", "exposure", "controllability") if not _value(getattr(risk, field))]
+        text = "ASIL未决：" + ("/".join(missing) + "尚无等级。" if missing else "分支结果尚未闭合。")
+        text += "；".join(dict.fromkeys(reasons))
+        if not detail:
+            return text
+        tuples = risk.branch_evaluations or [{"S": _value(risk.severity), "E": _value(risk.exposure),
+                                               "C": _value(risk.controllability), "ASIL": ""}]
+        relations = []
+        for branch in tuples:
+            if branch.get("ASIL") or not branch.get("S") or not branch.get("E") or branch.get("C"):
+                continue
+            matches = [m for m in getattr(getattr(method, "asil", None), "mappings", ())
+                       if m.severity == branch["S"] and m.exposure == branch["E"]]
+            if matches:
+                relations.append(f"{branch['S']}/{branch['E']}：" + "、".join(
+                    f"{m.controllability}→{m.result}" for m in matches))
+        if relations:
+            text += " 活动矩阵条件关系：" + "；".join(dict.fromkeys(relations)) + "。未选择C，不作为已评定ASIL。"
+        return text
+
+    @staticmethod
+    def _safe_state_display(goal: Any, catalog: Mapping) -> str:
+        candidates = catalog.get("safe_state_candidates", [])
+        if candidates:
+            variants = defaultdict(list)
+            for candidate in candidates:
+                key = candidate["description"] + "；适用条件：" + "、".join(candidate["conditions"])
+                variants[key].append(candidate["scenario_id"])
+            return "\n".join(f"候选：{text}（覆盖{len(set(ids))}个成员）" for text, ids in variants.items())
+        if goal.safe_state not in {"", "待确定", "待评定", "Pending"}:
+            return goal.safe_state if goal.status.value == "FINALIZED" else "候选：" + goal.safe_state
+        return "未生成安全状态候选；当前保存结果没有可用方案"
+
     @staticmethod
     def _selected_atom_ids(scenario: Any) -> str:
         facts = scenario.get("facts", {}) if isinstance(scenario, Mapping) else getattr(scenario, "facts", {})
@@ -861,7 +902,8 @@ class HARAReportProjectionService:
             for risk in state.risk_results if risk.safety_goal_id == goal.sg_id
         ], goal.text) for goal in state.safety_goals}
         goal_texts = {sg_id: result["text"] for sg_id, result in goal_presentations.items()}
-        goal_safe_states = {goal.sg_id: goal.safe_state if goal.status.value == "FINALIZED" else "待确定"
+        goal_safe_states = {goal.sg_id: self._safe_state_display(goal,
+                            state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}))
                             for goal in state.safety_goals}
         severity_descriptions = ({level.level: level.description for level in method.severity.scale.levels}
                                  if hasattr(method, "severity") else {})
@@ -1018,6 +1060,12 @@ class HARAReportProjectionService:
                 row = replace(row, remark=row.remark + "；成员等级分布：" + "；".join(
                     f"{label}: " + "、".join(f"{grade}×{count}" for grade, count in distribution[field]["members"].items())
                     for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL"))))
+            if row.asil == "待评定":
+                explanations = Counter(self._missing_asil_explanation(e["risk"], e["trace"], method, detail=False)
+                                       for e in siblings if not _value(e["risk"].asil))
+                if explanations:
+                    row = replace(row, asil_rationale=row.asil_rationale + "\n" + "\n".join(
+                        f"{count}个成员：{reason}" for reason, count in explanations.items()))
             rows.append(row)
             group_source_counts[str(representative["base_key"][0])] += 1
 
@@ -1059,7 +1107,7 @@ class HARAReportProjectionService:
                     analysis_basis=self.text.analysis_basis(child) + "\n" + boundary_notes(child.facts, method),
                     review_group_id=review_group_id,
                     **child_values,
-                    pending_reasons="；".join(self._score_rationale(field, getattr(child_risk, field),
+                    pending_reasons=self._missing_asil_explanation(child_risk, child_trace, method) or "；".join(self._score_rationale(field, getattr(child_risk, field),
                         child_trace.get(field, {}), _UNCALCULATED)
                         for field in ("severity", "exposure", "controllability", "asil")
                         if not _value(getattr(child_risk, field))),
@@ -1182,7 +1230,7 @@ class HARAReportProjectionService:
             if risk.asil.value and risk.asil.status.value != "FINALIZED"}
         goals = tuple(
             SafetyGoalView(goal.sg_id, goal_texts[goal.sg_id],
-                goal.safe_state if goal.status.value == "FINALIZED" else "待确定",
+                goal_safe_states[goal.sg_id],
                 goal.max_asil or "待评定",
                 "；".join(dict.fromkeys(str(malfunctions.get(risk.malfunction_id, {}).get("vehicle_level_hazard", ""))
                     for risk in state.risk_results if risk.safety_goal_id == goal.sg_id)),
@@ -1197,13 +1245,22 @@ class HARAReportProjectionService:
         speed_values = [item.speed_constraint for item in details if item.speed_constraint]
         projection_metrics = {
             "safety_goal_scope_note": "最高 ASIL 仅覆盖本次已计算成员；未计算成员不包含在该最大值中。"
+                + " Safety State为期望达到的车辆安全状态；候选及适用条件另行审核，未生成不等于没有安全状态。"
                 + (" 本页使用离线模拟响应。" if offline_goals else "")
                 + (" 条件性数值仍待工程确认。" if conditional_goal_ids else ""),
             "safety_goal_stage_completed": any(event.get("event") == "safety_goals_aggregated"
                                                for event in state.audit_trail),
             "display_review_groups": len(rows),
+            "grouping_explanation": (
+                f"{len(details)}条风险明细组织为{len(rows)}个审核组。按同一失效、物理机制、对象类别及伤害描述分组；"
+                "每条明细保留原身份、条件和分支评级，按HARA-ID查回主表。分组便于审核，不证明风险等价或ODD覆盖完整。"),
             "safety_goal_text_mapping": [goal.to_dict() for goal in goals],
             "safety_goal_display_evidence": goal_presentations,
+            "safe_state_evidence": {goal.sg_id: {
+                "recorded_text": goal.safe_state, "goal_status": goal.status.value,
+                "candidates": state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_candidates", []),
+                "prior": state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("prior_safe_state"),
+            } for goal in state.safety_goals},
             "ftti_timing_inputs": list(timing_inputs.values()),
             "partial_group_grade_distributions": partial_group_distributions,
             "collision_branch_rows": sum(len(risk.branch_evaluations) for risk in state.risk_results),

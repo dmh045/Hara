@@ -58,7 +58,12 @@ def test_projection_separates_harm_and_exposes_human_pending_reasons():
     assert "S 暂不评定" in row.severity_rationale
     assert row.exposure_rationale == "暴露度场景维度覆盖规则未定义，E 暂不评定。"
     assert row.controllability_rationale == "未知分支策略未定义，C 暂不评定。"
-    assert row.asil_rationale == "S/E/C 未全部确定，ASIL 暂不评定。"
+    assert row.asil_rationale == (
+        "S/E/C 未全部确定，ASIL 暂不评定。\n"
+        "1个成员：ASIL未决：S/E/C尚无等级。"
+        "缺少该危险事件可用于评定的碰撞相对速度，S 暂不评定。；"
+        "暴露度场景维度覆盖规则未定义，E 暂不评定。；未知分支策略未定义，C 暂不评定。"
+    )
     assert row.ftti == "待确定"
     assert "缺少可用的接触时间" in row.ftti_rationale
     assert "故障起点、危险判据及安全处置时间预算" in row.ftti_rationale

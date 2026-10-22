@@ -555,11 +555,13 @@ class PhysicalHypothesisInstantiationService:
             raise ValueError("SPEED_CAP_REQUIRES_EXPLICIT_REMAINING_LIMITER")
         supplied = {**g, **values, "object_speed_kph": 0, "object_longitudinal_direction": "STATIONARY",
                     "fault_motion_model": h["model"], **grade_mapping}
+        supplied.update({field: proposal["value"]
+                         for field, proposal in h.get("intervention_assumptions", {}).items()})
         # Source facts stay intact. A different analytical initial point may
         # replace a method representative within its range, never a measurement.
         for field, value in supplied.items():
             old = parent.fact_provenance.get(field, {})
-            if field == "ego_speed_kph" and new_initial or new_target and field in {"object_id", "object_position", "road_user_type", "collision_type", "object_speed_kph", "object_longitudinal_direction", "relative_distance_m", "lateral_clearance_m"}:
+            if field == "ego_speed_kph" and new_initial or new_target and field in {"object_id", "object_position", "road_user_type", "collision_type", "object_speed_kph", "object_longitudinal_direction", "relative_distance_m", "lateral_clearance_m", "other_road_user_avoidance_possible"}:
                 continue
             if field in PARAMETER_UNITS and field != "ego_speed_kph" and not self._inheritance_reason(parent, h, field, malfunction.malfunction_id)[0]:
                 continue
@@ -579,6 +581,11 @@ class PhysicalHypothesisInstantiationService:
             return sid if value == parent.scenario_id else value
 
         facts, provenance = rescope(deepcopy(parent.facts)), rescope(deepcopy(parent.fact_provenance))
+        if new_target:
+            # An independent target has its own ability to evade. Preserve the
+            # parent evidence, but do not use it as this target's C input.
+            facts.pop("other_road_user_avoidance_possible", None)
+            provenance.pop("other_road_user_avoidance_possible", None)
         stale = {"collision_branches", "relative_speed_kph", "closing_speed_kph", "ttc_s", "impact_speed_kph",
                  "ego_impact_speed_kph", "object_impact_speed_kph", "motion_model_outcome", "delta_v_kph",
                  "impact_time_id", "trajectory_id", "first_contact_time_s", "fault_motion_model",
@@ -616,6 +623,11 @@ class PhysicalHypothesisInstantiationService:
                 facts[field] = value  # Canonical spelling; preserve the original authority and parent record.
                 continue
             facts[field], provenance[field] = value, deepcopy(meta)
+            if field in h.get("intervention_assumptions", {}):
+                assumption = h["intervention_assumptions"][field]
+                provenance[field]["basis_refs"] = list(assumption["basis_refs"])
+                provenance[field]["conditions"] = list(assumption["conditions"])
+                provenance[field]["source_refs"][0]["excerpt"] = assumption["rationale"]
         if "ego_speed_kph" in values:
             provenance["ego_speed_kph"] = {**provenance["ego_speed_kph"], "analysis_value_semantic": "PRE_FAULT_OPERATING_SPEED"}
         if "steering" in [control.lower() for control in h["failed_controls"]]:

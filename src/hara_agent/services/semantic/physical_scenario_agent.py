@@ -71,7 +71,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v9-braking-path-scope"
+    PROMPT_VERSION = "post-fault-physical-scenario-v10-intervention-safe-state"
     ANALYSIS_STRATEGY = (
         "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
@@ -134,6 +134,17 @@ class PhysicalScenarioAgent:
             "说明独立驾驶员制动路径是否仍可用；允许明确标识的条件性独立路径假设，"
             "但正常状态下可踩制动退出AVP，并不证明故障后制动通道一定独立有效。"
             "不能仅为得到C值声称remaining_controls；不支持的独立性留在未覆盖条件。"
+            "同时检查远程干预和目标参与者能否规避。已有事实足够时沿用；有合理条件性依据时，"
+            "用可选intervention_assumptions明确给出remote_intervention_available和/或"
+            "other_road_user_avoidance_possible，每项为{value:布尔值,rationale:理由,basis_refs:引用ID数组,"
+            "conditions:适用条件数组}。未知就省略，不把未提及解释为false；有App不等于故障后能远程制动，"
+            "目标静止不等于人员不能逃避。remote为true须有剩余remote_control路径及未失效的执行能力。"
+            "在本次方案中一并提出安全状态候选，使用可选safe_state_proposal："
+            "{description:简明目标状态,required_controls:依赖的剩余控制键数组,basis_refs:引用ID数组,"
+            "conditions:适用条件数组}。描述希望达到的车辆状态，不能仅复述控制指令；"
+            "依赖须是当前故障后仍可用的控制，不能凭空增加冗余、时间/距离指标或自动批准。"
+            "不同驾驶员位置的可达性须分别检查。无依据时省略并在未覆盖条件说明具体障碍。"
+            "安全状态候选只用于待审核方案，不证明到达时间，不输出FTTI，也不改变无干预轨迹和评级。"
             "不得依赖已失效的控制消除危险。坡道溜车初速为 0，使用来源坡度和假设残余阻力。"
             "侧向模型只支持沿纵向运动路径延伸的静止侧向目标，不能假装成纵向 TTC。"
             "所有支持模型当前只计算静止目标，移动目标列为未覆盖。"

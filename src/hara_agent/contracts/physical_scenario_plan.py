@@ -93,7 +93,7 @@ class PhysicalScenarioPlan:
         for h in hypotheses:
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame"})
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal"})
             if "condition_changes" in h:
                 if isinstance(h["condition_changes"], dict) and "grade_frame" in h["condition_changes"]:
                     raise ValueError(_GRADE_FRAME_LOCATION)
@@ -133,6 +133,33 @@ class PhysicalScenarioPlan:
                 raise ValueError("A failed control cannot be a remaining control")
             if "braking" in h["failed_controls"] and "driver_braking" in h["remaining_controls"]:
                 raise ValueError("A failed braking capability cannot provide remaining driver braking")
+            interventions = h.get("intervention_assumptions", {})
+            _object(interventions, set(), {"remote_intervention_available", "other_road_user_avoidance_possible"})
+            proposals = list(interventions.values())
+            if "safe_state_proposal" in h:
+                proposal = _object(h["safe_state_proposal"],
+                    {"description", "required_controls", "basis_refs", "conditions"})
+                _text(proposal["description"])
+                controls = _texts(proposal["required_controls"])
+                if not controls or not set(controls) <= set(h["remaining_controls"]):
+                    raise ValueError("Safe state proposal must depend on explicitly remaining controls")
+                proposals.append(proposal)
+            for proposal in proposals:
+                if not isinstance(proposal, dict):
+                    raise ValueError("Control proposal must be an object")
+                if "value" in proposal:
+                    _object(proposal, {"value", "rationale", "basis_refs", "conditions"})
+                    if type(proposal["value"]) is not bool:
+                        raise ValueError("Intervention assumption requires an explicit boolean")
+                    _text(proposal["rationale"])
+                elif proposal is not h.get("safe_state_proposal"):
+                    raise ValueError("Intervention assumption requires value and rationale")
+                refs = _texts(proposal["basis_refs"])
+                if not refs or not set(refs) <= evidence_ids or not _texts(proposal["conditions"]):
+                    raise ValueError("Control proposals require supplied evidence IDs and explicit conditions")
+            remote = interventions.get("remote_intervention_available", {})
+            if remote.get("value") is True and "remote_control" not in h["remaining_controls"]:
+                raise ValueError("Remote intervention requires an explicitly remaining remote control path")
             g = _object(h["geometry"], {"road_user_type", "collision_type", "object_position",
                 "ego_longitudinal_direction", "object_extent", "object_id"})
             for value in g.values():

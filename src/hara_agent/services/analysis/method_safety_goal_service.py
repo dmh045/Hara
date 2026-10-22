@@ -40,6 +40,7 @@ class MethodSafetyGoalService:
         scenario_description: str,
         hazard_event: str,
         asil: str,
+        safe_state_proposal: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         sg_id = self._intent_id(function_name, guideword, malfunction)
         original_safety_goal = (
@@ -58,6 +59,7 @@ class MethodSafetyGoalService:
             "max_asil": asil,
             "functions": [],
             "associations": [],
+            "safe_state_candidates": [],
             "method_contract_hash": self.method.metadata["template_hash"],
             "safety_goal_method_source": self.method.safety_goal_method.derivation_pattern,
             "safe_state_method_source": self.method.safe_state_method.derivation_pattern,
@@ -79,6 +81,14 @@ class MethodSafetyGoalService:
             "asil": asil,
         }
         entry["associations"].append(association)
+        if safe_state_proposal:
+            entry["derivation_status"] = "NEEDS_REVIEW"
+            entry["safe_state_candidates"].append({
+                **safe_state_proposal, "scenario_id": scenario_id,
+                "status": "PENDING", "nature": "ANALYSIS_HYPOTHESIS",
+            })
+            entry["safety_state"] = "\n".join(dict.fromkeys(
+                candidate["description"] for candidate in entry["safe_state_candidates"]))
         return {
             "sg_id": sg_id,
             "safety_goal": str(entry["safety_goal"]),
