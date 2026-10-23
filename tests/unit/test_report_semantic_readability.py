@@ -321,3 +321,22 @@ def test_display_uses_the_deciding_branch_physics_not_parent_max_s(active_method
     assert timing['contact_time_s'] is None
     assert {b['branch_id'] for b in timing['branch_timings']} == {low['branch_id'], high['branch_id']}
     assert state==before
+
+
+def test_partial_qm_branch_does_not_describe_missing_c_as_ttc_grade(active_method, real_sample):
+    state, _ = real_sample
+    risk = state.risk_results[0]
+    risk.severity = EvidenceValue('S0', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    risk.controllability = EvidenceValue(None, ReviewStatus.PENDING, review_reason='METHOD_GAP')
+    risk.asil = EvidenceValue('QM', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    branch = risk.branch_evaluations[0]
+    branch.update(S='S0', C=None, ASIL='QM', ttc_s=5.59)
+    branch['scores']['controllability'].update(controllability_score='',
+        decision_status='MODEL_DEPENDENCY_UNRESOLVED',
+        pending_reason='FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED')
+    before = deepcopy(state)
+    row = HARAReportProjectionService(load_report_schema()).project(state, active_method).rows[0]
+    assert row.controllability == '待评定' and row.asil == 'QM'
+    assert '分档为 待评定' not in row.controllability_rationale
+    assert 'C 方法依赖尚未成立' in row.controllability_rationale and 'C 暂未定' in row.controllability_rationale
+    assert state == before

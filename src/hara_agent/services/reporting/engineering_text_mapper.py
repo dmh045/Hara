@@ -866,13 +866,22 @@ class EngineeringReportTextMapper:
 
     def controllability_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
         if getattr(evidence, "value", None):
+            override = trace.get("override_inputs", trace.get("inputs", trace.get("physical_inputs", {})))
+            if trace.get("decision_status") == "OVERRIDE_MATCH" or trace.get("override", {}).get("matched") is True:
+                conditions = [yes if override[key] else no for key, yes, no in (
+                    ("driver_in_vehicle", "驾驶员在车内", "驾驶员不在车内"),
+                    ("remote_intervention_available", "可远程干预", "无远程干预"),
+                    ("other_road_user_avoidance_possible", "其他交通参与者可避让", "其他交通参与者不能避让"),
+                ) if isinstance(override.get(key), bool)]
+                return ("、".join(conditions) + "；" if conditions else "") + f"按已命中的优先干预规则评为 {evidence.value}，未使用 TTC 分档。"
             inputs = trace.get("physical_inputs", {})
             ttc = inputs.get("ttc_s", trace.get("derived_ttc", {}).get("ttc_s"))
             if isinstance(ttc, (int, float)):
                 unknown = ("；其他干预/避让信息未确定，按现有方法采用接触时间评定"
                     if trace.get("unknown_policy_action") == "SKIP_TO_TTC" else "")
+                if unknown and override.get("driver_in_vehicle") is False:
+                    unknown += "；驾驶员在车外，当前时间分档未证明实际可用的干预路径"
                 return f"预计 {quantity(ttc, 's')} s 后首次接触，按当前纵向可控性时间分档为 {evidence.value}{unknown}。"
-            override = trace.get("override_inputs", trace.get("inputs", {}))
             available = [label for key, label in (("driver_in_vehicle", "驾驶员在车内"),
                 ("remote_intervention_available", "可远程干预"), ("other_road_user_avoidance_possible", "其他交通参与者可避让"))
                 if override.get(key) is True]

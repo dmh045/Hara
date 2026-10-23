@@ -546,11 +546,12 @@ class HARAReportProjectionService:
             return None, []
         maximum = max(asil_order.index(values[-1]) for _, values, _ in candidates)
         highest = [(entry, values, branch) for entry, values, branch in candidates if asil_order.index(values[-1]) == maximum]
-        distinct = {values for _, values, _ in highest}
-        return (highest[0][1] if len(distinct) == 1 else ("待评定", "待评定", "待评定", asil_order[maximum])), highest
+        # A tie does not make already calculated dimensions unknown. Keep one
+        # actual branch tuple; the other tied tuples remain in scenario detail.
+        return highest[0][1], highest
 
     def _common_partial_grades(self, siblings: list[dict], *, trace_provided: bool) -> tuple:
-        """Display shared observations only; never aggregate an incomplete risk tuple."""
+        """Display each dimension's observed grades without inventing a group tuple."""
         values, rationales, distributions = {}, {}, {}
         for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL")):
             counts, branch_counts, bases = Counter(), Counter(), Counter()
@@ -561,16 +562,19 @@ class HARAReportProjectionService:
                     self._display_trace(field, entry["trace"]), states[field])] += 1
                 if entry["trace"].get("risk_scoring_invoked") is not False:
                     branch_counts.update(str(b.get(label) or "待评定") for b in entry["risk"].branch_evaluations)
-            common = next(iter(counts)) if len(counts) == 1 else "待评定"
-            if branch_counts and set(branch_counts) != {common}:
-                common = "待评定"
-            values[field] = common
+            observed = set(counts) | set(branch_counts)
+            known = sorted(observed - {"待评定"})
+            values[field] = " / ".join(known + (["待评定"] if "待评定" in observed else []))
             distributions[field] = {"members": dict(counts), "collision_branches": dict(branch_counts)}
             distribution = "、".join(f"{value}×{count}" for value, count in counts.most_common())
-            if common != "待评定":
-                reason = f"组内 {len(siblings)} 个成员的 {label} 共同值为 {common}；仅为该维度共同值，未形成完整风险结论。"
+            if len(observed) == 1 and known:
+                reason = f"组内 {len(siblings)} 个成员的 {label} 共同值为 {known[0]}；仅为该维度共同值，未形成完整风险结论。"
+            elif "待评定" not in observed:
+                reason = f"组内 {label} 分布：{distribution}；该维度均已有数值，等级随成员或碰撞分支条件不同；完整风险元组见场景明细。"
+            elif known:
+                reason = f"组内 {label} 分布：{distribution}；已计算等级保留，另有成员或碰撞分支尚无数值，具体缺口见场景明细。"
             else:
-                reason = f"组内 {label} 分布：{distribution}；不存在全组共同的已计算等级，逐成员结果及缺口见场景明细。"
+                reason = f"组内 {label} 分布：{distribution}；该维度尚无已计算等级，具体缺口见场景明细。"
             if branch_counts and set(branch_counts) != set(counts):
                 reason += "碰撞分支分布：" + "、".join(f"{value}×{count}" for value, count in branch_counts.most_common()) + "。"
             if len(bases) == 1:
@@ -921,6 +925,7 @@ class HARAReportProjectionService:
         for offset, siblings in enumerate(ordered_groups, start=1):
             siblings.sort(key=self._representative_rank)
             headline, highest_members = self._highest_known_tuple(siblings, asil_order)
+            tied_tuples = len({values for _, values, _ in highest_members}) > 1
             representative = highest_members[0][0] if highest_members else siblings[0]
             risk = representative["risk"]
             scenario = representative["scenario"]
@@ -1011,8 +1016,8 @@ class HARAReportProjectionService:
                 assessment_status=assessment_status,
                 clarification_ids=self._clarifications(risk),
                 remark=(f"审核展示分组，不代表风险等价；{len(siblings)} 个成员。" if is_review_group and len(siblings) > 1 else "")
-                  + (("最高已知 ASIL 的完整元组；" if headline and headline[0] != "待评定" else
-                      "并列最高 ASIL 有不同元组，见明细；") if highest_members and (len(siblings) > 1 or len(risk.branch_evaluations) > 1) else "")
+                  + (("并列最高 ASIL 有不同元组；主表显示其中一个实际分支的完整元组，其余见明细；" if tied_tuples else
+                      "最高已知 ASIL 的完整元组；") if highest_members and (len(siblings) > 1 or len(risk.branch_evaluations) > 1) else "")
                   + ("尚有未决成员，最高已知结果不是全组上界；" if pending_count and is_review_group else "")
                   + self._status_note(score_states)
                   + ("；条件差异：" + self.text.group_differences([e["scenario"] for e in siblings]) if len(siblings) > 1 else "")
@@ -1025,14 +1030,14 @@ class HARAReportProjectionService:
                 # An aggregate max-S rationale may describe a different branch.
                 # Point every headline dimension at the same selected branch.
                 row = replace(row, **{field + "_rationale":
-                    (self._score_rationale(field, replace(getattr(risk, field), value=values[field]),
+                    self._score_rationale(field, replace(getattr(risk, field), value=(
+                        None if values[field] == "待评定" else values[field])),
                         self._display_trace(field, trace, highest_members[0][2]), score_states[field])
-                     if headline[0] != "待评定" else "并列最高 ASIL 对应不同元组，各分支依据见场景明细。")
                     for field in ("severity", "exposure", "controllability", "asil")})
             elif partial_rationales:
                 row = replace(row, **partial_rationales,
-                    remark="无最高已知 ASIL；等级格仅显示全组共同值，不代表完整风险元组。" + row.remark)
-            if (values["severity"] == "待评定" and any(_value(e["risk"].severity) for e in siblings)
+                    remark="各维度独立展示已计算等级；斜线分隔不同成员或分支的等级，不表示一个组合元组。" + row.remark)
+            if ((values["severity"] == "待评定" or " / " in values["severity"]) and any(_value(e["risk"].severity) for e in siblings)
                     and (len(siblings) > 1 or len(risk.branch_evaluations) > 1)):
                 row = replace(row, potential_harm="伤害类别按各成员 S 分档分别查阅方法依据；未完成成员仍待定。")
             if asil_service and row.asil in asil_order:

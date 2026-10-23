@@ -38,7 +38,9 @@ def test_incomplete_group_does_not_display_first_member_noncommon_e(active_metho
     before = deepcopy(state)
     view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
     row = view.rows[0]
-    assert (row.severity, row.exposure, row.controllability, row.asil) == ('S1', '待评定', '待评定', '待评定')
+    assert (row.severity, row.exposure, row.controllability, row.asil) == ('S1', 'E2 / E3', '待评定', '待评定')
+    assert '该维度均已有数值' in row.exposure_rationale
+    assert '斜线分隔' in row.remark
     assert 'E3×12' in row.exposure_rationale and 'E2×2' in row.exposure_rationale
     assert len(view.scenario_details) == 14
     assert Counter(d.exposure for d in view.scenario_details) == {'E3': 12, 'E2': 2}
@@ -84,7 +86,7 @@ def test_incomplete_group_shared_value_and_branch_difference(active_method):
     assert project.project(state, active_method).rows[0].exposure == 'E3'
     state.risk_results[0].branch_evaluations = [{'S':'S1', 'E':'E2', 'C':None, 'ASIL':None}]
     view = project.project(state, active_method)
-    assert view.rows[0].exposure == '待评定'
+    assert view.rows[0].exposure == 'E2 / E3'
     assert '碰撞分支分布：E2×1' in view.rows[0].exposure_rationale
 
 
@@ -105,13 +107,109 @@ def test_incomplete_group_keeps_different_actual_exposure_bases(active_method):
         trace['assessments'].append(record)
     before = deepcopy((state, trace))
     row = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace).rows[0]
-    assert row.exposure == '待评定'
+    assert row.exposure == 'E2 / E3'
     assert '室外停车场=E3' in row.exposure_rationale
     assert '地下停车场=E2' in row.exposure_rationale
     assert '不同暴露等级组合取较低等级' in row.exposure_rationale
     assert '成员依据示例' in row.exposure_rationale
     assert 'E3×12' in row.exposure_rationale and 'E2×2' in row.exposure_rationale
     assert (state, trace) == before
+
+
+@pytest.mark.parametrize('dimension,grades', [
+    ('severity', ('S1', 'S2')), ('exposure', ('E2', 'E3')),
+    ('controllability', ('C1', 'C2')),
+])
+def test_group_dimension_distinguishes_mixed_values_from_missing(active_method, dimension, grades):
+    state = mixed_pending_group()
+    for i, risk in enumerate(state.risk_results):
+        setattr(risk, dimension, EvidenceValue(grades[i % 2], ReviewStatus.FINALIZED, rule_version='fixture'))
+    project = HARAReportProjectionService(load_report_schema())
+    before = deepcopy(state)
+    row = project.project(state, active_method).rows[0]
+    assert getattr(row, dimension) == ' / '.join(grades)
+    assert '均已有数值' in getattr(row, dimension + '_rationale')
+    assert row.asil == '待评定' and state == before
+    setattr(state.risk_results[0], dimension, _pending())
+    before = deepcopy(state)
+    view = project.project(state, active_method)
+    assert getattr(view.rows[0], dimension) == ' / '.join((*grades, '待评定'))
+    assert '另有成员或碰撞分支尚无数值' in getattr(view.rows[0], dimension + '_rationale')
+    assert sum(getattr(d, dimension) == '待评定' for d in view.scenario_details) == 1
+    assert state == before
+
+
+def test_group_unknown_collision_branch_does_not_hide_known_e(active_method):
+    state = mixed_pending_group()
+    state.risk_results[0].branch_evaluations = [{'S':'S1', 'E':None, 'C':None, 'ASIL':None}]
+    before = deepcopy(state)
+    row = HARAReportProjectionService(load_report_schema()).project(state, active_method).rows[0]
+    assert row.exposure == 'E2 / E3 / 待评定'
+    assert '碰撞分支分布：待评定×1' in row.exposure_rationale
+    assert state == before
+
+
+def test_tied_highest_asil_keeps_one_actual_tuple_and_all_other_tuples(active_method):
+    state = mixed_pending_group()
+    state.risk_results = state.risk_results[:2]
+    state.scenarios = state.scenarios[:2]
+    tuples = [('S1', 'E3', 'C3', 'A'), ('S2', 'E2', 'C3', 'A')]
+    for risk, values in zip(state.risk_results, tuples):
+        for field, value in zip(('severity', 'exposure', 'controllability', 'asil'), values):
+            setattr(risk, field, EvidenceValue(value, ReviewStatus.FINALIZED, rule_version='fixture'))
+        risk.branch_evaluations = [dict(zip(('S', 'E', 'C', 'ASIL'), values))]
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    row = view.rows[0]
+    assert (row.severity, row.exposure, row.controllability, row.asil) == tuples[0]
+    assert '并列最高 ASIL 有不同元组' in row.remark
+    assert {(d.severity, d.exposure, d.controllability, d.asil) for d in view.scenario_details} == set(tuples)
+    assert [m['branches'] for m in view.projection_metrics['grouping_map'][0]['member_ratings']] == [r.branch_evaluations for r in state.risk_results]
+    assert state == before
+
+
+@pytest.mark.parametrize('value,conditions', [
+    ('C1', {'remote_intervention_available': True}),
+    ('C3', {'driver_in_vehicle': False, 'remote_intervention_available': False,
+            'other_road_user_avoidance_possible': False}),
+])
+def test_c_rationale_uses_matched_override_even_when_ttc_exists(value, conditions):
+    evidence = EvidenceValue(value, ReviewStatus.FINALIZED, rule_version='fixture')
+    trace = {'decision_status':'OVERRIDE_MATCH', 'override_inputs':conditions,
+             'derived_ttc':{'ttc_s':6}}
+    before = deepcopy((evidence, trace))
+    text = EngineeringReportTextMapper().controllability_rationale(evidence,trace)
+    assert f'优先干预规则评为 {value}' in text
+    assert '未使用 TTC 分档' in text and '按当前纵向' not in text
+    assert (evidence, trace) == before
+
+
+def test_c_ttc_rationale_keeps_outside_driver_applicability_visible():
+    evidence = EvidenceValue('C0',ReviewStatus.PENDING,review_reason='CONDITIONAL_TRIAL')
+    trace = {'decision_status':'TTC_AFTER_UNKNOWN_OVERRIDE', 'unknown_policy_action':'SKIP_TO_TTC',
+             'override_inputs':{'driver_in_vehicle':False,'remote_intervention_available':None,
+                                'other_road_user_avoidance_possible':None},
+             'derived_ttc':{'ttc_s':5.9115}}
+    before = deepcopy((evidence,trace))
+    text = EngineeringReportTextMapper().controllability_rationale(evidence,trace)
+    assert 'C0' in text and '5.91' in text
+    assert '驾驶员在车外' in text and '未证明实际可用的干预路径' in text
+    assert '无远程干预' not in text
+    assert (evidence,trace) == before
+
+
+def test_c_rationale_uses_branch_driver_context_instead_of_parent():
+    parent = {'controllability':{'override_inputs':{'driver_in_vehicle':True}}}
+    branch = {'S':'S1','E':'E3','C':'C0','ASIL':'QM','ttc_s':5.9115,
+              'risk_context':{'driver_in_vehicle':{'status':'AVAILABLE','value':False}},
+              'scores':{'controllability':{'decision_status':'TTC_AFTER_UNKNOWN_OVERRIDE',
+                        'unknown_policy_action':'SKIP_TO_TTC'}}}
+    before = deepcopy((parent,branch))
+    displayed = HARAReportProjectionService._display_trace('controllability',parent,branch)
+    text = EngineeringReportTextMapper().controllability_rationale(
+        EvidenceValue('C0',ReviewStatus.PENDING,review_reason='CONDITIONAL_TRIAL'),displayed)
+    assert '驾驶员在车外' in text and '未证明实际可用的干预路径' in text
+    assert 'C0' in text and (parent,branch)==before
 
 
 def test_concrete_severity_gap_is_not_hidden_by_input_production_status():

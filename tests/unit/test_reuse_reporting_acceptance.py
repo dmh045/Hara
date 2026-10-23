@@ -191,7 +191,7 @@ def test_T18_highest_asil_uses_its_entire_tuple_and_handles_ties():
     assert values==('S2','E4','C3','C')
     a.branch_evaluations[0].update(ASIL='C')
     values,_=HARAReportProjectionService._highest_known_tuple(entries,['QM','A','B','C','D'])
-    assert values==('待评定','待评定','待评定','C')
+    assert values==('S3','E1','C1','C')
 
 
 def test_T15_exact_task_checkpoint_rebinds_renamed_ids_and_detects_conflict():
