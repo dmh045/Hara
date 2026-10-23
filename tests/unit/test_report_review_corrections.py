@@ -37,11 +37,12 @@ def test_incomplete_group_does_not_display_first_member_noncommon_e(active_metho
     state = mixed_pending_group()
     before = deepcopy(state)
     view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
-    row = view.rows[0]
-    assert (row.severity, row.exposure, row.controllability, row.asil) == ('S1', 'E2 / E3', '待评定', '待评定')
-    assert '该维度均已有数值' in row.exposure_rationale
-    assert '斜线分隔' in row.remark
-    assert 'E3×12' in row.exposure_rationale and 'E2×2' in row.exposure_rationale
+    assert len(view.rows) == 2
+    assert {(r.severity, r.exposure, r.controllability, r.asil) for r in view.rows} == {
+        ('S1', 'E2', '待评定', '待评定'), ('S1', 'E3', '待评定', '待评定')}
+    for row in view.rows:
+        assert {d.exposure for d in view.scenario_details if d.hara_id == row.hara_id} == {row.exposure}
+        assert '斜线分隔' not in row.remark
     assert len(view.scenario_details) == 14
     assert Counter(d.exposure for d in view.scenario_details) == {'E3': 12, 'E2': 2}
     assert state == before
@@ -51,16 +52,63 @@ def test_incomplete_group_does_not_display_first_member_noncommon_e(active_metho
     ('driver_in_vehicle', (True, False)),
     ('ego_longitudinal_direction', ('FORWARD', 'REVERSE')),
     ('object_position', ('FRONT', 'REAR')),
-    ('scenario_atom_ids', (['SO006', 'FB001'], ['SO010', 'FB003'])),
+    ('ego_heading_relative_to_downhill', ('UPHILL', 'DOWNHILL')),
+    ('object_motion_state', ('STATIONARY', 'MOVING')),
 ])
 def test_review_groups_preserve_distinct_conditions_even_when_ratings_are_equal(active_method, field, values):
     state = mixed_pending_group()
+    for risk in state.risk_results:
+        risk.exposure = EvidenceValue('E3', ReviewStatus.FINALIZED, rule_version='fixture')
     for i, child in enumerate(state.scenarios):
         child.facts[field] = values[i % 2]
     view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
     assert len(view.rows) == 2
     assert len(view.scenario_details) == 14
     assert {d.scenario_id for d in view.scenario_details} == {s.scenario_id for s in state.scenarios}
+
+
+def test_same_tuple_atom_and_parameter_variants_share_display_only(active_method):
+    state = mixed_pending_group()
+    for i, (scenario, risk) in enumerate(zip(state.scenarios, state.risk_results)):
+        risk.exposure = EvidenceValue('E3', ReviewStatus.FINALIZED, rule_version='fixture')
+        scenario.facts.update(scenario_atom_ids=['SO006' if i % 2 else 'SO010'],
+            relative_distance_m=1.001 + i / 10, object_id=f'local-object-{i}')
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert len(view.rows) == 1 and len(view.scenario_details) == 14
+    assert view.rows[0].exposure == 'E3' and view.rows[0].controllability == '待评定'
+    group = view.projection_metrics['grouping_map'][0]
+    assert len(group['scenario_ids']) == len(set(group['scenario_ids'])) == 14
+    assert all(key is None for key in group['risk_equivalence_keys'])
+    assert {r.selected_atom_ids for r in view.audit_references} == {'SO006', 'SO010'}
+    assert len({d.physical_inputs for d in view.scenario_details}) == 14
+    assert state == before
+
+
+def test_same_numeric_tuple_does_not_hide_different_review_states(active_method):
+    state = mixed_pending_group()
+    state.risk_results[0].severity = EvidenceValue('S1', ReviewStatus.PENDING, review_reason='CONDITIONAL_TRIAL')
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert len(view.rows) == 3
+    assert len([r for r in view.rows if r.exposure == 'E3']) == 2
+    assert sum('待审试算' in row.remark for row in view.rows) == 1
+    assert state == before
+
+
+def test_incomplete_branch_tuple_never_combines_known_dimensions(active_method):
+    state = mixed_pending_group()
+    state.scenarios = state.scenarios[:1]
+    state.risk_results = state.risk_results[:1]
+    state.risk_results[0].branch_evaluations = [
+        {'branch_id': 'first', 'S': 'S2', 'E': None, 'C': 'C2', 'ASIL': None},
+        {'branch_id': 'second', 'S': None, 'E': 'E3', 'C': 'C3', 'ASIL': None}]
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    row = view.rows[0]
+    assert (row.severity, row.exposure, row.controllability, row.asil) == ('S2', '待评定', 'C2', '待评定')
+    assert view.projection_metrics['grouping_map'][0]['member_ratings'][0]['branches'] == state.risk_results[0].branch_evaluations
+    assert state == before
 
 
 @pytest.mark.parametrize('input_key', ['override_inputs', 'physical_inputs'])
@@ -84,7 +132,7 @@ def test_pending_asil_explains_same_branch_matrix_without_assigning_c(active_met
     assert detail.asil == detail.controllability == '待评定'
     assert 'S3/E3' in detail.pending_reasons and 'C3→C' in detail.pending_reasons
     assert '未选择C' in detail.pending_reasons
-    assert '14条风险明细组织为1个审核组' in view.projection_metrics['grouping_explanation']
+    assert '14条风险明细组织为3个审核组' in view.projection_metrics['grouping_explanation']
     assert state == before
 
 
@@ -112,8 +160,9 @@ def test_incomplete_group_shared_value_and_branch_difference(active_method):
     assert project.project(state, active_method).rows[0].exposure == 'E3'
     state.risk_results[0].branch_evaluations = [{'S':'S1', 'E':'E2', 'C':None, 'ASIL':None}]
     view = project.project(state, active_method)
-    assert view.rows[0].exposure == 'E2 / E3'
-    assert '碰撞分支分布：E2×1' in view.rows[0].exposure_rationale
+    assert {r.exposure for r in view.rows} == {'E2', 'E3'}
+    assert view.scenario_details[0].exposure == 'E2'
+    assert state.risk_results[0].exposure.value == 'E3'  # Stored aggregate is untouched.
 
 
 def test_incomplete_group_keeps_different_actual_exposure_bases(active_method):
@@ -132,13 +181,12 @@ def test_incomplete_group_keeps_different_actual_exposure_bases(active_method):
             aggregation_rule='min_when_unequal')
         trace['assessments'].append(record)
     before = deepcopy((state, trace))
-    row = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace).rows[0]
-    assert row.exposure == 'E2 / E3'
-    assert '室外停车场=E3' in row.exposure_rationale
-    assert '地下停车场=E2' in row.exposure_rationale
-    assert '不同暴露等级组合取较低等级' in row.exposure_rationale
-    assert '成员依据示例' in row.exposure_rationale
-    assert 'E3×12' in row.exposure_rationale and 'E2×2' in row.exposure_rationale
+    rows = HARAReportProjectionService(load_report_schema()).project(state, active_method, risk_trace=trace).rows
+    assert len(rows) == 2
+    by_e = {r.exposure: r for r in rows}
+    assert '室外停车场=E3' in by_e['E3'].exposure_rationale
+    assert '地下停车场=E2' in by_e['E2'].exposure_rationale
+    assert all('不同暴露等级组合取较低等级' in r.exposure_rationale for r in rows)
     assert (state, trace) == before
 
 
@@ -152,15 +200,13 @@ def test_group_dimension_distinguishes_mixed_values_from_missing(active_method, 
         setattr(risk, dimension, EvidenceValue(grades[i % 2], ReviewStatus.FINALIZED, rule_version='fixture'))
     project = HARAReportProjectionService(load_report_schema())
     before = deepcopy(state)
-    row = project.project(state, active_method).rows[0]
-    assert getattr(row, dimension) == ' / '.join(grades)
-    assert '均已有数值' in getattr(row, dimension + '_rationale')
-    assert row.asil == '待评定' and state == before
+    rows = project.project(state, active_method).rows
+    assert {getattr(row, dimension) for row in rows} == set(grades)
+    assert all(row.asil == '待评定' for row in rows) and state == before
     setattr(state.risk_results[0], dimension, _pending())
     before = deepcopy(state)
     view = project.project(state, active_method)
-    assert getattr(view.rows[0], dimension) == ' / '.join((*grades, '待评定'))
-    assert '另有成员或碰撞分支尚无数值' in getattr(view.rows[0], dimension + '_rationale')
+    assert {getattr(row, dimension) for row in view.rows} == {*grades, '待评定'}
     assert sum(getattr(d, dimension) == '待评定' for d in view.scenario_details) == 1
     assert state == before
 
@@ -169,9 +215,9 @@ def test_group_unknown_collision_branch_does_not_hide_known_e(active_method):
     state = mixed_pending_group()
     state.risk_results[0].branch_evaluations = [{'S':'S1', 'E':None, 'C':None, 'ASIL':None}]
     before = deepcopy(state)
-    row = HARAReportProjectionService(load_report_schema()).project(state, active_method).rows[0]
-    assert row.exposure == 'E2 / E3 / 待评定'
-    assert '碰撞分支分布：待评定×1' in row.exposure_rationale
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert {row.exposure for row in view.rows} == {'E2', 'E3', '待评定'}
+    assert '分支评级尚未闭合' in view.rows[0].remark
     assert state == before
 
 
@@ -186,11 +232,10 @@ def test_tied_highest_asil_keeps_one_actual_tuple_and_all_other_tuples(active_me
         risk.branch_evaluations = [dict(zip(('S', 'E', 'C', 'ASIL'), values))]
     before = deepcopy(state)
     view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
-    row = view.rows[0]
-    assert (row.severity, row.exposure, row.controllability, row.asil) == tuples[0]
-    assert '并列最高 ASIL 有不同元组' in row.remark
+    assert len(view.rows) == 2
+    assert {(r.severity, r.exposure, r.controllability, r.asil) for r in view.rows} == set(tuples)
     assert {(d.severity, d.exposure, d.controllability, d.asil) for d in view.scenario_details} == set(tuples)
-    assert [m['branches'] for m in view.projection_metrics['grouping_map'][0]['member_ratings']] == [r.branch_evaluations for r in state.risk_results]
+    assert [m['branches'] for g in view.projection_metrics['grouping_map'] for m in g['member_ratings']] == [r.branch_evaluations for r in state.risk_results]
     assert state == before
 
 
@@ -296,7 +341,7 @@ def test_malfunction_distribution_keeps_numeric_pending_and_known_severity(activ
     assert '已知最大 S=S3' in inventory.risk_distribution
     assert 'S3×1' in inventory.risk_distribution and '待审试算×1' in inventory.risk_distribution
     assert 'E3×12' in inventory.risk_distribution
-    assert 'S3×1' in view.rows[0].severity_rationale
+    assert view.rows[0].severity == 'S3'
     assert state == before
 
 
@@ -307,7 +352,7 @@ def test_summary_separates_review_groups_and_retained_records(tmp_path, active_m
     HARAReportWorkbookRenderer().render(view, 'references/HARA_Template_AI_20260327.xlsx', output, schema)
     workbook = load_workbook(output)
     summary = {row[1].value: row[2].value for row in workbook['00_Summary'].iter_rows(min_row=5)}
-    assert summary['主表审核组数（04_HARA）'] == 1
+    assert summary['主表审核组数（04_HARA）'] == 2
     assert summary['风险记录数'] == summary['场景明细成员数'] == 14
     assert view.summary.eligible_hazardous_event_count == 14
 
@@ -370,11 +415,12 @@ def test_qm_with_unresolved_members_is_not_a_group_qm(active_method, known, pend
         state.item_definition['scenario_assessments'].append({**deepcopy(causal), 'scenario_id': child.scenario_id})
     before = deepcopy(state)
     view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
-    assert len(view.rows) == 1
-    row = view.rows[0]
-    assert row.asil == '待评定'
-    assert f'QM×{known}' in row.remark and f'待评定×{pending}' in row.remark
-    assert '不能认定全组 QM' in row.asil_rationale
+    assert len(view.rows) == 2
+    assert {r.asil for r in view.rows} == {'QM', '待评定'}
+    for row in view.rows:
+        members = [d for d in view.scenario_details if d.hara_id == row.hara_id]
+        assert {d.asil for d in members} == {row.asil}
+        assert len(members) == (known if row.asil == 'QM' else pending)
     assert Counter(d.asil for d in view.scenario_details) == {'QM': known, '待评定': pending}
     assert state == before
 
@@ -420,13 +466,14 @@ def test_group_sg_links_include_nonrepresentatives_without_creating_qm_goals(act
     before = deepcopy(state)
     schema = load_report_schema()
     view = HARAReportProjectionService(schema).project(state, active_method)
-    row = view.rows[0]
+    assert not view.rows[0].sg_id  # QM member keeps its original no-SG behavior.
+    row = next(r for r in view.rows if r.sg_id.splitlines() == list(goal_ids))
     assert row.sg_id.splitlines() == list(goal_ids)
     for goal in view.safety_goals:
         assert goal.safety_goal in row.safety_goal
         if len(goal_ids) > 1:
             assert f'{goal.sg_id}：' in row.safety_goal and f'{goal.sg_id}：' in row.safe_state
-    members = view.projection_metrics['grouping_map'][0]['member_ratings']
+    members = [m for g in view.projection_metrics['grouping_map'] for m in g['member_ratings']]
     assert {m['scenario_id']: m['safety_goal_id'] for m in members} == {
         risk.scenario_id: risk.safety_goal_id for risk in state.risk_results}
     output = tmp_path / 'group_sg.xlsx'

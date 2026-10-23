@@ -8,6 +8,7 @@ import re
 from typing import Any, Mapping
 
 from hara_agent.contracts import MethodContract
+from hara_agent.models import ReviewStatus
 from hara_agent.workflow.state import HARAState
 
 from .engineering_text_mapper import EngineeringReportTextMapper
@@ -550,9 +551,28 @@ class HARAReportProjectionService:
         # actual branch tuple; the other tied tuples remain in scenario detail.
         return highest[0][1], highest
 
-    def _common_partial_grades(self, siblings: list[dict], *, trace_provided: bool) -> tuple:
-        """Display each dimension's observed grades without inventing a group tuple."""
-        values, rationales, distributions = {}, {}, {}
+    def _member_display_tuple(self, entry: dict, asil_order: list[str], *, trace_provided: bool) -> tuple:
+        """Select one actual tuple, keeping all other branches in the detail view."""
+        risk, trace = entry["risk"], entry["trace"]
+        states = self._score_states(risk, trace, trace_provided=trace_provided)
+        values = tuple(self._display_score(getattr(risk, field), states[field])
+                       for field in ("severity", "exposure", "controllability", "asil"))
+        headline, highest = self._highest_known_tuple([entry], asil_order)
+        branch = highest[0][2] if highest else {}
+        if headline:
+            values = headline
+        elif risk.branch_evaluations and (not trace_provided or trace.get("risk_scoring_invoked")):
+            # No known ASIL: retain one incomplete branch, never splice the
+            # individually known S/E/C values of different branches together.
+            branch = risk.branch_evaluations[0]
+            values = tuple(str(branch.get(key) or "待评定") for key in ("S", "E", "C", "ASIL"))
+        if values[-1] == "QM" and any(not b.get("ASIL") for b in risk.branch_evaluations):
+            values = (*values[:3], "待评定")
+        return values, branch
+
+    def _group_grade_summary(self, siblings: list[dict], *, trace_provided: bool) -> tuple:
+        """Retain distributions and bases in explanations, never in grade cells."""
+        rationales, distributions = {}, {}
         for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL")):
             counts, branch_counts, bases = Counter(), Counter(), Counter()
             for entry in siblings:
@@ -564,7 +584,6 @@ class HARAReportProjectionService:
                     branch_counts.update(str(b.get(label) or "待评定") for b in entry["risk"].branch_evaluations)
             observed = set(counts) | set(branch_counts)
             known = sorted(observed - {"待评定"})
-            values[field] = " / ".join(known + (["待评定"] if "待评定" in observed else []))
             distributions[field] = {"members": dict(counts), "collision_branches": dict(branch_counts)}
             distribution = "、".join(f"{value}×{count}" for value, count in counts.most_common())
             if len(observed) == 1 and known:
@@ -584,7 +603,7 @@ class HARAReportProjectionService:
                     f"{count} 个成员：{text}" for text, count in bases.most_common(2))
                 basis += "各成员及分支的完整依据见风险追溯。"
             rationales[field + "_rationale"] = basis + "\n" + reason
-        return values, rationales, distributions
+        return rationales, distributions
 
     def _missing_asil_explanation(self, risk: Any, trace: Mapping, method: Any, *, detail: bool = True) -> str:
         """Explain incomplete tuples using the active matrix, without assigning C."""
@@ -768,6 +787,10 @@ class HARAReportProjectionService:
             (str(item.get("malfunction_id", "")), str(item.get("scenario_id", ""))): item
             for item in state.item_definition.get("scenario_assessments", [])
         }
+        from hara_agent.services.analysis.asil_service import MethodContractASILService
+        asil_service = (MethodContractASILService(method)
+                        if getattr(method, "engineering_rules_compiled", False) else None)
+        asil_order = asil_service.result_order() if asil_service else []
         for risk in state.risk_results:
             scenario = scenarios.get(risk.scenario_id)
             if scenario is None:
@@ -840,6 +863,8 @@ class HARAReportProjectionService:
                     base_key = ("unproven_risk_equivalence", str(risk.malfunction_id), str(risk.scenario_id))
                     group_key = base_key
             risk_equivalence_key = base_key if base_key[0] == "risk_equivalent" else None
+            display_tuple, display_branch = self._member_display_tuple(
+                {"risk": risk, "trace": trace}, asil_order, trace_provided=risk_trace is not None)
             if instance.get("p6_generation"):
                 facts = scenario.facts
                 causal = causal_by_pair.get((risk.malfunction_id, risk.scenario_id), {})
@@ -848,23 +873,28 @@ class HARAReportProjectionService:
                 objects = sorted(category for category in self.text._categories(scenario)
                                  if category.startswith("OBJECT_"))
                 conditions = scenario_conditions(scenario)
-                # A review group may contain parameter samples, but must not
-                # erase distinct operating worlds or intervention locations.
-                review_fields = {"method_scenario_dimensions", "scenario_atom_ids",
-                    "driver_position", "driver_in_vehicle",
-                    "ego_longitudinal_direction", "object_position", "object_id",
+                # Atom/parameter variants remain in detail. Intervention and
+                # interaction geometry still distinguish review rows, and every
+                # row has exactly one tuple and one set of review states.
+                review_fields = {"driver_position", "driver_in_vehicle",
+                    "ego_longitudinal_direction", "object_position",
                     "object_longitudinal_direction", "object_motion_state", "collision_type",
                     "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
                     "downhill_body_direction", "assessment_reference", "object_extent"}
                 condition_key = signature({"operating_mode": scenario.operating_mode,
                     "facts": {key: value for key, value in conditions["facts"].items() if key in review_fields}})
                 group_key = ("review", str(risk.malfunction_id), str(mechanism),
-                             tuple(objects), str(risk.potential_harm or ""), condition_key)
+                             tuple(objects), str(risk.potential_harm or ""), condition_key,
+                             self._driver_group_identity(scenario), display_tuple, tuple(self._score_states(
+                                 risk, trace, trace_provided=risk_trace is not None).items()))
+            else:
+                group_key = (*group_key, display_tuple)
             entries.append({
                 "risk_equivalence_key": risk_equivalence_key,
                 "risk": risk, "scenario": scenario, "trace": trace,
                 "hazardous_event_id": hazardous_event_id, "base_key": base_key,
                 "group_key": group_key, "causal_identity": causal_identity,
+                "display_tuple": display_tuple, "display_branch": display_branch,
             })
 
         grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
@@ -902,10 +932,6 @@ class HARAReportProjectionService:
         details: list[ScenarioDetailView] = []
         audit: list[AuditReferenceView] = []
         variant_counts: Counter[str] = Counter()
-        from hara_agent.services.analysis.asil_service import MethodContractASILService
-        asil_service = (MethodContractASILService(method)
-                        if getattr(method, "engineering_rules_compiled", False) else None)
-        asil_order = asil_service.result_order() if asil_service else []
         goal_presentations = {goal.sg_id: self.text.safety_goal_presentation([
             {"scenario_id": risk.scenario_id, "malfunction_id": risk.malfunction_id,
              "malfunction": str(malfunctions.get(risk.malfunction_id, {}).get("description", "")),
@@ -950,17 +976,15 @@ class HARAReportProjectionService:
             score_states = self._score_states(
                 risk, trace, trace_provided=risk_trace is not None,
             )
-            values = {
-                field: self._display_score(getattr(risk, field), score_states[field])
-                for field in ("severity", "exposure", "controllability", "asil")
-            }
-            if headline:
-                values.update(dict(zip(("severity", "exposure", "controllability", "asil"), headline)))
+            values = dict(zip(("severity", "exposure", "controllability", "asil"),
+                              representative["display_tuple"]))
+            score_states = {field: _UNCALCULATED if values[field] == "待评定" else status
+                            for field, status in score_states.items()}
             review_group_id = "RG-" + signature(representative["group_key"])[:12].upper()
             is_review_group = representative["group_key"][0] == "review"
             partial_rationales = {}
             if is_review_group and not headline:
-                values, partial_rationales, distribution = self._common_partial_grades(
+                partial_rationales, distribution = self._group_grade_summary(
                     siblings, trace_provided=risk_trace is not None)
                 partial_group_distributions[f"HARA_{offset:03d}"] = distribution
             pending_count = sum(
@@ -1037,18 +1061,24 @@ class HARAReportProjectionService:
                   + ("；SG为历史草稿关联，本轮未重评" if group_goal_ids and any(
                       event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail) else ""),
             )
-            if highest_members and highest_members[0][2]:
+            if representative["display_branch"]:
                 # An aggregate max-S rationale may describe a different branch.
                 # Point every headline dimension at the same selected branch.
                 row = replace(row, **{field + "_rationale":
                     self._score_rationale(field, replace(getattr(risk, field), value=(
-                        None if values[field] == "待评定" else values[field])),
-                        self._display_trace(field, trace, highest_members[0][2]), score_states[field])
+                        None if values[field] == "待评定" else values[field]),
+                        status=ReviewStatus.PENDING if values[field] == "待评定" else getattr(risk, field).status),
+                        self._display_trace(field, trace, representative["display_branch"]), score_states[field])
                     for field in ("severity", "exposure", "controllability", "asil")})
             elif partial_rationales:
-                row = replace(row, **partial_rationales,
-                    remark="各维度独立展示已计算等级；斜线分隔不同成员或分支的等级，不表示一个组合元组。" + row.remark)
-            if ((values["severity"] == "待评定" or " / " in values["severity"]) and any(_value(e["risk"].severity) for e in siblings)
+                row = replace(row, **partial_rationales)
+            if representative["display_branch"] and not headline:
+                row = replace(row, remark="分支评级尚未闭合；主表列示一个实际分支的评级，全部分支见场景明细。" + row.remark)
+            if headline and headline[-1] == "QM" and row.asil == "待评定":
+                row = replace(row, asil_rationale=(
+                    "已计算碰撞分支的已知 ASIL 为 QM；其余碰撞分支 ASIL 尚未评定，不能认定全组 QM。"
+                    "完整分支评级见场景明细。"))
+            if (values["severity"] == "待评定" and any(_value(e["risk"].severity) for e in siblings)
                     and (len(siblings) > 1 or len(risk.branch_evaluations) > 1)):
                 row = replace(row, potential_harm="伤害类别按各成员 S 分档分别查阅方法依据；未完成成员仍待定。")
             if asil_service and row.asil in asil_order:
@@ -1066,13 +1096,7 @@ class HARAReportProjectionService:
                             f"{missing} 本身仍待评定，该矩阵结论不补齐缺失维度。"))
             if len(siblings) > 1 and highest_members:
                 # A deciding tuple does not erase other known member grades.
-                _, _, distribution = self._common_partial_grades(siblings, trace_provided=risk_trace is not None)
-                if row.asil == "QM" and any("待评定" in counts for counts in distribution["asil"].values()):
-                    # Missing C alone does not invalidate a stored QM result.
-                    # Only unresolved ASIL members/branches prevent group QM.
-                    row = replace(row, asil="待评定", asil_rationale=(
-                        "已计算成员的已知 ASIL 为 QM；其余成员或碰撞分支 ASIL 尚未评定，不能认定全组 QM。"
-                        "完整成员及分支评级见场景明细。"))
+                _, distribution = self._group_grade_summary(siblings, trace_provided=risk_trace is not None)
                 row = replace(row, remark=row.remark + "；成员等级分布：" + "；".join(
                     f"{label}: " + "、".join(f"{grade}×{count}" for grade, count in distribution[field]["members"].items())
                     for field, label in (("severity", "S"), ("exposure", "E"), ("controllability", "C"), ("asil", "ASIL"))))
@@ -1100,12 +1124,8 @@ class HARAReportProjectionService:
                 child_operational, child_detail = self.text.scenario(child)
                 variant = self.text.variant_text(child)
                 variant_counts[variant] += 1
-                child_headline, _ = self._highest_known_tuple([entry], asil_order)
-                child_values = {field: self._display_score(getattr(child_risk, field),
-                    self._score_states(child_risk, child_trace, trace_provided=risk_trace is not None)[field])
-                    for field in ("severity", "exposure", "controllability", "asil")}
-                if child_headline:
-                    child_values.update(zip(("severity", "exposure", "controllability", "asil"), child_headline))
+                child_values = dict(zip(("severity", "exposure", "controllability", "asil"),
+                                        entry["display_tuple"]))
                 details.append(ScenarioDetailView(
                     hara_id=hara_id,
                     variant=variant,
@@ -1268,7 +1288,8 @@ class HARAReportProjectionService:
                                                for event in state.audit_trail),
             "display_review_groups": len(rows),
             "grouping_explanation": (
-                f"{len(details)}条风险明细组织为{len(rows)}个审核组。按同一失效、物理机制、对象及伤害分组，同时区分运行条件、驾驶员位置、方向和坡向；"
+                f"{len(details)}条风险明细组织为{len(rows)}个审核组。按同一失效、物理机制、对象及伤害分组，同时区分驾驶员位置、方向、坡向以及S/E/C/ASIL和审核状态；"
+                "每行仅列一组评级，Atom和参数变体保留在明细；"
                 "每条明细保留原身份、条件和分支评级，按HARA-ID查回主表。分组便于审核，不证明风险等价或ODD覆盖完整。"),
             "safety_goal_text_mapping": [goal.to_dict() for goal in goals],
             "safety_goal_display_evidence": goal_presentations,

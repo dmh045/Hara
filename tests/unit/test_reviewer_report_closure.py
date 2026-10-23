@@ -231,7 +231,7 @@ def test_p6_j_different_risk_conditions_do_not_merge_despite_equal_ratings(diffe
     else:
         state.risk_results[2].exposure = _pending()
     view = HARAReportProjectionService(load_report_schema()).project(state, _method())
-    assert len(view.rows) == (1 if difference == "pending" else 2)
+    assert len(view.rows) == 2
     assert len(view.scenario_details) == 3
     keys = [key for group in view.projection_metrics["grouping_map"] for key in group["risk_equivalence_keys"]]
     assert keys[2] is None or keys[2] != keys[0]
