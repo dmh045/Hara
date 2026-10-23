@@ -225,11 +225,13 @@ def test_controllability_uses_exact_overrides_before_ttc(service):
 
     ttc_facts = {
         "driver_in_vehicle": True,
+        "emergency_braking_available": True,
         "remote_intervention_available": False,
         "other_road_user_avoidance_possible": False,
         "ttc_s": 2.0,
         "_fact_provenance": {
             "driver_in_vehicle": _accepted(),
+            "emergency_braking_available": _accepted(),
             "remote_intervention_available": _accepted(),
             "other_road_user_avoidance_possible": _accepted(),
             "ttc_s": _accepted(),

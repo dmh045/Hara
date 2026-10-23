@@ -91,6 +91,7 @@ class RiskCalculationInputService:
         input_keys = (
             "ttc_s", "driver_in_vehicle", "has_remote_app",
             "direct_control_available",
+            "emergency_braking_available",
             "remote_intervention_available", "other_road_user_avoidance_possible",
             "vehicle_stability", "function_type",
         )
@@ -103,6 +104,7 @@ class RiskCalculationInputService:
             has_remote_app=scenario.get("has_remote_app"),
             function_type=str(scenario.get("function_type", "")),
             direct_control_available=scenario.get("direct_control_available"),
+            emergency_braking_available=scenario.get("emergency_braking_available"),
             remote_intervention_available=scenario.get(
                 "remote_intervention_available"
             ),

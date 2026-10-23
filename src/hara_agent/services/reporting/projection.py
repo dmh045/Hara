@@ -847,8 +847,19 @@ class HARAReportProjectionService:
                              (normalized_event + str(causal.get("causal_chain", {}).get("m_to_b", {}).get("claim", ""))))
                 objects = sorted(category for category in self.text._categories(scenario)
                                  if category.startswith("OBJECT_"))
+                conditions = scenario_conditions(scenario)
+                # A review group may contain parameter samples, but must not
+                # erase distinct operating worlds or intervention locations.
+                review_fields = {"method_scenario_dimensions", "scenario_atom_ids",
+                    "driver_position", "driver_in_vehicle",
+                    "ego_longitudinal_direction", "object_position", "object_id",
+                    "object_longitudinal_direction", "object_motion_state", "collision_type",
+                    "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
+                    "downhill_body_direction", "assessment_reference", "object_extent"}
+                condition_key = signature({"operating_mode": scenario.operating_mode,
+                    "facts": {key: value for key, value in conditions["facts"].items() if key in review_fields}})
                 group_key = ("review", str(risk.malfunction_id), str(mechanism),
-                             tuple(objects), str(risk.potential_harm or ""))
+                             tuple(objects), str(risk.potential_harm or ""), condition_key)
             entries.append({
                 "risk_equivalence_key": risk_equivalence_key,
                 "risk": risk, "scenario": scenario, "trace": trace,
@@ -1257,7 +1268,7 @@ class HARAReportProjectionService:
                                                for event in state.audit_trail),
             "display_review_groups": len(rows),
             "grouping_explanation": (
-                f"{len(details)}条风险明细组织为{len(rows)}个审核组。按同一失效、物理机制、对象类别及伤害描述分组；"
+                f"{len(details)}条风险明细组织为{len(rows)}个审核组。按同一失效、物理机制、对象及伤害分组，同时区分运行条件、驾驶员位置、方向和坡向；"
                 "每条明细保留原身份、条件和分支评级，按HARA-ID查回主表。分组便于审核，不证明风险等价或ODD覆盖完整。"),
             "safety_goal_text_mapping": [goal.to_dict() for goal in goals],
             "safety_goal_display_evidence": goal_presentations,

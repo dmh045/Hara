@@ -1267,6 +1267,11 @@ class YamlBaselineCompiler:
             controllability_profile=ControllabilityProfile(
                 profile_id="iav_avp_v1", bands=tuple(bands), source_ref=c_ref,
                 review_status=ReviewStatus.FINALIZED,
+                applicability=tuple(ControllabilityCondition(field=key, expected=value)
+                    for key, value in c_asset.get("ttc_applicability", {}).get("all_of", {}).items()),
+                applicability_source_ref=self._source(source_hash,
+                    source_paths["controllability_profile"], "ttc_applicability",
+                    c_asset["ttc_applicability"]) if c_asset.get("ttc_applicability") else None,
             ),
             controllability_overrides=tuple(overrides),
             controllability_branch_policy=ControllabilityBranchPolicy(

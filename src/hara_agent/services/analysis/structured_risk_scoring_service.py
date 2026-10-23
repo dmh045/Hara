@@ -78,6 +78,7 @@ class StructuredRiskScoringService:
                 for rule_id, state in judgement.rule_match_states
             ],
             "executor_invoked": True,
+            "pending_reason": judgement.reason if not judgement.value else "",
         }
 
     @staticmethod
@@ -185,8 +186,7 @@ class StructuredRiskScoringService:
                 or scenario.get("emergency_braking_available") is not True))
         override_match = control.get("decision_status") == "OVERRIDE_MATCH" and control.get("engineering_rule_id") in {
             rule.rule_id for rule in self.structured.controllability_overrides}
-        if (override_match and scenario.get("physical_analysis")
-                and braking_path_unresolved
+        if (override_match and braking_path_unresolved
                 and scenario.get("remote_intervention_available") is True):
             # A remote command does not restore a failed braking actuator.
             # Re-evaluate the existing override with that positive capability
@@ -204,12 +204,20 @@ class StructuredRiskScoringService:
         if scenario.get("physical_object_exposure_unresolved"):
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
-        if (scenario.get("physical_analysis") and braking_path_unresolved
+        if (braking_path_unresolved
                 and result["controllability"].get("selected_profile_id") and not override_match):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED",
                 decision_status="MODEL_DEPENDENCY_UNRESOLVED", engineering_rule_id="",
                 reasoning="The failed braking path cannot establish an independent available braking avoidance path.")
+        if not control.get("controllability_score"):
+            # A rejected lookup is not a finalized avoidance path. Keep its
+            # attempted value for audit, separately from the usable result.
+            for key in ("braking", "method_override"):
+                path = control.get("avoidance_paths", {}).get(key)
+                if path:
+                    path.update(lookup_result=path.get("result", ""), result="",
+                        status=control["calculation_status"], reason=control.get("reasoning", ""))
         return result
 
     def _calculate(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:

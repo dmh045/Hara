@@ -73,6 +73,7 @@ def _scenario(service: StructuredRiskScoringService, relative_speed: float) -> d
         },
         "_exposure_dimension_coverage_decision": _resolved_coverage(service),
         "ttc_s": 4.1, "driver_in_vehicle": True,
+        "emergency_braking_available": True,
         "remote_intervention_available": False,
         "other_road_user_avoidance_possible": False,
     }
@@ -123,15 +124,53 @@ def test_structured_c_override_precedes_ttc():
     assert scored["controllability"]["engineering_rule_id"] == "driver_outside_no_intervention"
 
 
+@pytest.mark.parametrize('physical_path', [False, True])
+def test_failed_braking_is_not_a_usable_ttc_path_for_either_producer(physical_path):
+    service = _service()
+    scenario = _scenario(service, 7)
+    scenario['emergency_braking_available'] = False
+    if physical_path:
+        scenario['physical_analysis'] = {'hypothesis': {'failed_controls': ['braking'], 'remaining_controls': []}}
+    c = service.score(scenario, 'braking unavailable')['controllability']
+    assert c['controllability_score'] == ''
+    assert c['pending_reason'] == 'FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED'
+    assert c['avoidance_paths']['braking']['result'] == ''
+    assert c['avoidance_paths']['braking']['status'] == c['calculation_status']
+
+
+def test_ttc_profile_boundaries_stay_deterministic_when_braking_is_available():
+    service = _service()
+    scenario = _scenario(service, 7)
+    for ttc, expected in ((3, 'C3'), (3.1, 'C2'), (4.1, 'C1'), (5.1, 'C0')):
+        scenario['ttc_s'] = ttc
+        first = service.score(scenario, 'contact')
+        assert first == service.score(scenario, 'contact')
+        assert first['controllability']['controllability_score'] == expected
+
+
+def test_remote_command_does_not_repair_failed_brake_or_leave_finalized_trace():
+    service = _service()
+    scenario = _scenario(service, 7)
+    scenario.update(emergency_braking_available=False, remote_intervention_available=True)
+    c = service.score(scenario, 'failed brake')['controllability']
+    assert c['controllability_score'] == ''
+    path = c['avoidance_paths']['method_override']
+    assert path['lookup_result'] == 'C1' and path['result'] == ''
+    assert path['status'] == c['calculation_status']
+    scenario['other_road_user_avoidance_possible'] = True
+    assert service.score(scenario, 'independent external evasion')['controllability']['controllability_score'] == 'C1'
+
+
 def test_current_project_unknown_override_policy_routes_to_ttc_without_fabricating_facts():
     service = _service()
     scenario = _scenario(service, 20.0)
     scenario.pop("driver_in_vehicle")
     scored = service.score(scenario, "hazard")["controllability"]
-    assert scored["calculation_status"] == CalculationStatus.FINALIZED.value
+    assert scored["calculation_status"] == CalculationStatus.PENDING_INPUT.value
     assert scored["unknown_override_policy"] == UnknownOverridePolicy.SKIP_TO_TTC.value
     assert scored["unknown_policy_action"] == "SKIP_TO_TTC"
-    assert scored["decision_status"] == "TTC_AFTER_UNKNOWN_OVERRIDE"
+    assert scored["decision_status"] == "PROFILE_APPLICABILITY_UNRESOLVED"
+    assert "driver_in_vehicle" in scored["pending_reason"]
     assert "driver_in_vehicle" not in scenario
 
 
@@ -145,12 +184,12 @@ def test_skip_to_ttc_fixture_preserves_unknown_in_runtime_trace():
         ),
     )
     scenario = _scenario(service, 20.0)
-    scenario.pop("driver_in_vehicle")
+    scenario.pop("remote_intervention_available")
     scored = service.score(scenario, "hazard")["controllability"]
     assert scored["controllability_score"] == "C1"
     assert scored["unknown_policy_action"] == "SKIP_TO_TTC"
     assert scored["decision_status"] == "TTC_AFTER_UNKNOWN_OVERRIDE"
-    assert scored["rule_match_states"][0]["state"] == "UNKNOWN"
+    assert scored["rule_match_states"][1]["state"] == "UNKNOWN"
 
 
 def test_structured_exposure_missing_atom_is_pending_input():

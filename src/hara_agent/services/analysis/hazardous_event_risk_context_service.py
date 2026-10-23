@@ -12,12 +12,14 @@ from hara_agent.contracts import (
     RuleMatchState, UnknownOverridePolicy,
 )
 from hara_agent.models import ReviewStatus, ScenarioCandidate
+from hara_agent.contracts.physical_scenario_plan import braking_capability
 from hara_agent.services.analysis.scenario_physics import (
     derive_scenario_physics, has_analysis_assumption_lineage,
     source_has_provenance, source_is_accepted_for, source_origin, source_reference,
     is_lateral_collision,
 )
 from hara_agent.services.analysis.risk_vocabulary_adapter import RiskVocabularyAdapter
+from .deterministic_risk_executor import ControllabilityProfileExecutor, StructuredControllabilityExecutor
 
 
 class HazardousEventRiskContextService:
@@ -45,7 +47,7 @@ class HazardousEventRiskContextService:
         "relative_distance_m", "ttc_s", "driver_in_vehicle",
         "remote_intervention_available", "other_road_user_avoidance_possible",
         "direct_control_available", "vehicle_stability", "function_type",
-        "has_remote_app",
+        "has_remote_app", "emergency_braking_available",
     }
 
     def __init__(self, method: MethodContract):
@@ -150,6 +152,19 @@ class HazardousEventRiskContextService:
             )
             for field in self._FIELDS
         }
+        # Older validated plans already declare remaining/failed controls but
+        # did not materialize this input. Project that declaration with its
+        # original conditional provenance; never overwrite an explicit fact.
+        if scenario.get("emergency_braking_available") is None:
+            physical = scenario.get("physical_analysis", {})
+            metadata = scenario.get("_fact_provenance", {}).get("physical_analysis", {})
+            capability = braking_capability(physical.get("hypothesis", {}))
+            if capability is not None and source_is_accepted_for(metadata,
+                    malfunction_id=malfunction_id, scenario_id=scenario_id):
+                values["emergency_braking_available"] = self._fact(
+                    "emergency_braking_available", {"emergency_braking_available": capability,
+                        "_fact_provenance": {"emergency_braking_available": metadata}},
+                    malfunction_id=malfunction_id, scenario_id=scenario_id)
         if values["ttc_s"].status is not RiskContextFactStatus.AVAILABLE:
             closing_source = scenario.get("_fact_provenance", {}).get("closing_speed_kph", {})
             accepted_closing = source_is_accepted_for(closing_source,
@@ -216,6 +231,9 @@ class HazardousEventRiskContextService:
             fact = getattr(context, field)
             if fact.status is RiskContextFactStatus.AVAILABLE:
                 result[field] = fact.value
+                if field == "emergency_braking_available" and scenario.get(field) is None:
+                    result["_fact_provenance"] = {**scenario.get("_fact_provenance", {}),
+                        field: scenario.get("_fact_provenance", {}).get("physical_analysis", {})}
             else:
                 result.pop(field, None)
         result["_hazardous_event_risk_context"] = context
@@ -263,26 +281,11 @@ class HazardousEventRiskContextService:
         unknown_fields: list[str] = []
         for rule in sorted(self.structured.controllability_overrides, key=lambda item: item.priority):
             conditions = rule.all_of or rule.any_of
-            values = [
-                state if state is ControllabilityFactState.UNKNOWN else (
-                    ControllabilityFactState.TRUE
-                    if ((state is ControllabilityFactState.TRUE) is item.expected)
-                    else ControllabilityFactState.FALSE
-                )
-                for item in conditions for state in (states[item.field],)
-            ]
-            if rule.all_of:
-                if ControllabilityFactState.FALSE in values:
-                    continue
-                if ControllabilityFactState.UNKNOWN in values:
-                    unknown_fields.extend(item.field for item in conditions)
-                    continue
+            state = StructuredControllabilityExecutor.override_state(rule, states)
+            if state is RuleMatchState.MATCH:
                 return {"status": "READY", "branch": "OVERRIDE", "rule_id": rule.rule_id,
                         "missing_reasons": [], "rule_match_state": RuleMatchState.MATCH.value}
-            if ControllabilityFactState.TRUE in values:
-                return {"status": "READY", "branch": "OVERRIDE", "rule_id": rule.rule_id,
-                        "missing_reasons": [], "rule_match_state": RuleMatchState.MATCH.value}
-            if ControllabilityFactState.UNKNOWN in values:
+            if state is RuleMatchState.UNKNOWN:
                 unknown_fields.extend(item.field for item in conditions)
         policy = self.structured.controllability_branch_policy.unknown_override_policy
         if unknown_fields and policy is UnknownOverridePolicy.UNSPECIFIED:
@@ -293,6 +296,15 @@ class HazardousEventRiskContextService:
             return {"status": "PENDING_INPUT", "branch": "OVERRIDE", "rule_id": "",
                     "missing_reasons": [f"MISSING_{item.upper()}" for item in dict.fromkeys(unknown_fields)],
                     "unknown_override_policy": policy.value, "ttc_eligible": False}
+        profile = self.structured.controllability_profile
+        values = {c.field: getattr(context, c.field).value
+                  if getattr(context, c.field).status is RiskContextFactStatus.AVAILABLE else None
+                  for c in profile.applicability}
+        unresolved = ControllabilityProfileExecutor.unresolved_applicability(values, profile)
+        if unresolved:
+            return {"status": "PENDING_INPUT", "branch": "TTC", "rule_id": "",
+                "missing_reasons": ["TTC_PROFILE_APPLICABILITY_UNRESOLVED", *unresolved],
+                "ttc_eligible": False}
         ttc = context.ttc_s
         if ttc.status is RiskContextFactStatus.AVAILABLE:
             return {"status": "READY", "branch": "TTC", "rule_id": "", "missing_reasons": []}

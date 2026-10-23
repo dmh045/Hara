@@ -72,6 +72,13 @@ def validate_manifest(manifest_path: Path) -> tuple[dict[str, Any], dict[str, di
             hashes[relative] = actual
         assets[role] = load_yaml_mapping(path)
     controllability = assets.get("controllability_profile", {})
+    applicability = controllability.get("ttc_applicability", {})
+    if applicability:
+        conditions = applicability.get("all_of", {})
+        if (set(applicability) != {"all_of"} or not conditions
+                or any(field not in {"driver_in_vehicle", "emergency_braking_available"}
+                       or not isinstance(value, bool) for field, value in conditions.items())):
+            raise YamlBaselineValidationError("Unsupported controllability TTC applicability conditions")
     policy = controllability.get("unknown_override_policy")
     if policy is not None and policy not in {
         "BLOCK_TTC", "SKIP_TO_TTC", "UNSPECIFIED",

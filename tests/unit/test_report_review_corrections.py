@@ -47,6 +47,32 @@ def test_incomplete_group_does_not_display_first_member_noncommon_e(active_metho
     assert state == before
 
 
+@pytest.mark.parametrize('field,values', [
+    ('driver_in_vehicle', (True, False)),
+    ('ego_longitudinal_direction', ('FORWARD', 'REVERSE')),
+    ('object_position', ('FRONT', 'REAR')),
+    ('scenario_atom_ids', (['SO006', 'FB001'], ['SO010', 'FB003'])),
+])
+def test_review_groups_preserve_distinct_conditions_even_when_ratings_are_equal(active_method, field, values):
+    state = mixed_pending_group()
+    for i, child in enumerate(state.scenarios):
+        child.facts[field] = values[i % 2]
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert len(view.rows) == 2
+    assert len(view.scenario_details) == 14
+    assert {d.scenario_id for d in view.scenario_details} == {s.scenario_id for s in state.scenarios}
+
+
+@pytest.mark.parametrize('input_key', ['override_inputs', 'physical_inputs'])
+def test_outside_driver_profile_gap_is_explained_as_inapplicability_not_missing_ttc(input_key):
+    text = EngineeringReportTextMapper.controllability_branch({'controllability': {
+        'decision_status': 'PROFILE_APPLICABILITY_UNRESOLVED',
+        'pending_reason': 'TTC_PROFILE_APPLICABILITY_UNRESOLVED: driver_in_vehicle',
+        input_key: {'driver_in_vehicle': False}, 'derived_ttc': {'ttc_s': 5.9}}})
+    assert '驾驶员在车外' in text and '不适用' in text
+    assert '缺相对距离' not in text and 'C0' not in text
+
+
 def test_pending_asil_explains_same_branch_matrix_without_assigning_c(active_method):
     state = mixed_pending_group()
     risk = state.risk_results[0]

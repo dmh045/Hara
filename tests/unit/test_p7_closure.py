@@ -134,7 +134,8 @@ def scoring_view(method):
     return {"scenario_id": "SC", "malfunction_id": "MF", "harm_mechanism_id": "IMPACT",
         "component_category": "sensor_camera", "scenario_atom_ids": ["SO010", "PH005"],
         "method_scenario_dimensions": {}, "ttc_s": 4.1,
-        "_fact_provenance": {"collision_branches": source(), "ttc_s": source()},
+        "driver_in_vehicle": True, "emergency_braking_available": True,
+        "_fact_provenance": {key: source() for key in ("collision_branches", "ttc_s", "driver_in_vehicle", "emergency_braking_available")},
         "_exposure_dimension_coverage_decision": ExposureDimensionCoverageService(method).decide(
             assessment_key="MF::SC", function=None, operating_mode="parking_vehicle_control")}
 

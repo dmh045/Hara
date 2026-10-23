@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import replace, asdict
 import math
 
-from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS
+from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability
 from .scenario_equivalence import signature
 from .scenario_physics import CONDITIONAL_ORIGIN, derive_scenario_physics, source_is_accepted_for, physical_semantics
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
@@ -632,9 +632,9 @@ class PhysicalHypothesisInstantiationService:
             provenance["ego_speed_kph"] = {**provenance["ego_speed_kph"], "analysis_value_semantic": "PRE_FAULT_OPERATING_SPEED"}
         if "steering" in [control.lower() for control in h["failed_controls"]]:
             facts["steering_control_available"], provenance["steering_control_available"] = False, deepcopy(meta)
-        if {"braking", "driver_braking"} & set(h["failed_controls"]):
+        if braking_capability(h) is False:
             facts["emergency_braking_available"], provenance["emergency_braking_available"] = False, deepcopy(meta)
-        elif "driver_braking" in h["remaining_controls"]:
+        elif braking_capability(h) is True:
             if (facts.get("emergency_braking_available") is False and source_is_accepted_for(
                     provenance.get("emergency_braking_available", {}),
                     malfunction_id=malfunction.malfunction_id, scenario_id=sid)):

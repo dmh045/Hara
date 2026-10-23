@@ -119,6 +119,11 @@ class ControllabilityProfileExecutor:
     """Perform deterministic TTC lookup against one explicitly selected profile."""
 
     @staticmethod
+    def unresolved_applicability(values: dict, profile: ControllabilityProfile) -> tuple[str, ...]:
+        return tuple(condition.field for condition in profile.applicability
+                     if values.get(condition.field) is not condition.expected)
+
+    @staticmethod
     def _matches(band: ControllabilityBand, ttc_s: float) -> bool:
         if band.lower_ttc_s is not None:
             if ttc_s < band.lower_ttc_s:
@@ -144,6 +149,15 @@ class ControllabilityProfileExecutor:
                 status=CalculationStatus.PENDING_METHOD_SEMANTICS,
                 reason="No approved Controllability profile was explicitly selected.",
             )
+        unresolved = self.unresolved_applicability(assessment.to_dict(), profile)
+        if unresolved:
+            return ControllabilityJudgement(
+                value="", profile_id=profile.profile_id, rule_id="",
+                inputs_used=tuple(condition.field for condition in profile.applicability),
+                status=CalculationStatus.PENDING_INPUT,
+                decision_status="PROFILE_APPLICABILITY_UNRESOLVED",
+                reason="TTC_PROFILE_APPLICABILITY_UNRESOLVED: " + ", ".join(unresolved),
+            )
         if assessment.ttc_s is None:
             return ControllabilityJudgement(
                 value="", profile_id=profile.profile_id, rule_id="",
@@ -166,7 +180,7 @@ class ControllabilityProfileExecutor:
         band = matches[0]
         return ControllabilityJudgement(
             value=band.result, profile_id=profile.profile_id,
-            rule_id=band.rule_id, inputs_used=("ttc_s",),
+            rule_id=band.rule_id, inputs_used=("ttc_s", *(c.field for c in profile.applicability)),
             status=CalculationStatus.FINALIZED,
             reason="Deterministic TTC lookup matched exactly one approved profile band.",
         )
@@ -467,7 +481,7 @@ class StructuredControllabilityExecutor:
         return ControllabilityFactState.TRUE if value is expected else ControllabilityFactState.FALSE
 
     @classmethod
-    def _override_state(cls, rule, scenario: dict) -> RuleMatchState:
+    def override_state(cls, rule, scenario: dict) -> RuleMatchState:
         conditions = rule.all_of or rule.any_of
         values = [cls._condition_state(scenario.get(item.field), item.expected) for item in conditions]
         if ControllabilityFactState.CONFLICT in values:
@@ -495,7 +509,7 @@ class StructuredControllabilityExecutor:
         match_states: tuple[tuple[str, RuleMatchState], ...],
     ) -> ControllabilityJudgement:
         return replace(
-            judgement, decision_status=decision_status,
+            judgement, decision_status=judgement.decision_status or decision_status,
             unknown_override_policy=policy, unknown_policy_action=action,
             rule_match_states=match_states,
         )
@@ -506,7 +520,7 @@ class StructuredControllabilityExecutor:
         states: list[tuple[str, RuleMatchState]] = []
         unknown_fields: list[str] = []
         for rule in sorted(method.controllability_overrides, key=lambda item: item.priority):
-            state = self._override_state(rule, scenario)
+            state = self.override_state(rule, scenario)
             states.append((rule.rule_id, state))
             fields = self._fields(rule)
             if state is RuleMatchState.MATCH:

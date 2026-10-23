@@ -86,6 +86,7 @@ def _facts() -> dict:
             "source_refs": [{"location": "tests/test_risk_execution_trace.py"}],
         }},
         "driver_in_vehicle": True, "remote_intervention_available": False,
+        "emergency_braking_available": True,
         "other_road_user_avoidance_possible": False,
     }
 
@@ -175,7 +176,7 @@ def test_missing_relative_speed_and_atoms_remain_pending_inputs():
 def test_current_project_unknown_policy_trace_routes_to_ttc():
     method = _method()
     facts = _scoring_facts(method)
-    facts.pop("driver_in_vehicle")
+    facts.pop("remote_intervention_available")
     scored = StructuredRiskScoringService(method).score(facts, "hazard")
     trace = RiskExecutionTraceService(method).project(
         run_id="trace", assessments=[_assessment()], candidates=[], committed=True,
@@ -186,8 +187,8 @@ def test_current_project_unknown_policy_trace_routes_to_ttc():
     controllability = trace["assessments"][0]["controllability"]
     assert controllability["decision_status"] == "TTC_AFTER_UNKNOWN_OVERRIDE"
     assert controllability["unknown_policy_action"] == "SKIP_TO_TTC"
-    assert controllability["rule_match_states"][0]["state"] == "UNKNOWN"
-    assert "driver_in_vehicle" not in facts
+    assert controllability["rule_match_states"][1]["state"] == "UNKNOWN"
+    assert "remote_intervention_available" not in facts
 
 
 def test_pending_coverage_trace_records_native_fusa_execution():

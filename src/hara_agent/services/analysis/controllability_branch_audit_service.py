@@ -13,6 +13,7 @@ from hara_agent.contracts import (
 )
 
 from .hazardous_event_risk_context_service import HazardousEventRiskContextService
+from .deterministic_risk_executor import ControllabilityProfileExecutor, StructuredControllabilityExecutor
 
 
 class ControllabilityBranchAuditService:
@@ -59,23 +60,8 @@ class ControllabilityBranchAuditService:
             for field in self._OVERRIDE_FIELDS
         }
 
-    @staticmethod
-    def _condition_state(state: ControllabilityFactState, expected: bool) -> ControllabilityFactState:
-        if state in {ControllabilityFactState.UNKNOWN, ControllabilityFactState.CONFLICT}:
-            return state
-        return ControllabilityFactState.TRUE if ((state is ControllabilityFactState.TRUE) is expected) else ControllabilityFactState.FALSE
-
     def _rule_state(self, rule, states: dict[str, ControllabilityFactState]) -> RuleMatchState:
-        values = [self._condition_state(states[item.field], item.expected) for item in (rule.all_of or rule.any_of)]
-        if ControllabilityFactState.CONFLICT in values:
-            return RuleMatchState.CONFLICT
-        if rule.all_of:
-            if ControllabilityFactState.FALSE in values:
-                return RuleMatchState.NO_MATCH
-            return RuleMatchState.UNKNOWN if ControllabilityFactState.UNKNOWN in values else RuleMatchState.MATCH
-        if ControllabilityFactState.TRUE in values:
-            return RuleMatchState.MATCH
-        return RuleMatchState.UNKNOWN if ControllabilityFactState.UNKNOWN in values else RuleMatchState.NO_MATCH
+        return StructuredControllabilityExecutor.override_state(rule, states)
 
     @staticmethod
     def _fields(rule) -> list[str]:
@@ -116,6 +102,20 @@ class ControllabilityBranchAuditService:
         states: dict[str, ControllabilityFactState], match_states: list[dict[str, str]], *,
         policy_action: str,
     ) -> dict[str, Any]:
+        profile = self.structured.controllability_profile
+        values = {}
+        for condition in profile.applicability:
+            fact = context.get(condition.field, {}) if isinstance(context, dict) else getattr(context, condition.field)
+            state = self._state(fact)
+            values[condition.field] = True if state is ControllabilityFactState.TRUE else False if state is ControllabilityFactState.FALSE else None
+        unresolved = ControllabilityProfileExecutor.unresolved_applicability(values, profile)
+        if unresolved:
+            result = self._result(status="PENDING_INPUT", stage="TTC",
+                fields=[*self._TTC_FIELDS, *(c.field for c in profile.applicability)],
+                states=states, match_states=match_states, policy_action=policy_action,
+                reason="TTC_PROFILE_APPLICABILITY_UNRESOLVED")
+            result["missing_inputs"] = list(unresolved)
+            return result
         ttc = context.get("ttc_s", {}) if isinstance(context, dict) else context.ttc_s
         status = str(ttc.get("status", "")) if isinstance(ttc, dict) else ttc.status.value
         if status == RiskContextFactStatus.AVAILABLE.value:
@@ -209,6 +209,8 @@ class ControllabilityBranchAuditService:
             "ttc_branch": {
                 "required_facts": ["relative_distance_m", "relative_speed_kph"],
                 "preconditions": ["all overrides are NO_MATCH, or compiled policy explicitly permits TTC after UNKNOWN"],
+                "applicability": [{"field": c.field, "expected": c.expected} for c in profile.applicability],
+                "applicability_source": self._source(profile.applicability_source_ref),
                 "fallback_status_when_ttc_missing": "PENDING_INPUT",
                 "source_ref": self._source(profile.source_ref),
             },

@@ -189,7 +189,7 @@ class OfflineRiskRescorer:
             }
             expected_manifest = deepcopy(old_manifest)
             expected_manifest["asset_hashes"][policy_path] = new_hashes[policy_path]
-            if not all((
+            routing_only = all((
                 old_resolution.method.metadata["method_source_hash"]
                 == source.method_contract["method_source_hash"],
                 old_resolution.method.contract_version == method.contract_version,
@@ -200,18 +200,36 @@ class OfflineRiskRescorer:
                     for key in old_hashes if key != policy_path),
                 old_policy.get("controllability") in (None, {}),
                 new_policy == expected_policy,
-            )):
-                raise ValueError("Method transition is not limited to current-project C routing")
+            ))
+            profile_path = new_manifest["sources"]["controllability_profile"]
+            expected_profile = deepcopy(old_assets["controllability_profile"])
+            expected_profile["ttc_applicability"] = new_assets["controllability_profile"].get("ttc_applicability")
+            profile_manifest = deepcopy(old_manifest)
+            profile_manifest["asset_hashes"][profile_path] = new_hashes[profile_path]
+            applicability_only = all((
+                old_resolution.method.metadata["method_source_hash"] == source.method_contract["method_source_hash"],
+                old_resolution.method.contract_version == method.contract_version,
+                old_resolution.method.compiler_version == method.compiler_version,
+                new_manifest == profile_manifest,
+                set(old_hashes) == set(new_hashes),
+                all(old_hashes[key] == new_hashes[key] for key in old_hashes if key != profile_path),
+                not old_assets["controllability_profile"].get("ttc_applicability"),
+                bool(method.structured_risk_method.controllability_profile.applicability),
+                new_assets["controllability_profile"] == expected_profile,
+            ))
+            if not (routing_only or applicability_only):
+                raise ValueError("Method transition is not limited to current-project C routing or explicit TTC applicability")
+            changed_path = policy_path if routing_only else profile_path
             method_transition = {
-                "type": "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY",
+                "type": "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY" if routing_only else "C_PROFILE_APPLICABILITY_ONLY",
                 "source_method_hash": old_resolution.method.metadata["method_source_hash"],
                 "target_method_hash": method.metadata["method_source_hash"],
                 "source_baseline": str(source_baseline.resolve()),
                 "source_baseline_sha256": file_hash(source_baseline.resolve()),
                 "unchanged_asset_count": len(old_hashes) - 1,
-                "changed_asset": policy_path,
-                "source_policy_sha256": old_hashes[policy_path],
-                "target_policy_sha256": new_hashes[policy_path],
+                "changed_asset": changed_path,
+                "source_policy_sha256": old_hashes[changed_path],
+                "target_policy_sha256": new_hashes[changed_path],
             }
         if (source.method_contract["contract_version"] != method.contract_version
                 or source.method_contract["compiler_version"] != method.compiler_version):

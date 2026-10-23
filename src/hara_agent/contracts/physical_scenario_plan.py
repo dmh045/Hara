@@ -39,6 +39,18 @@ MODEL_CATALOG = {
 # and an independently available driver path need separate identities.
 CONTROL_IDENTITIES = {"drive", "steering", "braking", "automatic_braking_command", "driver_braking",
                       "parking_hold", "speed_limiter", "remote_control"}
+
+
+def braking_capability(hypothesis: dict) -> bool | None:
+    """Translate declared controls, without inferring fault independence."""
+    failed = set(hypothesis.get("failed_controls", []))
+    remaining = set(hypothesis.get("remaining_controls", []))
+    if failed & {"braking", "driver_braking"}:
+        return False
+    if "automatic_braking_command" in failed and "driver_braking" not in remaining:
+        return None
+    return True if remaining & {"braking", "driver_braking"} else None
+
 _GRADE_FRAME_LOCATION = (
     "grade_frame must be an object at hypotheses[].grade_frame, alongside geometry, "
     "parameters and condition_changes; not a parameter or condition_changes member. "

@@ -629,6 +629,7 @@ class ControllabilityAssessmentInput:
     has_remote_app: bool | None = None
     function_type: str = ""
     direct_control_available: bool | None = None
+    emergency_braking_available: bool | None = None
     remote_intervention_available: bool | None = None
     selected_profile_id: str = ""
     matched_rule_id: str = ""
@@ -647,6 +648,7 @@ class ControllabilityAssessmentInput:
         for name in (
             "driver_in_vehicle", "has_remote_app", "direct_control_available",
             "remote_intervention_available", "other_road_user_avoidance_possible",
+            "emergency_braking_available",
         ):
             value = getattr(self, name)
             if value is not None and not isinstance(value, bool):
@@ -687,6 +689,8 @@ class ControllabilityProfile:
     bands: tuple[ControllabilityBand, ...]
     source_ref: SourceRef
     review_status: ReviewStatus = ReviewStatus.PENDING
+    applicability: tuple[ControllabilityCondition, ...] = ()
+    applicability_source_ref: SourceRef | None = None
 
     def __post_init__(self) -> None:
         if not self.profile_id or not self.bands:

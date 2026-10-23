@@ -8,6 +8,13 @@ applies_when:
   - "TTC 可由物理模块算出（v_relative, Δs 已知）"
   - "驾驶员的主要兜底动作是制动反应"
 
+# 将上面的适用条件结构化；不改变 TTC 档位或优先覆盖规则。
+# 可用制动能力可以是有来源事实或明确的条件性假设，不表示工程批准。
+ttc_applicability:
+  all_of:
+    driver_in_vehicle: true
+    emergency_braking_available: true
+
 # 这两条优先级高于阈值表
 override_rules:
   - id: driver_outside_no_intervention

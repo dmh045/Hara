@@ -286,6 +286,8 @@ class RiskExecutionTraceService:
             "selected_profile": profile.profile_id if profile else "",
             "avoidance_paths": result.get("avoidance_paths", {}),
             "profile_id": profile.profile_id if profile else "",
+            "profile_applicability": [{"field": c.field, "expected": c.expected,
+                "actual": scenario.get(c.field)} for c in profile.applicability] if profile else [],
             "source_status": "CONFIRMED" if profile is not None else "UNRESOLVED",
             "status": _status(result),
             "decision_tree_stage": "OVERRIDE" if decision_status.startswith("OVERRIDE") or rule_id in override_ids else "TTC" if decision_status.startswith("TTC") or rule_id else "UNRESOLVED",
@@ -310,12 +312,13 @@ class RiskExecutionTraceService:
             },
             "inputs": {
                 key: scenario.get(key)
-                for key in ("driver_in_vehicle", "remote_intervention_available", "other_road_user_avoidance_possible")
+                for key in ("driver_in_vehicle", "remote_intervention_available", "other_road_user_avoidance_possible", "emergency_braking_available")
             },
             "risk_context_fields": [
                 "driver_in_vehicle", "remote_intervention_available",
                 "other_road_user_avoidance_possible", "relative_distance_m",
                 "relative_speed_kph", "ttc_s",
+                "emergency_braking_available",
             ],
             "derived_ttc": {"relative_distance_m": distance, "relative_speed_kph": relative_speed, "closing_speed_kph": closing_speed, "closing_speed_status": ttc_state, "ttc_s": ttc, "source": "DERIVED_PHYSICS" if ttc is not None else "", "formula_identity": ttc_metadata.get("formula_identity", TTC_CLOSING_FORMULA_IDENTITY), "risk_context_field": "ttc_s"},
             "override": {"evaluated": True, "matched": rule_id in override_ids, "rule_id": rule_id if rule_id in override_ids else ""},

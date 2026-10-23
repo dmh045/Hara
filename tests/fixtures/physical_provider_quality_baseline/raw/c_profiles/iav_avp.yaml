@@ -1,0 +1,31 @@
+# skills/hara/c_profiles/iav_v1.yaml
+profile_name: "IAV TTC-band C lookup"
+profile_version: "1.0"
+source: "IAV 内部方法学（用户截图，2026-XX）"
+supersedes: "IAV_EHYREEV蓝海项目_代客泊车HARA分析 C选择原因 sheet (xlsx 草稿)"
+
+applies_when:
+  - "TTC 可由物理模块算出（v_relative, Δs 已知）"
+  - "驾驶员的主要兜底动作是制动反应"
+
+# 这两条优先级高于阈值表
+override_rules:
+  - id: driver_outside_no_intervention
+    when: "driver_in_vehicle == false AND remote_brake_available == false AND external_evasion == false"
+    result: C3
+    rationale_template: "驾驶员不在车内，无远程兜底，可控性选 C3"
+
+  - id: external_evasion_available
+    when: "remote_app_brake_available == true OR counter_party_can_evade == true"
+    result: C1
+    rationale_template: "{evasion_means}可控"
+
+# 阈值表（fallback，半开区间，上界包含）
+ttc_thresholds:
+  unit: seconds
+  scan_order: "low_to_high"   # 从 C3 往上扫，first-match
+  bands:
+    - { upper_bound: 3.0,  upper_inclusive: true,  result: C3, label: "TTC ≤ 3s" }
+    - { upper_bound: 4.0,  upper_inclusive: true,  result: C2, label: "3s < TTC ≤ 4s" }
+    - { upper_bound: 5.0,  upper_inclusive: true,  result: C1, label: "4s < TTC ≤ 5s" }
+    - { upper_bound: null, upper_inclusive: null,  result: C0, label: "TTC > 5s" }

@@ -99,7 +99,8 @@ def test_selected_source_boundary_is_not_silently_changed_by_plan(method):
     assert 'SLOPE_CONFLICTS_WITH_SELECTED_BOUNDARY' in json.dumps(errors)
 
 
-def test_original_real_proposal_replays_through_production_physics_and_sec(method):
+@pytest.mark.parametrize('fresh_source_generation', [False, True])
+def test_original_real_proposal_replays_through_production_physics_and_sec(method, tmp_path, fresh_source_generation):
     from hara_agent.models import MalfunctionCandidate, ReviewStatus, FunctionDefinition
     from hara_agent.services.analysis import StructuredRiskScoringService, ExposureDimensionCoverageService
     from hara_agent.services.analysis.hazardous_event_risk_context_service import HazardousEventRiskContextService
@@ -108,6 +109,21 @@ def test_original_real_proposal_replays_through_production_physics_and_sec(metho
     parent = HARAState._scenario_from_dict(frozen['candidate'])
     raw = fixture['state']['malfunctions'][0]
     fault = MalfunctionCandidate(**{**raw, 'sources': [SourceRef(**r) for r in raw['sources']], 'status': ReviewStatus(raw['status'])})
+    if fresh_source_generation:
+        from hara_agent.application import HARAApplication
+        from hara_agent.config import RunConfig
+        from hara_agent.services.analysis.malfunction_situation_selection import selection_function
+        source_state = HARAState.read_committed(fixture['state'])
+        source_state.item_definition['typed'] = deepcopy(frozen['project'])
+        service = MethodScenarioCandidateService(method)
+        app = HARAApplication(RunConfig(Path('input/ItemDef.docx'), None, tmp_path/'unused.xlsx', tmp_path,
+            operating_mode='parking_vehicle_control', allow_draft=True), None)
+        parents, _ = app.prepare_scenario_candidates(source_state, service)
+        function = next(f for f in source_state.functions if f['function_id'] == fault.function_id)
+        generated, _ = service.generate_for_malfunction(fault, parents,
+            project_facts=ItemDefinitionFacts.from_dict(frozen['project']), function=selection_function(function))
+        parent = next(c for c in generated if c.facts.get('driver_in_vehicle') is True
+            and c.facts['scenario_atom_ids'] == frozen['candidate']['facts']['scenario_atom_ids'])
     class Client:
         calls = 0
         def complete_json(self, request):
@@ -133,8 +149,19 @@ def test_original_real_proposal_replays_through_production_physics_and_sec(metho
         assessment_key='replay', function=func, operating_mode=sc.operating_mode)
     result = StructuredRiskScoringService(method).score(view, 'unmodified real proposal replay')
     assert tuple(result[key][field] for key, field in (
-        ('severity', 'severity_score'), ('exposure', 'exposure_score'), ('controllability', 'controllability_score'))) == ('S1', 'E3', 'C3')
-    assert result['branch_summary']['highest_known_asil'] == 'A'
+        ('severity', 'severity_score'), ('exposure', 'exposure_score'), ('controllability', 'controllability_score'))) == ('S1', 'E3', 'C3' if fresh_source_generation else '')
+    # This saved candidate predates validated driver-location provenance. The
+    # real proposal's braking capability is preserved, but TTC alone cannot
+    # bypass the unresolved driver input in this historical direct replay.
+    assert sc.facts['emergency_braking_available'] is True
+    if fresh_source_generation:
+        assert context.driver_in_vehicle.status.value == 'AVAILABLE'
+        assert result['branch_summary']['highest_known_asil'] == 'A'
+    else:
+        assert context.driver_in_vehicle.status.value == 'UNAVAILABLE'
+        assert 'driver_in_vehicle' in result['controllability']['pending_reason']
+        assert result['controllability']['decision_status'] == 'PROFILE_APPLICABILITY_UNRESOLVED'
+        assert not result['branch_summary']['highest_known_asil']
     assert result['branch_summary']['calculation_nature'] == 'CONDITIONAL'
 
 

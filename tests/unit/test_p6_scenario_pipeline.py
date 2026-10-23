@@ -382,6 +382,7 @@ def test_l_causal_reuse_does_not_reuse_c_or_asil_ratings(method):
     base = {**parent().facts, "scenario_atom_ids": ["SO010", "PH005"],
             "relative_speed_kph": 4.0, "collision_type": "FRONTAL", "road_user_type": "VEHICLE",
             "component_category": "sensor_camera", "ttc_s": 4.1,
+            "emergency_braking_available": True,
             "remote_intervention_available": False, "other_road_user_avoidance_possible": False}
     a = replace(parent("IN"), facts={**base, "driver_in_vehicle": True}, analysis_instance={"p6_generation": True})
     b = replace(a, scenario_id="OUT", facts={**base, "driver_in_vehicle": False})

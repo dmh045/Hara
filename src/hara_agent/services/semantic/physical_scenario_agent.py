@@ -71,7 +71,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v10-intervention-safe-state"
+    PROMPT_VERSION = "post-fault-physical-scenario-v11-braking-applicability"
     ANALYSIS_STRATEGY = (
         "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
@@ -134,6 +134,9 @@ class PhysicalScenarioAgent:
             "说明独立驾驶员制动路径是否仍可用；允许明确标识的条件性独立路径假设，"
             "但正常状态下可踩制动退出AVP，并不证明故障后制动通道一定独立有效。"
             "不能仅为得到C值声称remaining_controls；不支持的独立性留在未覆盖条件。"
+            "intervention_inputs是下游实际需要的干预条件；应在同一次方案中逐项检查。"
+            "emergency_braking_available由你明确声明的failed_controls/remaining_controls派生，"
+            "请说明当前故障后驾驶员制动能力是否保留及其条件；它与驾驶员是否在车内是两个条件。"
             "同时检查远程干预和目标参与者能否规避。已有事实足够时沿用；有合理条件性依据时，"
             "用可选intervention_assumptions明确给出remote_intervention_available和/或"
             "other_road_user_avoidance_possible，每项为{value:布尔值,rationale:理由,basis_refs:引用ID数组,"

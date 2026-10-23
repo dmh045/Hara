@@ -73,7 +73,9 @@ def score(method, sc):
 
 
 def test_drive_from_rest_produces_conditional_impact_without_approving_inputs(method):
-    sc = instantiate(method)[0]
+    raw = raw_plan()
+    raw["hypotheses"][0]["remaining_controls"] = ["driver_braking"]
+    sc = instantiate(method, raw)[0]
     assert sc.facts["ego_impact_speed_kph"] == pytest.approx(10.182338)
     assert sc.facts["ttc_s"] == pytest.approx(math.sqrt(2), abs=1e-6)
     assert sc.fact_provenance["longitudinal_acceleration_mps2"]["approval"] == "PENDING"

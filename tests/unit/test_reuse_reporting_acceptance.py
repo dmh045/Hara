@@ -173,12 +173,12 @@ def test_T17_T19_T20_pending_review_group_preserves_identities_and_combinations(
     for c in state.scenarios[1:]:c.facts.update(object_position='REAR',ego_longitudinal_direction='REVERSE')
     before=deepcopy(state)
     view=HARAReportProjectionService(load_report_schema()).project(state,_method())
-    assert len(view.rows)==1 and len(view.scenario_details)==3
-    combos=view.projection_metrics['grouping_map'][0]['combinations']
-    assert set(combos)=={'前进＋前方目标','倒车＋后方目标'}
+    assert len(view.rows)==2 and len(view.scenario_details)==3
+    groups=view.projection_metrics['grouping_map']
+    assert {tuple(g['combinations']) for g in groups}=={('前进＋前方目标',),('倒车＋后方目标',)}
     assert state==before
     assert all(d.asil=='待评定' for d in view.scenario_details)
-    assert set(view.projection_metrics['grouping_map'][0]['scenario_ids'])=={'SCN-1','SCN-2','SCN-3'}
+    assert {sid for g in groups for sid in g['scenario_ids']}=={'SCN-1','SCN-2','SCN-3'}
 
 
 def test_T18_highest_asil_uses_its_entire_tuple_and_handles_ties():

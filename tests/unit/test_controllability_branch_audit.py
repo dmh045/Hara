@@ -33,6 +33,7 @@ def _context(*, driver=False, remote=False, avoidance=False, ttc=4.5):
 
     return {
         "driver_in_vehicle": fact(driver),
+        "emergency_braking_available": fact(True),
         "remote_intervention_available": fact(remote),
         "other_road_user_avoidance_possible": fact(avoidance),
         "ttc_s": fact(ttc),
@@ -75,7 +76,8 @@ def test_current_project_unknown_override_fact_routes_to_ttc_without_false_fact(
         "source_type": "UNAVAILABLE", "source_ref": "",
     }
     result = _service().readiness(context)
-    assert result["status"] == "READY"
+    assert result["status"] == "PENDING_INPUT"
+    assert result["missing_inputs"] == ["driver_in_vehicle"]
     assert result["unknown_override_policy"] == "SKIP_TO_TTC"
     assert result["decision_stage"] == "TTC"
     assert result["unknown_policy_action"] == "SKIP_TO_TTC"
@@ -93,7 +95,7 @@ def test_later_positive_override_wins_after_an_earlier_unknown_rule():
 
 def test_block_and_skip_policies_are_distinct_fixture_behaviors():
     context = _context(driver=True, remote=False, avoidance=False)
-    context["driver_in_vehicle"] = {"status": "UNAVAILABLE", "value": None}
+    context["remote_intervention_available"] = {"status": "UNAVAILABLE", "value": None}
     blocked = _with_policy(UnknownOverridePolicy.BLOCK_TTC).readiness(context)
     assert blocked["status"] == "PENDING_INPUT"
     assert blocked["unknown_policy_action"] == "BLOCK_TTC"

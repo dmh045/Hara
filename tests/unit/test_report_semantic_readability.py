@@ -132,15 +132,14 @@ def test_multiple_members_keep_only_shared_raw_conditions_and_all_ratings(active
     before = deepcopy(state)
     service = HARAReportProjectionService(load_report_schema())
     view = service.project(state,active_method)
-    assert len(view.rows) == 1 and len(view.scenario_details) == 2
-    row = view.rows[0]
-    assert '驾驶员在驾驶位' not in row.operational_scenario
-    assert '室外停车场' not in row.operational_scenario and '地下停车场' not in row.operational_scenario
-    assert '初始车速' in row.operational_scenario
-    assert '参数' in row.remark and '加速度' in row.remark and '驾驶员位置' in row.remark
-    assert '最高已知结果不是全组上界' in row.remark
+    assert len(view.rows) == 2 and len(view.scenario_details) == 2
+    assert all('初始车速' in row.operational_scenario for row in view.rows)
+    assert any('室外停车场' in row.operational_scenario for row in view.rows)
+    assert any('地下停车场' in row.operational_scenario for row in view.rows)
+    assert any('最高已知结果不是全组上界' in row.remark for row in view.rows)
     assert {d.asil for d in view.scenario_details} == {'A','待评定'}
-    assert '15.6' not in row.scenario_detail and '18.1' not in row.scenario_detail
+    assert any('15.6' in row.scenario_detail for row in view.rows)
+    assert any('18.1' in row.scenario_detail for row in view.rows)
     assert state == before
 
 

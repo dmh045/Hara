@@ -27,7 +27,7 @@ def test_real_three_models_keep_geometry_and_reduce_only_redundant_sampling(acti
     baseline = tmp_path / 'frozen_method'
     shutil.copytree('method_assets/fusa_baseline_v1', baseline)
     frozen = Path(__file__).parents[1] / 'fixtures/physical_provider_quality_baseline'
-    for name in ('manifest.yaml', 'normalized/project_analysis_policy.yaml'):
+    for name in ('manifest.yaml', 'normalized/project_analysis_policy.yaml', 'raw/c_profiles/iav_avp.yaml'):
         shutil.copyfile(frozen / name, baseline / name)
     active_method = MethodSourceResolver().resolve(template_path=None,
         baseline_manifest_path=baseline / 'manifest.yaml',

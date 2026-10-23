@@ -233,6 +233,17 @@ def test_frozen_assets_and_eight_guidewords_are_exactly_unchanged(method):
         # physics. Other frozen assets and numerical tables stay exact.
         if filename.endswith("normalized/project_analysis_policy.yaml"):
             continue
+        if filename.endswith("raw/c_profiles/iav_avp.yaml"):
+            # Only compile the applicability already stated in the source;
+            # frozen thresholds, overrides and all other semantics stay exact.
+            import yaml
+            frozen = ROOT / 'tests/fixtures/physical_provider_quality_baseline/raw/c_profiles/iav_avp.yaml'
+            assert hashlib.sha256(frozen.read_bytes()).hexdigest() == digest
+            current = yaml.safe_load((ROOT / filename).read_text())
+            assert current.pop('ttc_applicability') == {'all_of': {
+                'driver_in_vehicle': True, 'emergency_braking_available': True}}
+            assert current == yaml.safe_load(frozen.read_text())
+            continue
         assert hashlib.sha256((ROOT / filename).read_bytes()).hexdigest() == digest, filename
     assert method.metadata["project_analysis_policy"]["version"] == "2.1"
     assert [{"id": g.guideword_id, "name": g.name, "description": g.description} for g in method.guidewords.guidewords] == fixture["guidewords"]

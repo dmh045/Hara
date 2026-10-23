@@ -145,6 +145,60 @@ def test_legacy_plan_still_reads_and_does_not_fabricate_state_or_intervention():
     assert 'safe_state_proposal' not in plan.hypotheses[0]
 
 
+@pytest.mark.parametrize('inside,remote,expected', [(True, None, 'C0'), (False, None, ''), (False, False, 'C3')])
+def test_generated_braking_capability_and_driver_access_are_separate(method, tmp_path, inside, remote, expected):
+    raw = raw_plan(initial=7, acceleration=0)
+    h = raw['hypotheses'][0]
+    h['parameters'][1]['value'] = 12
+    h['remaining_controls'] = ['braking']
+    if remote is not None:
+        h['intervention_assumptions'] = {'remote_intervention_available': {
+            'value': remote, 'rationale': 'offline scope explicitly has no remote brake',
+            'basis_refs': ['SCENARIO.conditions'], 'conditions': ['no remote intervention']}}
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            assert 'emergency_braking_available' in request.user_prompt
+            return LLMResponse(deepcopy(raw), 'OFFLINE_SYNTHETIC')
+    client = Frozen()
+    parent = make_candidate(7)
+    parent.facts['driver_in_vehicle'] = inside
+    parent.facts.pop('remote_intervention_available')
+    parent.fact_provenance.pop('remote_intervention_available', None)
+    state = HARAState('braking-access')
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    child = construct_physical_scenarios(state, {'MF': [parent]}, [mf()], method=method,
+        agent=agent, project_facts=None)['MF'][0]
+    assert child.facts['emergency_braking_available'] is True
+    assert child.fact_provenance['emergency_braking_available']['approval'] == 'PENDING'
+    result = score(method, child)
+    assert result['controllability']['controllability_score'] == expected
+    assert result['severity']['severity_score'] == 'S1'
+    assert result['controllability']['engineering_status'] == 'PENDING'
+    construct_physical_scenarios(state, {'MF': [parent]}, [mf()], method=method,
+        agent=agent, project_facts=None)
+    assert client.calls == 1
+
+
+def test_legacy_remaining_control_projection_preserves_checkpoint_and_provenance(method):
+    from test_autonomous_physics import instantiate
+    from hara_agent.services.analysis.hazardous_event_risk_context_service import HazardousEventRiskContextService
+    raw = raw_plan()
+    raw['hypotheses'][0]['remaining_controls'] = ['braking']
+    child = instantiate(method, raw)[0]
+    # Serialized historical records have the proposal, but no flat capability.
+    child.facts.pop('emergency_braking_available')
+    child.fact_provenance.pop('emergency_braking_available')
+    before = deepcopy(child)
+    assert score(method, child)['controllability']['controllability_score'] == 'C3'
+    assert child == before
+    child.fact_provenance['physical_analysis']['validation_status'] = 'UNVALIDATED'
+    result = score(method, child)
+    assert not result['controllability']['controllability_score']
+    assert result['controllability']['decision_status'] == 'PROFILE_APPLICABILITY_UNRESOLVED'
+
+
 def test_driver_only_safe_state_is_not_applied_to_outside_driver_child(method):
     from test_report_review_corrections import mixed_pending_group
     state = mixed_pending_group()

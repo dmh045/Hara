@@ -418,6 +418,14 @@ class EngineeringReportTextMapper:
             return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
         if control.get("decision_status") == "MODEL_DEPENDENCY_UNRESOLVED":
             return "故障影响规避控制；C 方法依赖尚未成立"
+        if control.get("decision_status") == "PROFILE_APPLICABILITY_UNRESOLVED":
+            inputs = control.get("override_inputs", control.get("inputs", control.get("physical_inputs", {})))
+            if inputs.get("driver_in_vehicle") is False:
+                return "驾驶员在车外，车内制动反应分档不适用；远程干预或他方避让尚无适用结论"
+            reason = control.get("pending_reason", "")
+            missing = [label for key, label in (("driver_in_vehicle", "驾驶员可在车内操作"),
+                ("emergency_braking_available", "故障后仍有可用制动能力")) if key in reason]
+            return "制动反应分档不适用或依据未齐：" + "、".join(missing or ["驾驶员及制动路径条件未成立"])
         stage = {
             "OVERRIDE": "干预覆盖",
             "TTC": "TTC 分档",
@@ -889,7 +897,7 @@ class EngineeringReportTextMapper:
                 return "、".join(available) + f"；按适用干预条件评为 {evidence.value}。"
         if _status(evidence) == "FINALIZED":
             return "已按当前方法完成 C 评定。"
-        if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED"}:
+        if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED", "PROFILE_APPLICABILITY_UNRESOLVED"}:
             reason = self.controllability_branch({"controllability": trace})
             available = self.known_inputs(trace.get("known_physical_inputs", {}))
             return reason + (f"；已有 {available}" if available else "") + "；C 暂未定。"
