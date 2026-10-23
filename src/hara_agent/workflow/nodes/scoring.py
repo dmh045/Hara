@@ -587,7 +587,7 @@ def score_structured_scenarios(
                 else ("条件性 ASIL 试算；假设范围内的分支结果，未获工程批准。" if asil_value else
                       "ASIL 未决；" + "; ".join(f"{label}: {value.review_reason}" for label, value in
                           (("S", severity), ("E", exposure), ("C", controllability)) if not value.value))
-                if scenario.get("physical_analysis")
+                if scenario.get("physical_analysis") or scenario.get("control_analysis")
                 else "ASIL lookup requires complete, approved S/E/C values."
             ),
         )

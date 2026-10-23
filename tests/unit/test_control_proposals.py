@@ -20,6 +20,139 @@ from hara_agent.workflow.nodes.scoring import score_structured_scenarios
 from hara_agent.workflow.physical_analysis import construct_physical_scenarios
 
 
+def control_only_plan(*, braking=True):
+    return {"hypotheses": [], "uncovered_conditions": [], "control_assessment": {
+        "rationale": "命令异常与执行器能力分开；独立人工通道为条件性假设",
+        "basis_refs": ["MF.description"], "conditions": ["独立人工制动通道未受自动指令故障影响"],
+        "uncovered_conditions": ["未证明车辆实测能力"],
+        "failed_controls": ["automatic_braking_command"] if braking else ["braking"],
+        "remaining_controls": ["driver_braking"] if braking else [],
+        "intervention_assumptions": {field: {
+            "value": False, "rationale": "限定为无可用远程路径、目标无规避空间的代表工况",
+            "basis_refs": ["SCENARIO.conditions"], "conditions": ["无远程干预；目标无规避空间"]}
+            for field in ("remote_intervention_available", "other_road_user_avoidance_possible")}}}
+
+
+def existing_motion(inside=True):
+    from test_p7_closure import source
+    parent = make_candidate(7)
+    parent.facts.update(driver_in_vehicle=inside, relative_speed_kph=7., relative_distance_m=12.,
+        ttc_s=12 / (7 / 3.6), collision_type="FRONTAL", object_position="FRONT",
+        collision_branches=[{"branch_id": "existing-contact", "mechanism_id": "MF:CONTACT",
+                             "physically_possible": True}])
+    parent.fact_provenance.update({field: source() for field in parent.facts})
+    return parent
+
+
+@pytest.mark.parametrize('inside,braking,expected', [(True, True, 'C0'), (False, True, 'C3'), (True, False, '')])
+def test_existing_motion_gets_only_missing_controls_then_scores_and_resumes(method, tmp_path, inside, braking, expected):
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            content = json.loads(request.user_prompt)
+            assert content['context']['task_scope'] == 'CONTROL_INPUTS_ONLY'
+            assert not content['model_catalog']
+            return LLMResponse(control_only_plan(braking=braking), 'OFFLINE_SYNTHETIC')
+    client = Frozen()
+    parent = existing_motion(inside)
+    # No hidden prefilled control facts: the bounded agent must produce them.
+    for field in ('remote_intervention_available', 'other_road_user_avoidance_possible'):
+        parent.facts.pop(field); parent.fact_provenance.pop(field)
+    original = deepcopy(asdict(parent))
+    state = HARAState('control-only', malfunctions=[asdict(mf())])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    def run(candidates):
+        return construct_physical_scenarios(state, {'MF': candidates}, [mf()], method=method,
+            agent=agent, project_facts=None)['MF']
+    child = run([parent])[0]
+    assert child.scenario_id != parent.scenario_id
+    assert child.status is ReviewStatus.PENDING
+    assert asdict(parent) == original
+    for field in ('relative_speed_kph', 'relative_distance_m', 'ttc_s', 'collision_branches'):
+        assert child.facts[field] == parent.facts[field]
+        assert child.fact_provenance[field] == parent.fact_provenance[field]
+    before, after = score(method, parent), score(method, child)
+    assert after['controllability']['controllability_score'] == expected
+    assert before['severity'] == after['severity']
+    assert before['exposure'] == after['exposure']
+    assert after['controllability']['engineering_status'] == 'PENDING'
+    assert 'physical_analysis' not in child.facts
+    assert child.fact_provenance['emergency_braking_available']['approval'] == 'PENDING'
+    assert state.item_definition['physical_analysis_metrics']['physical_solve_points'] == 0
+    assert state.item_definition['physical_analysis_metrics']['control_only_instances'] == 1
+    assert run([parent])[0] == child  # response/plan recovery
+    assert run([child])[0] == child  # an assessed gap is not re-requested
+    assert client.calls == 1
+    assert PhysicalHypothesisInstantiationService(method).task_scope(child, 'MF') == ''
+    state.scenarios = [child]
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    assert restored.scenarios == state.scenarios
+
+
+def test_control_only_preserves_conflicting_project_and_old_hypothesis(method):
+    from test_autonomous_physics import instantiate
+    from test_p7_closure import source
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    producer = PhysicalHypothesisInstantiationService(method)
+    plan = PhysicalScenarioPlan.from_dict(control_only_plan(), evidence_ids={'MF.description', 'SCENARIO.conditions'})
+    parents = [existing_motion(), instantiate(method)[0], existing_motion()]
+    parents[0].facts['emergency_braking_available'] = False
+    parents[0].fact_provenance['emergency_braking_available'] = source()
+    parents[1].facts['physical_analysis']['hypothesis']['failed_controls'] = ['braking']
+    parents[2].facts['collision_branches'][0].update(emergency_braking_available=False,
+        _fact_provenance={'emergency_braking_available': source()})
+    for parent in parents:
+        before = deepcopy(asdict(parent))
+        children, errors = producer.instantiate(parent, mf(), plan, plan_key='controls', response_model='OFFLINE')
+        assert not children and errors[0]['reason_code'] == 'CONFLICT_WITH_SELECTED_CONDITION'
+        assert asdict(parent) == before
+
+
+def test_control_only_contract_rejects_motion_and_rating_payloads():
+    for key, value in [('parameters', []), ('controllability', 'C1'), ('approved', True)]:
+        raw = control_only_plan(); raw['control_assessment'][key] = value
+        with pytest.raises(ValueError):
+            PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description', 'SCENARIO.conditions'})
+    raw = control_only_plan(); raw['hypotheses'] = raw_plan()['hypotheses']
+    with pytest.raises(ValueError, match='preserve existing motion'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description', 'SCENARIO.conditions'})
+
+
+def test_existing_motion_two_drivers_share_controls_without_reusing_causal_identity(method):
+    from hara_agent.services.analysis.scenario_equivalence import exact_task_key
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(control_only_plan(), 'OFFLINE_SYNTHETIC')
+    parents = [existing_motion(True), existing_motion(False)]
+    parents[1].scenario_id = 'SC-OUTSIDE'
+    for parent in parents:
+        for field in ('remote_intervention_available', 'other_road_user_avoidance_possible'):
+            parent.facts.pop(field); parent.fact_provenance.pop(field)
+    client = Frozen()
+    state = HARAState('control-sharing', malfunctions=[asdict(mf())])
+    children = construct_physical_scenarios(state, {'MF': parents}, [mf()], method=method,
+        agent=PhysicalScenarioAgent(client), project_facts=None)['MF']
+    assert client.calls == 1 and len(children) == 2
+    assert len({c.scenario_id for c in children}) == 2
+    assert len({exact_task_key(ScenarioFeasibilityAgent(client), mf(), c) for c in children}) == 2
+    assert {c.facts['driver_in_vehicle']: score(method, c)['controllability']['controllability_score']
+            for c in children} == {True: 'C0', False: 'C3'}
+    assert state.item_definition['physical_analysis_metrics']['control_plan_reuse'] == 1
+    assert state.item_definition['physical_analysis_metrics']['physical_plan_reuse'] == 0
+
+
+def test_existing_physical_proposal_does_not_fan_out_unresolved_controls(method):
+    from test_autonomous_physics import instantiate
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    child = instantiate(method)[0]  # Valid motion, no declared remaining braking capability.
+    assert not score(method, child)['controllability']['controllability_score']
+    assert PhysicalHypothesisInstantiationService(method).task_scope(child, 'MF') == ''
+
+
 def proposal_plan():
     raw = raw_plan('CONSTANT_LATERAL_ACCELERATION_TO_CONTACT')
     h = raw['hypotheses'][0]

@@ -72,6 +72,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 class PhysicalScenarioAgent:
     PROMPT_VERSION = "post-fault-physical-scenario-v11-braking-applicability"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v1"
     ANALYSIS_STRATEGY = (
         "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
@@ -187,6 +188,34 @@ class PhysicalScenarioAgent:
                    "parameter_units": PARAMETER_UNITS, "output_shape": example,
                    "control_identities": sorted(CONTROL_IDENTITIES),
                    "contract_version": PHYSICAL_PLAN_VERSION}
+        controls_only = context.get("task_scope") == "CONTROL_INPUTS_ONLY"
+        if controls_only:
+            # Same bounded agent/transport/repair ledger, with motion explicitly
+            # out of scope. Avoid contradictory motion-generation instructions.
+            system = (
+                "你是故障后物理场景分析员。当前轨迹和碰撞条件已经由现有生产路径确定。"
+                "本次只分析 intervention_inputs 中缺少的干预能力，不重新生成运动、参数、对象或碰撞分支。"
+                "读取 context 的原文、限定与来源；$context_ref 和 $source_text 是完整来源引用。"
+                "根据功能、失效作用范围及现有条件，区分自动指令故障 automatic_braking_command、"
+                "制动能力本身 braking 和独立驾驶员制动路径 driver_braking。已有明确控制条件必须保留。"
+                "正常时踩制动能退出功能，不等于故障后独立制动一定有效；允许有依据的条件性能力假设，"
+                "明确写出适用条件，不能声称工程批准。驾驶员位置由各分支提供，本任务不改变它。"
+                "远程干预和目标规避通过 intervention_assumptions 表达，每项包含 value 布尔值、"
+                "rationale、basis_refs、conditions。未知不能当成false，静止目标不等于人员无法逃避，"
+                "有App不等于故障后远程制动有效。remote为true须有remaining_controls中的remote_control"
+                "和仍可用的执行能力。不能依赖失效的控制。无法形成合理假设时具体说明未覆盖条件。"
+                "failed_controls/remaining_controls只能使用control_identities；basis_refs只能使用"
+                "output_contract.basis_ref_ids。每项假设必须有来源依据和明确条件。"
+                "只返回output_shape规定的JSON：hypotheses为空，control_assessment为控制能力分析。"
+                "禁止输出S/E/C/ASIL、批准状态、速度、距离、TTC、碰撞分支、几何或新运动模型。"
+                "correction_diagnostics仅用于纠正相容性问题，保留有效输入。"
+            )
+            content["output_shape"] = {"hypotheses": [], "uncovered_conditions": [], "control_assessment": {
+                "rationale": "failure scope and capability basis", "basis_refs": ["MF.description"],
+                "conditions": ["explicit conditional applicability"], "uncovered_conditions": [],
+                "failed_controls": [], "remaining_controls": [], "intervention_assumptions": {}}}
+            content["model_catalog"] = {}
+            content["parameter_units"] = {}
         attempts = []
         errors = []
         previous_response = None
@@ -194,7 +223,7 @@ class PhysicalScenarioAgent:
             request = LLMRequest(task="construct_post_fault_physical_scenario",
                 system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
                     **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str),
-                schema_name="PhysicalScenarioPlan", prompt_version=self.PROMPT_VERSION,
+                schema_name="PhysicalScenarioPlan", prompt_version=self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION,
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair}, max_tokens=4096)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
             record = {"request": asdict(request), "response": asdict(response), "schema_repair": repair}
@@ -202,6 +231,8 @@ class PhysicalScenarioAgent:
             on_response(record)  # Persist even a semantically invalid response before repair.
             try:
                 plan = PhysicalScenarioPlan.from_dict(response.data, evidence_ids=set(context["evidence"]))
+                if controls_only != (plan.control_assessment is not None):
+                    raise ValueError("Output must match task_scope; control-only tasks cannot replace existing motion")
                 return plan, {"responses": attempts, "validation_errors": errors,
                     "request_count": sum(not a["response"]["usage"].get("response_checkpoint_hit") for a in attempts),
                     "response_cache_hits": sum(bool(a["response"]["usage"].get("response_checkpoint_hit")) for a in attempts),

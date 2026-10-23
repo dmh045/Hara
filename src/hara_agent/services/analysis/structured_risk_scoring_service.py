@@ -154,14 +154,16 @@ class StructuredRiskScoringService:
     def score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
         result = self._score(scenario, hazard_event)
         analysis = scenario.get("physical_analysis")
-        if not analysis:
+        controls = scenario.get("control_analysis")
+        if not analysis and not controls:
             return result
         # Numeric table evaluations are retained; engineering confirmation is
         # independent and never manufactured from the proposal's validity.
-        conditional_dimensions = ("severity", "controllability", "exposure") if scenario.get("physical_object_exposure_conditional") else ("severity", "controllability")
+        conditional_dimensions = (("severity", "controllability", "exposure") if scenario.get("physical_object_exposure_conditional")
+            else ("severity", "controllability") if analysis else ("controllability",))
         for dimension in conditional_dimensions:
             result[dimension].update(engineering_status="PENDING", calculation_nature="CONDITIONAL",
-                engineering_basis="条件性试算；仅适用于所列物理假设，并非已确认车辆能力。")
+                engineering_basis="条件性试算；仅适用于所列运动或干预能力假设，并非已确认车辆能力。")
         if scenario.get("physical_object_exposure_unresolved"):
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
@@ -172,13 +174,16 @@ class StructuredRiskScoringService:
         if result.get("branch_summary"):
             result["branch_summary"].update(status="PENDING", calculation_nature="CONDITIONAL",
                 vehicle_upper_bound_proven=False, range_invariance_proven=False)
-        result["physical_analysis"] = analysis
+        if analysis:
+            result["physical_analysis"] = analysis
+        if controls:
+            result["control_analysis"] = controls
         return result
 
     def _score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
         result = self._calculate(scenario, hazard_event)
         control = result["controllability"]
-        hypothesis = scenario.get("physical_analysis", {}).get("hypothesis", {})
+        hypothesis = scenario.get("control_analysis", scenario.get("physical_analysis", {})).get("hypothesis", {})
         failed_controls = hypothesis.get("failed_controls", [])
         braking_path_unresolved = scenario.get("emergency_braking_available") is False or (
             "automatic_braking_command" in failed_controls and (

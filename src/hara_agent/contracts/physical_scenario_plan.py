@@ -86,20 +86,71 @@ def _number(value: Any) -> float:
     return float(value)
 
 
+def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
+    for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
+        _texts(h[key])
+    if not set(h["failed_controls"] + h["remaining_controls"]) <= CONTROL_IDENTITIES:
+        raise ValueError("Control identities must be " + ", ".join(sorted(CONTROL_IDENTITIES)))
+    if set(h["failed_controls"]) & set(h["remaining_controls"]):
+        raise ValueError("A failed control cannot be a remaining control")
+    if "braking" in h["failed_controls"] and "driver_braking" in h["remaining_controls"]:
+        raise ValueError("A failed braking capability cannot provide remaining driver braking")
+    interventions = h.get("intervention_assumptions", {})
+    _object(interventions, set(), {"remote_intervention_available", "other_road_user_avoidance_possible"})
+    proposals = list(interventions.values())
+    if "safe_state_proposal" in h:
+        proposal = _object(h["safe_state_proposal"],
+            {"description", "required_controls", "basis_refs", "conditions"})
+        _text(proposal["description"])
+        controls = _texts(proposal["required_controls"])
+        if not controls or not set(controls) <= set(h["remaining_controls"]):
+            raise ValueError("Safe state proposal must depend on explicitly remaining controls")
+        proposals.append(proposal)
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            raise ValueError("Control proposal must be an object")
+        if "value" in proposal:
+            _object(proposal, {"value", "rationale", "basis_refs", "conditions"})
+            if type(proposal["value"]) is not bool:
+                raise ValueError("Intervention assumption requires an explicit boolean")
+            _text(proposal["rationale"])
+        elif proposal is not h.get("safe_state_proposal"):
+            raise ValueError("Intervention assumption requires value and rationale")
+        refs = _texts(proposal["basis_refs"])
+        if not refs or not set(refs) <= evidence_ids or not _texts(proposal["conditions"]):
+            raise ValueError("Control proposals require supplied evidence IDs and explicit conditions")
+    remote = interventions.get("remote_intervention_available", {})
+    if remote.get("value") is True and "remote_control" not in h["remaining_controls"]:
+        raise ValueError("Remote intervention requires an explicitly remaining remote control path")
+
+
 @dataclass(frozen=True)
 class PhysicalScenarioPlan:
     hypotheses: tuple[dict, ...]
     uncovered_conditions: tuple[str, ...]
     version: str = PHYSICAL_PLAN_VERSION
+    control_assessment: dict | None = None
 
     @classmethod
     def from_dict(cls, raw: dict, *, evidence_ids: set[str]) -> "PhysicalScenarioPlan":
-        _object(raw, {"hypotheses", "uncovered_conditions"})
+        _object(raw, {"hypotheses", "uncovered_conditions"}, {"control_assessment"})
+        control = raw.get("control_assessment")
+        if control is not None:
+            _object(control, {"rationale", "basis_refs", "conditions", "uncovered_conditions",
+                              "failed_controls", "remaining_controls"}, {"intervention_assumptions"})
+            _text(control["rationale"])
+            if not _texts(control["basis_refs"]) or not set(control["basis_refs"]) <= evidence_ids:
+                raise ValueError("Control assessment requires supplied evidence IDs")
+            if not _texts(control["conditions"]):
+                raise ValueError("Control assessment requires explicit applicability conditions")
+            _validate_controls(control, evidence_ids)
+            if raw["hypotheses"]:
+                raise ValueError("Control-only assessment must preserve existing motion")
         hypotheses = raw["hypotheses"]
         if not isinstance(hypotheses, list) or not 0 <= len(hypotheses) <= 3:
             raise ValueError("A physical plan contains 0..3 hypotheses")
         uncovered = _texts(raw["uncovered_conditions"])
-        if not hypotheses and not uncovered:
+        if not hypotheses and not uncovered and control is None:
             raise ValueError("An empty physical plan requires a concrete model applicability gap")
         identities = set()
         for h in hypotheses:
@@ -137,41 +188,7 @@ class PhysicalScenarioPlan:
             refs = _texts(h["basis_refs"])
             if not refs or not set(refs) <= evidence_ids:
                 raise ValueError(f"hypotheses[{identity}].basis_refs must use supplied IDs {sorted(evidence_ids)}; received {refs}")
-            for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
-                _texts(h[key])
-            if not set(h["failed_controls"] + h["remaining_controls"]) <= CONTROL_IDENTITIES:
-                raise ValueError("Control identities must be " + ", ".join(sorted(CONTROL_IDENTITIES)))
-            if set(h["failed_controls"]) & set(h["remaining_controls"]):
-                raise ValueError("A failed control cannot be a remaining control")
-            if "braking" in h["failed_controls"] and "driver_braking" in h["remaining_controls"]:
-                raise ValueError("A failed braking capability cannot provide remaining driver braking")
-            interventions = h.get("intervention_assumptions", {})
-            _object(interventions, set(), {"remote_intervention_available", "other_road_user_avoidance_possible"})
-            proposals = list(interventions.values())
-            if "safe_state_proposal" in h:
-                proposal = _object(h["safe_state_proposal"],
-                    {"description", "required_controls", "basis_refs", "conditions"})
-                _text(proposal["description"])
-                controls = _texts(proposal["required_controls"])
-                if not controls or not set(controls) <= set(h["remaining_controls"]):
-                    raise ValueError("Safe state proposal must depend on explicitly remaining controls")
-                proposals.append(proposal)
-            for proposal in proposals:
-                if not isinstance(proposal, dict):
-                    raise ValueError("Control proposal must be an object")
-                if "value" in proposal:
-                    _object(proposal, {"value", "rationale", "basis_refs", "conditions"})
-                    if type(proposal["value"]) is not bool:
-                        raise ValueError("Intervention assumption requires an explicit boolean")
-                    _text(proposal["rationale"])
-                elif proposal is not h.get("safe_state_proposal"):
-                    raise ValueError("Intervention assumption requires value and rationale")
-                refs = _texts(proposal["basis_refs"])
-                if not refs or not set(refs) <= evidence_ids or not _texts(proposal["conditions"]):
-                    raise ValueError("Control proposals require supplied evidence IDs and explicit conditions")
-            remote = interventions.get("remote_intervention_available", {})
-            if remote.get("value") is True and "remote_control" not in h["remaining_controls"]:
-                raise ValueError("Remote intervention requires an explicitly remaining remote control path")
+            _validate_controls(h, evidence_ids)
             g = _object(h["geometry"], {"road_user_type", "collision_type", "object_position",
                 "ego_longitudinal_direction", "object_extent", "object_id"})
             for value in g.values():
@@ -222,7 +239,8 @@ class PhysicalScenarioPlan:
                     raise ValueError("Unknown parameter kind")
                 if field not in {"longitudinal_acceleration_mps2", "lateral_acceleration_mps2"} and any(v < 0 for v in values):
                     raise ValueError("Negative magnitude")
-        return cls(tuple(hypotheses), tuple(uncovered))
+        return cls(tuple(hypotheses), tuple(uncovered), control_assessment=control)
 
     def to_dict(self) -> dict:
-        return {"hypotheses": list(self.hypotheses), "uncovered_conditions": list(self.uncovered_conditions)}
+        return {"hypotheses": list(self.hypotheses), "uncovered_conditions": list(self.uncovered_conditions),
+                **({"control_assessment": self.control_assessment} if self.control_assessment is not None else {})}

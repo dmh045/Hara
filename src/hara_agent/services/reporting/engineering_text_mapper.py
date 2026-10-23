@@ -315,6 +315,10 @@ class EngineeringReportTextMapper:
         ]
         model = facts.get("fault_motion_model")
         analysis = facts.get("physical_analysis", {})
+        if controls := facts.get("control_analysis", {}).get("hypothesis"):
+            parts.append("干预能力假设：" + "；".join(controls["conditions"]))
+            for proposal in controls.get("intervention_assumptions", {}).values():
+                parts.append("干预条件：" + "；".join(proposal["conditions"]))
         if analysis:
             labels = {"ego_speed_kph": "初速(km/h)", "relative_distance_m": "行程(m)",
                 "longitudinal_acceleration_mps2": "纵向加速度(m/s²)", "slope_percent": "坡度(%)",
@@ -414,6 +418,8 @@ class EngineeringReportTextMapper:
         control = trace.get("controllability", {})
         if not isinstance(control, Mapping) or not control:
             return ""
+        if control.get("decision_status") == "OVERRIDE_MATCH":
+            return "C 分支：干预覆盖；依据已命中的干预条件评分，未使用 TTC 分档"
         if control.get("decision_status") == "MODEL_NOT_APPLICABLE":
             return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
         if control.get("decision_status") == "MODEL_DEPENDENCY_UNRESOLVED":
@@ -435,14 +441,14 @@ class EngineeringReportTextMapper:
         ttc = control.get("derived_ttc", {}).get("ttc_s")
         if isinstance(ttc, (float, int)):
             parts.append(f"预计首次接触：{quantity(ttc, 's')} s")
-        policy = str(control.get("unknown_override_policy", ""))
-        if policy:
-            parts.append("未知干预条件的处理：" + {"SKIP_TO_TTC": "进入 TTC 分档",
-                "UNSPECIFIED": "方法尚未明确", "PENDING": "保留待评定"}.get(policy, "见方法依据"))
-        action = str(control.get("unknown_policy_action", ""))
-        if action and action not in {"NOT_INVOKED", ""}:
-            if action != policy:
-                parts.append("处理结果：" + {"SKIP_TO_TTC": "进入 TTC 分档"}.get(action, "见方法依据"))
+        action = {"SKIP_TO_TTC": "干预条件未明确，按方法进入 TTC 分档",
+            "BLOCK_TTC": "干预条件未明确，保留待评定",
+            "UNSPECIFIED_BLOCKED": "未知干预条件的处理方法尚未明确",
+            "CONFLICT_BLOCKED": "干预条件冲突，保留待评定"}.get(control.get("unknown_policy_action"))
+        if action:
+            parts.append(action)
+        elif not control.get("unknown_policy_action") and control.get("unknown_override_policy") == "UNSPECIFIED":
+            parts.append("未知干预条件的处理方法尚未明确")  # Legacy trace without an action field.
         return "；".join(parts)
 
     @classmethod
@@ -476,6 +482,8 @@ class EngineeringReportTextMapper:
             "fault_motion_model": "运动分析条件", "ego_impact_speed_kph": "碰撞速度",
         }
         parts = []
+        if (getattr(scenario, "facts", {}) or {}).get("control_analysis"):
+            parts.append("沿用既有轨迹；干预能力为条件性假设，C/ASIL 数值不代表已获工程批准")
         all_source_locations = []
         for field, label in labels.items():
             record = provenance.get(field, {})

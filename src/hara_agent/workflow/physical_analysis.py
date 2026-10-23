@@ -148,16 +148,17 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     for mf in malfunctions:
         groups, kept = defaultdict(list), []
         for candidate in candidates[mf.malfunction_id]:
-            if not producer.needed(candidate, mf.malfunction_id):
+            task_scope = producer.task_scope(candidate, mf.malfunction_id)
+            if not task_scope:
                 kept.append(candidate); metrics["existing_path_skipped"] += 1
-            elif gap := producer.known_model_gap(candidate, mf.malfunction_id):
+            elif task_scope == "MOTION_AND_CONTROLS" and (gap := producer.known_model_gap(candidate, mf.malfunction_id)):
                 candidate.analysis_instance["physical_plan_diagnostics"] = [gap]
                 kept.append(candidate)
                 metrics["known_model_gap_skipped"] = metrics.get("known_model_gap_skipped", 0) + 1
                 metrics["diagnostics"].append({"scenario_id": candidate.scenario_id, **gap})
             else:
-                groups[signature(scenario_conditions(candidate, without_driver=True))].append(candidate)
-        for condition_key, family in groups.items():
+                groups[(task_scope, signature(scenario_conditions(candidate, without_driver=True)))].append(candidate)
+        for (task_scope, condition_key), family in groups.items():
             first = family[0]
             # The same motion plan can be instantiated for multiple driver
             # configurations. Causality and risk are still evaluated per world.
@@ -167,7 +168,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 "project_context": {k: v for k, v in project.items() if k not in {"risk_facts", "method_risk_fact_bindings", "sources"}},
                 "project_physical_facts": [f for f in project.get("risk_facts", [])
                     if f.get("parameter") in {"longitudinal_acceleration_mps2", "slope_percent", "ego_speed_kph",
-                        "relative_distance_m", "steering_control_available", "emergency_braking_available"}],
+                        "relative_distance_m", "steering_control_available", "emergency_braking_available",
+                        "remote_intervention_available", "other_road_user_avoidance_possible"}],
                 "method_identity": {k: method.metadata.get(k) for k in ("method_source_hash", "project_analysis_policy")},
                 "method_version": [method.contract_version, method.compiler_version],
                 "intervention_inputs": sorted({condition.field for rule in method.structured_risk_method.controllability_overrides
@@ -179,6 +181,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 "model_input_status": producer.input_status(first, mf.malfunction_id),
                 "producer_version": PHYSICAL_PLAN_VERSION, "model_catalog_identity": signature(MODEL_CATALOG),
                 "prompt_version": agent.PROMPT_VERSION, "route": route}
+            if task_scope == "CONTROL_INPUTS_ONLY":
+                inputs.update(task_scope=task_scope, prompt_version=agent.CONTROL_PROMPT_VERSION)
             evidence = {"MF.description": {"value": mf.description, "sources": [vars(ref) for ref in mf.sources]},
                         "MF.functional_effect": {"value": mf.functional_effect, "sources": [vars(ref) for ref in mf.sources]},
                         "PROJECT.operating_context": {"value": inputs["project_context"], "sources": project.get("sources", [])},
@@ -260,12 +264,14 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["schema_repairs"] += audit["schema_repairs"]
                     metrics["response_cache_hits"] += audit["response_cache_hits"]
                     instantiated = instantiate_family(plan)
-                metrics["physical_plan_reuse"] += len(family) - 1
+                reuse_kind = "control_plan_reuse" if task_scope == "CONTROL_INPUTS_ONLY" else "physical_plan_reuse"
+                metrics[reuse_kind] = metrics.get(reuse_kind, 0) + len(family) - 1
                 metrics["plan_reuse_records"].append({"plan_key": key,
+                    "task_scope": task_scope,
                     "scenario_ids": [candidate.scenario_id for candidate in family],
                     "exact_input_keys": [signature(scenario_conditions(candidate)) for candidate in family]})
                 for candidate, generated, failures in instantiated:
-                    if not plan.hypotheses:
+                    if not plan.hypotheses and plan.control_assessment is None:
                         failures = [{"reason": "PHYSICAL_MODEL_NOT_APPLICABLE",
                                      "uncovered_conditions": list(plan.uncovered_conditions)}]
                     kept.extend(generated or [candidate])
@@ -273,6 +279,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                         for item in generated or [candidate]:
                             item.analysis_instance["physical_plan_diagnostics"] = failures
                     metrics["generated_instances"] += len(generated)
+                    if plan.control_assessment is not None:
+                        metrics["control_only_instances"] = metrics.get("control_only_instances", 0) + len(generated)
                     metrics["diagnostics"].extend({"scenario_id": candidate.scenario_id, **f} for f in failures)
                     entry.setdefault("instantiations", {})[candidate.scenario_id] = {
                         "generated_ids": [g.scenario_id for g in generated],

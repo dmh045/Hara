@@ -121,6 +121,24 @@ def test_outside_driver_profile_gap_is_explained_as_inapplicability_not_missing_
     assert '缺相对距离' not in text and 'C0' not in text
 
 
+def test_matched_intervention_does_not_display_configured_ttc_policy_as_executed():
+    text = EngineeringReportTextMapper.controllability_branch({'controllability': {
+        'decision_status': 'OVERRIDE_MATCH', 'decision_tree_stage': 'OVERRIDE',
+        'unknown_override_policy': 'SKIP_TO_TTC', 'derived_ttc': {'ttc_s': .154286}}})
+    assert '干预覆盖' in text and '未使用 TTC 分档' in text
+    assert '进入 TTC 分档' not in text
+
+
+@pytest.mark.parametrize('action,unknown', [('ALL_OVERRIDES_NO_MATCH', False), ('SKIP_TO_TTC', True)])
+def test_c_detail_only_reports_unknown_policy_when_actually_used(action, unknown):
+    text = EngineeringReportTextMapper.controllability_branch({'controllability': {
+        'decision_status': 'TTC_AFTER_NO_MATCH', 'decision_tree_stage': 'TTC',
+        'unknown_override_policy': 'SKIP_TO_TTC', 'unknown_policy_action': action,
+        'derived_ttc': {'ttc_s': .154286}}})
+    assert ('干预条件未明确' in text) is unknown
+    assert '预计首次接触：0.15 s' in text
+
+
 def test_pending_asil_explains_same_branch_matrix_without_assigning_c(active_method):
     state = mixed_pending_group()
     risk = state.risk_results[0]

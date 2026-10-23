@@ -302,6 +302,8 @@ def test_existing_direct_path_never_requests_a_physical_plan(method):
         def complete_json(self, request):
             raise AssertionError("resolved path must not call LLM")
     sc = make_candidate()
+    sc.facts["emergency_braking_available"] = True
+    sc.fact_provenance["emergency_braking_available"] = source()
     sc.facts["collision_branches"] = [{"branch_id": "existing"}]
     sc.fact_provenance["collision_branches"] = source()
     state = HARAState("offline")

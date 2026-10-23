@@ -69,11 +69,33 @@ class PhysicalHypothesisInstantiationService:
             return isinstance(old, str) and isinstance(proposed, str) and old.strip().upper() == proposed.strip().upper()
         return old == proposed
 
-    @staticmethod
-    def needed(candidate, malfunction_id):
+    def task_scope(self, candidate, malfunction_id):
+        """Retain solved motion; ask only for unresolved control inputs."""
         scope = dict(malfunction_id=malfunction_id, scenario_id=candidate.scenario_id)
-        return not (candidate.facts.get("collision_branches") and
-                    source_is_accepted_for(candidate.fact_provenance.get("collision_branches", {}), **scope))
+        if not (candidate.facts.get("collision_branches") and
+                source_is_accepted_for(candidate.fact_provenance.get("collision_branches", {}), **scope)):
+            return "MOTION_AND_CONTROLS"
+        if candidate.facts.get("control_analysis") and source_is_accepted_for(
+                candidate.fact_provenance.get("control_analysis", {}), **scope):
+            return ""  # An assessed limitation is not another request on resume.
+        if candidate.facts.get("physical_analysis") and source_is_accepted_for(
+                candidate.fact_provenance.get("physical_analysis", {}), **scope):
+            # The motion task already requested control capabilities. Do not
+            # fan a saved plan's unresolved assumptions into another paid pass.
+            return ""
+        from .hazardous_event_risk_context_service import HazardousEventRiskContextService
+        from hara_agent.contracts import RiskContextFactStatus
+        contexts = HazardousEventRiskContextService(self.method)
+        context = contexts.build(**scope, hazard_node_id="control-readiness",
+            scenario={**candidate.facts, "_fact_provenance": candidate.fact_provenance})
+        if contexts.controllability_readiness(context)["status"] == "READY":
+            return ""
+        structured = self.method.structured_risk_method
+        fields = {c.field for r in structured.controllability_overrides for c in (*r.all_of, *r.any_of)}
+        fields.update(c.field for c in structured.controllability_profile.applicability)
+        fields.discard("driver_in_vehicle")  # An operating condition, not a proposed capability.
+        return "CONTROL_INPUTS_ONLY" if any(
+            getattr(context, field).status is not RiskContextFactStatus.AVAILABLE for field in fields) else ""
 
     @staticmethod
     def _opposite_target(values, model):
@@ -352,6 +374,12 @@ class PhysicalHypothesisInstantiationService:
     def instantiate(self, candidate, malfunction, plan, *, plan_key: str, response_model: str,
                     project_context=None, function=None):
         results, diagnostics = [], []
+        if plan.control_assessment is not None:
+            try:
+                return [self._instantiate_controls(candidate, malfunction, plan.control_assessment,
+                    plan_key, response_model)], []
+            except PhysicalInputConflict as error:
+                return [], [{"reason": str(error), **error.details}]
         for h in plan.hypotheses:
             try:
                 inputs, inheritance = self._model_inputs(candidate, h, malfunction.malfunction_id)
@@ -383,6 +411,71 @@ class PhysicalHypothesisInstantiationService:
                                         "reason": str(error), "parameters": values,
                                         **(error.details if isinstance(error, PhysicalInputConflict) else {})})
         return results, diagnostics
+
+    @staticmethod
+    def _rescope(value, old_id, new_id):
+        if isinstance(value, dict):
+            return {k: PhysicalHypothesisInstantiationService._rescope(v, old_id, new_id) for k, v in value.items()}
+        if isinstance(value, list):
+            return [PhysicalHypothesisInstantiationService._rescope(v, old_id, new_id) for v in value]
+        return new_id if value == old_id else value
+
+    def _instantiate_controls(self, parent, malfunction, assessment, plan_key, model_name):
+        """Condition the existing trajectory; never regenerate collision inputs."""
+        sid = f"{parent.scenario_id}-CTRL-{signature({'plan': plan_key, 'assessment': assessment})[:16]}"
+        facts = self._rescope(deepcopy(parent.facts), parent.scenario_id, sid)
+        provenance = self._rescope(deepcopy(parent.fact_provenance), parent.scenario_id, sid)
+        scope = {"malfunction_id": malfunction.malfunction_id, "scenario_id": sid}
+        meta = {"provenance": "LLM_INFERENCE", "origin": CONDITIONAL_ORIGIN, "approval": "PENDING",
+            "analysis_assumption_origin": CONDITIONAL_ORIGIN, "calculation_scope": "CONDITIONAL",
+            "analysis_assumption_scope": scope, "applicable_scope": scope,
+            "validation_status": "VALIDATED", "validated_by": type(self).__name__,
+            "hypothesis_id": f"{plan_key}:control_assessment",
+            "method_contract_hash": self.method.metadata.get("method_source_hash", ""),
+            "source_refs": [{"source_type": "analysis_hypothesis", "source_id": plan_key,
+                "location": "control_assessment", "excerpt": assessment["rationale"]}],
+            "basis_refs": assessment["basis_refs"], "conditions": assessment["conditions"]}
+        supplied = {k: p["value"] for k, p in assessment.get("intervention_assumptions", {}).items()}
+        capability = braking_capability(assessment)
+        old_analysis = parent.facts.get("physical_analysis", {})
+        if source_is_accepted_for(parent.fact_provenance.get("physical_analysis", {}),
+                malfunction_id=malfunction.malfunction_id, scenario_id=parent.scenario_id):
+            old_hypothesis = old_analysis.get("hypothesis", {})
+            old_capability = braking_capability(old_hypothesis)
+            if capability is not None and old_capability is not None and capability != old_capability:
+                raise PhysicalInputConflict("CONFLICT_WITH_SELECTED_CONDITION", "emergency_braking_available",
+                    old_capability, capability)
+            if (set(assessment["remaining_controls"]) & set(old_hypothesis.get("failed_controls", [])) or
+                    set(assessment["failed_controls"]) & set(old_hypothesis.get("remaining_controls", []))):
+                raise PhysicalInputConflict("CONFLICT_WITH_SELECTED_CONDITION", "controls", old_hypothesis, assessment)
+        if capability is not None:
+            supplied["emergency_braking_available"] = capability
+        if "steering" in assessment["failed_controls"]:
+            supplied["steering_control_available"] = False
+        for field, value in supplied.items():
+            for branch in facts.get("collision_branches", []):
+                if (branch.get(field) is not None and branch[field] != value
+                        and source_is_accepted_for(branch.get("_fact_provenance", {}).get(field, {}), **scope)):
+                    raise PhysicalInputConflict("CONFLICT_WITH_SELECTED_CONDITION", field, branch[field], value,
+                        relation=f"COLLISION_BRANCH:{branch.get('branch_id', '')}")
+            if facts.get(field) is not None and source_is_accepted_for(provenance.get(field, {}), **scope):
+                if facts[field] != value:
+                    raise PhysicalInputConflict("CONFLICT_WITH_SELECTED_CONDITION", field, facts[field], value)
+                continue
+            facts[field], provenance[field] = value, deepcopy(meta)
+            if proposal := assessment.get("intervention_assumptions", {}).get(field):
+                provenance[field].update(basis_refs=proposal["basis_refs"], conditions=proposal["conditions"])
+                provenance[field]["source_refs"][0]["excerpt"] = proposal["rationale"]
+        facts["control_analysis"] = {"plan_key": plan_key, "hypothesis": deepcopy(assessment),
+            "parent_scenario_id": parent.scenario_id, "response_model": model_name,
+            "calculation_nature": "CONDITIONAL", "engineering_approval": "NOT_GRANTED"}
+        provenance["control_analysis"] = deepcopy(meta)
+        # New capability conditions require a fresh causal task. The original
+        # parent, contact identity, trajectory and all physical values survive.
+        return replace(parent, scenario_id=sid, source_scenario_id=parent.scenario_id,
+            facts=facts, fact_provenance=provenance, status=type(parent.status).PENDING,
+            semantic_fingerprint=signature({"parent": parent.semantic_fingerprint, "controls": assessment}),
+            analysis_instance={**deepcopy(parent.analysis_instance), "control_analysis": facts["control_analysis"]})
 
     def _object_binding(self, parent, malfunction, geometry, project_context, function, *, initial=None, dimensions=("OBJECT",)):
         """Refine changed initial conditions through the existing validator.
@@ -574,11 +667,7 @@ class PhysicalHypothesisInstantiationService:
         sid = f"{parent.scenario_id}-PH-{identity}"
 
         def rescope(value):
-            if isinstance(value, dict):
-                return {k: rescope(v) for k, v in value.items()}
-            if isinstance(value, list):
-                return [rescope(v) for v in value]
-            return sid if value == parent.scenario_id else value
+            return self._rescope(value, parent.scenario_id, sid)
 
         facts, provenance = rescope(deepcopy(parent.facts)), rescope(deepcopy(parent.fact_provenance))
         if new_target:
