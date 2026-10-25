@@ -138,6 +138,7 @@ def main():
     mode=parser.add_mutually_exclusive_group();mode.add_argument('--live',action='store_true');mode.add_argument('--offline',action='store_true')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--symbolic-drive',action='store_true',help='Offline fixture only; exercises symbolic proposal through reporting')
+    parser.add_argument('--interaction-coverage', action='store_true', help='Offline only: finite moving targets through the same production application')
     parser.add_argument('--families',nargs='+',choices=FAMILIES,help='Narrow existing production sample selection; e.g. drive selects its two driver identities')
     parser.add_argument('--driver-position',choices=('in_driver_seat','outside_driver_seat'),help='Select an existing generated driver identity, without changing its facts')
     parser.add_argument('--numeric-representative',action='store_true',help='Compatibility flag: ordinary production now uses the same justified representative strategy')
@@ -145,6 +146,8 @@ def main():
     args=parser.parse_args()
     if args.symbolic_drive and not args.offline:
         parser.error('--symbolic-drive is an offline fixture option')
+    if args.interaction_coverage and (not args.offline or args.symbolic_drive or args.replay_physical_checkpoint):
+        parser.error('--interaction-coverage requires offline scripted replies without saved physical replay or symbolic-drive')
     if args.replay_physical_checkpoint and (not args.offline or args.symbolic_drive):
         parser.error('--replay-physical-checkpoint requires --offline and cannot edit saved replies via --symbolic-drive')
     if args.live and args.max_provider_attempts<1:
@@ -154,6 +157,8 @@ def main():
     state,config,plan=prepare(args.source_context,args.output,args.run_id,args.max_provider_attempts if args.live else 1,
         families=args.families,driver_position=args.driver_position,numeric_representative=args.numeric_representative)
     plan['offline_symbolic_drive']=args.symbolic_drive
+    if args.interaction_coverage:
+        plan['offline_interaction_coverage'] = True
     if args.replay_physical_checkpoint:
         plan['saved_physical_checkpoint_sha256'] = hashlib.sha256(args.replay_physical_checkpoint.read_bytes()).hexdigest()
     plan['budget_limit']=args.max_provider_attempts if args.live else 0
@@ -172,7 +177,7 @@ def main():
         load_local_env(); app=HARAApplication.from_env(config)
     else:
         client=(SavedPhysicalProposalClient(args.output,args.replay_physical_checkpoint) if args.replay_physical_checkpoint
-                else OfflinePhysicalClient(args.output,symbolic_drive=args.symbolic_drive))
+                else OfflinePhysicalClient(args.output,symbolic_drive=args.symbolic_drive,interaction_coverage=args.interaction_coverage))
         client.attempt_budget=ProviderAttemptBudget(config.run_dir/f'{config.run_id}.provider-attempts.jsonl',run_id=config.run_id,limit=1)
         app=HARAApplication(config,client)
     if not args.resume:

@@ -247,6 +247,15 @@ class EngineeringReportTextMapper:
             str(facts.get("object_position", "")).strip().casefold(), ""
         )
 
+    @classmethod
+    def _object_motion(cls, scenario: Any) -> str:
+        facts = getattr(scenario, "facts", {}) or {}
+        speed = facts.get("object_speed_kph")
+        direction = {"FORWARD": "沿车体前向运动", "REVERSE": "沿车体后向运动",
+                     "LEFT": "向车体左侧横穿", "RIGHT": "向车体右侧横穿"}.get(facts.get("object_longitudinal_direction"))
+        return (f"目标以{quantity(speed, 'km/h')} km/h{direction}"
+                if direction and isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0 else "")
+
     def object_interaction_summary(self, scenario: Any) -> str:
         """Render only structured object and interaction facts."""
         facts = getattr(scenario, "facts", {}) or {}
@@ -269,6 +278,8 @@ class EngineeringReportTextMapper:
             values.append(f"位置：{position}")
         if traffic:
             values.append(f"交互：{traffic}")
+        if motion := self._object_motion(scenario):
+            values.append(motion)
         return "；".join(values)
 
     @classmethod
@@ -324,7 +335,11 @@ class EngineeringReportTextMapper:
                 "longitudinal_acceleration_mps2": "纵向加速度(m/s²)", "slope_percent": "坡度(%)",
                 "residual_resistance_mps2": "残余阻力减速度(m/s²)", "lateral_clearance_m": "侧向净距(m)",
                 "lateral_speed_mps": "初始侧速(m/s)", "lateral_acceleration_mps2": "侧向加速度(m/s²)",
-                "model_valid_until_s": "模型时域(s)", "post_fault_speed_cap_kph": "残余限速(km/h)"}
+                "model_valid_until_s": "模型时域(s)", "post_fault_speed_cap_kph": "残余限速(km/h)",
+                "object_offset_x_m": "目标初始纵向中心偏移(m，车前为正)",
+                "object_offset_y_m": "目标初始横向中心偏移(m，车左为正)",
+                "contact_half_length_m": "双方合计接触包络半长(m)",
+                "contact_half_width_m": "双方合计接触包络半宽(m)"}
             parts.extend(f"{labels[key]}：{quantity(number, FIELD_UNITS.get(key, ''))}"
                 for key, number in analysis.get("sample_parameters", {}).items()
                 if key in labels and key not in {"ego_speed_kph", "relative_distance_m"})
@@ -350,14 +365,17 @@ class EngineeringReportTextMapper:
             # existing risk trace. Keep intervention assumptions visible here.
             parts.extend(text for text in analysis.get("hypothesis", {}).get("conditions", [])
                 if re.search(r"接管|介入|干预|interven", text, re.IGNORECASE))
-            if facts.get("first_contact_time_s") is not None:
-                parts.append(f"侧向首次接触：{quantity(facts['first_contact_time_s'], 's')} s（不作为纵向 TTC）")
+            if facts.get("first_contact_time_s") is not None and facts.get("ttc_s") is None:
+                parts.append(f"首次接触：{quantity(facts['first_contact_time_s'], 's')} s（不作为纵向 TTC）")
+            if condition := facts.get("selected_source_condition"):
+                parts.append(f"代表运行条件：{condition['value']}；物理影响：{condition['physical_effect']}")
         if model == "CONSTANT_SPEED_REPRESENTATIVE":
             parts.append("恒速代表工况；用于所列碰撞条件，不是故障最大速度包络")
         elif model:
             names = {"GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": "坡道溜车（重力减残余阻力）",
                 "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": "恒加速度至首次接触",
-                "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "侧向恒加速度至首次接触"}
+                "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "侧向恒加速度至首次接触",
+                "RECTILINEAR_MOVING_TARGET_CONTACT": "移动目标相对轨迹与有限包络首次接触"}
             parts.append(f"运动模型：{names.get(model, model)}")
         if not any(part.startswith("TTC：") for part in parts) and (
             str(derived.get("closing_speed_status", "")) == "TTC_NOT_CLOSING"
@@ -559,6 +577,8 @@ class EngineeringReportTextMapper:
         position = self._object_position(scenario)
 
         clauses = [location]
+        if condition := facts.get("selected_source_condition"):
+            clauses.append(f"代表运行条件为{condition['value']}")
         if mode:
             clauses.append(f"AVP处于{mode}状态")
         driver_position = {
@@ -575,6 +595,8 @@ class EngineeringReportTextMapper:
             clauses.append(f"周边存在{traffic}")
         elif object_value:
             clauses.append(f"周边{position}存在{object_value}" if position else f"周边存在{object_value}")
+        if motion := self._object_motion(scenario):
+            clauses.append(motion)
         if speed:
             clauses.append(speed.replace("：", "为", 1))
         operational = "，".join(clauses) + "。"
@@ -593,6 +615,10 @@ class EngineeringReportTextMapper:
             details.append(f"对象位置：{position}")
         if traffic:
             details.append(f"交通关系：{traffic}")
+        if motion:
+            details.append(motion)
+        if condition:
+            details.append(f"条件影响：{condition['physical_effect']}")
         if speed:
             details.append(speed)
         for field, label in (("relative_distance_m", "目标距离"), ("longitudinal_acceleration_mps2", "故障后纵向加速度")):

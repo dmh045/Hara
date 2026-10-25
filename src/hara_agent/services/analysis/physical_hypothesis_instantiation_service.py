@@ -53,7 +53,9 @@ class PhysicalInputConflict(ValueError):
 
 
 class PhysicalHypothesisInstantiationService:
-    MAX_INSTANCES_PER_PLAN = 9
+    # A plan's three mechanism slots are shared with parameter sampling. Full
+    # ranges and unscheduled boundaries stay in sensitivity, not paid tasks.
+    MAX_INSTANCES_PER_PLAN = 3
 
     def __init__(self, method):
         self.method = method
@@ -99,7 +101,7 @@ class PhysicalHypothesisInstantiationService:
 
     @staticmethod
     def _opposite_target(values, model):
-        if model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
+        if model in {"CONSTANT_LATERAL_ACCELERATION_TO_CONTACT", "RECTILINEAR_MOVING_TARGET_CONTACT"}:
             return False
         direction, position = values.get("ego_longitudinal_direction"), values.get("object_position")
         return bool(direction and position and (direction, position) not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")})
@@ -194,6 +196,10 @@ class PhysicalHypothesisInstantiationService:
         scoped = {**values, **h["geometry"]}
         if self._opposite_target(scoped, model):
             texts = ["当前模型的运动方向与目标位置不构成接近；未知参数不能改变该几何条件，不给出接触速度或TTC。"]
+        elif model == "RECTILINEAR_MOVING_TARGET_CONTACT":
+            texts = ["车体坐标x前向、y左向；x(t)=dx+(u_x−v_x)t−a_x·t²/2，y(t)=dy+u_y·t。",
+                     "接触要求同一时刻|x(t)|≤接触包络半长且|y(t)|≤接触包络半宽；取自车停止前和模型有效期内的首次重合。",
+                     "路径相交不保证发生碰撞；交叉接触时间不作为纵向TTC。"]
         elif model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
             texts = ["w=v_y0·t+a_y·t²/2；取停止前且模型有效期内的首次非负根。",
                      "v_rel=3.6·sqrt(v_x²+v_y0²+2a_y·w)，v_x=初始车速/3.6；目标须静止并沿纵向路径延伸。",
@@ -259,6 +265,7 @@ class PhysicalHypothesisInstantiationService:
             "deferral_basis": "FULL_PARAMETER_RELATION_RETAINED_NO_NEW_NUMERIC_CONTACT_RESULT" if deferred_symbolic else "",
             "parameter_relations": self.parameter_relations(values, h),
             "range_invariance_proven": False, "vehicle_upper_bound_proven": False,
+            "instance_limit": limit, "deferred_points_evaluated": False,
         }
 
     @staticmethod
@@ -280,7 +287,8 @@ class PhysicalHypothesisInstantiationService:
             return (False, "CONTACT_SPEED_IS_NOT_INITIAL_SPEED") if "IMPACT" in phase or "POST_FAULT" in phase else (True, "PRE_FAULT_SPEED_AS_INITIAL_CONDITION")
         if field == "slope_percent":
             return True, "ROAD_GEOMETRY_CONTEXT"
-        if field in {"relative_distance_m", "lateral_clearance_m"}:
+        if field in {"relative_distance_m", "lateral_clearance_m", "object_speed_kph",
+                     "object_offset_x_m", "object_offset_y_m", "contact_half_length_m", "contact_half_width_m"}:
             target = meta.get("object_id", parent.facts.get("object_id"))
             if h.get("condition_changes", {}).get("target") or target and target != h["geometry"]["object_id"]:
                 return False, "PARENT_INPUT_OTHER_OBJECT"
@@ -303,7 +311,7 @@ class PhysicalHypothesisInstantiationService:
     def _model_inputs(self, parent, h, malfunction_id):
         explicit = {p["field"]: p for p in h["parameters"]}
         allowed = set(MODEL_CATALOG[h["model"]]["required"]) | {"model_valid_until_s"}
-        if h["model"] != "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
+        if h["model"] in {"CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE"}:
             allowed.add("post_fault_speed_cap_kph")
         values, audit = {}, {}
         for field in PARAMETER_UNITS:
@@ -348,7 +356,7 @@ class PhysicalHypothesisInstantiationService:
                 "scope": spec["scope"],
             }
         dimensions = candidate.facts.get("method_scenario_dimensions", {})
-        return {"models": models, "known_model_gap": self.known_model_gap(candidate, malfunction_id),
+        return {"models": models,
             "derivable_conditions": {k: candidate.facts[k] for k in (
                 "source_slope_pct", "source_slope_direction", "slope_reference",
                 "ego_speed_constraint") if k in candidate.facts},
@@ -356,20 +364,6 @@ class PhysicalHypothesisInstantiationService:
                 "initial_speed_range_kph": dimensions.get("EGO_DYNAMICS", {}).get("speed_intersection_kph"),
                 "road_slope": dimensions.get("ROAD", {}).get("method_semantics", {}).get("slope")},
             "policy": "Use applicable inputs; jointly justify missing geometry and motion, or explicitly explain a symbolic relationship. PENDING assumptions can be computed conditionally. Constraints are not measurements."}
-
-    @staticmethod
-    def known_model_gap(candidate, malfunction_id):
-        """Only an accepted, fixed moving target excludes all current models."""
-        speed = candidate.facts.get("object_speed_kph")
-        if (all(spec.get("target_motion") == "STATIONARY" for spec in MODEL_CATALOG.values())
-                and isinstance(speed, (int, float)) and not isinstance(speed, bool) and math.isfinite(speed) and speed > 0
-                and source_is_accepted_for(candidate.fact_provenance.get("object_speed_kph", {}),
-                    malfunction_id=malfunction_id, scenario_id=candidate.scenario_id)):
-            return {"reason": "FIXED_MOVING_TARGET_OUTSIDE_MODEL_CATALOG", "object_id": candidate.facts.get("object_id"),
-                "object_speed_kph": speed, "models": list(MODEL_CATALOG),
-                "basis": deepcopy(candidate.fact_provenance["object_speed_kph"]),
-                "scope": "Catalog requires a stationary target; keep this hazardous candidate for causal assessment. No risk or causal exclusion is inferred."}
-        return None
 
     def instantiate(self, candidate, malfunction, plan, *, plan_key: str, response_model: str,
                     project_context=None, function=None):
@@ -591,6 +585,10 @@ class PhysicalHypothesisInstantiationService:
 
     def _instantiate(self, parent, malfunction, h, values, plan_key, model_name, sensitivity, project_context, function):
         g = deepcopy(h["geometry"])
+        operating_condition = h.get("operating_condition")
+        if operating_condition and operating_condition["value"] not in (project_context or {}).get(operating_condition["source_field"], []):
+            raise PhysicalInputConflict("OPERATING_CONDITION_OUTSIDE_ITEM_SCOPE", operating_condition["source_field"],
+                (project_context or {}).get(operating_condition["source_field"], []), operating_condition["value"])
         changes = h.get("condition_changes", {})
         new_initial, new_target = changes.get("initial_state", False), changes.get("target", False)
         if new_target and parent.facts.get("object_id") == g["object_id"]:
@@ -604,7 +602,7 @@ class PhysicalHypothesisInstantiationService:
         if lateral:
             if g["object_position"] not in {"LEFT", "RIGHT"} or g["object_extent"] != "EXTENDED_ALONG_TRAVEL_PATH":
                 raise ValueError("LATERAL_MODEL_REQUIRES_EXTENDED_SIDE_TARGET")
-        elif h["model"] != "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" and (g["ego_longitudinal_direction"], g["object_position"]) not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}:
+        elif h["model"] == "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE" and (g["ego_longitudinal_direction"], g["object_position"]) not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}:
             raise ValueError("TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH")
         speed_range = parent.facts.get("ego_speed_constraint", {})
         speed_binding = parent.facts.get("method_scenario_dimensions", {}).get("EGO_DYNAMICS", {})
@@ -646,7 +644,9 @@ class PhysicalHypothesisInstantiationService:
         grade_mapping = self._grade_mapping(parent, h) if h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" else {}
         if "post_fault_speed_cap_kph" in values and "speed_limiter" not in h["remaining_controls"]:
             raise ValueError("SPEED_CAP_REQUIRES_EXPLICIT_REMAINING_LIMITER")
-        supplied = {**g, **values, "object_speed_kph": 0, "object_longitudinal_direction": "STATIONARY",
+        target = {} if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT" else {
+            "object_speed_kph": 0, "object_longitudinal_direction": "STATIONARY"}
+        supplied = {**g, **values, **target,
                     "fault_motion_model": h["model"], **grade_mapping}
         supplied.update({field: proposal["value"]
                          for field, proposal in h.get("intervention_assumptions", {}).items()})
@@ -677,7 +677,7 @@ class PhysicalHypothesisInstantiationService:
             provenance.pop("other_road_user_avoidance_possible", None)
         stale = {"collision_branches", "relative_speed_kph", "closing_speed_kph", "ttc_s", "impact_speed_kph",
                  "ego_impact_speed_kph", "object_impact_speed_kph", "motion_model_outcome", "delta_v_kph",
-                 "impact_time_id", "trajectory_id", "first_contact_time_s", "fault_motion_model",
+                 "impact_time_id", "trajectory_id", "first_contact_time_s", "fault_motion_model", "trajectory_max_speed_kph",
                  "travel_to_impact_m", "gravity_body_acceleration_mps2",
                  "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
                  "downhill_body_direction", "grade_orientation_basis"}
@@ -691,7 +691,9 @@ class PhysicalHypothesisInstantiationService:
                 facts[field] = values[field]
                 provenance[field] = rescope(deepcopy(parent.fact_provenance[field]))
         impact_id = f"CONTACT-{identity}"
-        supplied.update(impact_time_id=impact_id, trajectory_id=f"TRAJECTORY-{identity}", object_impact_speed_kph=0)
+        supplied.update(impact_time_id=impact_id, trajectory_id=f"TRAJECTORY-{identity}")
+        if target:
+            supplied["object_impact_speed_kph"] = 0
         if "relative_distance_m" in values:
             supplied["travel_to_impact_m"] = values["relative_distance_m"]
         hypothesis_id = f"{plan_key}:{h['hypothesis_id']}:{sensitivity['point_index']}"
@@ -771,6 +773,16 @@ class PhysicalHypothesisInstantiationService:
             info["object_binding"] = {"status": "RESOLVED" if refinement else "PENDING", "reason": reason}
         facts["physical_analysis"] = info
         provenance["physical_analysis"] = deepcopy(meta)
+        if operating_condition:
+            facts["selected_source_condition"] = deepcopy(operating_condition)
+            provenance["selected_source_condition"] = {**deepcopy(meta), "selection_basis": "ITEM_ALLOWED_SCOPE_ANALYTICAL_SELECTION",
+                "allowed_scope_sources": deepcopy((project_context or {}).get("sources", []))}
+            facts["source_operating_conditions"] = {**facts.get("source_operating_conditions", {}),
+                "selected_condition": deepcopy(operating_condition)}
+            provenance["source_operating_conditions"] = {**deepcopy(meta),
+                "parent_source_metadata": deepcopy(provenance.get("source_operating_conditions", {})),
+                "selection_basis": "ITEM_ALLOWED_SCOPE_ANALYTICAL_SELECTION"}
+            info["selected_source_condition"] = deepcopy(operating_condition)
         instance = deepcopy(parent.analysis_instance)
         descriptions = [parent.situational_description, parent.situational_detailing]
         if dimensions and refinement:

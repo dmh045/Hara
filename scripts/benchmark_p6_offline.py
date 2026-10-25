@@ -112,7 +112,7 @@ def historical_audit(saved: dict, review: Path, corrected_report: Path | None) -
 
 
 def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: Path,
-        corrected_report: Path | None = None, item: Path | None = None) -> dict:
+        corrected_report: Path | None = None, item: Path | None = None, *, generation_only: bool = False) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     with checkpoint.open('rb') as stream:
         before_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -208,7 +208,8 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
         per_malfunction.append({'malfunction_id': malfunction.malfunction_id, 'candidate_count': len(children),
                                'generation': generation, 'driver_configuration': audit.get('driver_configuration', {})})
         print(f'[P6 offline] {index}/{len(saved["malfunctions"])} {malfunction.malfunction_id}: {len(children)} candidates', flush=True)
-    old_audit = historical_audit(saved, checkpoint.parent.parent / 'review' / saved['run_id'], corrected_report)
+    old_audit = ({'status': 'NOT_REQUESTED_GENERATION_ONLY'} if generation_only else
+        historical_audit(saved, checkpoint.parent.parent / 'review' / saved['run_id'], corrected_report))
     old_assessments = saved['item_definition']['scenario_assessments']
     latest = {a['malfunction_id']: a for a in saved['audit_trail'] if a.get('event') == 'scenario_feasibility_assessed'}
     historical_ratings = {field: dict(Counter(r[field]['status'] for r in saved['risk_results']))
@@ -256,5 +257,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, default=Path('output/p6'))
     parser.add_argument('--corrected-report', type=Path)
     parser.add_argument('--item', type=Path, help='Reapply production source-scope normalization to the original Item')
+    parser.add_argument('--generation-only', action='store_true', help='Compare production candidate generation without requiring historical review sidecars')
     args = parser.parse_args()
-    run(args.checkpoint, args.method_baseline, args.report_template, args.output, args.corrected_report, args.item)
+    run(args.checkpoint, args.method_baseline, args.report_template, args.output, args.corrected_report, args.item,
+        generation_only=args.generation_only)

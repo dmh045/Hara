@@ -207,11 +207,20 @@ class StructuredRiskScoringService:
             if reference is not None:
                 control.update(reference)
         reference_match = control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH"
-        if scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT" and not (override_match or reference_match):
+        moving = scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
+        crossing = moving and scenario.get("object_longitudinal_direction") in {"LEFT", "RIGHT"}
+        if (scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT" or crossing) and not (override_match or reference_match):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="Lateral first-contact time is not a longitudinal TTC; no applicable lateral C method is compiled.")
+        if (moving and not crossing and not override_match
+                and (scenario.get("ego_longitudinal_direction"), scenario.get("object_position"))
+                not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}):
+            control.update(controllability_score="", engineering_status="PENDING",
+                calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED",
+                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                reasoning="The target approaches from behind the ego travel direction; ego braking alone cannot establish an avoidance path. The computed contact time is retained, but not used by the braking TTC profile.")
         if scenario.get("physical_object_exposure_unresolved"):
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")

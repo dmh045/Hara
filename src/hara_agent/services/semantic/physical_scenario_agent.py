@@ -71,7 +71,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v11-braking-applicability"
+    PROMPT_VERSION = "post-fault-physical-scenario-v12-bounded-interaction-coverage"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v1"
     ANALYSIS_STRATEGY = (
         "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
@@ -98,7 +98,7 @@ class PhysicalScenarioAgent:
                 "basis_refs": ["a supplied evidence ID"],
                 "geometry": {"road_user_type": "from method vocabulary", "collision_type": "from method vocabulary",
                     "object_position": "FRONT|REAR|LEFT|RIGHT", "ego_longitudinal_direction": "FORWARD|REVERSE",
-                    "object_extent": "POINT_ON_TRAVEL_PATH|EXTENDED_ALONG_TRAVEL_PATH", "object_id": "target1"},
+                    "object_extent": "POINT_ON_TRAVEL_PATH|EXTENDED_ALONG_TRAVEL_PATH|FINITE_CONTACT_ENVELOPE", "object_id": "target1"},
                 "parameters": [{"field": "one parameter_units key", "unit": "exact declared unit",
                     "kind": "POINT", "value": 0, "rationale": "why this conditional representative is useful"}],
                 "conditions": ["scope of this hypothesis"], "uncovered_conditions": ["limits of this analysis"],
@@ -122,6 +122,15 @@ class PhysicalScenarioAgent:
             "若目录中没有能表示当前危险机制的模型，返回hypotheses空数组，并在uncovered_conditions具体说明模型缺口。"
             "不得为了满足模型目录把后车追尾改成前方静止目标碰撞，或把移动目标换成静止目标；"
             "合法新增条件仍必须代表当前失效的危险机制，不能以另一危险机制替代原问题。"
+            "有source_condition_focus时，在本次现有假设中落实相关来源条件：新增operating_condition="
+            "{source_field:odd_road_types或odd_weather_conditions,value:该来源列表中的原文值,"
+            "physical_effect:该条件如何影响本假设的几何/可见性/运动/干预}。"
+            "车位朝向和单侧/双侧障碍约束要体现到对象位置、路径或净距；照明/能见度须体现在"
+            "感知或干预条件中，不能自动改变路面附着或E。允许范围不等于当前事实。"
+            "焦点与当前机制或室内外环境不相容时，选择列表内另一相关条件并解释；没有适用条件时"
+            "在uncovered_conditions明确记录。不能只复述标签就声称覆盖，也不为每个标签新增假设。"
+            "优先覆盖既有条件允许的不同对象运动交互，同一接触关系仅数值变化不占新增机制槽位；"
+            "三个实例预算由不同交互和范围采样共同使用，默认每种交互一个代表点。"
             "不得把假设声称为原文事实、车辆真实能力或可信上界。不得输出 S/E/C/ASIL、批准状态、"
             "碰撞速度、TTC、collision_branches 或 Atom ID。程序会计算这些量。"
             "优先保留已给定的对象类别和运行条件；新对象需说明适用性，不得扩大 ODD。"
@@ -151,7 +160,12 @@ class PhysicalScenarioAgent:
             "安全状态候选只用于待审核方案，不证明到达时间，不输出FTTI，也不改变无干预轨迹和评级。"
             "不得依赖已失效的控制消除危险。坡道溜车初速为 0，使用来源坡度和假设残余阻力。"
             "侧向模型只支持沿纵向运动路径延伸的静止侧向目标，不能假装成纵向 TTC。"
-            "所有支持模型当前只计算静止目标，移动目标列为未覆盖。"
+            "RECTILINEAR_MOVING_TARGET_CONTACT支持同向、对向、后方接近和横穿的匀速移动目标；"
+            "使用车体坐标x前、y左的初始中心偏移，接触包络半长/半宽为双方投影半尺寸之和，"
+            "须解释尺寸和有效时段假设。geometry用FINITE_CONTACT_ENVELOPE并给出"
+            "object_longitudinal_direction=FORWARD|REVERSE|LEFT|RIGHT（均相对车体，非道路行驶方向）。"
+            "自车沿当前行驶方向匀加减速；不支持转弯、反向启动和多阶段限速。"
+            "路径交叉但到达时间不同可以无接触；不得为了碰撞强行调参。"
             "参数可以 POINT(value)、RANGE(lower,value,upper；value 是代表值)、SYMBOLIC(symbol)。"
             "不确定真实上界时给条件性代表值/敏感性范围或符号条件，不编造最大速度。"
             "距离、净距等缺少实测值时，也可提出有依据的条件性代表值并说明适用范围；"
@@ -181,6 +195,8 @@ class PhysicalScenarioAgent:
             "parameter_payloads": {"POINT": {"value": "finite number"},
                 "RANGE": {"lower": "finite number", "value": "representative number", "upper": "finite number"},
                 "SYMBOLIC": {"symbol": "nonempty string; omit value/lower/upper"}},
+            "moving_target_geometry": {"object_extent": "FINITE_CONTACT_ENVELOPE",
+                "object_longitudinal_direction": ["FORWARD", "REVERSE", "LEFT", "RIGHT"]},
         }
         prompt_context, source_texts = physical_prompt_view(context)
         content = {"output_contract": output_contract, "context": prompt_context, "source_texts": source_texts,
@@ -222,7 +238,7 @@ class PhysicalScenarioAgent:
         for repair in (False, True):
             request = LLMRequest(task="construct_post_fault_physical_scenario",
                 system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
-                    **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str),
+                    **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str, separators=(",", ":")),
                 schema_name="PhysicalScenarioPlan", prompt_version=self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION,
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair}, max_tokens=4096)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)

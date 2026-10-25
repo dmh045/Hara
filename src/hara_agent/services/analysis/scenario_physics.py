@@ -46,7 +46,8 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
     model = {"fault_motion_model", "longitudinal_acceleration_mps2", "model_valid_until_s",
              "slope_percent", "residual_resistance_mps2", "lateral_speed_mps",
              "lateral_acceleration_mps2", "lateral_clearance_m", "object_extent",
-             "post_fault_speed_cap_kph",
+             "post_fault_speed_cap_kph", "object_offset_x_m", "object_offset_y_m",
+             "contact_half_length_m", "contact_half_width_m",
              "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
              "downhill_body_direction", "grade_orientation_basis",
              "impact_time_id", "trajectory_id", "assessment_reference"}
@@ -209,6 +210,79 @@ def is_lateral_collision(value: Any) -> bool:
     return any(token in normalized for token in (
         "SIDE", "LATERAL", "PERPENDICULAR", "CROSSING",
     ))
+
+
+def rectilinear_moving_contact(facts: dict) -> dict:
+    """First simultaneous envelope overlap; all inputs are model assumptions.
+
+    Solve x(t)=dx+(u_x-v_x)t-a_x*t²/2 and y(t)=dy+u_y*t.
+    Partition at boundary roots, so non-overlapping crossing times and tangency
+    are distinguished without a time step or a sampling tolerance.
+    """
+    from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG
+    fields = MODEL_CATALOG["RECTILINEAR_MOVING_TARGET_CONTACT"]["required"]
+    if any(isinstance(facts.get(k), bool) or not isinstance(facts.get(k), (int, float))
+           or not math.isfinite(facts[k]) for k in fields):
+        return {"status": "MODEL_INPUTS_UNRESOLVED"}
+    v, u = facts["ego_speed_kph"] / 3.6, facts["object_speed_kph"] / 3.6
+    a, horizon = facts["longitudinal_acceleration_mps2"], facts["model_valid_until_s"]
+    hx, hy = facts["contact_half_length_m"], facts["contact_half_width_m"]
+    dx, dy = facts["object_offset_x_m"], facts["object_offset_y_m"]
+    vectors = {"FORWARD": (1, 0), "REVERSE": (-1, 0), "LEFT": (0, 1), "RIGHT": (0, -1)}
+    direction = facts.get("ego_longitudinal_direction")
+    target_direction = facts.get("object_longitudinal_direction")
+    if (v < 0 or u <= 0 or hx <= 0 or hy <= 0 or horizon <= 0
+            or direction not in {"FORWARD", "REVERSE"} or target_direction not in vectors
+            or facts.get("object_extent") != "FINITE_CONTACT_ENVELOPE"):
+        return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE"}
+    if target_direction in {"LEFT", "RIGHT"} and not is_lateral_collision(facts.get("collision_type")):
+        return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "CROSSING_REQUIRES_SIDE_CONTACT"}
+    position = facts.get("object_position")
+    if not {"FRONT": dx > 0, "REAR": dx < 0, "LEFT": dy > 0, "RIGHT": dy < 0}.get(position, False):
+        return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "TARGET_OFFSET_POSITION_CONFLICT"}
+    if abs(dx) <= hx and abs(dy) <= hy:
+        return {"status": "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}
+    # Negative acceleration is deceleration in the travel coordinate, never
+    # an implicit reverse launch. A stopped ego stays still for this horizon.
+    stop = v / -a if a < 0 and v > 0 else horizon
+    end = min(horizon, stop)
+    if v == 0 and a < 0:
+        a = 0.0
+    sign = vectors[direction][0]
+    ux, uy = (component * u for component in vectors[target_direction])
+    q, b = -sign * a / 2, ux - sign * v
+    cuts = {0.0, end}
+    for bound in (-hx, hx):
+        c = dx - bound
+        if q == 0:
+            roots = [-c / b] if b else []
+        else:
+            disc = b*b - 4*q*c
+            if disc < 0:
+                roots = []
+            else:
+                # Stable quadratic roots, including a repeated root.
+                t = -.5 * (b + math.copysign(math.sqrt(disc), b))
+                roots = [t / q, c / t] if t else [-b / (2*q)]
+        cuts.update(t for t in roots if 0 <= t <= end)
+    if uy:
+        cuts.update(t for bound in (-hy, hy) if 0 <= (t := (bound-dy)/uy) <= end)
+    def inside(t):
+        return abs(dx+b*t+q*t*t) <= hx and abs(dy+uy*t) <= hy
+    ordered = sorted(cuts)
+    for index, t in enumerate(ordered):
+        # The right-hand interval is inside even if roundoff at its root is
+        # a few ulps outside; do not widen the geometric contact envelope.
+        if inside(t) or index+1 < len(ordered) and inside((t+ordered[index+1])/2):
+            impact = max(0.0, v+a*t)
+            return {"status": "CONTACT", "time_s": t, "ego_impact_speed_kph": impact*3.6,
+                "object_impact_speed_kph": u*3.6,
+                "relative_speed_kph": math.hypot(sign*impact-ux, uy)*3.6,
+                "trajectory_max_speed_kph": max(v, impact)*3.6,
+                "contact_offset_x_m": dx+b*t+q*t*t, "contact_offset_y_m": dy+uy*t,
+                "longitudinal_contact": uy == 0 and not is_lateral_collision(facts.get("collision_type"))}
+    return {"status": "NO_CONTACT_WITHIN_MODEL", "evaluated_until_s": end,
+            "limiting_condition": "EGO_STOP" if stop < horizon else "MODEL_HORIZON"}
 
 
 def closing_relative_speed_kph(
@@ -474,10 +548,12 @@ def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any
     outcome = facts.get("motion_model_outcome", {})
     if (same_target and same_phase and interaction.get("relation") == "CONTACT"
             and isinstance(outcome, dict) and outcome.get("status") in {
-                "STOPPED_BEFORE_CONTACT", "NO_POSITIVE_CONTACT_ROOT", "CONTACT_OUTSIDE_MODEL_INTERVAL"}):
+                "STOPPED_BEFORE_CONTACT", "NO_POSITIVE_CONTACT_ROOT", "CONTACT_OUTSIDE_MODEL_INTERVAL", "NO_CONTACT_WITHIN_MODEL"}):
         conflicts.append("NO_CONTACT_TRAJECTORY_CONTRADICTS_CONTACT_CLAIM")
     if closing == 0:
         modeled = False
+        if facts.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT":
+            modeled = rectilinear_moving_contact(facts)["status"] == "CONTACT"
         if facts.get("fault_motion_model") in {"CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE"}:
             outcome = constant_acceleration_contact(facts.get("ego_speed_kph"),
                 facts.get("longitudinal_acceleration_mps2"), facts.get("travel_to_impact_m"),
@@ -822,6 +898,28 @@ def derive_scenario_physics(
                 "source_refs": [_source_dict(ref) for ref in record.source_refs]}})
 
     model = scenario.facts.get("fault_motion_model")
+    if model == "RECTILINEAR_MOVING_TARGET_CONTACT":
+        from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG
+        keys = tuple(MODEL_CATALOG[model]["required"]) + (
+            "fault_motion_model", "object_position", "object_extent", "ego_longitudinal_direction",
+            "object_longitudinal_direction", "impact_time_id")
+        outcome = rectilinear_moving_contact(scenario.facts)
+        formula = "first simultaneous |dx+(ux-vx)t-ax*t^2/2|<=hx and |dy+uy*t|<=hy before ego stop/horizon"
+        records.append(derived_record("motion_model_outcome", outcome, keys,
+            DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula))
+        if outcome["status"] == "CONTACT":
+            results = {k: outcome[k] for k in ("ego_impact_speed_kph", "object_impact_speed_kph",
+                       "relative_speed_kph", "trajectory_max_speed_kph")}
+            results["first_contact_time_s"] = outcome["time_s"]
+            if outcome["longitudinal_contact"]:
+                results["ttc_s"] = outcome["time_s"]
+            for key, value in results.items():
+                record = derived_record(key, value, keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula)
+                record.metadata.update(impact_time_id=scenario.facts.get("impact_time_id"),
+                    analysis_value_semantic="FIRST_CONTACT_TIME" if key in {"ttc_s", "first_contact_time_s"} else "IMPACT_SPEED",
+                    assessment_reference="MODEL_INITIAL_STATE")
+                records.append(record)
+        return tuple({record.evidence_ref: record for record in records}.values())
     if model == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE":
         grade = _nonnegative_number(scenario.facts.get("slope_percent"))
         resistance = _nonnegative_number(scenario.facts.get("residual_resistance_mps2"))

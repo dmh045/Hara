@@ -25,15 +25,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OfflinePhysicalClient:
-    def __init__(self, output, *, range_proposals=False, symbolic_drive=False):
+    def __init__(self, output, *, range_proposals=False, symbolic_drive=False, interaction_coverage=False):
         self.output = output
         self.config = SimpleNamespace(provider="OFFLINE_SCRIPTED", model="offline-physical-fixtures-v1", max_tokens=8192)
         self.calls = Counter()
         self.range_proposals = range_proposals
         self.symbolic_drive = symbolic_drive
+        self.interaction_coverage = interaction_coverage
 
     def proposal(self, request):
-        context = json.loads(request.user_prompt)["context"]
+        from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+        payload = json.loads(request.user_prompt)
+        context = expand_physical_prompt_view(payload["context"], payload.get("source_texts", {}))
+        if context.get('task_scope') == 'CONTROL_INPUTS_ONLY':
+            return {'hypotheses': [], 'uncovered_conditions': ['Offline control assumptions require engineering review'],
+                'control_assessment': {'rationale': 'OFFLINE: independent driver braking remains outside the automatic command fault',
+                    'basis_refs': ['MF.description'], 'conditions': ['Independent manual braking path remains effective in this test'],
+                    'uncovered_conditions': [], 'failed_controls': ['automatic_braking_command'], 'remaining_controls': ['driver_braking'],
+                    'intervention_assumptions': {key: {'value': False, 'rationale': 'Explicit offline no independent evasion representative',
+                        'basis_refs': ['SCENARIO.conditions'], 'conditions': ['No timely independent intervention in this test world']}
+                        for key in ('remote_intervention_available', 'other_road_user_avoidance_possible')}}}
         # Fixture dispatch is confined to this test harness, not runtime rules.
         function = context["malfunction"]["function_id"]
         label = {"F02": "drive", "F03": "lateral", "F08": "rollaway"}.get(function, "drive")
@@ -82,6 +93,44 @@ class OfflinePhysicalClient:
                     p["value"] = min(15, road[-1])
                     p["rationale"] = "Offline representative grade within supplied project 15% and selected ROAD range; not a measurement"
         h["rationale"] = "OFFLINE scripted analytical proposal for " + context["malfunction"]["description"]
+        if self.interaction_coverage and label == "drive":
+            raw = json.loads((ROOT / "tests/fixtures/autonomous_physics/moving_contact.json").read_text())
+            original = raw['hypotheses'][0]
+            original['condition_changes'] = {"initial_state": False, "target": True,
+                "rationale": "Offline independent moving participants inside the same source ODD"}
+            original['geometry'].update(ego_longitudinal_direction=direction)
+            raw['hypotheses'] = []
+            for index, interaction in enumerate(('oncoming', 'following', 'crossing')):
+                proposal = deepcopy(original)
+                g = proposal['geometry']
+                g.update(object_id='offline-' + interaction, object_position='FRONT' if direction == 'FORWARD' else 'REAR',
+                    object_longitudinal_direction=('REVERSE' if direction == 'FORWARD' else 'FORWARD') if interaction == 'oncoming' else direction,
+                    collision_type='FRONTAL' if interaction == 'oncoming' else 'REAR_END')
+                if interaction == 'crossing':
+                    g.update(object_position='LEFT', object_longitudinal_direction='RIGHT', collision_type='SIDE', road_user_type='PEDESTRIAN')
+                proposal['hypothesis_id'] = interaction
+                proposal['rationale'] = 'OFFLINE: excessive drive reaches a ' + interaction + ' participant before intervention; conditional finite trajectories'
+                for p in proposal['parameters']:
+                    if p['field'] == 'ego_speed_kph': p['value'] = initial
+                    if p['field'] == 'object_offset_x_m': p['value'] = 8 if direction == 'FORWARD' else -8
+                    if p['field'] == 'object_offset_y_m': p['value'] = 4 if interaction == 'crossing' else 0
+                raw['hypotheses'].append(proposal)
+        if self.interaction_coverage and context.get('source_condition_focus'):
+            for proposal in raw['hypotheses']:
+                # Test responses select actual source alternatives and explain
+                # their connection to the chosen interaction. This mapping is
+                # a frozen offline fixture, never a runtime selection policy.
+                wanted, effect = {
+                    'oncoming': ('水平车位', '平行车位旁的直行通道中，自车与对向车辆沿同一纵向走廊接近'),
+                    'following': ('单侧障碍物', '单侧边界限制绕行空间；本代表保持沿通道追近前方移动车辆，不据此宣称所有参与者均无法规避'),
+                    'crossing': ('垂直车位', '自车出库方向与通道行人横穿方向正交，有限包络及到达时刻共同决定接触'),
+                }.get(proposal['hypothesis_id'], ('', ''))
+                if wanted not in context['project_context'].get('odd_road_types', []):
+                    proposal['uncovered_conditions'].append('本离线回复未实例化额外的车位或天气条件；坡向/侧向轨迹仅覆盖已列条件')
+                    continue
+                focus = {'source_field': 'odd_road_types', 'value': wanted}
+                proposal['operating_condition'] = {**focus,
+                    'physical_effect': effect + '（离线条件性代表）'}
         return raw
 
     @staticmethod
@@ -228,7 +277,7 @@ def inventory(output: Path, source_checkpoint: Path):
             "sources": [SourceRef(**s) for s in raw["sources"]]})
         children, audit = service.generate_for_malfunction(mf, parents, project_facts=project,
             function=functions.get(mf.function_id))
-        waiting = [c for c in children if producer.needed(c, mf.malfunction_id)]
+        waiting = [c for c in children if producer.task_scope(c, mf.malfunction_id)]
         groups = {}
         for candidate in waiting:
             key = signature(scenario_conditions(candidate, without_driver=True))
@@ -246,7 +295,7 @@ def inventory(output: Path, source_checkpoint: Path):
     summary = {"mode": "CURRENT_GENERATION_INVENTORY_NO_PROVIDER", "source_checkpoint_sha256": hashlib.sha256(original).hexdigest(),
         "method_source_hash": method.metadata["method_source_hash"], "malfunctions": len(rows), "base_contexts": len(parents),
         **totals, "live_calls": 0, "new_hypotheses": 0, "source_unchanged": source_checkpoint.read_bytes() == original,
-        "budget_note": "pending_plan_groups is one first proposal per unchanged non-driver condition group. Local schema repair can add one each; transport retries and downstream causal/risk requests are extra and must share an explicit budget. At most 9 instantiations per input candidate. No full-run request count is promised before actual proposals."}
+        "budget_note": "pending_plan_groups is one first proposal per unchanged non-driver condition group. Local schema repair can add one each; transport retries and downstream causal/risk requests are extra and must share an explicit budget. At most 3 instantiations per input candidate. No full-run request count is promised before actual proposals."}
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     (output / "per_malfunction.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps(summary, ensure_ascii=False))

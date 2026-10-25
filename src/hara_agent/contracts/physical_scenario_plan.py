@@ -9,7 +9,7 @@ import math
 from typing import Any
 
 
-PHYSICAL_PLAN_VERSION = "physical-plan-v2-scoped-inputs-grade-frame"
+PHYSICAL_PLAN_VERSION = "physical-plan-v3-relative-contact"
 PARAMETER_UNITS = {
     "ego_speed_kph": "km/h", "relative_distance_m": "m",
     "longitudinal_acceleration_mps2": "m/s2", "slope_percent": "%",
@@ -17,6 +17,8 @@ PARAMETER_UNITS = {
     "lateral_speed_mps": "m/s", "lateral_acceleration_mps2": "m/s2",
     "lateral_clearance_m": "m",
     "post_fault_speed_cap_kph": "km/h",
+    "object_speed_kph": "km/h", "object_offset_x_m": "m", "object_offset_y_m": "m",
+    "contact_half_length_m": "m", "contact_half_width_m": "m",
 }
 MODEL_CATALOG = {
     "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": {
@@ -33,6 +35,13 @@ MODEL_CATALOG = {
         "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "lateral_clearance_m", "lateral_speed_mps", "lateral_acceleration_mps2"],
         "scope": "Steering-induced deviation while ego is moving longitudinally (speed > 0); stationary side object extended along the longitudinal swept path; lateral first contact, constant longitudinal speed. No longitudinal TTC or steering avoidance rule is inferred.",
+    },
+    "RECTILINEAR_MOVING_TARGET_CONTACT": {
+        "target_motion": "CONSTANT_VELOCITY",
+        "required": ["ego_speed_kph", "longitudinal_acceleration_mps2", "object_speed_kph",
+                     "object_offset_x_m", "object_offset_y_m", "contact_half_length_m",
+                     "contact_half_width_m", "model_valid_until_s"],
+        "scope": "Body frame x forward, y left; initial target-center offsets signed. Ego straight constant acceleration along its travel direction, target constant velocity FORWARD/REVERSE/LEFT/RIGHT. Axis-aligned contact envelope half-length/width is the SUM of ego and target projected half-extents, justified as assumptions, not measured dimensions. First simultaneous x/y overlap before ego stops and within explicit horizon. Supports following, oncoming, rear approach and crossing; no turns, reversal or independent speed cap. Crossing contact time is not longitudinal TTC.",
     },
 }
 # Legacy "braking" means the braking capability itself. Command-path failure
@@ -156,7 +165,13 @@ class PhysicalScenarioPlan:
         for h in hypotheses:
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal"})
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition"})
+            if "operating_condition" in h:
+                condition = _object(h["operating_condition"], {"source_field", "value", "physical_effect"})
+                if condition["source_field"] not in {"odd_road_types", "odd_weather_conditions"}:
+                    raise ValueError("Operating condition must select an Item allowed scope")
+                _text(condition["value"])
+                _text(condition["physical_effect"])
             if "condition_changes" in h:
                 if isinstance(h["condition_changes"], dict) and "grade_frame" in h["condition_changes"]:
                     raise ValueError(_GRADE_FRAME_LOCATION)
@@ -190,15 +205,21 @@ class PhysicalScenarioPlan:
                 raise ValueError(f"hypotheses[{identity}].basis_refs must use supplied IDs {sorted(evidence_ids)}; received {refs}")
             _validate_controls(h, evidence_ids)
             g = _object(h["geometry"], {"road_user_type", "collision_type", "object_position",
-                "ego_longitudinal_direction", "object_extent", "object_id"})
+                "ego_longitudinal_direction", "object_extent", "object_id"}, {"object_longitudinal_direction"})
             for value in g.values():
                 _text(value)
             if g["object_position"] not in {"FRONT", "REAR", "LEFT", "RIGHT"}:
                 raise ValueError("Unknown target position")
             if g["ego_longitudinal_direction"] not in {"FORWARD", "REVERSE"}:
                 raise ValueError("Post-fault travel direction must be explicit")
-            if g["object_extent"] not in {"POINT_ON_TRAVEL_PATH", "EXTENDED_ALONG_TRAVEL_PATH"}:
+            if g["object_extent"] not in {"POINT_ON_TRAVEL_PATH", "EXTENDED_ALONG_TRAVEL_PATH", "FINITE_CONTACT_ENVELOPE"}:
                 raise ValueError("Unknown target extent")
+            if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT":
+                if (g.get("object_longitudinal_direction") not in {"FORWARD", "REVERSE", "LEFT", "RIGHT"}
+                        or g["object_extent"] != "FINITE_CONTACT_ENVELOPE"):
+                    raise ValueError("Moving target requires explicit body-frame direction and finite contact envelope")
+            elif g.get("object_longitudinal_direction", "STATIONARY") != "STATIONARY":
+                raise ValueError("Stationary-target model cannot declare a moving target")
             params = h["parameters"]
             if not isinstance(params, list) or len(params) > len(PARAMETER_UNITS):
                 raise ValueError("Invalid parameter list")
@@ -237,7 +258,7 @@ class PhysicalScenarioPlan:
                     values = []
                 else:
                     raise ValueError("Unknown parameter kind")
-                if field not in {"longitudinal_acceleration_mps2", "lateral_acceleration_mps2"} and any(v < 0 for v in values):
+                if field not in {"longitudinal_acceleration_mps2", "lateral_acceleration_mps2", "object_offset_x_m", "object_offset_y_m"} and any(v < 0 for v in values):
                     raise ValueError("Negative magnitude")
         return cls(tuple(hypotheses), tuple(uncovered), control_assessment=control)
 

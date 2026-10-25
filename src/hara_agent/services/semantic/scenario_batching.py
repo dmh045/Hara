@@ -85,6 +85,7 @@ def _scenario_json(
                     "ego_speed_kph", "object_speed_kph", "relative_distance_m", "fault_motion_model",
                     "ego_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s",
                     "lateral_clearance_m", "slope_percent", "residual_resistance_mps2", "motion_model_outcome",
+                    "object_offset_x_m", "object_offset_y_m", "contact_half_length_m", "contact_half_width_m", "selected_source_condition",
                 ) if key in scenario.facts},
                 "branches": [{key: value for key, value in branch.items() if not key.startswith("_")}
                              for branch in scenario.facts.get("collision_branches", [])],

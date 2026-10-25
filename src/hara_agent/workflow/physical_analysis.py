@@ -14,7 +14,7 @@ from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenari
 
 def _update_response_totals(metrics, responses, sign=1):
     """Each committed entry replaces its previous contribution, including resume."""
-    for name in ("cumulative_proposal_responses", "cumulative_uncached_requests", "cumulative_schema_repair_responses"):
+    for name in ("cumulative_proposal_responses", "cumulative_uncached_requests", "cumulative_schema_repair_responses", "cumulative_uncached_prompt_characters"):
         metrics.setdefault(name, 0)
     metrics.setdefault("token_usage", {"prompt_tokens": 0, "completion_tokens": 0})
     for r in responses:
@@ -23,6 +23,8 @@ def _update_response_totals(metrics, responses, sign=1):
             ("cumulative_proposal_responses", 1),
             ("cumulative_uncached_requests", int(not usage.get("response_checkpoint_hit"))),
             ("cumulative_schema_repair_responses", int(r.get("schema_repair", False))),
+            ("cumulative_uncached_prompt_characters", 0 if usage.get("response_checkpoint_hit") else
+                len(r["request"].get("system_prompt", "")) + len(r["request"].get("user_prompt", ""))),
         ):
             metrics[name] = metrics.get(name, 0) + sign * amount
         tokens = metrics.setdefault("token_usage", {})
@@ -151,14 +153,15 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             task_scope = producer.task_scope(candidate, mf.malfunction_id)
             if not task_scope:
                 kept.append(candidate); metrics["existing_path_skipped"] += 1
-            elif task_scope == "MOTION_AND_CONTROLS" and (gap := producer.known_model_gap(candidate, mf.malfunction_id)):
-                candidate.analysis_instance["physical_plan_diagnostics"] = [gap]
-                kept.append(candidate)
-                metrics["known_model_gap_skipped"] = metrics.get("known_model_gap_skipped", 0) + 1
-                metrics["diagnostics"].append({"scenario_id": candidate.scenario_id, **gap})
             else:
                 groups[(task_scope, signature(scenario_conditions(candidate, without_driver=True)))].append(candidate)
-        for (task_scope, condition_key), family in groups.items():
+        # Distribute source-condition requests over existing motion groups;
+        # never multiply groups by all parking layouts or weather conditions.
+        source_conditions = [{"source_field": field, "value": value}
+            for field in ("odd_road_types", "odd_weather_conditions")
+            for value in dict.fromkeys(project.get(field, []))]
+        coverage_offset = int(signature(asdict(mf))[:8], 16)
+        for group_index, ((task_scope, condition_key), family) in enumerate(sorted(groups.items())):
             first = family[0]
             # The same motion plan can be instantiated for multiple driver
             # configurations. Causality and risk are still evaluated per world.
@@ -181,6 +184,13 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 "model_input_status": producer.input_status(first, mf.malfunction_id),
                 "producer_version": PHYSICAL_PLAN_VERSION, "model_catalog_identity": signature(MODEL_CATALOG),
                 "prompt_version": agent.PROMPT_VERSION, "route": route}
+            if task_scope == "MOTION_AND_CONTROLS" and source_conditions:
+                inputs["source_condition_focus"] = source_conditions[(coverage_offset + group_index) % len(source_conditions)]
+                inputs["source_condition_policy"] = (
+                    "Use this allowed source condition only if relevant and compatible; otherwise select a relevant "
+                    "alternative from project_context or explain the uncovered condition. Return operating_condition "
+                    "with physical_effect linked to your geometry, motion, visibility or intervention assumptions. "
+                    "One source axis per hypothesis; no Cartesian expansion. A label alone does not prove coverage.")
             if task_scope == "CONTROL_INPUTS_ONLY":
                 inputs.update(task_scope=task_scope, prompt_version=agent.CONTROL_PROMPT_VERSION)
             evidence = {"MF.description": {"value": mf.description, "sources": [vars(ref) for ref in mf.sources]},
@@ -279,6 +289,13 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                         for item in generated or [candidate]:
                             item.analysis_instance["physical_plan_diagnostics"] = failures
                     metrics["generated_instances"] += len(generated)
+                    for child in generated:
+                        condition = child.facts.get("selected_source_condition")
+                        if condition:
+                            metrics.setdefault("source_condition_instances", []).append({
+                                "scenario_id": child.scenario_id, **condition})
+                        elif source_conditions and task_scope == "MOTION_AND_CONTROLS":
+                            metrics.setdefault("source_condition_uncovered_ids", []).append(child.scenario_id)
                     if plan.control_assessment is not None:
                         metrics["control_only_instances"] = metrics.get("control_only_instances", 0) + len(generated)
                     metrics["diagnostics"].extend({"scenario_id": candidate.scenario_id, **f} for f in failures)

@@ -121,18 +121,19 @@ def test_range_representative_does_not_split_a_regime_twice(method):
     assert {s[p['field']] for s in samples} == {-1, -.5, 0, .5, 1}
 
 
-def test_fixed_moving_target_skips_proposal_without_dropping_causal_identity(method):
+def test_moving_target_unsupported_geometry_retains_causal_identity(method):
+    # Moving speed alone no longer rules out the entire catalogue. A proposal
+    # can still identify an unsupported turning trajectory without replacing
+    # the target or dropping its candidate from causal assessment.
     parent = make_candidate()
     parent.facts.update(object_speed_kph=10, object_id='moving-target')
     parent.fact_provenance['object_speed_kph'] = source()
-    client = Client([])
+    client = Client([{'hypotheses': [], 'uncovered_conditions': ['target turns during the interaction']}])
     state, result = run(method, PhysicalScenarioAgent(client), candidates={'MF': [parent]})
-    assert result['MF'] == [parent] and not client.requests
-    assert parent.analysis_instance['physical_plan_diagnostics'][0]['object_speed_kph'] == 10
+    assert result['MF'] == [parent] and len(client.requests) == 1
+    assert parent.facts['object_speed_kph'] == 10
+    assert parent.analysis_instance['physical_plan_diagnostics'][0]['reason'] == 'PHYSICAL_MODEL_NOT_APPLICABLE'
     assert not parent.facts.get('collision_branches')
-    assert state.item_definition['physical_analysis_metrics']['known_model_gap_skipped'] == 1
-    parent.fact_provenance['object_speed_kph']['approval'] = 'PENDING'
-    assert PhysicalHypothesisInstantiationService.known_model_gap(parent, 'MF') is None
 
 
 def test_partial_conflict_does_not_correct_forever(method):

@@ -11,7 +11,6 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
-from itertools import product
 import json
 import re
 from typing import Any, Iterable
@@ -1395,7 +1394,8 @@ class ConstrainedScenarioSynthesisService:
 
         valid = []
         fingerprints = set()
-        primary_signatures = set()
+        coverage = set()
+        ranked = []
         for atom_ids, dimensions, score in sorted(
             states, key=lambda item: (-item[2], item[0]),
         ):
@@ -1417,14 +1417,20 @@ class ConstrainedScenarioSynthesisService:
             })
             if fingerprint in fingerprints:
                 continue
-            signature = tuple(expanded.get(dimension, ()) for dimension in primary)
-            if signature in primary_signatures and len(valid) < limit // 2:
-                continue
             fingerprints.add(fingerprint)
-            primary_signatures.add(signature)
-            valid.append(tuple(sorted(atom_ids)))
-            if len(valid) >= limit:
-                break
+            features = {(dimension, tuple(expanded.get(dimension, ())))
+                        for dimension in (*primary, "WHERE", "ROAD")}
+            ranked.append((tuple(sorted(atom_ids)), features))
+        # Score ranking breaks ties, while genuine primary/environment novelty
+        # wins over another lexical prefix. The previous one-pass primary-only
+        # filter permanently discarded every alternate WHERE/ROAD binding.
+        while ranked and len(valid) < limit:
+            index = max(range(len(ranked)), key=lambda i: (
+                sum(d in primary for d, _ in ranked[i][1] - coverage),
+                len(ranked[i][1] - coverage), -i))
+            ids, features = ranked.pop(index)
+            valid.append(ids)
+            coverage.update(features)
         return tuple(valid)
 
     def logical_selection_assignments(
@@ -1451,19 +1457,23 @@ class ConstrainedScenarioSynthesisService:
             })
             for bundle in pool
         }
-        assignments = []
-        for assignment in product(pool, repeat=desired):
-            if len({fingerprints[bundle] for bundle in assignment}) != desired:
-                continue
-            if self.diversity_validator.reasons(
-                synthesis_input.coverage_plan,
-                (expanded[bundle] for bundle in assignment),
-            ):
-                continue
-            assignments.append(assignment)
-            if len(assignments) >= limit:
-                break
-        return tuple(assignments)
+        # At most 32 * 32 * 3 extensions; never a Cartesian-product scan whose
+        # runtime depends on how late the first valid sibling set appears.
+        beam = [(pool[0],)] if desired > 1 else [(bundle,) for bundle in pool]
+        def novelty(assignment):
+            return sum(len({tuple(expanded[b].get(d, ())) for b in assignment})
+                       for d in (*synthesis_input.coverage_plan.primary_variation_dimensions, "WHERE", "ROAD"))
+        for _ in range(1, desired):
+            extended = [(*a, b) for a in beam for b in pool
+                        if fingerprints[b] not in {fingerprints[item] for item in a}
+                        and not self.diversity_validator.reasons(synthesis_input.coverage_plan,
+                            (expanded[item] for item in (*a, b)))]
+            # Sibling order has no engineering meaning; avoid permutations.
+            unique = {tuple(sorted(a)): a for a in extended}
+            beam = sorted(unique.values(), key=novelty, reverse=True)[:32]
+        assignments = [a for a in beam if not self.diversity_validator.reasons(
+            synthesis_input.coverage_plan, (expanded[b] for b in a))]
+        return tuple(assignments[:limit])
 
     def generate_candidates(
         self, *, malfunction: dict[str, Any], parent: ScenarioCandidate,
