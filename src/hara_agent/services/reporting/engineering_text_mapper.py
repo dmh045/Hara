@@ -418,6 +418,8 @@ class EngineeringReportTextMapper:
         control = trace.get("controllability", {})
         if not isinstance(control, Mapping) or not control:
             return ""
+        if control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH":
+            return control.get("reference_rule", {}).get("rationale", "按参考工况进行条件性 C 评定；适用性待审核")
         if control.get("decision_status") == "OVERRIDE_MATCH":
             return "C 分支：干预覆盖；依据已命中的干预条件评分，未使用 TTC 分档"
         if control.get("decision_status") == "MODEL_NOT_APPLICABLE":
@@ -882,6 +884,11 @@ class EngineeringReportTextMapper:
 
     def controllability_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
         if getattr(evidence, "value", None):
+            if trace.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH":
+                rule = trace.get("reference_rule", {})
+                speed = rule.get("trajectory_max_speed_kph")
+                prefix = f"接触前轨迹速度上界 {quantity(speed, 'km/h')} km/h；" if isinstance(speed, (int, float)) else ""
+                return prefix + rule.get("rationale", "按参考工况进行条件性 C 评定；适用性待审核")
             override = trace.get("override_inputs", trace.get("inputs", trace.get("physical_inputs", {})))
             if trace.get("decision_status") == "OVERRIDE_MATCH" or trace.get("override", {}).get("matched") is True:
                 conditions = [yes if override[key] else no for key, yes, no in (

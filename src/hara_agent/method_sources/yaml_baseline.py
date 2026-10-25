@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import asdict
+import math
 import re
 from typing import Any
 
@@ -558,6 +560,33 @@ class YamlBaselineCompiler:
                 ))
             ):
                 raise YamlBaselineCompileError("Invalid governed project analysis policy")
+            reference_rules = controllability.get("conditional_reference_rules", [])
+            if not isinstance(reference_rules, list):
+                raise YamlBaselineCompileError("conditional_reference_rules must be a list")
+            seen_reference_rules = set()
+            for index, rule in enumerate(reference_rules):
+                conditions = rule.get("when", {}) if isinstance(rule, dict) else {}
+                speed_limit = rule.get("trajectory_speed_upper_exclusive_kph") if isinstance(rule, dict) else None
+                if (not isinstance(rule, dict) or not rule.get("rule_id")
+                        or rule["rule_id"] in seen_reference_rules
+                        or rule.get("status") != "CONDITIONAL_REFERENCE"
+                        or rule.get("result") not in {"C0", "C1", "C2", "C3"}
+                        or not all(rule.get(key) for key in ("source_document", "source_location",
+                            "source_sha256", "source_statement", "limitation", "rationale"))
+                        or not isinstance(rule.get("function_output_terms"), list)
+                        or not rule["function_output_terms"]
+                        or any(not isinstance(term, str) or not term.strip() for term in rule["function_output_terms"])
+                        or not isinstance(conditions, dict) or set(conditions) != {
+                            "component_category", "failure_type", "operating_mode", "fault_motion_model",
+                            "driver_in_vehicle", "emergency_braking_available"}
+                        or any(not isinstance(conditions[key], list) or not conditions[key]
+                            for key in ("component_category", "failure_type", "operating_mode", "fault_motion_model"))
+                        or any(not isinstance(conditions[key], bool)
+                            for key in ("driver_in_vehicle", "emergency_braking_available"))
+                        or isinstance(speed_limit, bool) or not isinstance(speed_limit, (int, float))
+                        or not math.isfinite(speed_limit) or speed_limit <= 0):
+                    raise YamlBaselineCompileError("Invalid conditional controllability reference rule")
+                seen_reference_rules.add(rule["rule_id"])
             compiled_project_policy = {
                 "policy_id": str(project_policy["policy_id"]),
                 "version": str(project_policy["version"]),
@@ -572,7 +601,11 @@ class YamlBaselineCompiler:
                 "template_context_exclusions": dict(project_policy.get("template_context_exclusions", {})),
                 "driver_location_convention": dict(project_policy.get("driver_location_convention", {})),
                 "supersedes": str(project_policy.get("supersedes", "")),
-                "controllability": dict(controllability),
+                "controllability": {**controllability, "conditional_reference_rules": [
+                    {**rule, "source_ref": asdict(self._source(source_hash,
+                        source_paths["project_analysis_policy"],
+                        f"controllability.conditional_reference_rules[{index}]", rule))}
+                    for index, rule in enumerate(reference_rules)]},
                 "decisions": dict(decisions),
                 "engineering_decisions": dict(engineering_decisions),
                 "candidate_defaults": list(project_policy.get("candidate_defaults", [])),

@@ -74,7 +74,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
         changed_model |= changed & phase_ids
     invalidate = set()
     if changed_geometry or changed & speeds or changed_model:
-        invalidate.update(("relative_speed_kph", "closing_speed_kph", "ttc_s", "first_contact_time_s"))
+        invalidate.update(("relative_speed_kph", "closing_speed_kph", "ttc_s", "first_contact_time_s", "trajectory_max_speed_kph"))
     if changed & (distances | {"closing_speed_kph", "relative_speed_kph"}):
         invalidate.add("ttc_s")
     if changed_model or (changed & distances and view.get("fault_motion_model")):
@@ -101,7 +101,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
     conflicts = []
     outcome = next((r.value for r in records if r.evidence_ref == "DERIVED.motion_model_outcome"), {})
     if outcome and outcome.get("status") != "CONTACT":
-        for key in ("ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s"):
+        for key in ("ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s", "trajectory_max_speed_kph"):
             if key in view:
                 view.pop(key)
                 view["_fact_provenance"].pop(key, None)
@@ -110,7 +110,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
     for record in records:
         key = record.evidence_ref.removeprefix("DERIVED.")
         if outcome and outcome.get("status") != "CONTACT" and key in {
-            "ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s",
+            "ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s", "trajectory_max_speed_kph",
         }:
             continue
         # A directly supplied branch measurement must not be silently overwritten
@@ -885,6 +885,14 @@ def derive_scenario_physics(
             keys += ("model_valid_until_s",)
         records.append(derived_record("motion_model_outcome", outcome, keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED))
         if outcome["status"] == "CONTACT":
+            # In this model v_x is constant and v_y is affine in time, so the
+            # speed norm reaches its maximum at an interval endpoint. Keep
+            # this bound unrounded for method applicability, not display.
+            records.append(derived_record("trajectory_max_speed_kph",
+                max(math.hypot(initial, lateral * 3.6),
+                    math.hypot(initial, outcome["impact_speed_kph"])),
+                keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
+                formula="max(hypot(v_x,v_y(0)),hypot(v_x,v_y(first_contact))); constant lateral acceleration"))
             for key, value in (("first_contact_time_s", outcome["time_s"]),
                                ("ego_impact_speed_kph", math.hypot(initial, outcome["impact_speed_kph"])),
                                ("relative_speed_kph", math.hypot(initial, outcome["impact_speed_kph"]))):

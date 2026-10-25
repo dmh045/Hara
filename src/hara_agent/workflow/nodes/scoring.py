@@ -375,6 +375,8 @@ def score_structured_scenarios(
         for key in ("component_category", "failure_type"):
             if malfunction.get(key) not in (None, ""):
                 scenario[key] = malfunction[key]
+        scenario["_function_output"] = function_by_id.get(str(malfunction.get("function_id", "")), {}).get("output", "")
+        scenario["operating_mode"] = candidate.operating_mode
         scenario["_fact_provenance"] = dict(candidate.fact_provenance)
         physics_conflicts: list[dict[str, Any]] = []
         stationary_direction_conflict = (

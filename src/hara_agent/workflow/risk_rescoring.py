@@ -217,11 +217,24 @@ class OfflineRiskRescorer:
                 bool(method.structured_risk_method.controllability_profile.applicability),
                 new_assets["controllability_profile"] == expected_profile,
             ))
-            if not (routing_only or applicability_only):
-                raise ValueError("Method transition is not limited to current-project C routing or explicit TTC applicability")
-            changed_path = policy_path if routing_only else profile_path
+            reference_policy = deepcopy(old_policy)
+            reference_policy.setdefault("controllability", {})["conditional_reference_rules"] = (
+                new_policy.get("controllability", {}).get("conditional_reference_rules"))
+            reference_only = all((
+                old_resolution.method.metadata["method_source_hash"] == source.method_contract["method_source_hash"],
+                old_resolution.method.contract_version == method.contract_version,
+                old_resolution.method.compiler_version == method.compiler_version,
+                new_manifest == expected_manifest,
+                set(old_hashes) == set(new_hashes),
+                all(old_hashes[key] == new_hashes[key] for key in old_hashes if key != policy_path),
+                new_policy == reference_policy,
+                bool(new_policy.get("controllability", {}).get("conditional_reference_rules")),
+            ))
+            if not (routing_only or applicability_only or reference_only):
+                raise ValueError("Method transition is not limited to current-project C routing, applicability or conditional references")
+            changed_path = policy_path if routing_only or reference_only else profile_path
             method_transition = {
-                "type": "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY" if routing_only else "C_PROFILE_APPLICABILITY_ONLY",
+                "type": "C_CONDITIONAL_REFERENCE_RULES_ONLY" if reference_only else "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY" if routing_only else "C_PROFILE_APPLICABILITY_ONLY",
                 "source_method_hash": old_resolution.method.metadata["method_source_hash"],
                 "target_method_hash": method.metadata["method_source_hash"],
                 "source_baseline": str(source_baseline.resolve()),

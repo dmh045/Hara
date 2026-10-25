@@ -56,7 +56,7 @@ policies:
 
 asset_hashes:
   normalized/malfunction_situation_selection.yaml: 108aa4cd5c7254534b5de26d780d677bbc163a3f12569d05f987d4dee3bea455
-  normalized/project_analysis_policy.yaml: d30b123703a68615084c363176529a47cd1568e1372e16d7414972da7609f4a4
+  normalized/project_analysis_policy.yaml: a029e5a403b6d784d9778f517f1f69af5a0e78416cccac173a73f1ff5320953b
   raw/atom_spec.yaml: 391ad0433a6f37bb8f1ddc0b7bc004c0c882d4dae364e1420322bb0813331108
   raw/c_iso26262.yaml: 5a64ce1fa4f8d133f51d0aec7d88506f8a0bdf01ce4aa1ea90318ab388aeb8b9
   raw/c_profiles/iav_avp.yaml: 98468b3e57fb492b1bf498ee83e3cfb85c4b813ba50270fc389db0dc49ea6239

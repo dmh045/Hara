@@ -4,6 +4,7 @@ from typing import Any
 from .scenario_physics import source_is_accepted_for, branch_physics_view
 from .asil_service import MethodContractASILService
 from copy import deepcopy
+import math
 
 from hara_agent.contracts import (
     CalculationStatus, ExposureDimensionCoverageDecision,
@@ -201,7 +202,12 @@ class StructuredRiskScoringService:
                 str(scenario.get("malfunction_id", "UNKNOWN")), str(scenario.get("scenario_id", "UNKNOWN")),
                 {**scenario, "remote_intervention_available": None}), self.structured)
             override_match = independent.decision_status == "OVERRIDE_MATCH" and independent.rule_id == control["engineering_rule_id"]
-        if scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT" and not override_match:
+        if not override_match and "collision_branches" not in scenario:
+            reference = self._conditional_reference_control(scenario)
+            if reference is not None:
+                control.update(reference)
+        reference_match = control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH"
+        if scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT" and not (override_match or reference_match):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
@@ -224,6 +230,44 @@ class StructuredRiskScoringService:
                     path.update(lookup_result=path.get("result", ""), result="",
                         status=control["calculation_status"], reason=control.get("reasoning", ""))
         return result
+
+    def _conditional_reference_control(self, scenario: dict) -> dict | None:
+        """Execute the selected reference's bounded scope; retain pending approval."""
+        from hara_agent.contracts import SourceRef
+        rules = self.method.metadata.get("project_analysis_policy", {}).get(
+            "controllability", {}).get("conditional_reference_rules", [])
+        metadata = scenario.get("_fact_provenance", {})
+        scope = {key: scenario.get(key, "") for key in ("scenario_id", "malfunction_id")}
+        for rule in rules:
+            output = str(scenario.get("_function_output", "")).casefold()
+            if not any(term.casefold() in output for term in rule["function_output_terms"]):
+                continue
+            if any((scenario.get(key) not in expected if isinstance(expected, list)
+                    else scenario.get(key) is not expected) for key, expected in rule["when"].items()):
+                continue
+            fields = ("trajectory_max_speed_kph", "driver_in_vehicle", "emergency_braking_available")
+            if not all(source_is_accepted_for(metadata.get(key, {}), **scope) for key in fields):
+                continue
+            speed = scenario.get("trajectory_max_speed_kph")
+            if (isinstance(speed, bool) or not isinstance(speed, (int, float))
+                    or not math.isfinite(speed) or speed < 0
+                    or speed >= rule["trajectory_speed_upper_exclusive_kph"]):
+                continue
+            result = self._result(value_key="controllability_score", value=rule["result"],
+                status=CalculationStatus.FINALIZED, reason=rule["rationale"],
+                rule_id=rule["rule_id"], source_ref=SourceRef.from_dict(rule["source_ref"]),
+                inputs_used=(*fields, "_function_output", "component_category", "failure_type", "fault_motion_model"),
+                engineering_status="PENDING", calculation_nature="CONDITIONAL",
+                decision_status="CONDITIONAL_REFERENCE_MATCH", pending_reason="",
+                selected_profile_id=rule["rule_id"], unknown_policy_action="REFERENCE_RULE_MATCH",
+                reference_rule={key: rule[key] for key in ("rule_id", "source_document", "source_location",
+                    "source_sha256", "source_statement", "limitation", "when", "rationale",
+                    "trajectory_speed_upper_exclusive_kph")})
+            result["reference_rule"]["trajectory_max_speed_kph"] = speed
+            result["avoidance_paths"] = {"reference_scenario": {
+                "rule_id": rule["rule_id"], "status": "CONDITIONAL_TRIAL", "result": rule["result"]}}
+            return result
+        return None
 
     def _calculate(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
         if "collision_branches" in scenario:
@@ -477,11 +521,16 @@ class StructuredRiskScoringService:
         asil_service = MethodContractASILService(self.method)
         evaluations = []
         for row in rows:
-            approved = {dimension: score[dimension + "_score"] for dimension, score in row["scores"].items()
-                        if dimension in {"severity", "exposure", "controllability"} and score["engineering_status"] == "FINALIZED"}
-            asil, sources = asil_service.partial_zero_decision(approved)
-            if len(approved) == 3:
-                asil = asil_service.determine(approved["severity"], approved["exposure"], approved["controllability"])
+            calculated = {dimension: score[dimension + "_score"] for dimension, score in row["scores"].items()
+                          if dimension in {"severity", "exposure", "controllability"}
+                          and (score["engineering_status"] == "FINALIZED" or (
+                              score.get("calculation_nature") == "CONDITIONAL"
+                              and score.get("calculation_status") == "FINALIZED"))}
+            conditional = any(score.get("calculation_nature") == "CONDITIONAL"
+                              for score in row["scores"].values() if isinstance(score, dict))
+            asil, sources = asil_service.partial_zero_decision(calculated)
+            if len(calculated) == 3:
+                asil = asil_service.determine(calculated["severity"], calculated["exposure"], calculated["controllability"])
             if row["physical_input_conflicts"]:
                 asil = ""
             evaluations.append({"branch_id": row["branch_id"], "impact_time_id": row["impact_time_id"],
@@ -492,7 +541,7 @@ class StructuredRiskScoringService:
                 "risk_context": row["risk_context"],
                 "S": row["scores"]["severity"]["severity_score"], "E": row["scores"]["exposure"]["exposure_score"],
                 "C": row["scores"]["controllability"]["controllability_score"], "ASIL": asil,
-                "status": "FINALIZED" if asil else "PENDING", "scores": row["scores"]})
+                "status": "FINALIZED" if asil and not conditional else "PENDING", "scores": row["scores"]})
         known = [row for row in evaluations if row["ASIL"]]
         order = asil_service.result_order()
         deciding_risk = max(known, key=lambda row: (order.index(row["ASIL"]), list(self.method.asil.severity_levels).index(row["S"]) if row["S"] else -1)) if known else None
@@ -508,7 +557,7 @@ class StructuredRiskScoringService:
         result["branch_summary"] = {
             "highest_known_asil": deciding_risk["ASIL"] if deciding_risk else "",
             "deciding_branch_id": deciding_risk["branch_id"] if deciding_risk else "",
-            "status": "PENDING" if failures or not evaluations or any(not row["ASIL"] for row in evaluations) else "FINALIZED",
+            "status": "PENDING" if failures or not evaluations or any(row["status"] != "FINALIZED" for row in evaluations) else "FINALIZED",
             "unresolved_reasons": sorted(set(failures)),
             "severity_maximum": maximum_s,
             "aggregation_basis": "EACH_BRANCH_OWN_SEC_ACTIVE_MATRIX",

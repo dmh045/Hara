@@ -80,6 +80,25 @@ controllability:
   unknown_override_policy: SKIP_TO_TTC
   basis: POSITIVE_OVERRIDE_ONLY_THEN_TTC_FALLBACK
   status: CONFIRMED_FOR_CURRENT_PROJECT
+  conditional_reference_rules:
+    - rule_id: MQB_LOW_SPEED_ERRONEOUS_STEERING_REFERENCE
+      status: CONDITIONAL_REFERENCE
+      result: C1
+      source_document: MQBEvo-RHP2.0-SOTIF-GuR.xlsx
+      source_location: Prerequisite & Assumptions park!D17
+      source_sha256: ffb29c4c4a662ea3ba936ad817af6a37f1d0812e54a0538d2adafba5bb73a763
+      source_statement: "Unwarranted or erroneous steering interventions v < 15 kph are easily controllable (C1); cited REF_19 FuSi validation study."
+      limitation: "REF_19 full study is unavailable; transfer to the current project remains a conditional reference evaluation, not engineering approval."
+      function_output_terms: [行车转角, 转向, steering]
+      when:
+        component_category: [computing]
+        failure_type: [excessive, wrong_value, unintended_activation]
+        operating_mode: [parking_vehicle_control]
+        fault_motion_model: [CONSTANT_LATERAL_ACCELERATION_TO_CONTACT]
+        driver_in_vehicle: true
+        emergency_braking_available: true
+      trajectory_speed_upper_exclusive_kph: 15
+      rationale: "驾驶员在车内且剩余制动可用；低速非预期或错误转向干预，按参考工况评为 C1。跨项目适用性待审核；未使用纵向 TTC 分档。"
 decisions:
   A1:
     status: CONFIRMED_FOR_CURRENT_PROJECT
