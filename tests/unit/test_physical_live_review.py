@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,6 +53,62 @@ def test_agent_sends_compact_view_and_retains_original_basis_ids():
                'evidence': {'MF.description': 'drive fault', 'SCENARIO.conditions': {'facts': {'ego_speed_kph': 0}}}}
     plan, _ = PhysicalScenarioAgent(Client()).propose(context)
     assert plan.hypotheses[0]['basis_refs'] == ['MF.description']
+
+
+@pytest.mark.parametrize('controls_only', [False, True])
+@pytest.mark.parametrize('mode', ['json_object', 'none'])
+def test_physical_request_format_contract_and_cached_repair(tmp_path, controls_only, mode):
+    from hara_agent.contracts.physical_scenario_plan import INTERVENTION_ASSUMPTION_FIELDS
+    control = dict(rationale='Automatic command is lost; no independent path established',
+        basis_refs=['MF.description'], conditions=['Current fault only'], uncovered_conditions=['Independent control unknown'],
+        failed_controls=['automatic_braking_command'], remaining_controls=[], intervention_assumptions={})
+    valid = ({'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': control}
+             if controls_only else raw_plan())
+    invalid = deepcopy(valid)
+    target = invalid['control_assessment'] if controls_only else invalid['hypotheses'][0]
+    # Reproduce the real response's confusion of downstream inputs with
+    # allowed proposal fields; repair must not silently translate null to false.
+    target['intervention_assumptions'] = {'driver_in_vehicle': {'value': None}}
+    class Client:
+        config = SimpleNamespace(scenario_response_format=mode)
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            assert request.response_format == ({'type': 'json_object'} if mode == 'json_object' else None)
+            payload = json.loads(request.user_prompt)
+            contract = payload['output_contract']['intervention_assumptions']
+            assert set(contract['optional_keys']) == INTERVENTION_ASSUMPTION_FIELDS
+            assert contract['type'] == 'object'
+            if self.calls == 2:
+                assert payload['previous_invalid_response'] == invalid
+                assert 'driver_in_vehicle' in payload['repair_errors'][0]
+            return LLMResponse(deepcopy(invalid if self.calls == 1 else valid), 'OFFLINE')
+    context = {'plan_key': 'format-contract', 'evidence': {'MF.description': 'command fault'}}
+    if controls_only:
+        context['task_scope'] = 'CONTROL_INPUTS_ONLY'
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    plan, audit = agent.propose(context)
+    assert client.calls == 2 and audit['schema_repairs'] == 1
+    _, resumed = agent.propose(context)
+    assert client.calls == 2 and resumed['response_cache_hits'] == 2
+    result = plan.control_assessment if controls_only else plan.hypotheses[0]
+    assert result.get('intervention_assumptions', {}) == {}
+
+
+def test_physical_acceleration_unit_notation_preserves_raw_reply_and_values():
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = raw_plan('CONSTANT_LATERAL_ACCELERATION_TO_CONTACT', initial=7)
+    parameter = next(p for p in raw['hypotheses'][0]['parameters'] if p['field'] == 'lateral_acceleration_mps2')
+    parameter['unit'] = 'm/s²'
+    before = deepcopy(raw)
+    plan = PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    normalized = next(p for p in plan.hypotheses[0]['parameters'] if p['field'] == parameter['field'])
+    assert normalized == {**parameter, 'unit': 'm/s2'}
+    assert raw == before
+    parameter['unit'] = 'm/s'
+    with pytest.raises(ValueError, match='declared unit'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
 
 
 @pytest.mark.parametrize('acceleration', [1.5, -0.1, 0])

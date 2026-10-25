@@ -80,6 +80,29 @@ def test_real_numeric_sample_keeps_scenario_and_explains_actual_scores(active_me
     assert state == before and trace == trace_before
 
 
+@pytest.mark.parametrize('same_condition', [False, True])
+def test_group_keeps_source_choice_and_effect_together(real_sample, same_condition):
+    state, _ = real_sample
+    first = deepcopy(state.scenarios[0])
+    second = deepcopy(first)
+    first.facts['selected_source_condition'] = {
+        'source_field': 'odd_road_types', 'value': 'T字框型', 'physical_effect': '开放端目标位于前方'}
+    second.facts['selected_source_condition'] = deepcopy(first.facts['selected_source_condition']) if same_condition else {
+        'source_field': 'odd_road_types', 'value': '直线开口型', 'physical_effect': '另一车位边界对应目标位置'}
+    before = deepcopy([first, second])
+    service = HARAReportProjectionService(load_report_schema())
+    text, detail = service._group_scenario([{'scenario': first}, {'scenario': second}])
+    assert ('代表运行条件为T字框型' in text) == same_condition
+    if not same_condition:
+        assert 'T字框型' not in text and '直线开口型' not in text
+        assert '开放端目标' not in detail and '另一车位' not in detail
+    for scenario in (first, second):
+        member_text, member_detail = service.text.scenario(scenario)
+        condition = scenario.facts['selected_source_condition']
+        assert condition['value'] in member_text and condition['physical_effect'] in member_detail
+    assert [first, second] == before
+
+
 def test_coverage_note_does_not_change_risk_or_approval(active_method, real_sample):
     state, trace = real_sample
     before = deepcopy(state)

@@ -464,6 +464,11 @@ class HARAReportProjectionService:
         common = deepcopy(scenarios[0])
         for field in ("facts", "context_resolution", "analysis_instance"):
             setattr(common, field, self._common_mapping([getattr(s, field) or {} for s in scenarios]))
+        # A source choice and its physical effect form one condition. Keeping
+        # only their shared source_field would describe no actual member.
+        selected = [s.facts.get("selected_source_condition") for s in scenarios]
+        if any(value != selected[0] for value in selected[1:]):
+            common.facts.pop("selected_source_condition", None)
         for field in ("operating_mode", "operating_scenario", "atomic_variant"):
             if len({str(getattr(s, field)) for s in scenarios}) > 1:
                 setattr(common, field, "")

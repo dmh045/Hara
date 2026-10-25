@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hara_agent.contracts.physical_scenario_plan import (
     MODEL_CATALOG, PARAMETER_UNITS, PHYSICAL_PLAN_VERSION, PhysicalScenarioPlan, CONTROL_IDENTITIES,
+    INTERVENTION_ASSUMPTION_FIELDS,
 )
 from hara_agent.infrastructure.llm import LLMRequest
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
@@ -71,8 +72,8 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v12-bounded-interaction-coverage"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v1"
+    PROMPT_VERSION = "post-fault-physical-scenario-v13-json-contract"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v2-json-contract"
     ANALYSIS_STRATEGY = (
         "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
@@ -90,6 +91,9 @@ class PhysicalScenarioAgent:
     def __init__(self, client, *, response_checkpoint_dir: Path | None = None):
         self.client = client
         self.responses = ResponseCheckpoint(response_checkpoint_dir) if response_checkpoint_dir else None
+        config = getattr(client, "config", None)
+        self.response_format = ({"type": "json_object"}
+            if getattr(config, "scenario_response_format", "none") == "json_object" else None)
 
     def propose(self, context: dict, *, on_response=lambda record: None) -> tuple[PhysicalScenarioPlan, dict]:
         example = {
@@ -192,6 +196,13 @@ class PhysicalScenarioAgent:
             "basis_ref_ids": sorted(context["evidence"]),
             "geometry_values": {field: sorted(values) for field, values in context.get("risk_vocabulary", {}).items()},
             "control_identities": sorted(CONTROL_IDENTITIES),
+            "intervention_assumptions": {
+                "type": "object", "optional_keys": sorted(INTERVENTION_ASSUMPTION_FIELDS),
+                "entry_shape": {"value": "boolean, never null", "rationale": "reason",
+                    "basis_refs": ["a supplied evidence ID"], "conditions": ["explicit applicability"]},
+                "unknown": "omit that key; use {} if all unknown, never null or an array",
+                "derived_inputs": "driver_in_vehicle comes from each driver branch; emergency_braking_available comes from failed_controls/remaining_controls, not additional keys here",
+            },
             "parameter_payloads": {"POINT": {"value": "finite number"},
                 "RANGE": {"lower": "finite number", "value": "representative number", "upper": "finite number"},
                 "SYMBOLIC": {"symbol": "nonempty string; omit value/lower/upper"}},
@@ -217,7 +228,10 @@ class PhysicalScenarioAgent:
                 "正常时踩制动能退出功能，不等于故障后独立制动一定有效；允许有依据的条件性能力假设，"
                 "明确写出适用条件，不能声称工程批准。驾驶员位置由各分支提供，本任务不改变它。"
                 "远程干预和目标规避通过 intervention_assumptions 表达，每项包含 value 布尔值、"
-                "rationale、basis_refs、conditions。未知不能当成false，静止目标不等于人员无法逃避，"
+                "rationale、basis_refs、conditions。仅可用output_contract.intervention_assumptions.optional_keys，"
+                "不是intervention_inputs中的所有字段；driver_in_vehicle由分支提供，"
+                "emergency_braking_available由控制清单派生。未知项省略，全部未知用{}，不输出null或数组。"
+                "未知不能当成false，静止目标不等于人员无法逃避，"
                 "有App不等于故障后远程制动有效。remote为true须有remaining_controls中的remote_control"
                 "和仍可用的执行能力。不能依赖失效的控制。无法形成合理假设时具体说明未覆盖条件。"
                 "failed_controls/remaining_controls只能使用control_identities；basis_refs只能使用"
@@ -240,7 +254,8 @@ class PhysicalScenarioAgent:
                 system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
                     **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str, separators=(",", ":")),
                 schema_name="PhysicalScenarioPlan", prompt_version=self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION,
-                metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair}, max_tokens=4096)
+                metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair}, max_tokens=4096,
+                response_format=self.response_format)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
             record = {"request": asdict(request), "response": asdict(response), "schema_repair": repair}
             attempts.append(record)

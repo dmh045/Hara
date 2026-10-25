@@ -95,6 +95,11 @@ def _number(value: Any) -> float:
     return float(value)
 
 
+INTERVENTION_ASSUMPTION_FIELDS = frozenset({
+    "remote_intervention_available", "other_road_user_avoidance_possible",
+})
+
+
 def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
     for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
         _texts(h[key])
@@ -105,7 +110,7 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
     if "braking" in h["failed_controls"] and "driver_braking" in h["remaining_controls"]:
         raise ValueError("A failed braking capability cannot provide remaining driver braking")
     interventions = h.get("intervention_assumptions", {})
-    _object(interventions, set(), {"remote_intervention_available", "other_road_user_avoidance_possible"})
+    _object(interventions, set(), INTERVENTION_ASSUMPTION_FIELDS)
     proposals = list(interventions.values())
     if "safe_state_proposal" in h:
         proposal = _object(h["safe_state_proposal"],
@@ -142,6 +147,10 @@ class PhysicalScenarioPlan:
 
     @classmethod
     def from_dict(cls, raw: dict, *, evidence_ids: set[str]) -> "PhysicalScenarioPlan":
+        # Normalize a notation alias on the owned plan, retaining the Provider
+        # response verbatim. This is not a conversion between physical units.
+        from copy import deepcopy
+        raw = deepcopy(raw)
         _object(raw, {"hypotheses", "uncovered_conditions"}, {"control_assessment"})
         control = raw.get("control_assessment")
         if control is not None:
@@ -229,6 +238,8 @@ class PhysicalScenarioPlan:
                 field = p["field"]
                 if field == "grade_frame":
                     raise ValueError(_GRADE_FRAME_LOCATION)
+                if PARAMETER_UNITS.get(field) == "m/s2" and p["unit"] == "m/s²":
+                    p["unit"] = "m/s2"
                 if field not in PARAMETER_UNITS or field in fields or p["unit"] != PARAMETER_UNITS[field]:
                     raise ValueError(f"Parameter {field!r} must be unique and use its declared unit; "
                                      f"allowed parameter units: {PARAMETER_UNITS}; received unit={p['unit']!r}")
