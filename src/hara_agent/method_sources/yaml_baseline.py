@@ -1721,5 +1721,7 @@ class YamlBaselineCompiler:
             spec(FactType.TTC, ("CONTROLLABILITY", "FTTI"), FactOrigin.DERIVED_FACT, controllability, "s"),
             spec(FactType.DRIVER_IN_VEHICLE, ("CONTROLLABILITY",), FactOrigin.PROJECT_FACT, controllability),
             spec(FactType.REMOTE_INTERVENTION_AVAILABLE, ("CONTROLLABILITY",), FactOrigin.PROJECT_FACT, controllability),
-            spec(FactType.INTERVENTION_AVAILABLE, ("CONTROLLABILITY",), FactOrigin.SCENARIO_FACT, controllability),
+            # This structured method consumes specific control capabilities.
+            # A generic intervention flag has no executor dependency here;
+            # explicit-template compilers still declare it when a rule uses it.
         )

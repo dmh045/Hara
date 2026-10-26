@@ -137,6 +137,26 @@ def test_risk_fact_extraction_requests_only_missing_current_world_inputs(method,
         assert child.fact_provenance['collision_type']['approval'] == 'PENDING'
 
 
+def test_yaml_risk_requests_do_not_include_unused_generic_intervention(method):
+    from hara_agent.contracts import FactType
+    from hara_agent.services.semantic import ScenarioRiskFactAgent
+    child = instantiate(method)[0]
+    class NoRequests:
+        def complete_json(self, request):
+            pytest.fail('Already scoped physics inputs must not cause generic capability extraction')
+    # Explicit-template/custom specs remain supported by the test above. The
+    # YAML method consumes specific capability fields, not this generic flag.
+    assert FactType.INTERVENTION_AVAILABLE not in {s.fact_type for s in method.required_fact_specs}
+    before = deepcopy(child)
+    facts, audit = ScenarioRiskFactAgent(NoRequests()).interpret(
+        [dict(malfunction_id=mf().malfunction_id, scenario_id=child.scenario_id,
+              physically_feasible=True, functionally_relevant=True, causally_relevant=True,
+              risk_dimensions_changed=[], status='FINALIZED')],
+        [child], [mf()], method.required_fact_specs)
+    assert not facts and child == before
+    assert audit['llm_call_count'] == audit['llm_requested_fact_pair_count'] == 0
+
+
 def test_equal_method_binding_cannot_approve_a_conditional_collision_world(method):
     from dataclasses import asdict
     from hara_agent.models import ItemDefinitionFacts, RiskFact, SourceRef, FactProvenance, ReviewStatus
