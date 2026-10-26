@@ -170,6 +170,28 @@ def test_raw_response_is_saved_and_reparsed_without_new_call(tmp_path):
     assert json.loads(next(tmp_path.glob('*.json')).read_text())["response"]["data"] == raw_plan()
 
 
+def test_geometry_only_reply_repairs_the_root_not_the_geometry(tmp_path):
+    good = raw_plan()
+    bad = deepcopy(good['hypotheses'][0]['geometry'])
+    requests, records = [], []
+
+    class Frozen:
+        def complete_json(self, request):
+            requests.append(json.loads(request.user_prompt))
+            return LLMResponse(deepcopy(bad if len(requests) == 1 else good), 'OFFLINE')
+
+    agent = PhysicalScenarioAgent(Frozen(), response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'root-shape', 'evidence': {'MF.description': 'drive fault'}}
+    plan, audit = agent.propose(context, on_response=records.append)
+    assert 'PhysicalScenarioPlan root' in requests[1]['repair_errors'][0]
+    assert 'not a geometry subobject' in requests[1]['repair_errors'][0]
+    assert records[0]['response']['data'] == bad
+    assert plan.to_dict() == good and audit['schema_repairs'] == 1
+    restored, restored_audit = agent.propose(context)
+    assert restored == plan and len(requests) == 2
+    assert restored_audit['request_count'] == 0
+
+
 @pytest.mark.parametrize("kind,payload,required", [
     ("SYMBOLIC", {"value": "a_fault"}, "symbol"),
     ("POINT", {}, "value"),

@@ -74,11 +74,11 @@ _GRADE_FRAME_LOCATION = (
 )
 
 
-def _object(value: Any, required: set[str], optional: set[str] = frozenset()) -> dict:
+def _object(value: Any, required: set[str], optional: set[str] = frozenset(), *, path="Physical plan") -> dict:
     if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - optional:
         detail = (f"; missing={sorted(required - value.keys())}, "
                   f"unexpected={sorted(value.keys() - required - optional)}" if isinstance(value, dict) else "; expected object")
-        raise ValueError(f"Physical plan keys must be {sorted(required)} plus {sorted(optional)}" + detail)
+        raise ValueError(f"{path} keys must be {sorted(required)} plus {sorted(optional)}" + detail)
     return value
 
 
@@ -170,7 +170,8 @@ class PhysicalScenarioPlan:
         # response verbatim. This is not a conversion between physical units.
         from copy import deepcopy
         raw = deepcopy(raw)
-        _object(raw, {"hypotheses", "uncovered_conditions"}, {"control_assessment"})
+        _object(raw, {"hypotheses", "uncovered_conditions"}, {"control_assessment"},
+                path="PhysicalScenarioPlan root (return the complete output_shape, not a geometry subobject)")
         control = raw.get("control_assessment")
         if control is not None:
             _object(control, {"rationale", "basis_refs", "conditions", "uncovered_conditions",
@@ -190,10 +191,11 @@ class PhysicalScenarioPlan:
         if not hypotheses and not uncovered and control is None:
             raise ValueError("An empty physical plan requires a concrete model applicability gap")
         identities = set()
-        for h in hypotheses:
+        for index, h in enumerate(hypotheses):
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions"})
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions"},
+                    path=f"hypotheses[{index}]")
             if "driver_positions" in h:
                 positions = _texts(h["driver_positions"])
                 if not positions or len(set(positions)) != len(positions) or not set(positions) <= {

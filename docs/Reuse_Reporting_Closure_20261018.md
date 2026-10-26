@@ -1619,3 +1619,5 @@ live_final 的 10 个来源身份进入普通 HARAApplication，产生 14 个分
 固定同一份新来源中间断点的549个可计算候选，C无数值从31降为9：22项从空值成为条件性C1，其余既有C数值不变。该检查调用原生产评分服务，未手工修改参数，但尚未完成这些候选的真实因果验证，不能称为最终549条危险事件。前后证据为 `continued_full_20261026/c_scope_before.json`、`c_scope_after.json`、`c_scope_comparison.json`。原缺陷先由12个非computing正例复现；修复后相关61项通过，并修正了测试用列表位置选规则的问题，改按规则ID，避免交叉方法新增后测试误测另一条规则。完整回归 **1250 passed、1 skipped**，doctor、compileall及diff检查通过。
 
 普通生产重评分又验证了既有10条真实样本和1000条固定历史风险：两组的风险身份、全部S/E/C/ASIL数值与审核状态、功能及失效身份均不变；原始场景数值、语义指纹和事实来源保持，唯一来源引用变化是驾驶员项目政策的合法方法哈希重绑。两次均为0 Provider，原始文件未改，旧总体仍为75条C无数值，原因仍需新上游输入解决。本次范围修复解决的是新全量中已生成有效控制后果的不同部件类别，而不是篡改旧75条。样本报告在 `continued_validation_20261026/live_c_scope/HARA_Physical_Followup.xlsx`；固定总体在 `population_c_scope/HARA_Population_C_Scope.xlsx`。
+
+全量中还有模型只返回 geometry 子对象、或混淆假设字段层级的结构失败。原对象校验统一写“Physical plan keys”，修正请求无法明确定位层级。现有 _object 校验只增加路径诊断：根对象明确要求完整 output_shape，假设明确到 hypotheses[index]；接受/拒绝的字段集合未改变，不自动补参数或组装缺失方案。新增测试通过同一 PhysicalScenarioAgent 验证一次修正、原始回复保存及0新请求恢复；80项相关测试和完整 **1251 passed、1 skipped** 通过，doctor、compileall、diff检查通过。有效计划仍可直接恢复，结构失败项在保存历史后按一次有界重核处理，所有真实修正仍累计原账本。
