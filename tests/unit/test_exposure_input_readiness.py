@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,27 @@ def test_complete_relevant_atom_set_is_ready_complete():
         })
     )
     assert readiness["status"] == "READY_COMPLETE"
+
+
+@pytest.mark.parametrize('speed,accepted,applicability,ready', [
+    (0,True,'OPTIONAL',True), (0,False,'OPTIONAL',False),
+    (10,True,'OPTIONAL',False), (0,True,'REQUIRED',False),
+])
+def test_current_stationary_target_does_not_inherit_optional_moving_traffic(speed,accepted,applicability,ready):
+    method = _method([('E4','E4'),('E2','E2')])
+    exposure = method.structured_risk_method.exposure
+    exposure = replace(exposure, atoms=(exposure.atoms[0],replace(exposure.atoms[1],dimensions=('TRAFFIC_PATTERN',))))
+    method = replace(method,structured_risk_method=replace(method.structured_risk_method,exposure=exposure))
+    sc = _scenario(atoms=['A1'], bindings={
+        'D1':{'resolution_status':'RESOLVED','atom_id':'A1'},
+        'TRAFFIC_PATTERN':{'resolution_status':'PENDING','applicability_status':applicability,'candidate_atom_ids':['A2']}})
+    sc.update(scenario_id='sc',malfunction_id='mf',object_speed_kph=speed,
+        _fact_provenance={'object_speed_kph':{'provenance':'PROJECT_INPUT',
+            'approval':'FINALIZED' if accepted else 'PENDING','source_refs':[{'location':'test stationary target'}]}})
+    before = deepcopy(sc)
+    result = ExposureInputReadinessService(method).assess(sc)
+    assert result['status'].startswith('READY') is ready
+    assert sc == before
 
 
 def test_unresolved_irrelevant_dimension_is_ready():
@@ -160,14 +182,21 @@ def test_p6_f_ambiguous_candidates_with_identical_e_do_not_block():
 def test_p6_f_joint_candidates_must_not_falsely_prove_invariance():
     # Individually E3/E4 leave E2 unchanged. Together the source-defined
     # E3+E4 branch returns E3; use the native evaluator to catch this witness.
-    readiness = ExposureInputReadinessService(_method([("E2", "E2"), ("E3", "E3"), ("E4", "E4")])).assess(
-        _scenario(atoms=["A1"], bindings={
+    method = _method([("E2", "E2"), ("E3", "E3"), ("E4", "E4")])
+    scenario = _scenario(atoms=["A1"], bindings={
             "D1": {"resolution_status": "RESOLVED", "atom_id": "A1"},
             "D2": {"resolution_status": "PENDING", "candidate_atom_ids": ["A2"]},
             "D3": {"resolution_status": "PENDING", "candidate_atom_ids": ["A3"]},
         })
-    )
+    # Keep the original counterexample against a serialized legacy policy.
+    exposure = method.structured_risk_method.exposure
+    legacy = replace(method, structured_risk_method=replace(method.structured_risk_method,
+        exposure=replace(exposure, aggregation_policy=replace(exposure.aggregation_policy, mixed_high_match='CONTAINS'))))
+    readiness = ExposureInputReadinessService(legacy).assess(scenario)
     assert readiness["status"] == "PENDING_RELEVANT_DIMENSION"
+    current = ExposureInputReadinessService(method).assess(scenario)
+    assert current['status'] == 'READY_METHOD_IRRELEVANT_GAPS'
+    assert current['baseline_exposure']['value'] == 'E2'
     assert set(readiness["unresolved_relevant_dimensions"]) == {"D2", "D3"}
     witness = readiness["dimension_assessments"][-1]
     assert witness["joint_preview"] == "EXPOSURE_CAN_CHANGE"

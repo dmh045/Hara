@@ -38,7 +38,7 @@ class ExposureCombinationExecutor:
         values = [int(value[1:]) for value in levels]
         if all(value == int(policy.all_highest_operand[1:]) for value in values):
             return policy.all_highest_result
-        if set(policy.mixed_high_operands).issubset(set(levels)):
+        if policy.matches_mixed_high(levels):
             return policy.mixed_high_result
         if min(values) != max(values):
             if policy.mixed_strategy != "MINIMUM":
@@ -422,7 +422,7 @@ class ExposureMethodExecutor:
                 **common, value=usable[0], status=CalculationStatus.FINALIZED,
                 reason="FUSA_V1_SINGLE_ATOM", aggregation_rule="single_atom",
             )
-        if set(policy.mixed_high_operands).issubset(set(usable)):
+        if policy.matches_mixed_high(usable):
             return self._base_result(
                 **common, value=policy.mixed_high_result,
                 status=CalculationStatus.FINALIZED,

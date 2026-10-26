@@ -1,0 +1,66 @@
+{
+  "hypotheses": [
+    {
+      "hypothesis_id": "h1",
+      "model": "CONSTANT_SPEED_CURVATURE_TO_CONTACT",
+      "rationale": "offline hypothetical post-fault motion",
+      "basis_refs": [
+        "MF.description"
+      ],
+      "geometry": {
+        "road_user_type": "VEHICLE",
+        "collision_type": "SIDE",
+        "object_position": "LEFT",
+        "ego_longitudinal_direction": "FORWARD",
+        "object_id": "object1",
+        "object_extent": "EXTENDED_ALONG_TRAVEL_PATH",
+        "ego_lateral_direction": "LEFT"
+      },
+      "parameters": [
+        {
+          "field": "ego_speed_kph",
+          "unit": "km/h",
+          "kind": "POINT",
+          "value": 7,
+          "rationale": "Explicit offline kinematic assumption"
+        },
+        {
+          "field": "turn_radius_m",
+          "unit": "m",
+          "kind": "POINT",
+          "value": 5,
+          "rationale": "Explicit offline kinematic assumption"
+        },
+        {
+          "field": "lateral_clearance_m",
+          "unit": "m",
+          "kind": "POINT",
+          "value": 1.75,
+          "rationale": "Explicit offline kinematic assumption"
+        },
+        {
+          "field": "model_valid_until_s",
+          "unit": "s",
+          "kind": "POINT",
+          "value": 5,
+          "rationale": "Explicit offline kinematic assumption"
+        }
+      ],
+      "conditions": [
+        "Constant speed, no sideslip, assumed radius and effective first-contact clearance"
+      ],
+      "uncovered_conditions": [
+        "Not a grip or steering capability bound; no instability or drive acceleration"
+      ],
+      "failed_controls": [
+        "steering"
+      ],
+      "remaining_controls": [
+        "driver_braking"
+      ]
+    }
+  ],
+  "uncovered_conditions": [
+    "offline proposal; no live validation"
+  ]
+}

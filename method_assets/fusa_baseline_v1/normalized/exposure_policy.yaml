@@ -9,6 +9,10 @@ all_highest:
 mixed_high:
   operands: [E3, E4]
   result: E3
+  match: EXACT_LEVEL_SET
+  # Current-project correction (2026-10-26): E1/E2 in the same combination
+  # must use mixed_levels, not be masked by the E3/E4 special case.
+  # Legacy contracts without match retain CONTAINS for historical replay.
 mixed_levels:
   strategy: MINIMUM
 equal_levels:

@@ -72,7 +72,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v14-source-control-coverage"
+    PROMPT_VERSION = "post-fault-physical-scenario-v15-curved-steering"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v3-source-conditions"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
@@ -185,6 +185,12 @@ class PhysicalScenarioAgent:
             "安全状态候选只用于待审核方案，不证明到达时间，不输出FTTI，也不改变无干预轨迹和评级。"
             "不得依赖已失效的控制消除危险。坡道溜车初速为 0，使用来源坡度和假设残余阻力。"
             "侧向模型只支持沿纵向运动路径延伸的静止侧向目标，不能假装成纵向 TTC。"
+            "纯转向改变运动方向且无切向加速时，选CONSTANT_SPEED_CURVATURE_TO_CONTACT："
+            "总速度保持所选初始速度，提出有依据的turn_radius_m、侧向有效接触净距和model_valid_until_s；"
+            "geometry.ego_lateral_direction明确LEFT或RIGHT的位移方向，不能仅看目标在哪侧就认定朝它转弯。"
+            "半径、无侧滑和等速必须列为分析假设，不能冒充实测转向/附着能力；不覆盖失稳或同时驱动异常。"
+            "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT表示惯性坐标独立横向加速/漂移，"
+            "固定vx再增加vy会增大总速度，不能用它代替纯转向，也不能将运行暴露Atom的正常向心加速度直接当故障横向加速度。"
             "RECTILINEAR_MOVING_TARGET_CONTACT支持同向、对向、后方接近和横穿的匀速移动目标；"
             "使用车体坐标x前、y左的初始中心偏移，接触包络半长/半宽为双方投影半尺寸之和，"
             "须解释尺寸和有效时段假设。geometry用FINITE_CONTACT_ENVELOPE并给出"

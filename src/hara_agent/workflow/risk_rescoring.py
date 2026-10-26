@@ -235,11 +235,26 @@ class OfflineRiskRescorer:
                 new_policy == reference_policy,
                 bool(new_policy.get("controllability", {}).get("conditional_reference_rules")),
             ))
-            if not (routing_only or applicability_only or reference_only):
-                raise ValueError("Method transition is not limited to current-project C routing, applicability or conditional references")
-            changed_path = policy_path if routing_only or reference_only else profile_path
+            exposure_path = new_manifest["normalized_sources"]["exposure_policy"]
+            exposure_manifest = deepcopy(old_manifest)
+            exposure_manifest["asset_hashes"][exposure_path] = new_hashes[exposure_path]
+            exposure_policy = deepcopy(old_assets["exposure_policy"])
+            exposure_policy["mixed_high"]["match"] = "EXACT_LEVEL_SET"
+            exposure_match_only = all((
+                old_resolution.method.metadata["method_source_hash"] == source.method_contract["method_source_hash"],
+                old_resolution.method.contract_version == method.contract_version,
+                old_resolution.method.compiler_version == method.compiler_version,
+                new_manifest == exposure_manifest,
+                set(old_hashes) == set(new_hashes),
+                all(old_hashes[key] == new_hashes[key] for key in old_hashes if key != exposure_path),
+                old_assets["exposure_policy"]["mixed_high"].get("match", "CONTAINS") == "CONTAINS",
+                new_assets["exposure_policy"] == exposure_policy,
+            ))
+            if not (routing_only or applicability_only or reference_only or exposure_match_only):
+                raise ValueError("Method transition is not limited to supported C changes or exact-set E matching")
+            changed_path = exposure_path if exposure_match_only else policy_path if routing_only or reference_only else profile_path
             method_transition = {
-                "type": "C_CONDITIONAL_REFERENCE_RULES_ONLY" if reference_only else "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY" if routing_only else "C_PROFILE_APPLICABILITY_ONLY",
+                "type": "E_MIXED_HIGH_EXACT_SET_ONLY" if exposure_match_only else "C_CONDITIONAL_REFERENCE_RULES_ONLY" if reference_only else "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY" if routing_only else "C_PROFILE_APPLICABILITY_ONLY",
                 "source_method_hash": old_resolution.method.metadata["method_source_hash"],
                 "target_method_hash": method.metadata["method_source_hash"],
                 "source_baseline": str(source_baseline.resolve()),

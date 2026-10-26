@@ -84,7 +84,7 @@ def _scenario_json(
                     "object_position", "ego_longitudinal_direction", "object_longitudinal_direction",
                     "ego_speed_kph", "object_speed_kph", "relative_distance_m", "fault_motion_model",
                     "ego_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s",
-                    "lateral_clearance_m", "slope_percent", "residual_resistance_mps2", "motion_model_outcome",
+                    "lateral_clearance_m", "turn_radius_m", "ego_lateral_direction", "slope_percent", "residual_resistance_mps2", "motion_model_outcome",
                     "object_offset_x_m", "object_offset_y_m", "contact_half_length_m", "contact_half_width_m", "selected_source_condition",
                 ) if key in scenario.facts},
                 "branches": [{key: value for key, value in branch.items() if not key.startswith("_")}

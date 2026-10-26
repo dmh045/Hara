@@ -1,0 +1,17 @@
+schema_version: "1.0"
+policy_id: fusa_v1
+source: "fusa_agent/core/hara/evaluators/exposure_evaluator.py"
+level_prefix: E
+minimum_level: 0
+all_highest:
+  operand: E4
+  result: E4
+mixed_high:
+  operands: [E3, E4]
+  result: E3
+mixed_levels:
+  strategy: MINIMUM
+equal_levels:
+  independent_decrement: 1
+  dependent_decrement: 0
+status: USER_SELECTED_BASELINE

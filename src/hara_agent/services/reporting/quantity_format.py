@@ -37,7 +37,7 @@ FIELD_UNITS = {
     "object_offset_x_m": "m", "object_offset_y_m": "m", "contact_half_length_m": "m", "contact_half_width_m": "m",
     "ego_speed_kph": "km/h", "object_speed_kph": "km/h", "ego_impact_speed_kph": "km/h",
     "relative_speed_kph": "km/h", "closing_speed_kph": "km/h", "post_fault_speed_cap_kph": "km/h",
-    "relative_distance_m": "m", "lateral_clearance_m": "m", "ttc_s": "s",
+    "relative_distance_m": "m", "lateral_clearance_m": "m", "turn_radius_m": "m", "ttc_s": "s",
     "first_contact_time_s": "s", "model_valid_until_s": "s", "slope_percent": "%",
     "longitudinal_acceleration_mps2": "m/s²", "lateral_acceleration_mps2": "m/s²",
     "residual_resistance_mps2": "m/s²", "lateral_speed_mps": "m/s",

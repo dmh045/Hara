@@ -1,11 +1,14 @@
 from copy import deepcopy
 from dataclasses import asdict
 import json
+import hashlib
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 import zipfile
 
 import pytest
+import yaml
 
 from hara_agent.contracts import (
     CausalBreakpoint, CausalEdge, CausalGraph, CausalNode, CausalNodeType,
@@ -26,6 +29,37 @@ from hara_agent.workflow.risk_rescoring import (
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / "method_assets/fusa_baseline_v1/manifest.yaml"
 TEMPLATE = ROOT / "references/HARA_Template_AI_20260327.xlsx"
+
+
+@pytest.mark.parametrize('unrelated_change', [False, True])
+def test_exposure_transition_requires_only_exact_set_match_change(tmp_path, source_state, unrelated_change):
+    old = tmp_path / 'old_method'
+    shutil.copytree(BASELINE.parent, old)
+    path = old / 'normalized/exposure_policy.yaml'
+    policy = yaml.safe_load(path.read_text())
+    policy['mixed_high'].pop('match')
+    if unrelated_change:
+        policy['equal_levels']['independent_decrement'] = 0
+    path.write_text(yaml.safe_dump(policy))
+    manifest = yaml.safe_load((old / 'manifest.yaml').read_text())
+    manifest['asset_hashes']['normalized/exposure_policy.yaml'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (old / 'manifest.yaml').write_text(yaml.safe_dump(manifest))
+    old_method = MethodSourceResolver().resolve(template_path=None,
+        baseline_manifest_path=old / 'manifest.yaml', report_template_path=TEMPLATE).method
+    source_state.method_contract['method_source_hash'] = old_method.metadata['method_source_hash']
+    source_state.method_contract['template_hash'] = old_method.metadata['template_hash']
+    repo = CheckpointRepository(tmp_path / 'runs')
+    repo.save(source_state)
+    args = dict(source_run_id='source', target_run_id='new', baseline=BASELINE,
+        source_baseline=old / 'manifest.yaml', report_template=TEMPLATE,
+        output=tmp_path / 'new.xlsx', run_dir=repo.run_dir, review_root=tmp_path / 'review')
+    with patch('hara_agent.application.create_llm_client', side_effect=AssertionError('no Provider')):
+        if unrelated_change:
+            with pytest.raises(ValueError, match='transition'):
+                OfflineRiskRescorer().run(**args)
+        else:
+            result = OfflineRiskRescorer().run(**args)
+            assert result['causal_reuse_basis']['method_transition']['type'] == 'E_MIXED_HIGH_EXACT_SET_ONLY'
 
 
 @pytest.fixture(scope="module")

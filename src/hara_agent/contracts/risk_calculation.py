@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
@@ -249,12 +250,20 @@ class ExposureAggregationPolicy:
     independent_decrement: int
     dependent_decrement: int
     source_ref: SourceRef
+    # Missing in old serialized contracts: retain their original semantics.
+    mixed_high_match: str = "CONTAINS"
 
     def __post_init__(self) -> None:
         if not self.policy_id or self.mixed_strategy not in {"MINIMUM"}:
             raise ValueError("Unsupported Exposure aggregation policy")
         if self.minimum_level < 0:
             raise ValueError("Exposure minimum level cannot be negative")
+        if self.mixed_high_match not in {"CONTAINS", "EXACT_LEVEL_SET"}:
+            raise ValueError("Unsupported Exposure mixed-high matching semantics")
+
+    def matches_mixed_high(self, levels: Sequence[str]) -> bool:
+        operands, actual = set(self.mixed_high_operands), set(levels)
+        return operands == actual if self.mixed_high_match == "EXACT_LEVEL_SET" else operands <= actual
 
 
 @dataclass(frozen=True)

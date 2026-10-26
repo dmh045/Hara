@@ -101,7 +101,7 @@ class PhysicalHypothesisInstantiationService:
 
     @staticmethod
     def _opposite_target(values, model):
-        if model in {"CONSTANT_LATERAL_ACCELERATION_TO_CONTACT", "RECTILINEAR_MOVING_TARGET_CONTACT"}:
+        if model in {"CONSTANT_LATERAL_ACCELERATION_TO_CONTACT", "CONSTANT_SPEED_CURVATURE_TO_CONTACT", "RECTILINEAR_MOVING_TARGET_CONTACT"}:
             return False
         direction, position = values.get("ego_longitudinal_direction"), values.get("object_position")
         return bool(direction and position and (direction, position) not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")})
@@ -200,6 +200,10 @@ class PhysicalHypothesisInstantiationService:
             texts = ["车体坐标x前向、y左向；x(t)=dx+(u_x−v_x)t−a_x·t²/2，y(t)=dy+u_y·t。",
                      "接触要求同一时刻|x(t)|≤接触包络半长且|y(t)|≤接触包络半宽；取自车停止前和模型有效期内的首次重合。",
                      "路径相交不保证发生碰撞；交叉接触时间不作为纵向TTC。"]
+        elif model == "CONSTANT_SPEED_CURVATURE_TO_CONTACT":
+            texts = ["等速圆弧代表工况：θ=v·t/R，y=R·(1−cosθ)，总速度保持v；不是纵向分量不变再叠加横向速度。",
+                "目标位于转弯一侧且0<w≤R时，首次接触时间t=2R·asin(sqrt(w/(2R)))/v；须在声明有效时段及首个四分之一圆内。",
+                "半径、无侧滑及等速均为条件性假设，不是车辆能力上界；侧向首次接触时间不用于纵向TTC分档。"]
         elif model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
             texts = ["w=v_y0·t+a_y·t²/2；取停止前且模型有效期内的首次非负根。",
                      "v_rel=3.6·sqrt(v_x²+v_y0²+2a_y·w)，v_x=初始车速/3.6；目标须静止并沿纵向路径延伸。",
@@ -614,7 +618,7 @@ class PhysicalHypothesisInstantiationService:
             if not resolution.mapped:
                 raise ValueError(f"UNSUPPORTED_METHOD_VOCABULARY:{field}")
             g[field] = resolution.canonical_value
-        lateral = h["model"] == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT"
+        lateral = h["model"] in {"CONSTANT_LATERAL_ACCELERATION_TO_CONTACT", "CONSTANT_SPEED_CURVATURE_TO_CONTACT"}
         if lateral:
             if g["object_position"] not in {"LEFT", "RIGHT"} or g["object_extent"] != "EXTENDED_ALONG_TRAVEL_PATH":
                 raise ValueError("LATERAL_MODEL_REQUIRES_EXTENDED_SIDE_TARGET")

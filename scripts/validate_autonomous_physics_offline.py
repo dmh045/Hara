@@ -48,7 +48,8 @@ class OfflinePhysicalClient:
         # Fixture dispatch is confined to this test harness, not runtime rules.
         function = context["malfunction"]["function_id"]
         label = {"F02": "drive", "F03": "lateral", "F08": "rollaway"}.get(function, "drive")
-        raw = json.loads((ROOT / f"tests/fixtures/autonomous_physics/{label}.json").read_text())
+        fixture = 'curved_steering' if label == 'lateral' else label
+        raw = json.loads((ROOT / f"tests/fixtures/autonomous_physics/{fixture}.json").read_text())
         h = raw["hypotheses"][0]
         if label == "drive" and self.range_proposals:
             parameter = next(p for p in h["parameters"] if p["field"] == "longitudinal_acceleration_mps2")

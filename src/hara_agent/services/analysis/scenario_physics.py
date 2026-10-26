@@ -41,11 +41,11 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
     view = {**parent, **branch}
     view["_fact_provenance"] = {**parent.get("_fact_provenance", {}), **branch.get("_fact_provenance", {})}
     geometry = {"object_position", "object_id", "road_user_type", "collision_type",
-                "ego_longitudinal_direction", "object_longitudinal_direction"}
+                "ego_longitudinal_direction", "ego_lateral_direction", "object_longitudinal_direction"}
     speeds = {"ego_speed_kph", "object_speed_kph", "ego_impact_speed_kph", "object_impact_speed_kph"}
     model = {"fault_motion_model", "longitudinal_acceleration_mps2", "model_valid_until_s",
              "slope_percent", "residual_resistance_mps2", "lateral_speed_mps",
-             "lateral_acceleration_mps2", "lateral_clearance_m", "object_extent",
+             "lateral_acceleration_mps2", "lateral_clearance_m", "turn_radius_m", "object_extent",
              "post_fault_speed_cap_kph", "object_offset_x_m", "object_offset_y_m",
              "contact_half_length_m", "contact_half_width_m",
              "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
@@ -210,6 +210,44 @@ def is_lateral_collision(value: Any) -> bool:
     return any(token in normalized for token in (
         "SIDE", "LATERAL", "PERPENDICULAR", "CROSSING",
     ))
+
+
+def constant_speed_curved_contact(facts: dict) -> dict:
+    """Constant-curvature point path to an effective extended side boundary.
+
+    The speed is the norm, not a fixed inertial x component. This is a
+    no-slip conditional kinematic case, not a tire/grip capability model.
+    Never infer radius from a pre-fault lateral-acceleration exposure Atom.
+    """
+    fields = ("ego_speed_kph", "turn_radius_m", "lateral_clearance_m", "model_valid_until_s")
+    values = [_nonnegative_number(facts.get(k)) for k in fields]
+    if any(v is None for v in values):
+        return {"status": "MODEL_INPUTS_UNRESOLVED"}
+    speed, radius, clearance, horizon = values
+    direction, position = facts.get("ego_lateral_direction"), facts.get("object_position")
+    if (min(values) <= 0 or direction not in {"LEFT", "RIGHT"} or position not in {"LEFT", "RIGHT"}
+            or facts.get("ego_longitudinal_direction") not in {"FORWARD", "REVERSE"}
+            or facts.get("object_extent") != "EXTENDED_ALONG_TRAVEL_PATH"
+            or facts.get("object_speed_kph") != 0 or not is_lateral_collision(facts.get("collision_type"))):
+        return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE"}
+    v = speed / 3.6
+    end = min(horizon, math.pi * radius / (2 * v))
+    no_contact = {"status": "NO_CONTACT_WITHIN_MODEL", "evaluated_until_s": end,
+                  "limiting_condition": "MODEL_HORIZON_OR_FIRST_QUARTER_TURN"}
+    if direction != position:
+        return {**no_contact, "reason": "TARGET_OPPOSITE_CURVATURE"}
+    if clearance > radius:
+        return no_contact
+    # 2*asin(sqrt(w/(2R))) avoids loss of precision for w << R.
+    angle = 2 * math.asin(math.sqrt(clearance / (2 * radius)))
+    time = radius * angle / v
+    if time > horizon:
+        return no_contact
+    return {"status": "CONTACT", "time_s": time, "impact_speed_kph": speed,
+            "trajectory_max_speed_kph": speed, "heading_change_rad": angle,
+            "contact_x_m": (1 if facts["ego_longitudinal_direction"] == "FORWARD" else -1) * radius * math.sin(angle),
+            "contact_y_m": (1 if direction == "LEFT" else -1) * clearance,
+            "normal_acceleration_mps2": v * v / radius}
 
 
 def rectilinear_moving_contact(facts: dict) -> dict:
@@ -967,6 +1005,24 @@ def derive_scenario_physics(
                 ("fault_motion_model", "ego_speed_kph", "slope_percent", "residual_resistance_mps2"),
                 DerivedPhysicsType.KINEMATIC_IMPACT_SPEED))
             return tuple(records)
+    if model == "CONSTANT_SPEED_CURVATURE_TO_CONTACT":
+        outcome = constant_speed_curved_contact(scenario.facts)
+        keys = ("ego_speed_kph", "turn_radius_m", "lateral_clearance_m", "model_valid_until_s",
+                "ego_lateral_direction", "ego_longitudinal_direction", "object_position", "object_extent",
+                "object_speed_kph", "collision_type", "fault_motion_model", "impact_time_id")
+        formula = "x=sign(v)*R*sin(v*t/R); y=side*R*(1-cos(v*t/R)); |v| constant; first quarter-turn only"
+        records.append(derived_record("motion_model_outcome", outcome, keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
+            formula=formula))
+        if outcome["status"] == "CONTACT":
+            for key, value in (("first_contact_time_s", outcome["time_s"]),
+                               ("ego_impact_speed_kph", outcome["impact_speed_kph"]),
+                               ("relative_speed_kph", outcome["impact_speed_kph"]),
+                               ("trajectory_max_speed_kph", outcome["trajectory_max_speed_kph"])):
+                record = derived_record(key, value, keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula)
+                record.metadata.update(impact_time_id=scenario.facts.get("impact_time_id"),
+                    analysis_value_semantic="FIRST_CONTACT_TIME" if key == "first_contact_time_s" else "IMPACT_SPEED")
+                records.append(record)
+        return tuple({record.evidence_ref: record for record in records}.values())
     if model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
         lateral = _nonnegative_number(scenario.facts.get("lateral_speed_mps"))
         initial = _nonnegative_number(scenario.facts.get("ego_speed_kph"))

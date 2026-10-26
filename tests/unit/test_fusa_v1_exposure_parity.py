@@ -21,6 +21,7 @@ from hara_agent.contracts import (
 )
 from hara_agent.method_sources import YamlBaselineCompiler
 from hara_agent.services.analysis import ExposureMethodExecutor, StructuredRiskScoringService
+from hara_agent.services.analysis.deterministic_risk_executor import ExposureCombinationExecutor
 from hara_agent.template import TemplateRoleCompiler
 
 
@@ -126,6 +127,26 @@ def test_v13_matches_legacy_same_rank_missing_coupling_case():
     assert result["status"].value == "PENDING_INPUT"
     assert result["pending_reason"] == "MISSING_ATOMS_COUPLING"
     assert result["aggregation_rule"] == ""
+
+
+@pytest.mark.parametrize('levels,expected', [
+    (['E1', 'E3', 'E4'], 'E1'), (['E2', 'E3', 'E4'], 'E2'),
+    (['E3', 'E4', 'E3'], 'E3'), (['E4', 'E4'], 'E4'),
+])
+def test_current_project_mixed_high_cannot_mask_lower_operands(levels, expected):
+    method = _exposure([(v, v) for v in levels])
+    scenario = {'component_category': 'test', 'scenario_atom_ids': [a.atom_id for a in method.atoms]}
+    for ordered in (levels, list(reversed(levels))):
+        assert ExposureCombinationExecutor.combine_policy(ordered, dependent=False,
+            policy=method.aggregation_policy) == expected
+    result = ExposureMethodExecutor().lookup(scenario, method)
+    assert result['value'] == expected
+    assert all(a['used'] for a in result['atom_details'])
+    # A historical contract still reproduces its contains-based precedence;
+    # the current repair is explicit policy, not a rewritten legacy fixture.
+    legacy = replace(method, aggregation_policy=replace(method.aggregation_policy, mixed_high_match='CONTAINS'))
+    if set(levels) >= {'E3', 'E4'}:
+        assert ExposureMethodExecutor().lookup(scenario, legacy)['value'] == 'E3'
     assert result["coupling_consumed"] is False
 
 

@@ -94,7 +94,7 @@ controllability:
         component_category: [computing]
         failure_type: [excessive, wrong_value, unintended_activation]
         operating_mode: [parking_vehicle_control]
-        fault_motion_model: [CONSTANT_LATERAL_ACCELERATION_TO_CONTACT]
+        fault_motion_model: [CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, CONSTANT_SPEED_CURVATURE_TO_CONTACT]
         driver_in_vehicle: true
         emergency_braking_available: true
       trajectory_speed_upper_exclusive_kph: 15
@@ -110,7 +110,7 @@ controllability:
       when:
         component_category: [computing]
         operating_mode: [parking_vehicle_control]
-        fault_motion_model: [CONSTANT_LATERAL_ACCELERATION_TO_CONTACT]
+        fault_motion_model: [CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, CONSTANT_SPEED_CURVATURE_TO_CONTACT]
         driver_in_vehicle: true
         emergency_braking_available: true
         steering_control_available: false
@@ -128,7 +128,7 @@ controllability:
       limitation: "Selected project reference judgement on 2026-10-26: outside-driver collision without an applicable evidenced avoidance override is evaluated without credit for an unestablished remote or counterpart intervention. Missing intervention facts stay missing; this does not prove that a remote interface is absent or a person cannot evade. Contact and driver-position inputs must be valid."
       when:
         operating_mode: [parking_vehicle_control]
-        fault_motion_model: [CONSTANT_SPEED_REPRESENTATIVE, CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE, GRADE_ROLLAWAY_TO_IMPACT_DISTANCE, CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, RECTILINEAR_MOVING_TARGET_CONTACT]
+        fault_motion_model: [CONSTANT_SPEED_REPRESENTATIVE, CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE, GRADE_ROLLAWAY_TO_IMPACT_DISTANCE, CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, CONSTANT_SPEED_CURVATURE_TO_CONTACT, RECTILINEAR_MOVING_TARGET_CONTACT]
         driver_in_vehicle: false
       rationale: "驾驶员不在驾驶位，不能直接操作车内控制；当前碰撞分支没有成立的远程干预或他方避让规则。按无人直接接管的泊车参考工况评为 C3，不计入尚未成立的额外规避收益；已有有效干预规则优先。"
     - rule_id: IAV_UNAVAILABLE_BRAKING_REFERENCE
@@ -143,7 +143,7 @@ controllability:
       limitation: "Selected project transfer on 2026-10-26: for a proven contact trajectory with explicitly unavailable braking, no lower C credit is taken without a separately established avoidance path. In-seat use is a conditional extension of the reference, not its original outside-driver fact. Unknown braking availability does not match."
       when:
         operating_mode: [parking_vehicle_control]
-        fault_motion_model: [CONSTANT_SPEED_REPRESENTATIVE, CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE, GRADE_ROLLAWAY_TO_IMPACT_DISTANCE, CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, RECTILINEAR_MOVING_TARGET_CONTACT]
+        fault_motion_model: [CONSTANT_SPEED_REPRESENTATIVE, CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE, GRADE_ROLLAWAY_TO_IMPACT_DISTANCE, CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, CONSTANT_SPEED_CURVATURE_TO_CONTACT, RECTILINEAR_MOVING_TARGET_CONTACT]
         driver_in_vehicle: true
         emergency_braking_available: false
       rationale: "当前故障条件明确不能使用制动避险，且轨迹计算存在接触；没有成立的独立避让规则时，按失去有效干预的代表工况评为 C3。保留其他剩余能力，不将它们自动等同于本场景已能避险；本项为参考方法的条件性扩展。"

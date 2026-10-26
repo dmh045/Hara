@@ -335,6 +335,7 @@ class EngineeringReportTextMapper:
                 "longitudinal_acceleration_mps2": "纵向加速度(m/s²)", "slope_percent": "坡度(%)",
                 "residual_resistance_mps2": "残余阻力减速度(m/s²)", "lateral_clearance_m": "侧向净距(m)",
                 "lateral_speed_mps": "初始侧速(m/s)", "lateral_acceleration_mps2": "侧向加速度(m/s²)",
+                "turn_radius_m": "条件性转弯半径(m)",
                 "model_valid_until_s": "模型时域(s)", "post_fault_speed_cap_kph": "残余限速(km/h)",
                 "object_offset_x_m": "目标初始纵向中心偏移(m，车前为正)",
                 "object_offset_y_m": "目标初始横向中心偏移(m，车左为正)",
@@ -374,7 +375,8 @@ class EngineeringReportTextMapper:
         elif model:
             names = {"GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": "坡道溜车（重力减残余阻力）",
                 "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": "恒加速度至首次接触",
-                "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "侧向恒加速度至首次接触",
+                "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "独立横向加速至接触（不等同于等速转向）",
+                "CONSTANT_SPEED_CURVATURE_TO_CONTACT": "等速圆弧至侧向首次接触（无侧滑假设）",
                 "RECTILINEAR_MOVING_TARGET_CONTACT": "移动目标相对轨迹与有限包络首次接触"}
             parts.append(f"运动模型：{names.get(model, model)}")
         if not any(part.startswith("TTC：") for part in parts) and (
@@ -384,9 +386,10 @@ class EngineeringReportTextMapper:
         position = cls._POSITION_TEXT.get(str(facts.get("object_position", "")).casefold(), "")
         if position:
             parts.append(f"目标位置：{position}")
-        directions = {"FORWARD": "前进", "REVERSE": "倒车", "STATIONARY": "静止"}
+        directions = {"FORWARD": "前进", "REVERSE": "倒车", "STATIONARY": "静止", "LEFT": "向左", "RIGHT": "向右"}
         for field, label in (
             ("ego_longitudinal_direction", "自车方向"),
+            ("ego_lateral_direction", "自车侧向位移方向"),
             ("object_longitudinal_direction", "目标方向"),
         ):
             direction = directions.get(str(facts.get(field, "")).upper(), "")
@@ -484,7 +487,7 @@ class EngineeringReportTextMapper:
                 "LLM_ANALYSIS_HYPOTHESIS": "LLM 分析假设", "DERIVED": "程序推导"}
             fields = {"ego_speed_kph": "初速", "relative_distance_m": "距离",
                 "longitudinal_acceleration_mps2": "纵向加速度", "slope_percent": "坡度",
-                "lateral_clearance_m": "侧向净距", "lateral_acceleration_mps2": "侧向加速度",
+                "lateral_clearance_m": "侧向净距", "lateral_acceleration_mps2": "侧向加速度", "turn_radius_m": "转弯半径",
                 "lateral_speed_mps": "初始侧速", "residual_resistance_mps2": "残余阻力"}
             groups = {}
             for field in fields:

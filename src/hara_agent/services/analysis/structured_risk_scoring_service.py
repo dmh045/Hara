@@ -209,7 +209,7 @@ class StructuredRiskScoringService:
         reference_match = control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH"
         moving = scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
         crossing = moving and scenario.get("object_longitudinal_direction") in {"LEFT", "RIGHT"}
-        if (scenario.get("fault_motion_model") == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT" or crossing) and not (override_match or reference_match):
+        if (scenario.get("fault_motion_model") in {"CONSTANT_LATERAL_ACCELERATION_TO_CONTACT", "CONSTANT_SPEED_CURVATURE_TO_CONTACT"} or crossing) and not (override_match or reference_match):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",

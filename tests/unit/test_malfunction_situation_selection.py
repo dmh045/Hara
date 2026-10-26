@@ -233,10 +233,18 @@ def test_frozen_assets_and_eight_guidewords_are_exactly_unchanged(method):
         # physics. Other frozen assets and numerical tables stay exact.
         if filename.endswith("normalized/project_analysis_policy.yaml"):
             continue
+        if filename.endswith("normalized/exposure_policy.yaml"):
+            # Explicit 2026-10-26 correction: only the E3/E4 match scope
+            # changes. Keep the legacy asset and every operand/result intact.
+            frozen = ROOT / 'tests/fixtures/physical_provider_quality_baseline/normalized/exposure_policy.yaml'
+            assert hashlib.sha256(frozen.read_bytes()).hexdigest() == digest
+            current = yaml.safe_load((ROOT / filename).read_text())
+            assert current['mixed_high'].pop('match') == 'EXACT_LEVEL_SET'
+            assert current == yaml.safe_load(frozen.read_text())
+            continue
         if filename.endswith("raw/c_profiles/iav_avp.yaml"):
             # Only compile the applicability already stated in the source;
             # frozen thresholds, overrides and all other semantics stay exact.
-            import yaml
             frozen = ROOT / 'tests/fixtures/physical_provider_quality_baseline/raw/c_profiles/iav_avp.yaml'
             assert hashlib.sha256(frozen.read_bytes()).hexdigest() == digest
             current = yaml.safe_load((ROOT / filename).read_text())
@@ -252,6 +260,9 @@ def test_frozen_assets_and_eight_guidewords_are_exactly_unchanged(method):
 
 def test_all_seven_native_fusa_operands_and_separate_reference_difference(method):
     exposure = method.structured_risk_method.exposure
+    # These are original-source outcomes, intentionally retained. The active
+    # exact-set correction has separate lower-operand regression assertions.
+    exposure = replace(exposure, aggregation_policy=replace(exposure.aggregation_policy, mixed_high_match='CONTAINS'))
     results = []
     for case in method.situation_selection.exposure_parity_cases:
         atoms = tuple(ExposureAtom(str(i), (str(i),), str(i), level, level, exposure.source_refs[0]) for i, level in enumerate(case.operands))

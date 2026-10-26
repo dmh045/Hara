@@ -20,8 +20,12 @@ Committed snapshot decoding is separate from workflow resume invalidation.
 Rescoring retains the stored scenario-generation version and fingerprints:
 it consumes existing candidates, not the current generator. A causal-contract
 or method mismatch fails closed unless `--source-baseline` proves one of the
-supported C-only routing, applicability or conditional-reference changes.
+supported C-only routing, applicability or conditional-reference changes, or
+the isolated Exposure `CONTAINS` → `EXACT_LEVEL_SET` correction.
 All other assets and generation/causal contracts must remain unchanged.
+The E transition changes only special-case matching, retaining every level,
+operand, result, domain and dependence policy. A simultaneous unrelated change
+is rejected. Applying two supported changes requires two recorded transitions.
 The command never restarts upstream stages or upgrades a version label.
 
 The optional JSON supplement is checkpoint-hash bound. `scopes` maps group

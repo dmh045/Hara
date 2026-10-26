@@ -265,6 +265,19 @@ class ExposureInputReadinessService:
         for dimension, binding in bindings.items():
             if self._is_resolved(binding):
                 continue
+            # OPTIONAL traffic was shortlisted solely because the parent
+            # mentioned a vehicle. A subsequently bound stationary target is
+            # not a moving cut-in/high-delta-speed interaction. Do not revive
+            # unrelated catalog alternatives during scoring. Keep unknown or
+            # explicitly REQUIRED traffic unresolved, and preserve the source.
+            if (dimension == "TRAFFIC_PATTERN" and binding.get("applicability_status") == "OPTIONAL"
+                    and scenario.get("object_speed_kph") == 0):
+                from .scenario_physics import source_is_accepted_for
+                metadata = scenario.get("_fact_provenance", {}).get("object_speed_kph", {})
+                if source_is_accepted_for(metadata, malfunction_id=str(scenario.get("malfunction_id", "")),
+                                          scenario_id=str(scenario.get("scenario_id", ""))):
+                    binding = {**binding, "applicability_status": "NOT_APPLICABLE",
+                        "applicability_reason": "The current scoped target is stationary; the optional vehicle-only traffic shortlist does not describe an established moving interaction."}
             if str(binding.get("applicability_status", "")).upper() == "NOT_APPLICABLE":
                 unresolved_irrelevant.append(dimension)
                 dimensions.append({

@@ -9,13 +9,13 @@ import math
 from typing import Any
 
 
-PHYSICAL_PLAN_VERSION = "physical-plan-v3-relative-contact"
+PHYSICAL_PLAN_VERSION = "physical-plan-v4-curved-contact"
 PARAMETER_UNITS = {
     "ego_speed_kph": "km/h", "relative_distance_m": "m",
     "longitudinal_acceleration_mps2": "m/s2", "slope_percent": "%",
     "residual_resistance_mps2": "m/s2", "model_valid_until_s": "s",
     "lateral_speed_mps": "m/s", "lateral_acceleration_mps2": "m/s2",
-    "lateral_clearance_m": "m",
+    "lateral_clearance_m": "m", "turn_radius_m": "m",
     "post_fault_speed_cap_kph": "km/h",
     "object_speed_kph": "km/h", "object_offset_x_m": "m", "object_offset_y_m": "m",
     "contact_half_length_m": "m", "contact_half_width_m": "m",
@@ -34,7 +34,12 @@ MODEL_CATALOG = {
     "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": {
         "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "lateral_clearance_m", "lateral_speed_mps", "lateral_acceleration_mps2"],
-        "scope": "Steering-induced deviation while ego is moving longitudinally (speed > 0); stationary side object extended along the longitudinal swept path; lateral first contact, constant longitudinal speed. No longitudinal TTC or steering avoidance rule is inferred.",
+        "scope": "Independent inertial x/y translation: constant x velocity plus y acceleration or drift toward a stationary extended side target. This can increase the total speed; it is NOT a constant-speed steering turn. Requires an explicit mechanism for the independent translational motion, e.g. sideslip. Do not derive its y acceleration from a normal-turning acceleration Atom. No longitudinal TTC is inferred.",
+    },
+    "CONSTANT_SPEED_CURVATURE_TO_CONTACT": {
+        "target_motion": "STATIONARY",
+        "required": ["ego_speed_kph", "turn_radius_m", "lateral_clearance_m", "model_valid_until_s"],
+        "scope": "Pure steering deviation represented by a constant-speed circular path with assumed positive turn radius; no sideslip or tangential acceleration. Initial travel aligned FORWARD/REVERSE; geometry.ego_lateral_direction LEFT/RIGHT specifies the displacement side independently of target position. Stationary side boundary extended along initial travel; lateral_clearance_m is effective first-contact path clearance, not center-to-center distance. Evaluated only to the explicit horizon or first quarter-turn. v magnitude stays constant, a_normal=v²/R; no longitudinal TTC. Radius and validity are conditional assumptions, not proven steering/grip capability. Use another model for acceleration or instability.",
     },
     "RECTILINEAR_MOVING_TARGET_CONTACT": {
         "target_motion": "CONSTANT_VELOCITY",
@@ -214,13 +219,15 @@ class PhysicalScenarioPlan:
                 raise ValueError(f"hypotheses[{identity}].basis_refs must use supplied IDs {sorted(evidence_ids)}; received {refs}")
             _validate_controls(h, evidence_ids)
             g = _object(h["geometry"], {"road_user_type", "collision_type", "object_position",
-                "ego_longitudinal_direction", "object_extent", "object_id"}, {"object_longitudinal_direction"})
+                "ego_longitudinal_direction", "object_extent", "object_id"}, {"object_longitudinal_direction", "ego_lateral_direction"})
             for value in g.values():
                 _text(value)
             if g["object_position"] not in {"FRONT", "REAR", "LEFT", "RIGHT"}:
                 raise ValueError("Unknown target position")
             if g["ego_longitudinal_direction"] not in {"FORWARD", "REVERSE"}:
                 raise ValueError("Post-fault travel direction must be explicit")
+            if h["model"] == "CONSTANT_SPEED_CURVATURE_TO_CONTACT" and g.get("ego_lateral_direction") not in {"LEFT", "RIGHT"}:
+                raise ValueError("Curved path requires an explicit LEFT/RIGHT displacement direction")
             if g["object_extent"] not in {"POINT_ON_TRAVEL_PATH", "EXTENDED_ALONG_TRAVEL_PATH", "FINITE_CONTACT_ENVELOPE"}:
                 raise ValueError("Unknown target extent")
             if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT":

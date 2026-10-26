@@ -1255,6 +1255,7 @@ class YamlBaselineCompiler:
             all_highest_result=str(policy_asset["all_highest"]["result"]),
             mixed_high_operands=tuple(map(str, policy_asset["mixed_high"]["operands"])),
             mixed_high_result=str(policy_asset["mixed_high"]["result"]),
+            mixed_high_match=str(policy_asset["mixed_high"].get("match", "CONTAINS")),
             mixed_strategy=str(policy_asset["mixed_levels"]["strategy"]),
             independent_decrement=int(policy_asset["equal_levels"]["independent_decrement"]),
             dependent_decrement=int(policy_asset["equal_levels"]["dependent_decrement"]),

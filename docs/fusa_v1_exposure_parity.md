@@ -30,3 +30,19 @@ The baseline atom catalog is traced to
 `C:\Users\DengMohan(CN-TV-M4)\Desktop\fusa_agent\skills\hara\vda702_atoms.yaml`
 and is compiled into the MethodContract.  Runtime code reads the compiled
 contract only.
+
+## Current-project exact-set correction (2026-10-26)
+
+The original implementation used a **contains** test: any supplied combination
+containing E3 and E4 took that special branch, even if E1/E2 was also present.
+The current project explicitly selects `mixed_high.match: EXACT_LEVEL_SET`:
+only combinations whose distinct levels are exactly E3/E4 use that branch;
+E1/E3/E4 and E2/E3/E4 use the existing unequal-level minimum policy. This is an
+intentional governed behavior correction, not a claim of unchanged legacy
+parity or a new ISO rule. Z/F routing, domain fallback, equal-level dependence,
+atom levels, S/C and the ASIL matrix are unchanged.
+
+Old contracts lacking this field retain `CONTAINS`. The original seven parity
+cases and joint-completion counterexample remain tested against that explicit
+legacy policy. The current policy has separate exact-set regression tests.
+Both preview and scoring call the same compiled-policy match operation.
