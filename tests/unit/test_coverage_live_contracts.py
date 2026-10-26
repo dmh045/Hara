@@ -199,6 +199,7 @@ def test_real_unassessed_safe_state_does_not_discard_valid_motion():
 
 def test_safe_state_with_explicitly_failed_control_is_still_rejected():
     from test_autonomous_physics import raw_plan
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
     raw = raw_plan(); h = raw['hypotheses'][0]
     h['failed_controls'].append('parking_hold')
     h['safe_state_proposal'] = {'description': 'Hold vehicle using failed EPB',
@@ -206,4 +207,11 @@ def test_safe_state_with_explicitly_failed_control_is_still_rejected():
     class Frozen:
         def complete_json(self, request):return LLMResponse(deepcopy(raw), 'OFFLINE')
     with pytest.raises(ValueError, match='Safe state proposal'):
-        PhysicalScenarioAgent(Frozen()).propose({'plan_key': 'failed-hold', 'evidence': {'MF.description': 'fault'}})
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    plan, audit = PhysicalScenarioAgent(Frozen()).propose(
+        {'plan_key': 'failed-hold', 'evidence': {'MF.description': 'fault'}})
+    assert 'safe_state_proposal' not in plan.hypotheses[0]
+    assert plan.hypotheses[0]['failed_controls'] == h['failed_controls']
+    assert plan.hypotheses[0]['parameters'] == h['parameters']
+    assert audit['deferred_safe_states'][0]['reason'] == 'SAFE_STATE_REQUIRES_FAILED_CONTROL'
+    assert audit['deferred_safe_states'][0]['proposal'] == h['safe_state_proposal']

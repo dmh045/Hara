@@ -282,3 +282,34 @@ def test_control_envelope_normalization_does_not_invent_or_approve_capability(de
     with pytest.raises(ValueError, match='schema repair exhausted'):
         PhysicalScenarioAgent(Client()).propose(context)
     assert raw == before
+
+
+def test_failed_control_safe_state_is_rejected_locally_without_losing_motion():
+    raw = raw_plan(assessed=True)
+    h = raw['hypotheses'][0]
+    h['failed_controls'] = ['drive']
+    h['safe_state_proposal'] = {'description': 'Maintain position using drive torque',
+        'required_controls': ['drive'], 'basis_refs': ['MF.description'],
+        'conditions': ['Drive torque available']}
+    before = deepcopy(raw)
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw, 'OFFLINE')
+    client = Client()
+    plan, audit = PhysicalScenarioAgent(client).propose(
+        {'plan_key': 'failed-safe-state', 'evidence': {'MF.description': 'Drive failure'}})
+    assert client.calls == 1 and raw == before
+    proposed = plan.hypotheses[0]
+    assert proposed['parameters'] == h['parameters'] and proposed['geometry'] == h['geometry']
+    assert proposed['failed_controls'] == ['drive']
+    assert proposed['remaining_controls'] == h['remaining_controls']
+    assert 'safe_state_proposal' not in proposed
+    assert audit['deferred_safe_states'] == [{'hypothesis_id': h['hypothesis_id'],
+        'reason': 'SAFE_STATE_REQUIRES_FAILED_CONTROL', 'proposal': h['safe_state_proposal']}]
+    assert '不采用' in proposed['uncovered_conditions'][-1]
+    # This does not relax contradictory primary controls.
+    raw['hypotheses'][0]['remaining_controls'].append('drive')
+    with pytest.raises(ValueError, match='failed control cannot be a remaining'):
+        PhysicalScenarioAgent(client).propose({'plan_key': 'contradiction', 'evidence': {'MF.description': 'Drive failure'}})

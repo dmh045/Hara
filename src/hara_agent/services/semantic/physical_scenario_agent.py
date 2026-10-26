@@ -419,7 +419,7 @@ class PhysicalScenarioAgent:
                 normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
                 deferred_states = []
                 # An optional safe-state proposal cannot establish an unassessed
-                # control. Defer that proposal locally, retaining the raw reply;
+                # or failed control. Reject that proposal locally, retaining the raw reply;
                 # do not discard otherwise valid motion or approve the control.
                 if isinstance(candidate, dict) and isinstance(candidate.get("hypotheses"), list):
                     for hypothesis in candidate["hypotheses"]:
@@ -435,11 +435,13 @@ class PhysicalScenarioAgent:
                                 and all(isinstance(c, str) for c in remaining + failed)
                                 and set(controls) - set(remaining)
                                 and set(controls) <= CONTROL_IDENTITIES
-                                and not set(controls) & set(failed)
                                 and isinstance(hypothesis.get("uncovered_conditions"), list)):
+                            failed_dependency = bool(set(controls) & set(failed))
                             deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),
-                                "reason": "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL", "proposal": hypothesis.pop("safe_state_proposal")})
+                                "reason": "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
+                                "proposal": hypothesis.pop("safe_state_proposal")})
                             hypothesis["uncovered_conditions"].append(
+                                "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
                                 "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
                 plan = PhysicalScenarioPlan.from_dict(candidate, evidence_ids=set(context["evidence"]))
                 if controls_only != (plan.control_assessment is not None):
