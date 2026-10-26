@@ -382,7 +382,7 @@ class PhysicalScenarioAgent:
                 candidate = deepcopy(response.data)
                 normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
                 deferred_states = []
-                # An optional safe-state proposal cannot establish an unresolved
+                # An optional safe-state proposal cannot establish an unassessed
                 # control. Defer that proposal locally, retaining the raw reply;
                 # do not discard otherwise valid motion or approve the control.
                 if isinstance(candidate, dict) and isinstance(candidate.get("hypotheses"), list):
@@ -394,7 +394,7 @@ class PhysicalScenarioAgent:
                         if (isinstance(controls, list) and controls
                                 and all(isinstance(c, str) for c in controls)
                                 and set(controls) - set(hypothesis.get("remaining_controls", []))
-                                and set(controls) <= set(hypothesis.get("unresolved_controls", {}))
+                                and set(controls) <= CONTROL_IDENTITIES
                                 and not set(controls) & set(hypothesis.get("failed_controls", []))
                                 and isinstance(hypothesis.get("uncovered_conditions"), list)):
                             deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),

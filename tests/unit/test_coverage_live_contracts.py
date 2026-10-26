@@ -174,3 +174,36 @@ def test_local_safe_state_deferral_keeps_a_consistent_motion_computable(method):
     assert children and not errors, errors
     assert children[0].facts['motion_model_outcome']['status'] == 'CONTACT'
     assert children[0].facts.get('emergency_braking_available') is None
+
+
+def test_real_unassessed_safe_state_does_not_discard_valid_motion():
+    record = continued_recorded()['unassessed_safe_state']
+    raw = json.loads(record['original_content'])
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(deepcopy(raw), record['model'])
+    client = Frozen(); saved = []
+    plan, audit = PhysicalScenarioAgent(client).propose({'plan_key': 'unassessed-hold',
+        'evidence': dict.fromkeys(record['evidence_ids'], 'frozen source identity')}, on_response=saved.append)
+    assert client.calls == 1 and audit['schema_repairs'] == 0
+    assert audit['deferred_safe_states']
+    for old, new in zip(raw['hypotheses'], plan.hypotheses):
+        assert new['parameters'] == old['parameters'] and new['geometry'] == old['geometry']
+        assert new['remaining_controls'] == old['remaining_controls']
+        assert 'parking_hold' not in new['remaining_controls']
+        assert 'safe_state_proposal' not in new
+    assert saved[0]['response']['data'] == json.loads(record['original_content'])
+
+
+def test_safe_state_with_explicitly_failed_control_is_still_rejected():
+    from test_autonomous_physics import raw_plan
+    raw = raw_plan(); h = raw['hypotheses'][0]
+    h['failed_controls'].append('parking_hold')
+    h['safe_state_proposal'] = {'description': 'Hold vehicle using failed EPB',
+        'required_controls': ['parking_hold'], 'basis_refs': ['MF.description'], 'conditions': ['conditional']}
+    class Frozen:
+        def complete_json(self, request):return LLMResponse(deepcopy(raw), 'OFFLINE')
+    with pytest.raises(ValueError, match='Safe state proposal'):
+        PhysicalScenarioAgent(Frozen()).propose({'plan_key': 'failed-hold', 'evidence': {'MF.description': 'fault'}})
