@@ -76,7 +76,7 @@ def scenario_conditions(scenario: ScenarioCandidate, *, without_driver: bool = F
                 if value.startswith(identity + ":"):
                     return aliases[identity] + value[len(identity):]
         if (key in {"impact_time_id", "trajectory_id"} and isinstance(value, str)
-                and value.startswith(("IMPACT-", "TRAJECTORY-"))):
+                and value.startswith(("IMPACT-", "CONTACT-", "TRAJECTORY-"))):
             phases.setdefault(str(value), f"$PHASE_{len(phases)}")
             return phases[str(value)]
         return value

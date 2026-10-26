@@ -131,6 +131,27 @@ def test_T09_T10_T11_paired_mode_executes_local_proof_without_complete(mode,call
     assert len(results)==2  # both downstream risk inputs survive
 
 
+@pytest.mark.parametrize('mode,calls,reuse', [('local',1,1),('driver_relevant',2,0)])
+def test_generated_contact_identity_does_not_block_driver_reuse(mode, calls, reuse):
+    a, b = pair()
+    for candidate in (a, b):
+        phase = 'CONTACT-' + candidate.scenario_id
+        candidate.facts['impact_time_id'] = phase
+        candidate.fact_provenance['vehicle_state']['input_fact_metadata'] = [
+            {'impact_time_id': phase, 'time_role': 'FIRST_CONTACT'}]
+    before = deepcopy([a, b])
+    client, results, audit = run_candidates([a, b], mode)
+    assert len(client.calls) == calls
+    assert audit['causal_reuse']['complete_causal_reuse'] == reuse
+    assert [r.scenario_id for r in results] == ['A', 'B']
+    assert [a, b] == before
+    # Aliasing is local to a signature; two references to different stages
+    # must not become references to the same stage.
+    a.facts['phase_links'] = [{'impact_time_id': 'CONTACT-A'}]
+    b.facts['phase_links'] = [{'impact_time_id': 'CONTACT-B-later'}]
+    assert scenario_conditions(a, without_driver=True) != scenario_conditions(b, without_driver=True)
+
+
 def test_T13_T14_changed_interaction_reuses_only_upstream_step():
     a,b=pair(); b.facts['object_position']='REAR'; a.facts['object_position']='FRONT'
     b.facts['longitudinal_acceleration_mps2']=2.5

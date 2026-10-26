@@ -148,6 +148,22 @@ def test_moving_target_response_shared_between_drivers_and_recovered(method, tmp
     assert changed["motion_model_outcome"]["status"] == "NO_CONTACT_WITHIN_MODEL"
 
 
+def test_instantiated_driver_pair_keeps_one_physical_family(method):
+    from hara_agent.services.analysis.scenario_equivalence import driver_families
+    inside = make_candidate(3.6)
+    inside.facts.update(driver_position='in_driver_seat', driver_in_vehicle=True)
+    outside = deepcopy(inside)
+    outside.scenario_id = 'outside'
+    outside.facts.update(driver_position='outside_driver_seat', driver_in_vehicle=False)
+    children = [instantiate(method, moving_plan(), p)[0] for p in (inside, outside)]
+    assert children[0].facts['impact_time_id'] != children[1].facts['impact_time_id']
+    before = deepcopy(children)
+    assert len(driver_families(children)) == 1
+    assert children == before
+    children[1].facts['object_id'] = 'different-actual-target'
+    assert len(driver_families(children)) == 2
+
+
 def test_total_parameter_tasks_bounded_but_original_range_retained(method):
     raw = raw_plan()
     raw["hypotheses"][0]["parameters"][-1].update(kind="RANGE", lower=0, upper=10)
