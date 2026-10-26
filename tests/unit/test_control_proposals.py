@@ -503,3 +503,15 @@ def test_independent_evasion_rule_avoids_unnecessary_braking_request(method):
         method=method, agent=PhysicalScenarioAgent(client), project_facts=None)['MF']
     assert client.calls == 1
     assert score(method, children[0])['controllability']['controllability_score'] == 'C1'
+
+
+def test_control_array_repair_identifies_the_actual_field():
+    from copy import deepcopy
+    from test_autonomous_physics import raw_plan
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = raw_plan(); raw['hypotheses'][0]['remaining_controls'] = [
+        {'control': 'driver_braking', 'driver_positions': ['in_driver_seat']}]
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match=r'remaining_controls\[0\].*received dict'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    assert raw == before

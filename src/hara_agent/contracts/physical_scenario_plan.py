@@ -88,10 +88,15 @@ def _text(value: Any) -> str:
     return value
 
 
-def _texts(value: Any) -> list[str]:
+def _texts(value: Any, *, path: str = "text_array") -> list[str]:
     if not isinstance(value, list) or len(value) > 16:
-        raise ValueError("Expected a bounded text array")
-    return [_text(item) for item in value]
+        raise ValueError(f"{path}: expected a bounded text array")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            hint = (" Control arrays contain control identity strings; driver applicability belongs to hypothesis.driver_positions and conditions."
+                    if path in {"failed_controls", "remaining_controls"} else "")
+            raise ValueError(f"{path}[{index}]: expected a nonempty string, received {type(item).__name__}." + hint)
+    return value
 
 
 def _number(value: Any) -> float:
@@ -107,7 +112,7 @@ INTERVENTION_ASSUMPTION_FIELDS = frozenset({
 
 def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
     for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
-        _texts(h[key])
+        _texts(h[key], path=key)
     if not set(h["failed_controls"] + h["remaining_controls"]) <= CONTROL_IDENTITIES:
         raise ValueError("Control identities must be " + ", ".join(sorted(CONTROL_IDENTITIES)))
     if set(h["failed_controls"]) & set(h["remaining_controls"]):
