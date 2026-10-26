@@ -74,6 +74,12 @@ def _explicit_label_slope_range(label: str) -> dict[str, Any]:
         return {}
     text = label.replace("≤", "<=").replace("≥", ">=")
     number = r"(\d+(?:\.\d+)?)"
+    chained = re.findall(number + r"\s*%\s*(<=|<)\s*(?:slope|hang|mountain)\s*(<=|<)\s*" + number + r"\s*%", text, re.I)
+    if len(chained) == 1:
+        lo, lo_op, hi_op, hi = chained[0]
+        if float(lo) <= float(hi):
+            return {"range_pct": [float(lo), float(hi)], "min_inclusive": lo_op == "<=",
+                    "max_inclusive": hi_op == "<=", "unit": "percent", "source": "EXPLICIT_ATOM_LABEL_RANGE"}
     ranges = re.findall(number + r"\s*[-–]\s*" + number + r"\s*%", text)
     inequalities = re.findall(r"(?:slope|hang|mountain)\s*(<=|>=|<|>)\s*" + number + r"\s*%", text, re.I)
     if len(ranges) + len(inequalities) != 1:
@@ -93,7 +99,7 @@ def _explicit_label_slope_range(label: str) -> dict[str, Any]:
 class YamlBaselineCompiler:
     """Compile a governed YAML bundle into the production MethodContract."""
 
-    compiler_version = "yaml-baseline-compiler-v5"
+    compiler_version = "yaml-baseline-compiler-v6"
 
     @staticmethod
     def _binding(role: TemplateRole, source_hash: str, location: str) -> RoleBinding:
@@ -564,8 +570,8 @@ class YamlBaselineCompiler:
             if not isinstance(reference_rules, list):
                 raise YamlBaselineCompileError("conditional_reference_rules must be a list")
             seen_reference_rules = set()
-            reference_scope_fields = {"component_category", "failure_type", "operating_mode", "fault_motion_model", "object_longitudinal_direction"}
-            reference_capability_fields = {"driver_in_vehicle", "emergency_braking_available", "steering_control_available"}
+            reference_scope_fields = {"component_category", "failure_type", "operating_mode", "fault_motion_model", "object_longitudinal_direction", "collision_type"}
+            reference_capability_fields = {"driver_in_vehicle", "emergency_braking_available", "steering_control_available", "other_road_user_avoidance_possible"}
             for index, rule in enumerate(reference_rules):
                 conditions = rule.get("when", {}) if isinstance(rule, dict) else {}
                 speed_limit = rule.get("trajectory_speed_upper_exclusive_kph") if isinstance(rule, dict) else None
@@ -718,14 +724,22 @@ class YamlBaselineCompiler:
             slope = dict(slope)
             if not slope:
                 slope = _explicit_label_slope_range(str(item.get("label", "")))
+            label_bounds = _explicit_label_slope_range(str(item.get("label", "")))
+            if slope.get("range_pct") is not None and slope.get("range_pct") == label_bounds.get("range_pct"):
+                for endpoint in ("min_inclusive", "max_inclusive"):
+                    if endpoint in label_bounds:
+                        slope.setdefault(endpoint, label_bounds[endpoint])
             if "pct_min" in slope and "min_inclusive" not in slope:
                 minimum = str(slope["pct_min"])
                 label = str(item.get("label", ""))
-                slope["min_inclusive"] = not bool(re.search(
-                    rf"(?:slope\s*>\s*{re.escape(minimum)}|"
-                    rf"{re.escape(minimum)}\s*%?\s*<\s*slope)",
-                    label, re.IGNORECASE,
-                ))
+                slope["min_inclusive"] = (
+                    label_bounds["min_inclusive"]
+                    if label_bounds.get("pct_min") == slope["pct_min"]
+                    else not bool(re.search(
+                        rf"(?:slope\s*>\s*{re.escape(minimum)}|"
+                        rf"{re.escape(minimum)}\s*%?\s*<\s*slope)",
+                        label, re.IGNORECASE,
+                    )))
             physical_semantics = {
                 key: value for key, value in {
                     "ego_dynamics": dynamics,

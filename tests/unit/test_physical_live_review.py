@@ -67,6 +67,30 @@ def test_repeated_structured_provenance_is_shared_losslessly():
     assert len(json.dumps([view, texts])) < len(json.dumps(context)) * .6
 
 
+def test_proposal_context_retains_physical_constraints_without_downstream_grades():
+    context = {'plan_key': 'unchanged-audit-key', 'conditions': {'facts': {'ego_speed_kph': 0}},
+        'evidence': {'MF.description': 'drive fault'},
+        'intervention_inputs': ['emergency_braking_available'],
+        'method_identity': {'method_source_hash': 'full-method-hash', 'project_analysis_policy': {
+            'controllability': {'result': 'C3', 'rationale': 'downstream-only'},
+            'severity_evaluation': {'grading_policy': 'downstream-only'},
+            'driver_location_convention': {'outside_driver_seat_is_outside_vehicle': True},
+            'engineering_decisions': {'approved_template_id': 'existing-template'}}}}
+    before = deepcopy(context)
+    class Client:
+        def complete_json(self, request):
+            payload = json.loads(request.user_prompt)
+            projected = expand_physical_prompt_view(payload['context'], payload['source_texts'])
+            expected = deepcopy(before)
+            policy = expected['method_identity']['project_analysis_policy']
+            policy.pop('controllability'); policy.pop('severity_evaluation')
+            assert projected == expected
+            assert request.prompt_version.endswith('v22-task-context')
+            return LLMResponse(raw_plan(), 'OFFLINE', usage={})
+    PhysicalScenarioAgent(Client()).propose(context)
+    assert context == before
+
+
 @pytest.mark.parametrize('controls_only', [False, True])
 @pytest.mark.parametrize('mode', ['json_object', 'none'])
 def test_physical_request_format_contract_and_cached_repair(tmp_path, controls_only, mode):

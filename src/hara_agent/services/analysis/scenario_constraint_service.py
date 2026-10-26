@@ -29,6 +29,36 @@ class ScenarioConstraintExecutor:
     """Apply exact compiled cross-dimension constraints without rarity guessing."""
 
     @staticmethod
+    def physical_semantic_conflicts(atoms: Sequence[dict[str, Any]]) -> list[str]:
+        """Selected atoms describing one road must share a possible slope.
+
+        Bounds and endpoint semantics come from the compiled catalog. This is
+        interval compatibility, not an Exposure rule or a new slope threshold.
+        """
+        lower, upper, lower_closed, upper_closed = float("-inf"), float("inf"), True, True
+        participants = []
+        for atom in atoms:
+            slope = atom.get("physical_semantics", {}).get("slope", {})
+            if not slope:
+                continue
+            bounds = slope.get("range_pct", [slope.get("pct_min"), slope.get("pct_max")])
+            lo, hi = bounds
+            if lo is None and hi is None:
+                continue
+            participants.append(str(atom["atom_id"]))
+            if lo is not None and lo >= lower:
+                closed = slope.get("min_inclusive", True)
+                lower_closed = lower_closed and closed if lo == lower else closed
+                lower = lo
+            if hi is not None and hi <= upper:
+                closed = slope.get("max_inclusive", True)
+                upper_closed = upper_closed and closed if hi == upper else closed
+                upper = hi
+        if lower > upper or (lower == upper and not (lower_closed and upper_closed)):
+            return ["INCOMPATIBLE_SLOPE_RANGES:" + ",".join(sorted(set(participants)))]
+        return []
+
+    @staticmethod
     def _value(binding: Any) -> str:
         if isinstance(binding, dict):
             return str(

@@ -16,6 +16,7 @@ from typing import Any
 from hara_agent.contracts import CalculationStatus, MethodContract
 
 from .deterministic_risk_executor import ExposureMethodExecutor
+from .scenario_constraint_service import ScenarioConstraintExecutor
 
 
 READY_STATUSES = frozenset({"READY_COMPLETE", "READY_METHOD_IRRELEVANT_GAPS"})
@@ -44,6 +45,7 @@ class ExposureInputReadinessService:
         self.exposure = method.structured_risk_method.exposure
         self.executor = executor or ExposureMethodExecutor()
         self.by_id = {atom.atom_id: atom for atom in self.exposure.atoms}
+        self.physical_atoms = {atom["atom_id"]: atom for atom in method.metadata.get("scenario_atom_catalog", [])}
         self.by_dimension: dict[str, tuple[str, ...]] = {}
         for atom in self.exposure.atoms:
             for dimension in atom.dimensions:
@@ -119,7 +121,9 @@ class ExposureInputReadinessService:
                 if dimension in dimensions and dimensions[dimension] != atom_id:
                     return False
                 dimensions[dimension] = atom_id
-        return True
+        return not ScenarioConstraintExecutor.physical_semantic_conflicts(
+            [self.physical_atoms[atom_id] for atom_id in dict.fromkeys(atom_ids)
+             if atom_id in self.physical_atoms])
 
     @staticmethod
     def _explicit_candidate_ids(binding: Mapping[str, Any]) -> list[str]:
@@ -211,6 +215,14 @@ class ExposureInputReadinessService:
                     and not self._is_resolved(binding)
                 ),
             })
+        physical_conflicts = ScenarioConstraintExecutor.physical_semantic_conflicts(
+            [self.physical_atoms[atom_id] for atom_id in atom_ids if atom_id in self.physical_atoms])
+        if physical_conflicts:
+            return self._result(
+                status="SOURCE_CONFLICT", reason_code="EXPOSURE_SCENARIO_CONSTRAINT_CONFLICT",
+                baseline=baseline, bindings=bindings, atom_ids=atom_ids,
+                dimensions=dimensions, binding_issues=[{"code": code} for code in physical_conflicts],
+                unresolved_relevant=unresolved_relevant, unresolved_irrelevant=unresolved_irrelevant)
         for atom_id in atom_ids:
             if atom_id not in self.by_id:
                 binding_issues.append({

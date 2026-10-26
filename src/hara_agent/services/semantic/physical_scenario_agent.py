@@ -139,8 +139,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v21-post-stop-contact"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v7-control-contract-guidance"
+    PROMPT_VERSION = "post-fault-physical-scenario-v22-task-context"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v8-task-context"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -327,7 +327,15 @@ class PhysicalScenarioAgent:
                 "placement": "hypotheses[] sibling of geometry and parameters",
                 "meaning": "Explicit conditional stationary continuation after ego stop; omitted retains pre-stop scope. Explain grade/control compatibility in conditions and rationale."},
         }
-        prompt_context, source_texts = physical_prompt_view(context)
+        # Grading tables belong to the deterministic scorer, not this proposal
+        # task. Keep the complete contract in the cache identity/audit context;
+        # send all physical/source/engineering constraints and the already
+        # explicit intervention_inputs, without downstream S/C classifications.
+        prompt_inputs = deepcopy(context)
+        policy = prompt_inputs.get("method_identity", {}).get("project_analysis_policy", {})
+        for downstream in ("controllability", "severity_evaluation"):
+            policy.pop(downstream, None)
+        prompt_context, source_texts = physical_prompt_view(prompt_inputs)
         content = {"output_contract": output_contract, "context": prompt_context, "source_texts": source_texts,
                    "model_catalog": MODEL_CATALOG,
                    "parameter_units": PARAMETER_UNITS, "output_shape": example,
@@ -370,6 +378,8 @@ class PhysicalScenarioAgent:
             content["model_catalog"] = {}
             content["parameter_units"] = {}
         system += self.CONTROL_ANALYSIS_POLICY
+        system += ("每个hypotheses成员都必须单独填写非空basis_refs，引用所给evidence ID；"
+                   "parameters、intervention_assumptions或safe_state_proposal里的引用不能替代该字段。")
         attempts = []
         errors = []
         previous_response = None

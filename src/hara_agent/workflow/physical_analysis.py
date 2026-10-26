@@ -206,7 +206,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             for field in ("odd_road_types", "odd_weather_conditions")
             for value in dict.fromkeys(project.get(field, []))]
         coverage_offset = int(signature(asdict(mf))[:8], 16)
-        for group_index, ((task_scope, condition_key), family) in enumerate(sorted(groups.items())):
+        for (task_scope, condition_key), family in sorted(groups.items()):
             first = family[0]
             # The same motion plan can be instantiated for multiple driver
             # configurations. Causality and risk are still evaluated per world.
@@ -231,7 +231,11 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 "producer_version": PHYSICAL_PLAN_VERSION, "model_catalog_identity": signature(MODEL_CATALOG),
                 "prompt_version": agent.PROMPT_VERSION, "route": route}
             if task_scope == "MOTION_AND_CONTROLS" and source_conditions:
-                inputs["source_condition_focus"] = source_conditions[(coverage_offset + group_index) % len(source_conditions)]
+                # Scope selection must not change the task for the same world.
+                # A sample's ordinal is different from its full-run ordinal;
+                # use the canonical condition identity, not enumeration order.
+                focus_index = (coverage_offset + int(condition_key[:8], 16)) % len(source_conditions)
+                inputs["source_condition_focus"] = source_conditions[focus_index]
                 inputs["source_condition_policy"] = (
                     "Use this allowed source condition only if relevant and compatible; otherwise select a relevant "
                     "alternative from project_context or explain the uncovered condition. Return operating_condition "

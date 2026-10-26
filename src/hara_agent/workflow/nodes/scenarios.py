@@ -30,7 +30,7 @@ from hara_agent.services.analysis.scenario_equivalence import (
 )
 
 
-SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v10-exact-local-reuse"
+SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v11-physical-deferrals"
 
 
 def _scenario_batch_cache_key(
@@ -104,8 +104,25 @@ def _assess_instantiated_scenarios(
     prior_batch=None,
 ) -> tuple[list[ScenarioFeasibilityAssessment], dict]:
     """Deduplicate before batching; parse every reused result in the child world."""
+    deferred, physical_deferrals = {}, []
+    for candidate in candidates:
+        outcome = candidate.facts.get("motion_model_outcome", {})
+        if outcome.get("status") not in {"MODEL_GEOMETRY_NOT_APPLICABLE", "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}:
+            continue
+        # The bounded physical correction has already run. A causal request
+        # cannot repair contradictory coordinates or create the missing phase.
+        # Preserve the identity as unknown; this is not a safe exclusion.
+        reason = str(outcome.get("reason") or outcome["status"])
+        deferred[candidate.scenario_id] = ScenarioFeasibilityAssessment(
+            malfunction.malfunction_id, candidate.scenario_id, False, False, False, [],
+            "当前物理候选仍需修正几何或补充独立阶段；因果判断暂缓，原身份及输入保留，不表示该危险已被排除：" + reason,
+            evidence_contract_version=agent.assessment_contract_version)
+        physical_deferrals.append({"scenario_id": candidate.scenario_id, "reason": reason,
+                                   "status": "PENDING_FEASIBILITY", "provider_called": False})
     exact_groups = {}
     for candidate in candidates:
+        if candidate.scenario_id in deferred:
+            continue
         key = exact_task_key(agent, malfunction, candidate, project_registry)
         exact_groups.setdefault(key, []).append(candidate)
     unique = [members[0] for members in exact_groups.values()]
@@ -176,7 +193,7 @@ def _assess_instantiated_scenarios(
     assessments, audit = assess_batch(first_wave) if first_wave else ([], {
         "task": "assess_scenario_feasibility", "malfunction_id": malfunction.malfunction_id,
         "actual_llm_calls": 0, "llm_calls": 0, "usage": {"batches": []}})
-    by_id = {**restored, **{item.scenario_id: item for item in assessments}}
+    by_id = {**deferred, **restored, **{item.scenario_id: item for item in assessments}}
     pending, reuse_records, partial_contexts = [], list(cache_records), {}
 
     def revalidate(assessed, parent, child, changed=()):
@@ -294,6 +311,7 @@ def _assess_instantiated_scenarios(
                           for key, members in exact_groups.items()],
     }
     audit["analytical_scenario_instantiation"] = instantiation
+    audit["physical_deferrals"] = physical_deferrals
     return assessments, audit
 
 

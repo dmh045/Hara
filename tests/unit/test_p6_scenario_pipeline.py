@@ -108,6 +108,27 @@ class MockCausalAgent:
         ) for candidate in candidates], {"llm_calls": 1, "usage": {"batches": []}}
 
 
+def test_unusable_geometry_is_preserved_without_paying_for_another_causal_judgment():
+    invalid = replace(parent("invalid-geometry"), facts={**parent().facts,
+        "motion_model_outcome": {"status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "TARGET_OFFSET_POSITION_CONFLICT"}})
+    initial = replace(parent("initial-contact"), facts={**parent().facts,
+        "motion_model_outcome": {"status": "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}})
+    # No contact in a finite time horizon is different: a more general
+    # hazardous vehicle behavior still needs a causal judgment.
+    finite = replace(parent("finite-horizon"), facts={**parent().facts,
+        "motion_model_outcome": {"status": "NO_CONTACT_WITHIN_MODEL"}})
+    agent = MockCausalAgent()
+    assessments, audit = _assess_instantiated_scenarios(agent, malfunction(), [invalid, initial, finite], {}, None)
+    assert [s.scenario_id for s in agent.seen] == [finite.scenario_id]
+    assert [a.scenario_id for a in assessments] == [invalid.scenario_id, initial.scenario_id, finite.scenario_id]
+    assert all(a.to_dict()["risk_eligibility_status"] == "PENDING_FEASIBILITY" for a in assessments[:2])
+    assert len(audit["physical_deferrals"]) == 2
+    # All-invalid batches make zero requests, preserving every pending identity.
+    agent = MockCausalAgent()
+    again, audit = _assess_instantiated_scenarios(agent, malfunction(), [invalid, initial], {}, None)
+    assert not agent.seen and audit["llm_calls"] == 0 and len(again) == 2
+
+
 def test_a_b_c_parking_candidates_are_bounded_and_have_method_atoms(method):
     service = ConstrainedScenarioSynthesisService(method)
     children, audit = service.generate_candidates(
@@ -220,6 +241,11 @@ def test_explicit_uphill_downhill_boundaries_are_kept_and_not_flattened(method):
     catalog = ConstrainedScenarioSynthesisService(method).by_id
     assert catalog['FV040']['physical_semantics']['slope']['range_pct'] == [2, 8]
     assert catalog['FV050']['physical_semantics']['slope']['pct_min'] == 8
+    assert catalog['FB003_as_used_by_source']['physical_semantics']['slope']['min_inclusive'] is False
+    assert catalog['PH013']['physical_semantics']['slope']['min_inclusive'] is False
+    from hara_agent.services.analysis.scenario_constraint_service import ScenarioConstraintExecutor
+    assert all(not ScenarioConstraintExecutor.physical_semantic_conflicts(
+        [catalog[atom] for atom in child.facts['scenario_atom_ids']]) for child in children)
 
 
 def test_source_road_axis_is_bounded_without_crossing_every_location(method):
@@ -289,6 +315,27 @@ def test_source_axis_sampling_preserves_primary_variants_without_claiming_equiva
     deferred = [row for a in audits for row in a["deferred_context_variants"]]
     assert len(deferred) == len(full) - len(bounded)
     assert all(row["status"] == "COMBINATION_NOT_EVALUATED" and not row["risk_equivalence_proven"] for row in deferred)
+
+
+def test_equal_coverage_choices_do_not_repeat_the_first_road_for_every_mechanism():
+    from collections import Counter
+    pool = []
+    for road_index, road in enumerate(("strong-slope", "mild-slope")):
+        for action in ("a", "b", "c", "d"):
+            child = replace(parent(f"{road_index}-{action}"), facts={
+                "source_operating_conditions": {"operating_scenario": "室外停车场"},
+                "method_scenario_dimensions": {
+                    "WHERE": {"atom_id": "outdoor", "atom_label": "室外停车场"},
+                    "ROAD": {"atom_id": road}, "EGO_ACTION": {"atom_id": action}},
+                "scenario_atom_ids": ["outdoor", road, action]})
+            pool.append((child, {"coverage_plan": {"primary_variation_dimensions": ["EGO_ACTION"]},
+                                 "deferred_context_variants": []}))
+    selected = MethodScenarioCandidateService._select_context_representatives(pool)
+    assert len(selected) == 4
+    assert {c.facts["method_scenario_dimensions"]["EGO_ACTION"]["atom_id"] for c in selected} == set("abcd")
+    assert Counter(c.facts["method_scenario_dimensions"]["ROAD"]["atom_id"] for c in selected) == {
+        "strong-slope": 2, "mild-slope": 2}
+    assert len([d for _, a in pool for d in a["deferred_context_variants"]]) == 4
 
 
 def test_h_exact_conditions_coalesce_with_complete_identity_map():

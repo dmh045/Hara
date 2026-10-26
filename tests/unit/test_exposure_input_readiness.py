@@ -59,6 +59,23 @@ def test_complete_relevant_atom_set_is_ready_complete():
     assert readiness["status"] == "READY_COMPLETE"
 
 
+def test_incompatible_current_slope_atoms_are_not_reported_as_a_numeric_exposure():
+    method = _method([("E3", "E3"), ("E2", "E2")])
+    method = replace(method, metadata={**method.metadata, "scenario_atom_catalog": [
+        {"atom_id": "A1", "physical_semantics": {"slope": {"range_pct": [2, 8]}}},
+        {"atom_id": "A2", "physical_semantics": {"slope": {"pct_min": 8, "min_inclusive": False}}}]})
+    service = ExposureInputReadinessService(method)
+    bindings = {"D1": {"resolution_status": "RESOLVED", "atom_id": "A1"},
+                "D2": {"resolution_status": "RESOLVED", "atom_id": "A2"}}
+    result = service.assess(_scenario(atoms=["A1", "A2"], bindings=bindings))
+    assert result["reason_code"] == "EXPOSURE_SCENARIO_CONSTRAINT_CONFLICT"
+    # An impossible completion is not a reason to block an otherwise complete
+    # current world; the same compatibility check governs both directions.
+    bindings["D2"] = {"resolution_status": "PENDING", "applicability_status": "OPTIONAL", "candidate_atom_ids": ["A2"]}
+    result = service.assess(_scenario(atoms=["A1"], bindings=bindings))
+    assert result["status"].startswith("READY")
+
+
 @pytest.mark.parametrize('speed,accepted,applicability,ready', [
     (0,True,'OPTIONAL',True), (0,False,'OPTIONAL',False),
     (10,True,'OPTIONAL',False), (0,True,'REQUIRED',False),

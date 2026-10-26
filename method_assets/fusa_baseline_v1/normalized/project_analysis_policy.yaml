@@ -132,6 +132,40 @@ controllability:
         steering_control_available: false
       trajectory_speed_upper_exclusive_kph: 15
       rationale: "驾驶员在驾驶位，转向指令异常后仍可人工制动；在持续监控并及时中止的低速代表工况下，参考转向丢失/不足的可制动案例评为 C1。该规则不覆盖制动同时失效、车辆失稳或轨迹速度达到 15 km/h；未套用纵向 TTC。"
+    - rule_id: IAV_CURVED_CONTACT_BRAKING_TIME_TRANSFER
+      status: CONDITIONAL_REFERENCE
+      result: ACTIVE_PROFILE
+      profile_time_input: first_contact_time_s
+      requires_contact: true
+      source_document: method_assets/fusa_baseline_v1/raw/c_profiles/iav_avp.yaml
+      source_location: applies_when; ttc_applicability; ttc_thresholds
+      source_sha256: 98468b3e57fb492b1bf498ee83e3cfb85c4b813ba50270fc389db0dc49ea6239
+      source_statement: "The active IAV profile classifies available braking reaction time. Its numerical bands are unchanged; its source does not directly validate curved-trajectory avoidance."
+      limitation: "Conditional project transfer, 2026-10-27: for constant-speed low-speed curved ego motion toward a stationary boundary, use the computed first contact interval with an in-seat monitoring driver and independent braking. Assumes prompt recognition and retained tire grip. It is not a stopping-distance proof or a validated avoidance probability. Excludes constant lateral acceleration/instability, unknown braking, occlusion, delayed recognition and post-stop contact. The existing failed-steering reference has precedence."
+      when:
+        operating_mode: [parking_vehicle_control]
+        fault_motion_model: [CONSTANT_SPEED_CURVATURE_TO_CONTACT]
+        driver_in_vehicle: true
+        emergency_braking_available: true
+      trajectory_speed_upper_exclusive_kph: 15
+      rationale: "驾驶员在驾驶位，独立人工制动可用；在持续监控、及时识别、轮胎保持附着的低速圆弧工况下，以轨迹首次接触时间作为可干预时窗，沿用当前制动反应时间分档。未把侧向净距除以纵向车速，也不表示已经证明能刹停；这是条件性方法迁移。"
+    - rule_id: IAV_REAR_CONTACT_WITHOUT_COUNTERPART_EVASION_REFERENCE
+      status: CONDITIONAL_REFERENCE
+      result: C3
+      evaluation_phase: AFTER_APPLICABLE_METHODS
+      requires_contact: true
+      source_document: 副本IAV_EHYREEV蓝海项目_代客泊车-HARA分析_V1.0.xlsx
+      source_location: "6-HARA Analyses!D7:N8; raw/c_profiles/iav_avp.yaml:override_rules"
+      source_sha256: 0698cc8e2f87ae861480c67ce8df89910f59d635a0cb49587e85b723e1d48898
+      source_statement: "Reference unintended braking/rear collision cases use C3; the active method gives priority to a separately established counterpart or remote evasion path. The original workbook cases concern an outside driver."
+      limitation: "Conditional in-seat transfer, 2026-10-27: computed rear contact with explicitly unavailable counterpart evasion and no applicable independent avoidance rule is assessed without credit for ego braking alone. The in-seat extension is a project judgement, not a quoted source rule or engineering approval. Unknown counterpart evasion does not match."
+      when:
+        operating_mode: [parking_vehicle_control]
+        fault_motion_model: [RECTILINEAR_MOVING_TARGET_CONTACT]
+        collision_type: [REAR_END]
+        driver_in_vehicle: true
+        other_road_user_avoidance_possible: false
+      rationale: "轨迹存在追尾接触，当前明确假设后车不能及时避让，且没有成立的独立规避规则；本车制动不能单独解除后方接近冲突，按追尾参考工况条件性评为 C3。驾驶员位置、后车规避假设和适用限制仍分别保留。"
     - rule_id: IAV_UNATTENDED_PARKING_REFERENCE
       status: CONDITIONAL_REFERENCE
       result: C3

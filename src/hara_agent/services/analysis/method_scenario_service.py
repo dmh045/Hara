@@ -628,11 +628,14 @@ class MethodScenarioCandidateService:
             specificity = (bool(parent_environment), not bool(selected_environment - parent_environment))
             rows.append((child, audit, features, source_key, specificity))
         remaining = sorted(rows, key=lambda r: r[0].scenario_id)
-        selected, covered, source_counts = [], set(), {}
+        selected, covered, source_counts, environment_counts = [], set(), {}, {}
         while remaining:
             index = max(range(len(remaining)), key=lambda i: (
                 len(remaining[i][2] - covered),
-                -source_counts.get(remaining[i][3], 0), remaining[i][4], -i))
+                -source_counts.get(remaining[i][3], 0),
+                -sum(environment_counts.get(feature, 0) for feature in remaining[i][2]
+                     if feature[0] in {"where", "road"}),
+                remaining[i][4], -i))
             row = remaining[index]
             if not row[2] - covered:
                 break
@@ -640,6 +643,9 @@ class MethodScenarioCandidateService:
             selected.append(row)
             covered.update(row[2])
             source_counts[row[3]] = source_counts.get(row[3], 0) + 1
+            for feature in row[2]:
+                if feature[0] in {"where", "road"}:
+                    environment_counts[feature] = environment_counts.get(feature, 0) + 1
         exact_keys = {signature(scenario_conditions(r[0])) for r in selected if r[0].facts.get("scenario_atom_ids")}
         for row in remaining:
             child, audit, features, _, _ = row

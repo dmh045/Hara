@@ -243,6 +243,11 @@ class StructuredRiskScoringService:
             if reference is not None:
                 control.update(reference)
         if not control.get("controllability_score"):
+            outcome = scenario.get("motion_model_outcome", {})
+            if outcome.get("status") in {"NO_CONTACT_WITHIN_MODEL", "MODEL_GEOMETRY_NOT_APPLICABLE"}:
+                control.update(calculation_status="PENDING_INPUT", decision_status="PHYSICAL_INPUT_UNRESOLVED",
+                    pending_reason="PHYSICAL_CONTACT_UNRESOLVED:" + outcome["status"],
+                    reasoning="The modeled trajectory has no established contact within its valid scope. This is not proof of no hazard beyond that scope, nor merely a missing C classification rule.")
             # A rejected lookup is not a finalized avoidance path. Keep its
             # attempted value for audit, separately from the usable result.
             for key in ("braking", "method_override"):

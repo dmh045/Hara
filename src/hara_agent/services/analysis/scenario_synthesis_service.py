@@ -1741,6 +1741,8 @@ class ConstrainedScenarioSynthesisService:
         selected_union = {
             atom_id for atom_ids in selected_by_dimension.values() for atom_id in atom_ids
         }
+        reasons.extend(self.constraint_executor.physical_semantic_conflicts(
+            [self.by_id[atom_id] for atom_id in sorted(selected_union) if atom_id in self.by_id]))
         for atom_id in selected_union:
             atom = self.by_id.get(atom_id)
             if atom is None:

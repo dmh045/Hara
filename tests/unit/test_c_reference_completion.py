@@ -13,6 +13,52 @@ from hara_agent.services.analysis.risk_execution_trace_service import RiskExecut
 from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
 
 
+@pytest.mark.parametrize("time,expected", [(2.5, "C3"), (3.5, "C2"), (4.5, "C1"), (5.5, "C0")])
+def test_curved_drive_contact_uses_real_arc_time_and_preserves_original_tuple(method, time, expected):
+    import math
+    from test_curved_steering_physics import curved_plan
+    # Build the trajectory through production instantiation; do not inject TTC.
+    speed, radius = 7, 12
+    clearance = radius * (1 - math.cos(speed / 3.6 * time / radius))
+    raw = curved_plan(speed=speed, radius=radius, clearance=clearance)
+    next(p for p in raw["hypotheses"][0]["parameters"] if p["field"] == "model_valid_until_s")["value"] = 6
+    raw["hypotheses"][0].update(failed_controls=["drive"], remaining_controls=["driver_braking", "steering"])
+    sc = instantiate(method, raw, make_candidate(speed))[0]
+    sc.facts.update(operating_mode="parking_vehicle_control", component_category="computing",
+                    scenario_atom_ids=["CN_parking_multistory", "FB001", "FA040"])
+    before = deepcopy(sc)
+    result = score(method, sc)
+    assert sc.facts["first_contact_time_s"] == pytest.approx(time)
+    assert "ttc_s" not in sc.facts
+    c = result["controllability"]
+    assert c["controllability_score"] == expected
+    assert c["engineering_rule_id"] == "IAV_CURVED_CONTACT_BRAKING_TIME_TRANSFER"
+    assert c["engineering_status"] == "PENDING"
+    assert sc == before
+    for row in result["branch_evaluations"]:
+        assert row["ASIL"] == MethodContractASILService(method).determine(row["S"], row["E"], row["C"])
+
+
+@pytest.mark.parametrize("evade,expected", [(False, "C3"), (None, ""), (True, "C1")])
+def test_rear_contact_does_not_turn_unknown_evasion_into_a_fact(method, evade, expected):
+    from test_bounded_interaction_coverage import moving_plan
+    parent = make_candidate(0)
+    parent.facts.update(operating_mode="parking_vehicle_control")
+    if evade is None:
+        parent.facts.pop("other_road_user_avoidance_possible")
+    else:
+        parent.facts["other_road_user_avoidance_possible"] = evade
+    sc = instantiate(method, moving_plan(initial=0, target_direction="FORWARD", x=-8,
+        position="REAR", collision="REAR_END"), parent)[0]
+    before = deepcopy(sc)
+    c = score(method, sc)["controllability"]
+    assert c["controllability_score"] == expected
+    assert sc == before
+    if evade is False:
+        assert c["engineering_rule_id"] == "IAV_REAR_CONTACT_WITHOUT_COUNTERPART_EVASION_REFERENCE"
+        assert c["engineering_status"] == "PENDING"
+
+
 @pytest.mark.parametrize("model", [
     "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE",
     "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT",

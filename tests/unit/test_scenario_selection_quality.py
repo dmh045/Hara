@@ -533,6 +533,25 @@ def test_explicit_structured_relation_requires_traffic_when_not_represented_else
     assert decision.status is ScenarioDimensionApplicability.REQUIRED
 
 
+@pytest.mark.parametrize("actions,expected", [
+    (["ACTION_ACCELERATE"], ScenarioDimensionApplicability.NOT_APPLICABLE),
+    (["ACTION_HOLD"], ScenarioDimensionApplicability.REQUIRED),
+    (["ACTION_REVERSE"], ScenarioDimensionApplicability.REQUIRED),
+])
+def test_slope_alone_does_not_introduce_another_operating_phase(actions, expected):
+    binding = ScenarioBindingDecision(dimension="EGO_X_ROAD",
+        authority=ScenarioBindingAuthority.ANALYTICAL_SELECTION, refinable=True,
+        source_refs=("PARENT.EGO_X_ROAD",), basis="explicit source operation")
+    query = {"road_relations": ["ROAD_SLOPE"], "action_categories": actions}
+    decision = ScenarioDimensionApplicabilityService.assess("EGO_X_ROAD", query, binding)
+    assert decision.status is expected
+    # An explicit authoritative binding is never removed by generic relevance.
+    from dataclasses import replace
+    locked = replace(binding, parent_atom_id="explicit-method-relation", refinable=False)
+    assert ScenarioDimensionApplicabilityService.assess(
+        "EGO_X_ROAD", query, locked).status is ScenarioDimensionApplicability.REQUIRED
+
+
 def test_source_defined_compound_traffic_atom_survives_hard_filter(method):
     service = ConstrainedScenarioSynthesisService(method)
     parent = _parent(

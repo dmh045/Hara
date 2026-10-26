@@ -5,6 +5,20 @@ from hara_agent.contracts import (
 from hara_agent.services.analysis import (
     ScenarioConstraintExecutor, ScenarioConstraintStatus,
 )
+import pytest
+
+
+@pytest.mark.parametrize("left,right,conflict", [
+    ({"range_pct": [2, 8]}, {"pct_min": 8, "min_inclusive": False}, True),
+    ({"range_pct": [2, 8]}, {"pct_min": 8, "min_inclusive": True}, False),
+    ({"pct_min": 8, "min_inclusive": False}, {"range_pct": [2, 8]}, True),
+    ({"range_pct": [0, 2]}, {"range_pct": [5, 8]}, True),
+    ({"range_pct": [8, 15], "min_inclusive": False}, {"pct_min": 8, "min_inclusive": False}, False),
+])
+def test_same_road_slope_ranges_respect_open_endpoints(left, right, conflict):
+    atoms = [{"atom_id": key, "physical_semantics": {"slope": value}}
+             for key, value in (("road", left), ("ego-on-road", right))]
+    assert bool(ScenarioConstraintExecutor.physical_semantic_conflicts(atoms)) is conflict
 
 
 def _source(name: str) -> SourceRef:

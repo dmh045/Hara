@@ -463,6 +463,8 @@ class EngineeringReportTextMapper:
             return "当前交互不满足所选适用条件；当前方法无适用 C 规则"
         if control.get("decision_status") == "MODEL_DEPENDENCY_UNRESOLVED":
             return "故障影响规避控制；C 方法依赖尚未成立"
+        if control.get("decision_status") == "PHYSICAL_INPUT_UNRESOLVED":
+            return "当前轨迹在模型有效范围内未建立接触，或几何不适用；不能据此判定范围外无危险，也不能直接套用碰撞避险分档"
         if control.get("decision_status") == "PROFILE_APPLICABILITY_UNRESOLVED":
             inputs = control.get("override_inputs", control.get("inputs", control.get("physical_inputs", {})))
             if inputs.get("driver_in_vehicle") is False:
@@ -929,6 +931,8 @@ class EngineeringReportTextMapper:
         if readiness_status == "PENDING_AMBIGUOUS_ATOM_SET":
             return "暴露度相关场景维度存在多个未消解的方法要素候选，E 暂不评定。"
         if readiness_status == "SOURCE_CONFLICT":
+            if readiness.get("reason_code") == "EXPOSURE_SCENARIO_CONSTRAINT_CONFLICT":
+                return "已选道路与自车道路关系的坡度区间互不相容，不能组成同一工况；需重新生成相容条件，E 暂不评定。"
             return "暴露度的方法契约来源或组件域存在冲突，E 暂不评定。"
         reason = trace.get("missing_method_semantics", "") or getattr(evidence, "review_reason", "")
         if self._has_reason(reason, "EXPOSURE_DIMENSION_COVERAGE"):

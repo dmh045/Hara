@@ -37,6 +37,35 @@ def run(method, agent, state=None, candidates=None, checkpoint=None, workers=1, 
     return state, result
 
 
+def test_sample_scope_preserves_full_run_physical_request_and_response_reuse(method, tmp_path):
+    from hara_agent.models import ItemDefinitionFacts
+    from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
+    raw = raw_plan(assessed=True)
+    candidates = []
+    for i in range(3):
+        candidate = make_candidate()
+        candidate.scenario_id = f"scope-{i}"
+        candidate.facts["operating_scenario"] = f"source-location-{i}"
+        candidates.append(candidate)
+    # Pick a non-first family, which previously shifted its focus in a sample.
+    ordered = sorted(candidates, key=lambda c: signature(scenario_conditions(c, without_driver=True)))
+    target = ordered[-1]
+    project = ItemDefinitionFacts("parking", "AVP", odd_road_types=["水平车位", "垂直车位", "斜向车位"], sources=mf().sources)
+    client = Client([raw, raw, raw])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    def execute(rows):
+        state = HARAState('scope-test')
+        construct_physical_scenarios(state, {'MF': rows}, [mf()], method=method,
+            agent=agent, project_facts=project)
+        return state
+    full = execute(candidates)
+    sample = execute([target])
+    sample_key = next(iter(sample.item_definition['physical_analysis_plans']))
+    assert sample_key in full.item_definition['physical_analysis_plans']
+    assert len(client.requests) == 3  # The sample uses the exact persisted response.
+    assert sample.item_definition['physical_analysis_metrics']['response_cache_hits'] == 1
+
+
 @pytest.mark.parametrize('model,field,initial', [
     ('CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE', 'relative_distance_m', 0),
     ('CONSTANT_LATERAL_ACCELERATION_TO_CONTACT', 'lateral_clearance_m', 3.6),

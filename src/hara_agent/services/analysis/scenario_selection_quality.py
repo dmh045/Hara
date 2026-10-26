@@ -634,9 +634,11 @@ class ScenarioDimensionApplicabilityService:
                 reason = "The active holding/reverse mechanism is explicitly road-slope relative."
                 trigger = ("ROAD_SLOPE", *sorted({"ACTION_HOLD", "ACTION_REVERSE"} & set(actions)))
             elif "ROAD_SLOPE" in road:
-                status = ScenarioDimensionApplicability.OPTIONAL
-                reason = "A slope is explicit, but child road-relative semantics are not required by the mechanism."
-                trigger = ("ROAD_SLOPE",)
+                status = ScenarioDimensionApplicability.NOT_APPLICABLE
+                reason = ("The selected ROAD represents the slope. No holding/reverse relation "
+                          "is established for this world; catalog alternatives describing a "
+                          "different operation are not missing Exposure inputs.")
+                trigger = ("ROAD_SLOPE", "NO_ROAD_RELATIVE_OPERATION")
             else:
                 status = ScenarioDimensionApplicability.NOT_APPLICABLE
                 reason = "No explicit road-relative vehicle relation is present."
