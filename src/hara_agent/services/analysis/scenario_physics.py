@@ -46,7 +46,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
     model = {"fault_motion_model", "longitudinal_acceleration_mps2", "model_valid_until_s",
              "slope_percent", "residual_resistance_mps2", "lateral_speed_mps",
              "lateral_acceleration_mps2", "lateral_clearance_m", "turn_radius_m", "object_extent",
-             "post_fault_speed_cap_kph", "object_offset_x_m", "object_offset_y_m",
+             "post_fault_speed_cap_kph", "post_stop_motion", "object_offset_x_m", "object_offset_y_m",
              "contact_half_length_m", "contact_half_width_m",
              "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
              "downhill_body_direction", "grade_orientation_basis",
@@ -281,7 +281,8 @@ def rectilinear_moving_contact(facts: dict) -> dict:
     if abs(dx) <= hx and abs(dy) <= hy:
         return {"status": "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}
     # Negative acceleration is deceleration in the travel coordinate, never
-    # an implicit reverse launch. A stopped ego stays still for this horizon.
+    # an implicit reverse launch. Continuing after stop requires a separate,
+    # explicit holding assumption; old plans retain their pre-stop scope.
     stop = v / -a if a < 0 and v > 0 else horizon
     end = min(horizon, stop)
     if v == 0 and a < 0:
@@ -289,38 +290,45 @@ def rectilinear_moving_contact(facts: dict) -> dict:
     sign = vectors[direction][0]
     ux, uy = (component * u for component in vectors[target_direction])
     q, b = -sign * a / 2, ux - sign * v
-    cuts = {0.0, end}
-    for bound in (-hx, hx):
-        c = dx - bound
-        if q == 0:
-            roots = [-c / b] if b else []
-        else:
-            disc = b*b - 4*q*c
-            if disc < 0:
-                roots = []
+    phases = [(0.0, end, dx, b, q)]
+    held = stop < horizon and facts.get("post_stop_motion") == "HOLD_POSITION"
+    if held:
+        stopping_position = sign * (v*stop + a*stop*stop/2)
+        phases.append((stop, horizon, dx-stopping_position, ux, 0.0))
+    for phase_index, (start, end, offset, b, q) in enumerate(phases):
+        cuts = {start, end}
+        for bound in (-hx, hx):
+            c = offset - bound
+            if q == 0:
+                roots = [-c / b] if b else []
             else:
-                # Stable quadratic roots, including a repeated root.
-                t = -.5 * (b + math.copysign(math.sqrt(disc), b))
-                roots = [t / q, c / t] if t else [-b / (2*q)]
-        cuts.update(t for t in roots if 0 <= t <= end)
-    if uy:
-        cuts.update(t for bound in (-hy, hy) if 0 <= (t := (bound-dy)/uy) <= end)
-    def inside(t):
-        return abs(dx+b*t+q*t*t) <= hx and abs(dy+uy*t) <= hy
-    ordered = sorted(cuts)
-    for index, t in enumerate(ordered):
-        # The right-hand interval is inside even if roundoff at its root is
-        # a few ulps outside; do not widen the geometric contact envelope.
-        if inside(t) or index+1 < len(ordered) and inside((t+ordered[index+1])/2):
-            impact = max(0.0, v+a*t)
-            return {"status": "CONTACT", "time_s": t, "ego_impact_speed_kph": impact*3.6,
-                "object_impact_speed_kph": u*3.6,
-                "relative_speed_kph": math.hypot(sign*impact-ux, uy)*3.6,
-                "trajectory_max_speed_kph": max(v, impact)*3.6,
-                "contact_offset_x_m": dx+b*t+q*t*t, "contact_offset_y_m": dy+uy*t,
-                "longitudinal_contact": uy == 0 and not is_lateral_collision(facts.get("collision_type"))}
+                disc = b*b - 4*q*c
+                if disc < 0:
+                    roots = []
+                else:
+                    # Stable quadratic roots, including a repeated root.
+                    t = -.5 * (b + math.copysign(math.sqrt(disc), b))
+                    roots = [t / q, c / t] if t else [-b / (2*q)]
+            cuts.update(t for t in roots if start <= t <= end)
+        if uy:
+            cuts.update(t for bound in (-hy, hy) if start <= (t := (bound-dy)/uy) <= end)
+        def inside(t):
+            return abs(offset+b*t+q*t*t) <= hx and abs(dy+uy*t) <= hy
+        ordered = sorted(cuts)
+        for index, t in enumerate(ordered):
+            # The right-hand interval is inside even if roundoff at its root is
+            # a few ulps outside; do not widen the geometric contact envelope.
+            if inside(t) or index+1 < len(ordered) and inside((t+ordered[index+1])/2):
+                impact = 0.0 if phase_index else max(0.0, v+a*t)
+                return {"status": "CONTACT", "time_s": t, "ego_impact_speed_kph": impact*3.6,
+                    "object_impact_speed_kph": u*3.6,
+                    "relative_speed_kph": math.hypot(sign*impact-ux, uy)*3.6,
+                    "trajectory_max_speed_kph": max(v, impact)*3.6,
+                    "contact_offset_x_m": offset+b*t+q*t*t, "contact_offset_y_m": dy+uy*t,
+                    **({"contact_phase": "HELD_AFTER_STOP", "ego_stop_time_s": stop} if phase_index else {}),
+                    "longitudinal_contact": uy == 0 and not is_lateral_collision(facts.get("collision_type"))}
     return {"status": "NO_CONTACT_WITHIN_MODEL", "evaluated_until_s": end,
-            "limiting_condition": "EGO_STOP" if stop < horizon else "MODEL_HORIZON"}
+            "limiting_condition": "EGO_STOP" if stop < horizon and not held else "MODEL_HORIZON"}
 
 
 def closing_relative_speed_kph(
@@ -942,8 +950,12 @@ def derive_scenario_physics(
         keys = tuple(MODEL_CATALOG[model]["required"]) + (
             "fault_motion_model", "object_position", "object_extent", "ego_longitudinal_direction",
             "object_longitudinal_direction", "impact_time_id")
+        if "post_stop_motion" in scenario.facts:
+            keys += ("post_stop_motion",)
         outcome = rectilinear_moving_contact(scenario.facts)
         formula = "first simultaneous |dx+(ux-vx)t-ax*t^2/2|<=hx and |dy+uy*t|<=hy before ego stop/horizon"
+        if scenario.facts.get("post_stop_motion") == "HOLD_POSITION":
+            formula += "; after stop ts, xe=sign*(v0*ts+a*ts^2/2), ve=0; solve |dx+ux*t-xe|<=hx and |dy+uy*t|<=hy until horizon"
         records.append(derived_record("motion_model_outcome", outcome, keys,
             DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula))
         if outcome["status"] == "CONTACT":

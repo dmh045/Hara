@@ -139,7 +139,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v20-control-contract-guidance"
+    PROMPT_VERSION = "post-fault-physical-scenario-v21-post-stop-contact"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v7-control-contract-guidance"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
@@ -279,6 +279,9 @@ class PhysicalScenarioAgent:
             "须解释尺寸和有效时段假设。geometry用FINITE_CONTACT_ENVELOPE并给出"
             "object_longitudinal_direction=FORWARD|REVERSE|LEFT|RIGHT（均相对车体，非道路行驶方向）。"
             "自车沿当前行驶方向匀加减速；不支持转弯、反向启动和多阶段限速。"
+            "后车接近等机制不能因本车先停车就宣布无接触。若有相容依据假设停车后保持原位置，"
+            "在该假设顶层给post_stop_motion=HOLD_POSITION，并在conditions和rationale说明保持条件、坡度及控制相容性；"
+            "程序会在同一model_valid_until_s内继续计算移动目标。缺少该假设时只计算至本车停车，不代表停车后无风险。"
             "路径交叉但到达时间不同可以无接触；不得为了碰撞强行调参。"
             "参数可以 POINT(value)、RANGE(lower,value,upper；value 是代表值)、SYMBOLIC(symbol)。"
             "不确定真实上界时给条件性代表值/敏感性范围或符号条件，不编造最大速度。"
@@ -320,6 +323,9 @@ class PhysicalScenarioAgent:
                 "SYMBOLIC": {"symbol": "nonempty string; omit value/lower/upper"}},
             "moving_target_geometry": {"object_extent": "FINITE_CONTACT_ENVELOPE",
                 "object_longitudinal_direction": ["FORWARD", "REVERSE", "LEFT", "RIGHT"]},
+            "post_stop_motion": {"optional": True, "allowed": ["HOLD_POSITION"],
+                "placement": "hypotheses[] sibling of geometry and parameters",
+                "meaning": "Explicit conditional stationary continuation after ego stop; omitted retains pre-stop scope. Explain grade/control compatibility in conditions and rationale."},
         }
         prompt_context, source_texts = physical_prompt_view(context)
         content = {"output_contract": output_contract, "context": prompt_context, "source_texts": source_texts,

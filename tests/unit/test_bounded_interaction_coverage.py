@@ -71,6 +71,96 @@ def test_crossing_pedestrian_does_not_require_vehicle_side_impact_label(method):
     assert 'ttc_s' not in child.facts
 
 
+def test_explicit_post_stop_world_reaches_contact_and_invalidates_old_phase(method):
+    raw = moving_plan(initial=7, target_speed=7, target_direction='FORWARD',
+        x=-6, acceleration=-7, position='REAR', collision='REAR_END', horizon=4)
+    h = raw['hypotheses'][0]
+    next(p for p in h['parameters'] if p['field'] == 'contact_half_length_m')['value'] = 4.3
+    parent = make_candidate(7)
+    before = deepcopy(parent)
+    original = instantiate(method, raw, parent)[0]
+    assert original.facts['motion_model_outcome']['limiting_condition'] == 'EGO_STOP'
+    assert not original.facts.get('collision_branches')
+    h['post_stop_motion'] = 'HOLD_POSITION'
+    h['conditions'].append('Conditional braking force maintains the stopping position on this road for four seconds; no restart or rollaway.')
+    client = Client([raw])
+    agent = PhysicalScenarioAgent(client)
+    state, results = run(method, agent, candidates={'MF': [parent]})
+    child = results['MF'][0]
+    stop = (7 / 3.6) / 7
+    distance = (7 / 3.6)**2 / (2 * 7)
+    assert child.facts['first_contact_time_s'] == pytest.approx((6 + distance - 4.3) / (7 / 3.6))
+    assert child.facts['first_contact_time_s'] > stop
+    assert child.facts['ego_impact_speed_kph'] == 0
+    assert child.facts['relative_speed_kph'] == 7
+    assert child.facts['motion_model_outcome']['contact_phase'] == 'HELD_AFTER_STOP'
+    assert child.fact_provenance['post_stop_motion']['approval'] == 'PENDING'
+    assert score(method, child)['severity']['severity_score']
+    assert parent == before and child.semantic_fingerprint != original.semantic_fingerprint
+    assert child.scenario_id != original.scenario_id
+    view = {**child.facts, 'scenario_id': child.scenario_id, 'malfunction_id': 'MF',
+        '_fact_provenance': child.fact_provenance}
+    removed = branch_physics_view(view, {'post_stop_motion': None})
+    assert removed['motion_model_outcome']['limiting_condition'] == 'EGO_STOP'
+    assert 'ttc_s' not in removed and 'relative_speed_kph' not in removed
+    run(method, agent, state=state, candidates={'MF': [deepcopy(parent)]})
+    assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize('reverse,lateral_offset,horizon,contact', [
+    (False, 0, 10, True), (True, 0, 10, True),
+    (False, 2, 10, False), (False, 0, 2, False),
+])
+def test_post_stop_contact_respects_body_direction_envelope_and_horizon(method, reverse, lateral_offset, horizon, contact):
+    raw = moving_plan(initial=3.6, target_speed=3.6,
+        target_direction='REVERSE' if reverse else 'FORWARD',
+        x=8 if reverse else -8, y=lateral_offset, acceleration=-2,
+        position='FRONT' if reverse else 'REAR', collision='REAR_END', horizon=horizon)
+    h=raw['hypotheses'][0]
+    h['post_stop_motion']='HOLD_POSITION'
+    h['geometry']['ego_longitudinal_direction']='REVERSE' if reverse else 'FORWARD'
+    parent=make_candidate(3.6)
+    parent.facts['ego_longitudinal_direction']=h['geometry']['ego_longitudinal_direction']
+    child=instantiate(method,raw,parent)[0]
+    outcome=child.facts['motion_model_outcome']
+    assert (outcome['status']=='CONTACT') is contact
+    if contact:
+        assert outcome['time_s']==7.25
+        assert outcome['ego_impact_speed_kph']==0 and outcome['relative_speed_kph']==3.6
+    else:
+        assert outcome['evaluated_until_s']==horizon and outcome['limiting_condition']=='MODEL_HORIZON'
+        assert not child.facts.get('collision_branches') and 'ttc_s' not in child.facts
+
+
+@pytest.mark.parametrize('change', ['unknown_mode','wrong_model','no_conditions'])
+def test_post_stop_assumption_is_model_scoped(change):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw=moving_plan();h=raw['hypotheses'][0]
+    h['post_stop_motion']='HOLD_POSITION'
+    if change=='unknown_mode':h['post_stop_motion']='REVERSE'
+    if change=='wrong_model':h['model']='CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE'
+    if change=='no_conditions':h['conditions']=[]
+    with pytest.raises(ValueError,match='post_stop_motion'):
+        PhysicalScenarioPlan.from_dict(raw,evidence_ids={'MF.description'})
+
+
+@pytest.mark.parametrize('kwargs,contact_time', [
+    ({'target_direction':'RIGHT','x':.25,'y':5,'position':'LEFT','collision':'SIDE'},4.5),
+    ({'target_direction':'REVERSE','x':8,'position':'FRONT','collision':'FRONTAL'},6.75),
+])
+def test_post_stop_contact_does_not_inherit_a_pre_stop_braking_time_grade(method,kwargs,contact_time):
+    raw=moving_plan(initial=3.6,acceleration=-2,**kwargs)
+    raw['hypotheses'][0]['post_stop_motion']='HOLD_POSITION'
+    child=instantiate(method,raw,make_candidate(3.6))[0]
+    assert child.facts['motion_model_outcome']['contact_phase']=='HELD_AFTER_STOP'
+    assert child.facts['first_contact_time_s']==contact_time
+    risk=score(method,child)
+    assert risk['severity']['severity_score']
+    assert not risk['controllability']['controllability_score']
+    assert risk['controllability']['pending_reason']=='POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED'
+    if kwargs['collision']=='SIDE':assert 'ttc_s' not in child.facts
+
+
 def test_driver_scoped_hypotheses_are_not_cross_producted(method):
     from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
     from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService

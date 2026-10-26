@@ -670,6 +670,8 @@ class PhysicalHypothesisInstantiationService:
             "object_speed_kph": 0, "object_longitudinal_direction": "STATIONARY"}
         supplied = {**g, **values, **target,
                     "fault_motion_model": h["model"], **grade_mapping}
+        if "post_stop_motion" in h:
+            supplied["post_stop_motion"] = h["post_stop_motion"]
         supplied.update({field: proposal["value"]
                          for field, proposal in h.get("intervention_assumptions", {}).items()})
         # Source facts stay intact. A different analytical initial point may
@@ -700,7 +702,7 @@ class PhysicalHypothesisInstantiationService:
         stale = {"collision_branches", "relative_speed_kph", "closing_speed_kph", "ttc_s", "impact_speed_kph",
                  "ego_impact_speed_kph", "object_impact_speed_kph", "motion_model_outcome", "delta_v_kph",
                  "impact_time_id", "trajectory_id", "first_contact_time_s", "fault_motion_model", "trajectory_max_speed_kph",
-                 "travel_to_impact_m", "gravity_body_acceleration_mps2",
+                 "travel_to_impact_m", "gravity_body_acceleration_mps2", "post_stop_motion",
                  "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
                  "downhill_body_direction", "grade_orientation_basis"}
         for field in stale:

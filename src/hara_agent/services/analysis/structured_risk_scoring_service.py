@@ -225,6 +225,13 @@ class StructuredRiskScoringService:
         if scenario.get("physical_object_exposure_unresolved"):
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
+        if (scenario.get("motion_model_outcome", {}).get("contact_phase") == "HELD_AFTER_STOP"
+                and not (override_match or reference_match)
+                and control.get("pending_reason") != "REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
+            control.update(controllability_score="", engineering_status="PENDING",
+                calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED",
+                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                reasoning="Contact occurs after the ego is held stationary. A braking-time band alone does not establish an avoidance path for that phase.")
         if (braking_path_unresolved
                 and result["controllability"].get("selected_profile_id") and not (override_match or reference_match)):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
@@ -292,6 +299,8 @@ class StructuredRiskScoringService:
             value = rule["result"]
             profile_trace = {}
             if value == "ACTIVE_PROFILE":
+                if scenario.get("motion_model_outcome", {}).get("contact_phase") == "HELD_AFTER_STOP":
+                    continue
                 time_input = rule["profile_time_input"]
                 time_value = scenario.get(time_input)
                 if (not isinstance(time_value, (int, float)) or isinstance(time_value, bool)

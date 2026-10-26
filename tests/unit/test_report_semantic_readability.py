@@ -383,3 +383,28 @@ def test_event_prose_translates_contact_labels_without_rewriting_identities():
     assert display.count('侧向碰撞') == 2
     assert 'ID-FRONTAL接触' in display and 'FRONTAL_RULE' in display and 'SIDEWAYS' in display
     assert 'FRONTAL接触' in original
+
+
+@pytest.mark.parametrize('reason,expected', [
+    ('REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED','后车从本车行进方向的后方接近'),
+    ('LATERAL_C_METHOD_NOT_AVAILABLE','侧向接触模型'),
+    ('UNSUPPORTED_INTERACTION','当前方法无适用 C 规则'),
+    ('POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED','本车停止后被移动目标接触'),
+])
+def test_pending_c_model_label_uses_the_actual_interaction_reason(reason,expected):
+    evidence=EvidenceValue('',ReviewStatus.PENDING)
+    trace={'decision_status':'MODEL_NOT_APPLICABLE','pending_reason':reason}
+    before=deepcopy(trace)
+    text=EngineeringReportTextMapper().controllability_rationale(evidence,trace)
+    assert expected in text and 'C 暂未定' in text
+    if not reason.startswith('LATERAL_'):assert '侧向' not in text
+    assert trace==before and evidence.value=='' and evidence.status is ReviewStatus.PENDING
+
+
+def test_pending_c_summary_keeps_committed_reason_when_trace_is_compact():
+    evidence=EvidenceValue('',ReviewStatus.PENDING,
+        review_reason='REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED; conditional')
+    trace={'decision_status':'MODEL_NOT_APPLICABLE'}
+    display=EngineeringReportTextMapper().controllability_rationale(evidence,trace)
+    assert '后车从本车行进方向的后方接近' in display and '侧向' not in display
+    assert trace=={'decision_status':'MODEL_NOT_APPLICABLE'}

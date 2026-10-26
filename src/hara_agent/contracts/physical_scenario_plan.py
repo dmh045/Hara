@@ -46,7 +46,7 @@ MODEL_CATALOG = {
         "required": ["ego_speed_kph", "longitudinal_acceleration_mps2", "object_speed_kph",
                      "object_offset_x_m", "object_offset_y_m", "contact_half_length_m",
                      "contact_half_width_m", "model_valid_until_s"],
-        "scope": "Body frame x forward, y left; initial target-center offsets signed. Ego straight constant acceleration along its travel direction, target constant velocity FORWARD/REVERSE/LEFT/RIGHT. Axis-aligned contact envelope half-length/width is the SUM of ego and target projected half-extents, justified as assumptions, not measured dimensions. First simultaneous x/y overlap before ego stops and within explicit horizon. Supports following, oncoming, rear approach and crossing; no turns, reversal or independent speed cap. Crossing contact time is not longitudinal TTC.",
+        "scope": "Body frame x forward, y left; initial target-center offsets signed. Ego straight constant acceleration along its travel direction, target constant velocity FORWARD/REVERSE/LEFT/RIGHT. Axis-aligned contact envelope half-length/width is the SUM of ego and target projected half-extents, justified as assumptions, not measured dimensions. First simultaneous x/y overlap within explicit horizon. By default evaluation ends at ego stop. Optional hypothesis.post_stop_motion=HOLD_POSITION explicitly assumes ego remains at its stopping position for the remaining horizon; explain its compatibility with grade and failed/remaining controls in conditions and rationale. This allows a moving target to contact the stopped ego without reversing it. Supports following, oncoming, rear approach and crossing; no turns, reversal or independent speed cap. Crossing contact time is not longitudinal TTC.",
     },
 }
 # Legacy "braking" means the braking capability itself. Command-path failure
@@ -194,7 +194,7 @@ class PhysicalScenarioPlan:
         for index, h in enumerate(hypotheses):
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions"},
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions", "post_stop_motion"},
                     path=f"hypotheses[{index}]")
             if "driver_positions" in h:
                 positions = _texts(h["driver_positions"])
@@ -239,6 +239,10 @@ class PhysicalScenarioPlan:
             if not refs or not set(refs) <= evidence_ids:
                 raise ValueError(f"hypotheses[{identity}].basis_refs must use supplied IDs {sorted(evidence_ids)}; received {refs}")
             _validate_controls(h, evidence_ids)
+            if "post_stop_motion" in h:
+                if (h["model"] != "RECTILINEAR_MOVING_TARGET_CONTACT"
+                        or h["post_stop_motion"] != "HOLD_POSITION" or not h["conditions"]):
+                    raise ValueError("post_stop_motion requires the moving-target model, HOLD_POSITION and explicit holding conditions")
             g = _object(h["geometry"], {"road_user_type", "collision_type", "object_position",
                 "ego_longitudinal_direction", "object_extent", "object_id"}, {"object_longitudinal_direction", "ego_lateral_direction"})
             for value in g.values():

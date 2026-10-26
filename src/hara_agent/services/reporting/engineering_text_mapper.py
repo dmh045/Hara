@@ -338,6 +338,8 @@ class EngineeringReportTextMapper:
             for proposal in controls.get("intervention_assumptions", {}).values():
                 parts.append("干预条件：" + "；".join(proposal["conditions"]))
         if analysis:
+            if facts.get("post_stop_motion") == "HOLD_POSITION":
+                parts.append("停车后保持原位置至所列模型时限（分析假设），继续检查移动目标是否接触")
             labels = {"ego_speed_kph": "初速(km/h)", "relative_distance_m": "行程(m)",
                 "longitudinal_acceleration_mps2": "纵向加速度(m/s²)", "slope_percent": "坡度(%)",
                 "residual_resistance_mps2": "残余阻力减速度(m/s²)", "lateral_clearance_m": "侧向净距(m)",
@@ -451,7 +453,14 @@ class EngineeringReportTextMapper:
         if control.get("decision_status") == "OVERRIDE_MATCH":
             return "C 分支：干预覆盖；依据已命中的干预条件评分，未使用 TTC 分档"
         if control.get("decision_status") == "MODEL_NOT_APPLICABLE":
-            return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
+            reason = str(control.get("pending_reason", ""))
+            if reason.startswith("REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
+                return "后车从本车行进方向的后方接近；本车制动不能直接作为避免被追尾的路径，当前避险方法适用性未确定"
+            if reason.startswith("LATERAL_C_METHOD_NOT_AVAILABLE"):
+                return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
+            if reason.startswith("POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED"):
+                return "本车停止后被移动目标接触；继续制动不是已成立的避险路径，当前方法无适用 C 规则"
+            return "当前交互不满足所选适用条件；当前方法无适用 C 规则"
         if control.get("decision_status") == "MODEL_DEPENDENCY_UNRESOLVED":
             return "故障影响规避控制；C 方法依赖尚未成立"
         if control.get("decision_status") == "PROFILE_APPLICABILITY_UNRESOLVED":
@@ -957,20 +966,24 @@ class EngineeringReportTextMapper:
         if _status(evidence) == "FINALIZED":
             return "已按当前方法完成 C 评定。"
         if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED", "PROFILE_APPLICABILITY_UNRESOLVED"}:
-            reason = self.controllability_branch({"controllability": trace})
+            control = {**trace, "pending_reason": trace.get("pending_reason") or getattr(evidence, "review_reason", "")}
+            reason = self.controllability_branch({"controllability": control})
             available = self.known_inputs(trace.get("known_physical_inputs", {}))
             return reason + (f"；已有 {available}" if available else "") + "；C 暂未定。"
         diagnostic = trace.get("input_diagnostic", {})
         if isinstance(diagnostic, Mapping) and diagnostic.get("reason"):
             labels = {
                 "MISSING_DISTANCE": "缺相对距离", "MISSING_GEOMETRY": "缺运动方向或几何关系",
-                "MODEL_NOT_APPLICABLE": "侧向交互：当前纵向 TTC 模型不适用",
+                "MODEL_NOT_APPLICABLE": "当前交互不满足现有 TTC 模型条件",
                 "NOT_CLOSING": "当前匀速模型不接近，未证明后续过程，不能判 C0",
                 "TTC_NOT_CLOSING": "当前匀速模型不接近，未证明后续过程，不能判 C0",
                 "SOURCE_NOT_FINALIZED": "已有数值的来源未通过校验",
             }
             code = str(diagnostic["reason"])
             known = trace.get("known_physical_inputs", {})
+            if code == "MODEL_NOT_APPLICABLE" and known.get("fault_motion_model") in {
+                    "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT", "CONSTANT_SPEED_CURVATURE_TO_CONTACT"}:
+                labels[code] = "侧向交互：当前纵向 TTC 模型不适用"
             available = self.known_inputs(known)
             return f"{labels.get(code, '可控性输入尚有未决项，具体原因见风险追溯')}；已有 {available or '场景方法要素'}；C 暂未定。"
         reason = trace.get("decision_status", "") or getattr(evidence, "review_reason", "")
