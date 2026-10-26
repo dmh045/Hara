@@ -399,6 +399,23 @@ class PhysicalScenarioAgent:
             on_response(record)  # Persist even a semantically invalid response before repair.
             try:
                 candidate = deepcopy(response.data)
+                envelope_normalization = ""
+                if controls_only and isinstance(candidate, dict):
+                    # Real control-only replies sometimes omit the outer plan
+                    # envelope. Preserve the complete control object and its
+                    # own limits; never repair capability values or conflicts.
+                    if ("control_assessment" not in candidate
+                            and "remaining_controls" in candidate
+                            and "uncovered_conditions" in candidate):
+                        candidate = {"hypotheses": [],
+                            "uncovered_conditions": deepcopy(candidate["uncovered_conditions"]),
+                            "control_assessment": candidate}
+                        envelope_normalization = "WRAPPED_CONTROL_ASSESSMENT"
+                    elif (isinstance(candidate.get("control_assessment"), dict)
+                            and "uncovered_conditions" not in candidate
+                            and "uncovered_conditions" in candidate["control_assessment"]):
+                        candidate["uncovered_conditions"] = deepcopy(candidate["control_assessment"]["uncovered_conditions"])
+                        envelope_normalization = "PROJECTED_CONTROL_LIMITS"
                 normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
                 deferred_states = []
                 # An optional safe-state proposal cannot establish an unassessed
@@ -431,6 +448,7 @@ class PhysicalScenarioAgent:
                     "request_count": sum(not a["response"]["usage"].get("response_checkpoint_hit") for a in attempts),
                     "response_cache_hits": sum(bool(a["response"]["usage"].get("response_checkpoint_hit")) for a in attempts),
                     "schema_repairs": int(repair), "model": response.model,
+                    "control_envelope_normalization": envelope_normalization,
                     "deferred_safe_states": deferred_states, "normalized_basis_refs": normalized_refs}
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))

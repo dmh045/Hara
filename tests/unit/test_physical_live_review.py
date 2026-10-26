@@ -235,3 +235,50 @@ def test_symbolic_uphill_front_does_not_accept_new_contact_claim(method):
     payload['physical_interaction']['relation'] = 'NOT_APPROACHING'
     payload['hazardous_event'] = '不会接触前方目标'
     assert not causal_physics_conflicts(child, payload)
+
+
+@pytest.mark.parametrize('envelope', ['unwrapped', 'missing_outer_limits'])
+def test_control_envelope_normalization_preserves_reply_and_reuses_response(tmp_path, envelope):
+    control = dict(rationale='Conditional independent driver path', basis_refs=['MF.description'],
+        conditions=['Manual channel independent of automatic command'],
+        uncovered_conditions=['Shared actuator faults not covered'],
+        failed_controls=['automatic_braking_command'], remaining_controls=['driver_braking'],
+        intervention_assumptions={})
+    raw = deepcopy(control) if envelope == 'unwrapped' else {'hypotheses': [], 'control_assessment': deepcopy(control)}
+    before = deepcopy(raw)
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw, 'OFFLINE')
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'control-envelope', 'task_scope': 'CONTROL_INPUTS_ONLY',
+               'evidence': {'MF.description': 'Automatic command fault'}}
+    records = []
+    plan, audit = agent.propose(context, on_response=records.append)
+    assert plan.control_assessment == control
+    assert list(plan.uncovered_conditions) == control['uncovered_conditions']
+    assert raw == before == records[0]['response']['data']
+    assert audit['schema_repairs'] == 0 and audit['control_envelope_normalization']
+    restored, resumed = agent.propose(context)
+    assert restored == plan and resumed['response_cache_hits'] == 1 and client.calls == 1
+
+
+@pytest.mark.parametrize('defect', ['contradiction', 'missing_limits', 'foreign_score', 'wrong_task'])
+def test_control_envelope_normalization_does_not_invent_or_approve_capability(defect):
+    raw = dict(rationale='Control scope', basis_refs=['MF.description'],
+        conditions=['Independent channel assumed'], uncovered_conditions=['Common cause not covered'],
+        failed_controls=['automatic_braking_command'], remaining_controls=['driver_braking'])
+    if defect == 'contradiction': raw['unresolved_controls'] = {'braking': 'Unknown even conditionally'}
+    if defect == 'missing_limits': raw.pop('uncovered_conditions')
+    if defect == 'foreign_score': raw['C'] = 'C1'
+    context = {'plan_key': 'invalid-envelope', 'task_scope': 'CONTROL_INPUTS_ONLY',
+               'evidence': {'MF.description': 'Automatic command fault'}}
+    if defect == 'wrong_task': context.pop('task_scope')
+    before = deepcopy(raw)
+    class Client:
+        def complete_json(self, request): return LLMResponse(raw, 'OFFLINE')
+    with pytest.raises(ValueError, match='schema repair exhausted'):
+        PhysicalScenarioAgent(Client()).propose(context)
+    assert raw == before
