@@ -89,8 +89,16 @@ class HARAReportProjectionService:
         after_branch = (
             sum(int(item["post_branch_count"]) for item in branches)
             if branches and all("post_branch_count" in item for item in branches)
-            else len(trace_rows) if trace_rows else None
+            else None  # Causal identities cannot substitute for pre-physics method candidates.
         )
+        method_counts = []
+        for item in latest_assessments.values():
+            generation = item.get("analytical_scenario_instantiation", {})
+            selected = generation.get("bounded_generated_selection", {})
+            method_counts.append(len(selected["selected_ids"]) if "selected_ids" in selected else
+                                 generation.get("driver_configuration", {}).get("post_branch_count"))
+        method_pairs = (sum(method_counts) if method_counts and all(n is not None for n in method_counts)
+                        else preview.get("scenario_pairs_after_method_instantiation"))
         guidewords = state.guideword_assessments
         guideword_applicable = sum(
             item.get("status") == "FINALIZED" and item.get("applicable") is True
@@ -165,10 +173,8 @@ class HARAReportProjectionService:
                 if "available_parent_scenario_count" in preview and "parent_scenario_count" in preview
                 else 0 if not bounded and "candidate_count" in prepared else None
             ),
-            "method_instantiated_scenario_pair_count": preview.get(
-                "scenario_pairs_after_method_instantiation",
-                feasibility.get("scenario_pair_count") if not bounded else None,
-            ),
+            "method_instantiated_scenario_pair_count": method_pairs,
+            "causal_candidate_count": len(trace_rows) if trace_rows else feasibility.get("scenario_pair_count"),
             "analytical_child_count_before_driver_branch": before_branch,
             "analytical_child_count_after_driver_branch": after_branch,
             "causal_retained_count": retained if trace_rows else None,

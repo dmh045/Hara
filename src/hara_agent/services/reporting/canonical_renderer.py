@@ -338,8 +338,9 @@ class HARAReportWorkbookRenderer:
             ("Malfunctions selected / omitted", f"{shown(scope.get('selected_malfunction_count'))} / {shown(scope.get('omitted_malfunction_count'))}"),
             ("Parent Scenarios available within selected upstream scope", shown(scope.get("available_parent_scenario_count_in_selected_scope"))),
             ("Parent Scenarios selected / omitted", f"{shown(scope.get('selected_parent_scenario_count'))} / {shown(scope.get('omitted_parent_scenario_count'))}"),
-            ("Method-instantiated scenario pairs", shown(scope.get("method_instantiated_scenario_pair_count"))),
-            ("Analytical children before / after driver branching", f"{shown(scope.get('analytical_child_count_before_driver_branch'))} / {shown(scope.get('analytical_child_count_after_driver_branch'))}"),
+            ("方法候选（范围筛选后、物理展开前）", shown(scope.get("method_instantiated_scenario_pair_count"))),
+            ("方法候选（筛选前；驾驶员展开前 / 后）", f"{shown(scope.get('analytical_child_count_before_driver_branch'))} / {shown(scope.get('analytical_child_count_after_driver_branch'))}"),
+            ("进入因果阶段的身份（含暂缓判断）", shown(scope.get("causal_candidate_count"))),
             ("Causal retained / excluded / pending", " / ".join(str(shown(scope.get(key))) for key in (
                 "causal_retained_count", "causal_excluded_count", "causal_pending_count"
             ))),

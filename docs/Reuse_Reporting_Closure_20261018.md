@@ -1835,3 +1835,14 @@ LLM必须在当前方案中自行提出这个条件，说明它与坡度、故�
 保留了原“失效控制Safe State”反例。原始提案直接送入契约仍抛错；Agent层的预期改为只剔除无效可选提案并保留其余合法运动，而非继续要求错误的整组丢弃行为。这是功能修复A→B的必要差异，不是清理时弱化断言。另增加原始回复不变、失效控制不被改为可用、主控制矛盾仍拒绝的检查。冻结真实回复证据在 `safe_state_frozen_evidence.json`，3份均未新增Provider调用；最新总体恢复验证将继续覆盖其生产实例。
 
 相关测试及完整 `1301 passed, 1 skipped`、doctor、compileall、diff检查通过。改动仍限定在原Agent、现有契约边界和测试，没有新的解析框架、评分器或审批流程。主全量进程不热修改；最终用本轮实际缓存与最新代码恢复验证，保留原始全量和全部请求。
+
+
+#### 摘要阶段计数统一，避免把候选、物理展开和HARA条目混为一数
+
+核查上面的真实补验Excel时，发现摘要的 `Analytical children before / after driver branching` 实际取自方法生成审计，位于来源身份筛选与自主物理展开之前；而 `Method-instantiated scenario pairs` 在小样本取筛选预览，在全量却可能退回因果阶段数量。同名指标在两种运行里不是同一阶段，会让工程师误以为报告丢了条目。
+
+修复位于普通生产使用的 `HARAReportProjectionService._run_scope` 和原renderer：方法候选统一取最新各失效的生成审计，存在明确选择时取selected_ids，否则取驾驶员展开后的方法候选数；因果身份另列，包含暂缓判断。历史记录若没有方法阶段计数就显示未记录，不拿后来因果数倒填。展示分别为“方法候选（筛选前；驾驶员展开前/后）”“方法候选（范围筛选后、物理展开前）”“进入因果阶段的身份（含暂缓判断）”，保留风险、排除、未决及未评分计数。
+
+用真实保留分支样本的原checkpoint经既有 `OfflineReportRebuilder` 重导：6/12是筛选前方法候选，2是已选来源身份，4是物理处理后的因果身份，2保留、0排除、2未决，风险记录为2。两条未决的几何原因仍在99_Audit，02_Functions也保留对应计数。重导仅00_Summary变化，其他工作表逐值相同、checkpoint哈希不变、新增调用0，原报告另行保留。证据为 `retained_correction/count_projection_comparison.json`，修订样本为 `HARA_Correction_Retention_Counts_Review.xlsx`。
+
+相关32项及完整 `1303 passed, 1 skipped`、doctor、compileall、diff检查通过。测试覆盖有界和全量两种范围、物理阶段与方法阶段数量不同、未决身份与未评分计数；没有修改S/E/C/ASIL、原始身份、来源或审批。现有汇总入口即可承担此职责，未新增报告器或独立计数运行时。

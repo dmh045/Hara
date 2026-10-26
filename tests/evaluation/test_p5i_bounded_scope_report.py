@@ -57,7 +57,7 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
         assert summary["Current full-project HARA population"] == "NOT MEASURED IN THIS RUN"
         assert summary["Functions selected / omitted"] == "1 / 8"
         assert summary["Malfunctions selected / omitted"] == "1 / 6"
-        assert summary["Analytical children before / after driver branching"] == "12 / 24"
+        assert summary["方法候选（筛选前；驾驶员展开前 / 后）"] == "12 / 24"
         assert summary["Causal retained / excluded / pending"] == "13 / 11 / 0"
         assert summary["Risk scoring invoked / not invoked"] == "13 / 11"
         assert summary["主表审核组数（04_HARA）"] == 13

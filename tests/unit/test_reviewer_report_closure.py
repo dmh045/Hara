@@ -631,3 +631,24 @@ def test_canonical_renderer_blocks_scored_state_without_trace(tmp_path, monkeypa
             output, draft=True,
         )
     assert not output.exists()
+
+
+@pytest.mark.parametrize('bounded,selected,expected', [(False, None, 12), (True, ['one', 'two'], 2)])
+def test_summary_separates_method_selection_from_physical_causal_expansion(bounded, selected, expected):
+    from hara_agent.workflow import HARAState
+    from hara_agent.services.reporting.projection import HARAReportProjectionService
+    state = HARAState('scope-stages')
+    if bounded: state.record('bounded_sample_configured', scope={})
+    generation = {'driver_configuration': {'pre_branch_count': 6, 'post_branch_count': 12}}
+    if selected is not None: generation['bounded_generated_selection'] = {'available': 12, 'selected_ids': selected}
+    state.record('scenario_feasibility_assessed', malfunction_id='MF', analytical_scenario_instantiation=generation)
+    state.record('scenario_feasibility_summary', scenario_pair_count=4)
+    traces = [{'risk_eligibility': {'status': s}, 'risk_scoring_invoked': s == 'ELIGIBLE'}
+              for s in ['ELIGIBLE', 'ELIGIBLE', 'PENDING_FEASIBILITY', 'PENDING_FEASIBILITY']]
+    scope = HARAReportProjectionService._run_scope(state, traces, 0)
+    assert scope['analytical_child_count_before_driver_branch'] == 6
+    assert scope['analytical_child_count_after_driver_branch'] == 12
+    assert scope['method_instantiated_scenario_pair_count'] == expected
+    assert scope['causal_candidate_count'] == 4
+    assert (scope['causal_retained_count'], scope['causal_pending_count']) == (2, 2)
+    assert (scope['risk_scored_count'], scope['risk_not_invoked_count']) == (2, 2)
