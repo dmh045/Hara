@@ -648,12 +648,15 @@ class ControllabilityAssessmentInput:
     evidence_refs: tuple[str, ...] = ()
     status: CalculationStatus = CalculationStatus.PENDING_METHOD_SEMANTICS
     reason: str = ""
+    first_contact_time_s: float | None = None
 
     def __post_init__(self) -> None:
         if not self.malfunction_id or not self.scenario_id or not self.reason.strip():
             raise ValueError("ControllabilityAssessmentInput requires identity and reason")
         if self.ttc_s is not None and self.ttc_s < 0:
             raise ValueError("ControllabilityAssessmentInput.ttc_s cannot be negative")
+        if self.first_contact_time_s is not None and self.first_contact_time_s < 0:
+            raise ValueError("ControllabilityAssessmentInput.first_contact_time_s cannot be negative")
         for name in (
             "driver_in_vehicle", "has_remote_app", "direct_control_available",
             "remote_intervention_available", "other_road_user_avoidance_possible",

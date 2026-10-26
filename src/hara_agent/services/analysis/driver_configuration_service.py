@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
+import re
 from typing import Any, Iterable
 
 from hara_agent.models import ReviewStatus, ScenarioCandidate, SourceRef
@@ -77,14 +78,19 @@ class DriverConfigurationBrancher:
         if explicit in _POSITIONS:
             return explicit, context
         value = str(fact.get("value", "")).strip()
-        position = _SOURCE_SEAT_TERMS.get(value, "")
+        seat = str(context.get("driver_location", context.get("位姿状态", value))).strip()
+        position = _SOURCE_SEAT_TERMS.get(seat, "")
+        # Numeric/Boolean encodings express membership, not a new location.
+        # Keep the exact source seat term and reject a contradictory encoding.
+        expected = {"in_driver_seat": {"1", "true"}, "outside_driver_seat": {"0", "false"}}
         if (
             position
-            and context.get("位姿状态") == value
-            and all(value in source.excerpt for source in cls._source_refs(fact))
+            and (value == seat or value.casefold() in expected[position])
+            and all(seat in re.findall(r"不在驾驶位|在驾驶位", source.excerpt)
+                    for source in cls._source_refs(fact))
         ):
             return position, {
-                **{key: item for key, item in context.items() if key != "位姿状态"},
+                **{key: item for key, item in context.items() if key not in {"位姿状态", "driver_location"}},
                 "allowed_driver_position": position,
             }
         return "", {}

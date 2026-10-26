@@ -4,6 +4,7 @@ from typing import Any
 from .scenario_physics import source_is_accepted_for, branch_physics_view
 from .asil_service import MethodContractASILService
 from copy import deepcopy
+from dataclasses import asdict, replace
 import math
 
 from hara_agent.contracts import (
@@ -13,7 +14,7 @@ from hara_agent.contracts import (
 
 from .deterministic_risk_executor import (
     ExposureMethodExecutor, SeverityMethodExecutor,
-    StructuredControllabilityExecutor,
+    StructuredControllabilityExecutor, ControllabilityProfileExecutor,
 )
 from .risk_calculation_input_service import RiskCalculationInputService
 from .exposure_dimension_coverage_service import ExposureDimensionCoverageService
@@ -202,7 +203,7 @@ class StructuredRiskScoringService:
                 str(scenario.get("malfunction_id", "UNKNOWN")), str(scenario.get("scenario_id", "UNKNOWN")),
                 {**scenario, "remote_intervention_available": None}), self.structured)
             override_match = independent.decision_status == "OVERRIDE_MATCH" and independent.rule_id == control["engineering_rule_id"]
-        if not override_match and "collision_branches" not in scenario:
+        if not override_match and not braking_path_unresolved and "collision_branches" not in scenario:
             reference = self._conditional_reference_control(scenario)
             if reference is not None:
                 control.update(reference)
@@ -288,7 +289,29 @@ class StructuredRiskScoringService:
                     "driver_in_vehicle", "emergency_braking_available", "remote_intervention_available",
                     "other_road_user_avoidance_possible")):
                 continue
-            result = self._result(value_key="controllability_score", value=rule["result"],
+            value = rule["result"]
+            profile_trace = {}
+            if value == "ACTIVE_PROFILE":
+                time_input = rule["profile_time_input"]
+                time_value = scenario.get(time_input)
+                if (not isinstance(time_value, (int, float)) or isinstance(time_value, bool)
+                        or not math.isfinite(time_value) or time_value < 0
+                        or not source_is_accepted_for(metadata.get(time_input, {}), **scope)
+                        or scenario.get("motion_model_outcome", {}).get("status") != "CONTACT"):
+                    continue
+                assessment = replace(self.inputs.controllability(
+                    scope["malfunction_id"], scope["scenario_id"], scenario),
+                    first_contact_time_s=time_value)
+                profile = self.structured.controllability_profile
+                judgement = ControllabilityProfileExecutor().lookup(assessment, profile, time_input=time_input)
+                if not judgement.value:
+                    continue
+                value = judgement.value
+                fields = tuple(dict.fromkeys((*fields, *judgement.inputs_used)))
+                profile_trace = {"profile_id": profile.profile_id, "band_rule_id": judgement.rule_id,
+                    "time_input": time_input, "time_value_s": time_value,
+                    "profile_source": asdict(profile.source_ref)}
+            result = self._result(value_key="controllability_score", value=value,
                 status=CalculationStatus.FINALIZED, reason=rule["rationale"],
                 rule_id=rule["rule_id"], source_ref=SourceRef.from_dict(rule["source_ref"]),
                 inputs_used=(*fields, "_function_output", "component_category", "failure_type", "fault_motion_model"),
@@ -297,12 +320,15 @@ class StructuredRiskScoringService:
                 selected_profile_id=rule["rule_id"], unknown_policy_action="REFERENCE_RULE_MATCH",
                 reference_rule={key: rule[key] for key in ("rule_id", "source_document", "source_location",
                     "source_sha256", "source_statement", "limitation", "when", "rationale",
-                    "trajectory_speed_upper_exclusive_kph", "evaluation_phase", "requires_contact") if key in rule})
+                    "trajectory_speed_upper_exclusive_kph", "evaluation_phase", "requires_contact",
+                    "profile_time_input") if key in rule})
+            if profile_trace:
+                result["reference_rule"]["profile_lookup"] = profile_trace
             if limit is not None:
                 result["reference_rule"]["trajectory_max_speed_kph"] = speed
             result["reference_rule"]["matched_inputs"] = {key: scenario.get(key) for key in (*fields, *rule["when"])}
             result["avoidance_paths"] = {"reference_scenario": {
-                "rule_id": rule["rule_id"], "status": "CONDITIONAL_TRIAL", "result": rule["result"]}}
+                "rule_id": rule["rule_id"], "status": "CONDITIONAL_TRIAL", "result": value}}
             return result
         return None
 

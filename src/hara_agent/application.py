@@ -63,7 +63,7 @@ class HARAApplication:
                 run_id=config.run_id,
                 limit=config.provider_attempt_limit,
             )
-            if config.provider_attempt_limit is not None else None
+            if config.bounded_sample else None
         )
         return cls(
             config,

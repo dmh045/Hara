@@ -55,6 +55,18 @@ def test_agent_sends_compact_view_and_retains_original_basis_ids():
     assert plan.hypotheses[0]['basis_refs'] == ['MF.description']
 
 
+def test_repeated_structured_provenance_is_shared_losslessly():
+    metadata = {'object_id': 'target', 'stage': 'POST_FAULT', 'inputs': list(range(500)),
+        'source_refs': [{'source_id': 'real-item', 'excerpt': 'source qualifier'}]}
+    context = {'conditions': {'fact_authority': {'first': metadata, 'second': deepcopy(metadata)}},
+        'evidence': {'MF.description': 'fault'}}
+    context['conditions']['fact_authority']['third'] = {**metadata, 'stage': 'PRE_FAULT'}
+    before = deepcopy(context)
+    view, texts = physical_prompt_view(context)
+    assert expand_physical_prompt_view(view, texts) == before == context
+    assert len(json.dumps([view, texts])) < len(json.dumps(context)) * .6
+
+
 @pytest.mark.parametrize('controls_only', [False, True])
 @pytest.mark.parametrize('mode', ['json_object', 'none'])
 def test_physical_request_format_contract_and_cached_repair(tmp_path, controls_only, mode):

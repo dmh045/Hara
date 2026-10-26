@@ -386,6 +386,8 @@ class PhysicalHypothesisInstantiationService:
             except PhysicalInputConflict as error:
                 return [], [{"reason": str(error), **error.details}]
         for h in plan.hypotheses:
+            if "driver_positions" in h and candidate.facts.get("driver_position") not in h["driver_positions"]:
+                continue  # Explicit applicability, not a risk-equivalence judgement.
             try:
                 inputs, inheritance = self._model_inputs(candidate, h, malfunction.malfunction_id)
             except PhysicalInputConflict as error:

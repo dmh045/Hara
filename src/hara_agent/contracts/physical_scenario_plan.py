@@ -114,15 +114,17 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         raise ValueError("A failed control cannot be a remaining control")
     if "braking" in h["failed_controls"] and "driver_braking" in h["remaining_controls"]:
         raise ValueError("A failed braking capability cannot provide remaining driver braking")
-    unresolved = _object(h.get("unresolved_controls", {}), set(), CONTROL_IDENTITIES)
+    unresolved = _object(h.get("unresolved_controls", {}), set(), CONTROL_IDENTITIES | INTERVENTION_ASSUMPTION_FIELDS)
     for control, reason in unresolved.items():
         _text(reason)
         if control in h["failed_controls"] or control in h["remaining_controls"]:
             raise ValueError("An unresolved control cannot also be declared failed or remaining")
     if "braking" in unresolved and braking_capability(h) is not None:
-        raise ValueError("Unresolved braking conflicts with a declared braking capability")
+        raise ValueError("Unresolved braking conflicts with a declared braking capability: choose one coherent conditional world. If driver_braking/braking is conditionally retained, put unverified independence/common-cause limits in conditions and uncovered_conditions, not unresolved_controls.braking. Otherwise remove the unsupported remaining capability and retain its specific unresolved reason.")
     interventions = h.get("intervention_assumptions", {})
     _object(interventions, set(), INTERVENTION_ASSUMPTION_FIELDS)
+    if set(unresolved) & set(interventions):
+        raise ValueError("An unresolved intervention cannot also have an explicit assumption")
     proposals = list(interventions.values())
     if "safe_state_proposal" in h:
         proposal = _object(h["safe_state_proposal"],
@@ -186,7 +188,12 @@ class PhysicalScenarioPlan:
         for h in hypotheses:
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls"})
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions"})
+            if "driver_positions" in h:
+                positions = _texts(h["driver_positions"])
+                if not positions or len(set(positions)) != len(positions) or not set(positions) <= {
+                        "in_driver_seat", "outside_driver_seat"}:
+                    raise ValueError("Hypothesis driver_positions must select nonempty unique driver configurations")
             if "operating_condition" in h:
                 condition = _object(h["operating_condition"], {"source_field", "value", "physical_effect"})
                 if condition["source_field"] not in {"odd_road_types", "odd_weather_conditions"}:

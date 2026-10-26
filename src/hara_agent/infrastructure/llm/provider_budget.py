@@ -36,8 +36,10 @@ class ProviderAttemptBudget:
     This favors a hard upper bound over optimistic accounting on resume.
     """
 
-    def __init__(self, path: str | Path, *, run_id: str, limit: int):
-        if limit < 1:
+    def __init__(self, path: str | Path, *, run_id: str, limit: int | None):
+        # None retains accounting and raw-response persistence without a cap.
+        # Authorization is supplied by the caller, never inferred from a spent ledger.
+        if limit is not None and limit < 1:
             raise ValueError("Provider attempt limit must be positive")
         self.path = Path(path).expanduser().resolve()
         self.run_id = run_id
@@ -51,7 +53,7 @@ class ProviderAttemptBudget:
                     raise ValueError("Provider attempt ledger is bound to a different run")
                 if event.get("event") == "attempt_started":
                     self._attempts += 1
-        if self._attempts > limit:
+        if limit is not None and self._attempts > limit:
             raise ValueError("Existing Provider attempts exceed the requested limit")
 
     @property
@@ -98,7 +100,7 @@ class ProviderAttemptBudget:
                         raise ValueError("Provider attempt ledger is bound to a different run")
                     attempts += event.get("event") == "attempt_started"
                 self._attempts = attempts
-                if attempts >= self.limit:
+                if self.limit is not None and attempts >= self.limit:
                     raise ProviderAttemptBudgetExceeded(
                         limit=self.limit, attempts=attempts,
                         ledger_path=self.path,

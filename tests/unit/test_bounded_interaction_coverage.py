@@ -59,6 +59,55 @@ def test_relative_contact_produces_scoped_risk_without_static_target_conversion(
             assert risk["controllability"]["controllability_score"]
 
 
+def test_crossing_pedestrian_does_not_require_vehicle_side_impact_label(method):
+    raw = moving_plan(target_direction="RIGHT", x=4, y=4, position="FRONT", collision="VEHICLE_TO_ROAD_USER")
+    raw['hypotheses'][0]['geometry']['road_user_type'] = 'PEDESTRIAN'
+    parent = make_candidate(3.6)
+    parent.facts['road_user_type'] = 'PEDESTRIAN'
+    child = instantiate(method, raw, parent)[0]
+    assert child.facts['motion_model_outcome']['status'] == 'CONTACT'
+    assert child.facts['first_contact_time_s'] == 3.5
+    assert child.facts['collision_type'] == 'VEHICLE_TO_ROAD_USER'
+    assert 'ttc_s' not in child.facts
+
+
+def test_driver_scoped_hypotheses_are_not_cross_producted(method):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    raw = moving_plan()
+    inside = raw['hypotheses'][0]
+    inside['driver_positions'] = ['in_driver_seat']
+    outside = deepcopy(inside)
+    outside.update(hypothesis_id='outside', driver_positions=['outside_driver_seat'],
+        remaining_controls=[], unresolved_controls={'braking': 'This outside-only condition does not credit direct intervention'})
+    raw['hypotheses'].append(outside)
+    plan = PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    for position, expected in [('in_driver_seat', True), ('outside_driver_seat', None)]:
+        parent = make_candidate(3.6)
+        parent.facts.update(driver_position=position, driver_in_vehicle=position=='in_driver_seat')
+        rows, errors = PhysicalHypothesisInstantiationService(method).instantiate(parent, mf(), plan,
+            plan_key='scoped', response_model='offline')
+        assert not errors and len(rows) == 1
+        assert rows[0].facts.get('emergency_braking_available') is expected
+        assert rows[0].facts['physical_analysis']['hypothesis']['driver_positions'] == [position]
+
+
+def test_numeric_target_position_conflict_uses_one_existing_family_correction(method):
+    bad = moving_plan(x=-8, position='FRONT')
+    good = moving_plan(x=8, position='FRONT')
+    client = Client([bad, good])
+    agent = PhysicalScenarioAgent(client)
+    parent = make_candidate(3.6)
+    state, result = run(method, agent, candidates={'MF': [parent]})
+    assert len(client.requests) == 2
+    plan = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert plan['initial_plan'] == bad
+    assert plan['correction_diagnostics'][0]['reason'] == 'TARGET_OFFSET_POSITION_CONFLICT'
+    assert result['MF'][0].facts['motion_model_outcome']['status'] == 'CONTACT'
+    run(method, agent, state=state, candidates={'MF': [deepcopy(parent)]})
+    assert len(client.requests) == 2
+
+
 @pytest.mark.parametrize("kwargs,status", [
     ({"target_direction": "RIGHT", "x": 4, "y": 8, "position": "LEFT", "collision": "SIDE"}, "NO_CONTACT_WITHIN_MODEL"),
     ({"target_direction": "FORWARD", "target_speed": 7.2}, "NO_CONTACT_WITHIN_MODEL"),

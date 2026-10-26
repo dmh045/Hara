@@ -126,6 +126,37 @@ def test_bounded_config_requires_all_limits_and_single_worker(tmp_path):
     )
     bounded.validate()
     assert bounded.sample_scope()["provider_attempt_limit"] == 48
+    from dataclasses import replace
+    uncapped = replace(bounded, provider_attempt_limit=None)
+    uncapped.validate()
+    assert uncapped.bounded_sample
+    assert uncapped.sample_scope()["provider_attempt_limit"] is None
+
+
+def test_uncapped_accounting_continues_spent_ledger_and_remains_shared(tmp_path):
+    path = tmp_path / "accounting.jsonl"
+    original = ProviderAttemptBudget(path, run_id="sample", limit=1)
+    assert original.begin(_request(), model="test") == 1
+    prior = path.read_bytes()
+    extended = ProviderAttemptBudget(path, run_id="sample", limit=None)
+    child = ProviderAttemptBudget(path, run_id="sample", limit=None)
+    assert extended.attempts == 1
+    assert extended.begin(_request(), model="test") == 2
+    assert child.begin(_request(), model="test") == 3
+    assert path.read_bytes().startswith(prior)
+    assert ProviderAttemptBudget(path, run_id="sample", limit=None).attempts == 3
+    with pytest.raises(ValueError, match="exceed"):
+        ProviderAttemptBudget(path, run_id="sample", limit=1)
+    (tmp_path / "sample.checkpoint.json").write_text(json.dumps({"audit_trail": [{
+        "event": "bounded_sample_configured", "scope": {"provider_attempt_limit": None}}]}))
+    # The CLI child must still name and share the parent's ledger, even when uncapped.
+    path.rename(tmp_path / "sample.provider-attempts.jsonl")
+    args = Namespace(provider_attempt_limit=None, provider_budget_run_id="sample",
+        source_run_id="sample", run_dir=tmp_path)
+    assert _shared_provider_budget(args).begin(_request(), model="test") == 4
+    args.provider_budget_run_id = None
+    with pytest.raises(ValueError, match="must reuse"):
+        _shared_provider_budget(args)
 
 
 def test_budget_stop_returns_last_committed_checkpoint(tmp_path):

@@ -1017,7 +1017,7 @@ class HARAReportProjectionService:
                 hazard=str(malfunction.get("vehicle_level_hazard", "")),
                 operational_scenario=operational,
                 scenario_detail=detail,
-                hazardous_event=self.text.hazardous_event(risk.hazardous_event),
+                hazardous_event=self.text.hazardous_event(risk.hazardous_event, scenario),
                 potential_harm=self.text.potential_harm(
                     risk.potential_harm if not headline or values["severity"] == _value(risk.severity) else "",
                     severity=(replace(risk.severity, value=values["severity"])
@@ -1139,7 +1139,7 @@ class HARAReportProjectionService:
                     scenario_detail=child_detail,
                     speed_constraint=self.text.speed_text(child),
                     causal_status=child_status,
-                    hazardous_event=self.text.hazardous_event(child_risk.hazardous_event),
+                    hazardous_event=self.text.hazardous_event(child_risk.hazardous_event, child),
                     semantic_group_id=self._semantic_group_id(child),
                     object_interaction_summary=self.text.object_interaction_summary(child),
                     physical_inputs=self.text.physical_inputs(child, child_trace),

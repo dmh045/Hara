@@ -175,7 +175,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     for mf in malfunctions:
         source_evidence, source_routing = _source_evidence(state, functions.get(mf.function_id, {}))
         driver_configurations = sorted({str(c.facts.get("driver_position", ""))
-                                        for c in candidates[mf.malfunction_id]})
+                                        for c in candidates[mf.malfunction_id]
+                                        if c.facts.get("driver_position")})
         groups, kept = defaultdict(list), []
         for candidate in candidates[mf.malfunction_id]:
             task_scope = producer.task_scope(candidate, mf.malfunction_id)
@@ -287,6 +288,16 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     rows = [(candidate, *producer.instantiate(candidate, mf, current_plan,
                         plan_key=key, response_model=entry["audit"]["model"], project_context=project,
                         function=functions.get(mf.function_id))) for candidate in family]
+                    # A declared target side conflicting with numeric coordinates
+                    # is a proposal error, not a new no-contact mechanism. Feed
+                    # the existing bounded correction; retain the original child.
+                    for _, children, errors in rows:
+                        for child in children:
+                            outcome = child.facts.get("motion_model_outcome", {})
+                            if outcome.get("reason") == "TARGET_OFFSET_POSITION_CONFLICT":
+                                errors.append({"reason": outcome["reason"],
+                                    "hypothesis_id": child.facts.get("physical_analysis", {}).get("hypothesis", {}).get("hypothesis_id"),
+                                    "resolution": "Reconcile target position with its signed body-frame offsets. Preserve valid hypotheses; if the existing model cannot represent this trajectory, state that limitation rather than changing the fault mechanism."})
                     # A syntactically valid motion plan may have omitted the
                     # capability analysis. Use the existing ONE family-level
                     # correction, retaining useful motion even if still unknown.
@@ -303,9 +314,13 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     continue  # No numeric contact needing C, or a deliberately symbolic plan.
                                 analysis = child.facts.get("control_analysis") or child.facts.get("physical_analysis", {})
                                 hypothesis = analysis.get("hypothesis", {})
-                                if (braking_capability(hypothesis) is not None
-                                        or hypothesis.get("unresolved_controls", {}).get("braking")):
+                                if braking_capability(hypothesis) is not None:
                                     continue
+                                unresolved_controls = hypothesis.get("unresolved_controls", {})
+                                unresolved = unresolved_controls.get("braking")
+                                if unresolved and (not unresolved_controls.get("driver_braking")
+                                                   or entry.get("semantic_correction_completed")):
+                                    continue  # Preserve an assessed limit; review an explicit manual-path gap once.
                                 if (type(child.facts.get("emergency_braking_available")) is bool
                                         and source_is_accepted_for(child.fact_provenance.get("emergency_braking_available", {}),
                                             malfunction_id=mf.malfunction_id, scenario_id=child.scenario_id)):
@@ -315,9 +330,10 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     scenario={**child.facts, "_fact_provenance": child.fact_provenance})
                                 if contexts.controllability_readiness(context)["status"] == "READY":
                                     continue  # A valid independent override already answers the active method.
-                                error = {"reason": "CONTROL_CAPABILITY_NOT_ASSESSED", "field": "emergency_braking_available",
+                                error = {"reason": "CONDITIONAL_CONTROL_BASIS_UNRESOLVED" if unresolved else "CONTROL_CAPABILITY_NOT_ASSESSED", "field": "emergency_braking_available",
                                     "hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
-                                    "resolution": "Assess braking against source and fault scope. Declare supported failed/remaining controls, or unresolved_controls.braking with a specific reason; preserve valid motion."}
+                                    "previous_reason": unresolved or "",
+                                    "resolution": "Assess braking against source and fault scope. Distinguish lack of engineering validation from an impossible analysis hypothesis: an independent manual braking path may be a PENDING conditional assumption when compatible with the declared fault. Preserve valid motion. If a specific shared failure, source conflict or model limit prevents even that conditional case, retain unresolved_controls.braking and explain that blocker. Do not invent proven capability; one correction only."}
                                 if error not in errors:
                                     errors.append(error)
                     return rows

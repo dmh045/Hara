@@ -1,6 +1,7 @@
 """Display physical quantities without changing calculations or method thresholds."""
 from decimal import Decimal, ROUND_HALF_UP
 from math import isfinite
+import re
 from typing import Any
 
 
@@ -31,6 +32,15 @@ def quantity_range(lower: float, upper: float, unit: str, *,
     collapsed = lower != upper and left == right
     suffix = "（端点舍入后相同；原始端点见追溯）" if collapsed else "（显示约值；端点包含性按原始值）"
     return f"{brackets[0]}{left}, {right}{brackets[1]} {unit}{suffix}"
+
+
+def narrative_quantities(text: str) -> str:
+    """Format unit-bearing observations in event prose, never rule/ID fields."""
+    pattern = r"(?<![A-Za-z0-9_.])(-?\d+(?:\.\d+)?)(\s*)(km/h|kph|m/s²|m/s2|m/s|秒|米|s|m)(?![A-Za-z0-9_])"
+    def display(match):
+        unit = {'kph': 'km/h', 'm/s2': 'm/s²', '秒': 's', '米': 'm'}.get(match[3], match[3])
+        return f"{quantity(Decimal(match[1]), unit)}{match[2]}{match[3]}"
+    return re.sub(pattern, display, text)
 
 
 FIELD_UNITS = {

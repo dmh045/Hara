@@ -214,6 +214,26 @@ def test_source_seat_terms_from_item_definition_reach_driver_branches():
     assert "driver_in_vehicle" not in branches[1].facts
 
 
+@pytest.mark.parametrize('values', [(1, 0), ('true', 'false')])
+def test_numeric_driver_location_facts_expand_source_seat_members(values):
+    from copy import deepcopy
+    facts = [{"fact_id": f"RF-{i}", "parameter": "DRIVER_IN_VEHICLE", "value": value,
+        "context": {"driver_location": seat}, "approval": "FINALIZED",
+        "source_refs": [asdict(SourceRef('item_definition', 'item', 'row13', seat))]}
+        for i, (seat, value) in enumerate(zip(('在驾驶位', '不在驾驶位'), values))]
+    before = deepcopy(facts)
+    brancher = DriverConfigurationBrancher(policy_id='project')
+    children = brancher.expand(_parent(), facts)
+    assert [c.facts['driver_position'] for c in children] == ['in_driver_seat', 'outside_driver_seat']
+    assert children[0].facts['driver_in_vehicle'] is True
+    assert 'driver_in_vehicle' not in children[1].facts
+    assert facts == before
+    bad = deepcopy(facts[1]); bad['value'] = values[0]
+    assert brancher.allowed_position(bad) == ('', {})
+    bad = deepcopy(facts[0]); bad['source_refs'][0]['excerpt'] = '不在驾驶位'
+    assert brancher.allowed_position(bad) == ('', {})
+
+
 def test_single_driver_position_reuses_existing_scenario_identity():
     brancher = DriverConfigurationBrancher(policy_id="AVP_SEC_2026_09_V1")
     parent = replace(_parent(), facts={"driver_position": "in_driver_seat"})

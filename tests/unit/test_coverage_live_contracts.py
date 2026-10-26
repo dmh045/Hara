@@ -23,6 +23,58 @@ def recorded():
         return json.load(stream)
 
 
+def continued_recorded():
+    with gzip.open(Path(__file__).parents[1] / 'fixtures/continued_live_edge_cases_20261026.json.gz', 'rt') as stream:
+        return json.load(stream)
+
+
+def test_real_unresolved_evasion_keeps_computable_control_without_a_second_call():
+    record = continued_recorded()['unresolved_control']
+    raw = json.loads(record['original_content'])
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(deepcopy(raw), record['model'])
+    client = Frozen()
+    plan, audit = PhysicalScenarioAgent(client).propose({'plan_key': 'frozen-real',
+        'task_scope': 'CONTROL_INPUTS_ONLY', 'evidence': {key: {} for key in record['evidence_ids']}})
+    assert client.calls == 1 and not audit['schema_repairs']
+    assert plan.control_assessment['unresolved_controls']['other_road_user_avoidance_possible']
+    assert plan.control_assessment['remaining_controls'] == raw['control_assessment']['remaining_controls']
+    assert raw == json.loads(record['original_content'])
+
+
+def test_real_padding_repair_still_rejects_a_separate_control_conflict():
+    from hara_agent.services.semantic.physical_scenario_agent import normalize_item_basis_refs
+    record = continued_recorded()['coordinate_padding']
+    raw = json.loads(record['original_content'])
+    owned = deepcopy(raw)
+    assert normalize_item_basis_refs(owned, set(record['evidence_ids'])) == [
+        {'original': 'ITEM.T-004-R-003', 'resolved': 'ITEM.T-004-R-0003'}]
+    with pytest.raises(ValueError, match='Unresolved braking conflicts'):
+        PhysicalScenarioPlan.from_dict(owned, evidence_ids=set(record['evidence_ids']))
+    assert raw == json.loads(record['original_content'])
+
+
+def test_item_coordinate_padding_only_resolves_a_unique_supplied_source():
+    from hara_agent.services.semantic.physical_scenario_agent import normalize_item_basis_refs
+    data = {'basis_refs': ['ITEM.T-004-R-003', 'ITEM.T-005-R-003', 'ITEM.P-99']}
+    assert normalize_item_basis_refs(data, {'ITEM.T-004-R-0003', 'ITEM.P-0099', 'ITEM.P-00099'}) == [
+        {'original': 'ITEM.T-004-R-003', 'resolved': 'ITEM.T-004-R-0003'}]
+    assert data['basis_refs'] == ['ITEM.T-004-R-0003', 'ITEM.T-005-R-003', 'ITEM.P-99']
+
+
+def test_real_crossing_motion_is_calculated_without_relabeling_impact():
+    from hara_agent.services.analysis.scenario_physics import rectilinear_moving_contact
+    raw = json.loads(continued_recorded()['crossing_target']['original_content'])
+    h = next(h for h in raw['hypotheses'] if h['model'] == 'RECTILINEAR_MOVING_TARGET_CONTACT')
+    facts = {**h['geometry'], **{p['field']: p['value'] for p in h['parameters']}}
+    result = rectilinear_moving_contact(facts)
+    assert result['status'] in {'CONTACT', 'NO_CONTACT_WITHIN_MODEL'}
+    assert facts['collision_type'] == 'VEHICLE_TO_ROAD_USER'
+
+
 def malfunction(raw):
     value = {f.name: raw[f.name] for f in fields(MalfunctionCandidate) if f.name in raw}
     value['status'] = ReviewStatus(raw['status'])

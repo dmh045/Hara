@@ -362,3 +362,13 @@ def test_partial_qm_branch_does_not_describe_missing_c_as_ttc_grade(active_metho
     assert '分档为 待评定' not in row.controllability_rationale
     assert 'C 方法依赖尚未成立' in row.controllability_rationale and 'C 暂未定' in row.controllability_rationale
     assert state == before
+def test_event_prose_formats_physical_units_and_only_the_bound_object():
+    from types import SimpleNamespace
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    original = '事件ID V1.2，规则R0.154286s；于0.5633344678939333s以7.126km/h接触target1，target10未接触；偏移-0.0001米。'
+    scenario = SimpleNamespace(facts={'object_id': 'target1', 'road_user_type': 'VEHICLE'}, analysis_instance={})
+    display = EngineeringReportTextMapper.hazardous_event(original, scenario)
+    assert '0.56s' in display and '7.1km/h' in display and '其他车辆' in display
+    assert 'target10' in display and 'target1，' not in display
+    assert 'V1.2' in display and 'R0.154286s' in display and '−0.01 < 值 < 0米' in display
+    assert '0.5633344678939333s' in original and scenario.facts['object_id'] == 'target1'

@@ -4,6 +4,7 @@ from collections import Counter
 from copy import deepcopy
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from hara_agent.contracts.physical_scenario_plan import (
@@ -53,7 +54,41 @@ def physical_prompt_view(context: dict) -> tuple[dict, dict]:
             return [intern(item) for item in value]
         return value
 
-    return intern(view), texts
+    view = intern(view)
+    structures = Counter()
+
+    def structured_key(value):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def count_structures(value):
+        if isinstance(value, (dict, list)):
+            key = structured_key(value)
+            if len(key) > 400:
+                structures[key] += 1
+            for item in value.values() if isinstance(value, dict) else value:
+                count_structures(item)
+
+    count_structures(view)
+    shared = {}
+
+    def share(value):
+        if not isinstance(value, (dict, list)):
+            return value
+        key = structured_key(value)
+        identity = hashlib.sha256(key.encode()).hexdigest() if structures[key] > 1 else None
+        if identity in shared:
+            return {"$context_value": identity}
+        projected = ({k: share(v) for k, v in value.items()} if isinstance(value, dict)
+                     else [share(v) for v in value])
+        if identity is not None:
+            shared[identity] = projected
+            return {"$context_value": identity}
+        return projected
+
+    view = share(view)
+    if shared:
+        view["$context_values"] = shared
+    return view, texts
 
 
 def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
@@ -64,16 +99,48 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
                 return source_texts[value["$source_text"]]
             if set(value) == {"$context_ref"}:
                 return expand(view[value["$context_ref"]])
+            if set(value) == {"$context_value"}:
+                return expand(view["$context_values"][value["$context_value"]])
             return {key: expand(item) for key, item in value.items()}
         if isinstance(value, list):
             return [expand(item) for item in value]
         return value
-    return expand(view)
+    return expand({key: value for key, value in view.items() if key != "$context_values"})
+
+
+def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[dict]:
+    """Resolve only unique supplied Item block coordinates with omitted padding."""
+    def coordinate(value):
+        match = re.fullmatch(r"ITEM\.(?:T-(\d+)-R-(\d+)|P-(\d+))", value)
+        return tuple(int(v) if v is not None else None for v in match.groups()) if match else None
+
+    by_coordinate = {}
+    for identity in evidence_ids:
+        if key := coordinate(identity):
+            by_coordinate.setdefault(key, []).append(identity)
+    changes = []
+
+    def visit(value):
+        if isinstance(value, dict):
+            refs = value.get("basis_refs")
+            if isinstance(refs, list):
+                for index, ref in enumerate(refs):
+                    matches = by_coordinate.get(coordinate(ref), []) if isinstance(ref, str) else []
+                    if isinstance(ref, str) and ref not in evidence_ids and len(matches) == 1:
+                        refs[index] = matches[0]
+                        changes.append({"original": ref, "resolved": matches[0]})
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    visit(candidate)
+    return changes
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v16-control-completeness"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v4-control-completeness"
+    PROMPT_VERSION = "post-fault-physical-scenario-v20-control-contract-guidance"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v7-control-contract-guidance"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -87,6 +154,10 @@ class PhysicalScenarioAgent:
         "当intervention_inputs包含emergency_braking_available且存在车内驾驶员时，必须分析制动能力："
         "用failed_controls或remaining_controls声明结论；若检查来源与故障后仍无法合理提出条件性结论，"
         "在同一假设或control_assessment的unresolved_controls.braking中说明具体原因。"
+        "这两种表示互斥：如果本代表工况已条件性保留driver_braking或braking，"
+        "不得同时在unresolved_controls.braking声明未知；尚未验证的独立性和未覆盖共同失效写入conditions和uncovered_conditions。"
+        "若连条件性人工路径也不能成立，则保留unresolved_controls.braking并不把driver_braking列为remaining。"
+        "driver_positions是可选字段，只能用in_driver_seat或outside_driver_seat；没有位置限定时省略，不写空字符串。"
         "空的控制数组不等于已完成分析；不要为通过检查强填可用或不可用。"
     )
     ANALYSIS_STRATEGY = (
@@ -100,6 +171,7 @@ class PhysicalScenarioAgent:
         "默认只给代表点；只有来源明确要求范围，或能指出接触、停止、方向、使能或规避条件的"
         "具体变化时才增加RANGE。数值随参数连续变化本身不是展开理由。符号几何下不展开无新结果的范围。"
         "额外假设须属于当前失效实际引起的不同危险机制，不附加另一个独立故障；"
+        "同一对象、轨迹和危险机制的不同数学近似模型不是两个独立机制，选最适用模型即可。"
         "例如纵向扭矩超量不能凭空附加左右扭矩不对称或转向故障，驻车失效不额外生成无因果依据的行驶加速。"
         "计算与评级全部由Python完成。"
     )
@@ -118,11 +190,13 @@ class PhysicalScenarioAgent:
                 "basis_refs": ["a supplied evidence ID"],
                 "geometry": {"road_user_type": "from method vocabulary", "collision_type": "from method vocabulary",
                     "object_position": "FRONT|REAR|LEFT|RIGHT", "ego_longitudinal_direction": "FORWARD|REVERSE",
+                    "ego_lateral_direction": "LEFT|RIGHT; required for curved/lateral motion, omit for longitudinal-only models",
                     "object_longitudinal_direction": "FORWARD|REVERSE|LEFT|RIGHT; required for moving target, omit for stationary",
                     "object_extent": "POINT_ON_TRAVEL_PATH|EXTENDED_ALONG_TRAVEL_PATH|FINITE_CONTACT_ENVELOPE", "object_id": "target1"},
                 "parameters": [{"field": "one parameter_units key", "unit": "exact declared unit",
                     "kind": "POINT", "value": 0, "rationale": "why this conditional representative is useful"}],
                 "conditions": ["scope of this hypothesis"], "uncovered_conditions": ["limits of this analysis"],
+                "driver_positions": ["in_driver_seat", "outside_driver_seat"],
                 "failed_controls": ["affected control"], "remaining_controls": ["independent control, if supported"],
                 "unresolved_controls": {"braking": "optional: specific unresolved cause after assessment; omit if braking capability is declared"},
                 "condition_changes": {"initial_state": False, "target": False, "rationale": "same initial world and target; set true only for a justified independent child condition"},
@@ -134,9 +208,13 @@ class PhysicalScenarioAgent:
             }], "uncovered_conditions": ["not an exhaustive vehicle capability envelope"],
         }
         system = (
-            "输入使用无损引用：$context_ref 指向 context 的同名字段，$source_text 指向 source_texts 中的完整原文。"
+            "输入使用无损引用：$context_ref 指向 context 的同名字段，$source_text 指向 source_texts 中的完整原文；"
+            "$context_value指向context.$context_values中的完整结构，可递归引用，来源、对象与阶段未省略。"
             "引用处保留来源身份、位置和适用范围；读取所引用全文，包括否定和限定，不得把引用当成缺失来源。"
             "先遵守 output_contract 的精确字段、枚举和引用ID。geometry_values列的是可输出的键，"
+            "每个运动假设默认适用于全部driver_configurations；不要仅因车外不能踩踏板就另造相同运动方案，"
+            "独立人工制动通道可用与驾驶员是否在驾驶位由程序分别处理。确有只适用某驾驶员配置的假设，"
+            "必须用driver_positions列出适用配置，不能只写在自然语言里后再交叉展开。"
             "不要用自然语言标签或自行创造对象类别。不能把不支持的障碍物伪称车辆；"
             "若分析另一个合法对象，必须声明condition_changes.target及新object_id，说明新条件和未覆盖对象。"
             "SYMBOLIC使用symbol字符串，不能把符号放进value；POINT只有value；RANGE必须有lower/value/upper。"
@@ -226,7 +304,9 @@ class PhysicalScenarioAgent:
             "basis_ref_ids": sorted(context["evidence"]),
             "geometry_values": {field: sorted(values) for field, values in context.get("risk_vocabulary", {}).items()},
             "control_identities": sorted(CONTROL_IDENTITIES),
-            "unresolved_controls": {"optional_keys": sorted(CONTROL_IDENTITIES),
+            "driver_positions": {"optional": True, "allowed": context.get("driver_configurations", []),
+                "meaning": "hypothesis applicability; omitted means all supplied configurations"},
+            "unresolved_controls": {"optional_keys": sorted(CONTROL_IDENTITIES | INTERVENTION_ASSUMPTION_FIELDS),
                 "values": "nonempty reasons after assessment, never a default for omitted analysis"},
             "intervention_assumptions": {
                 "type": "object", "optional_keys": sorted(INTERVENTION_ASSUMPTION_FIELDS),
@@ -257,7 +337,8 @@ class PhysicalScenarioAgent:
             system = (
                 "你是故障后物理场景分析员。当前轨迹和碰撞条件已经由现有生产路径确定。"
                 "本次只分析 intervention_inputs 中缺少的干预能力，不重新生成运动、参数、对象或碰撞分支。"
-                "读取 context 的原文、限定与来源；$context_ref 和 $source_text 是完整来源引用。"
+                "读取 context 的原文、限定与来源；$context_ref和$source_text是完整来源引用；"
+                "$context_value指向context.$context_values中的完整结构，可递归引用，来源、对象与阶段未省略。"
                 "根据功能、失效作用范围及现有条件，区分自动指令故障 automatic_braking_command、"
                 "制动能力本身 braking 和独立驾驶员制动路径 driver_braking。已有明确控制条件必须保留。"
                 "正常时踩制动能退出功能，不等于故障后独立制动一定有效；允许有依据的条件性能力假设，"
@@ -299,6 +380,7 @@ class PhysicalScenarioAgent:
             on_response(record)  # Persist even a semantically invalid response before repair.
             try:
                 candidate = deepcopy(response.data)
+                normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
                 deferred_states = []
                 # An optional safe-state proposal cannot establish an unresolved
                 # control. Defer that proposal locally, retaining the raw reply;
@@ -326,7 +408,7 @@ class PhysicalScenarioAgent:
                     "request_count": sum(not a["response"]["usage"].get("response_checkpoint_hit") for a in attempts),
                     "response_cache_hits": sum(bool(a["response"]["usage"].get("response_checkpoint_hit")) for a in attempts),
                     "schema_repairs": int(repair), "model": response.model,
-                    "deferred_safe_states": deferred_states}
+                    "deferred_safe_states": deferred_states, "normalized_basis_refs": normalized_refs}
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))
                 previous_response = response.data

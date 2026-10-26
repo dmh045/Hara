@@ -400,23 +400,32 @@ def test_motion_control_omission_corrects_once_per_plan_not_per_point_or_driver(
     assert run() == children and client.calls == 2
 
 
-def test_explicit_unresolved_or_accepted_parent_braking_needs_no_correction(method):
+def test_manual_path_gap_gets_one_review_and_other_assessed_inputs_need_none(method):
     from test_p7_closure import source
     class Frozen:
         calls = 0
         def complete_json(self, request):
             self.calls += 1
             raw = raw_plan(assessed=assessed)
+            if manual:
+                raw['hypotheses'][0]['unresolved_controls']['driver_braking'] = 'Source has a pedal but independence is unverified'
             return LLMResponse(raw, 'OFFLINE_SYNTHETIC')
-    for assessed in (False, True):
+    for assessed, manual in ((False, False), (True, False), (True, True)):
         parent = make_candidate()
         if not assessed:
             parent.facts['emergency_braking_available'] = True
             parent.fact_provenance['emergency_braking_available'] = source()
         client = Frozen()
-        construct_physical_scenarios(HARAState('no-extra-call'), {'MF': [parent]}, [mf()],
-            method=method, agent=PhysicalScenarioAgent(client), project_facts=None)
-        assert client.calls == 1
+        state = HARAState('bounded-review')
+        agent = PhysicalScenarioAgent(client)
+        result = construct_physical_scenarios(state, {'MF': [parent]}, [mf()],
+            method=method, agent=agent, project_facts=None)
+        assert client.calls == (2 if manual else 1)
+        if assessed:
+            assert all(c.facts.get('emergency_braking_available') is None for c in result['MF'])
+        construct_physical_scenarios(state, {'MF': [parent]}, [mf()],
+            method=method, agent=agent, project_facts=None)
+        assert client.calls == (2 if manual else 1)
 
 
 def test_unresolved_controls_are_bounded_and_cannot_contradict_declared_capability():
@@ -426,6 +435,19 @@ def test_unresolved_controls_are_bounded_and_cannot_contradict_declared_capabili
         raw['hypotheses'][0].update(unresolved_controls=unresolved, remaining_controls=remaining)
         with pytest.raises(ValueError):
             PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+
+
+def test_unresolved_evasion_preserves_reason_without_inventing_a_boolean():
+    raw = raw_plan()
+    h = raw['hypotheses'][0]
+    h['unresolved_controls'] = {'other_road_user_avoidance_possible': 'Target recognition and escape space unresolved'}
+    plan = PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    assert plan.hypotheses[0]['unresolved_controls'] == h['unresolved_controls']
+    assert not plan.hypotheses[0].get('intervention_assumptions')
+    h['intervention_assumptions'] = {'other_road_user_avoidance_possible': {
+        'value': False, 'rationale': 'contradictory', 'basis_refs': ['MF.description'], 'conditions': ['test']}}
+    with pytest.raises(ValueError, match='unresolved intervention'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
 
 
 def test_budget_stop_during_control_correction_saves_valid_motion_and_resumes(method, tmp_path):

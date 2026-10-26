@@ -141,7 +141,11 @@ class ControllabilityProfileExecutor:
         self,
         assessment: ControllabilityAssessmentInput,
         profile: ControllabilityProfile | None,
+        *, time_input: str = "ttc_s",
     ) -> ControllabilityJudgement:
+        if time_input not in {"ttc_s", "first_contact_time_s"}:
+            raise ValueError("Unsupported controllability time input")
+        time_value = getattr(assessment, time_input)
         if profile is None or profile.review_status is not ReviewStatus.FINALIZED:
             return ControllabilityJudgement(
                 value="", profile_id=profile.profile_id if profile else "",
@@ -158,31 +162,31 @@ class ControllabilityProfileExecutor:
                 decision_status="PROFILE_APPLICABILITY_UNRESOLVED",
                 reason="TTC_PROFILE_APPLICABILITY_UNRESOLVED: " + ", ".join(unresolved),
             )
-        if assessment.ttc_s is None:
+        if time_value is None:
             return ControllabilityJudgement(
                 value="", profile_id=profile.profile_id, rule_id="",
                 inputs_used=assessment.inputs_used,
                 status=CalculationStatus.PENDING_INPUT,
-                reason="The selected profile requires a source-grounded TTC input.",
+                reason=f"The selected profile requires a source-grounded {time_input} input.",
             )
         matches = [
             band for band in profile.bands
             if band.review_status is ReviewStatus.FINALIZED
-            and self._matches(band, assessment.ttc_s)
+            and self._matches(band, time_value)
         ]
         if len(matches) != 1:
             return ControllabilityJudgement(
                 value="", profile_id=profile.profile_id, rule_id="",
-                inputs_used=("ttc_s",),
+                inputs_used=(time_input,),
                 status=CalculationStatus.PENDING_METHOD_SEMANTICS,
                 reason="The selected profile has a TTC gap or overlap at the supplied input.",
             )
         band = matches[0]
         return ControllabilityJudgement(
             value=band.result, profile_id=profile.profile_id,
-            rule_id=band.rule_id, inputs_used=("ttc_s", *(c.field for c in profile.applicability)),
+            rule_id=band.rule_id, inputs_used=(time_input, *(c.field for c in profile.applicability)),
             status=CalculationStatus.FINALIZED,
-            reason="Deterministic TTC lookup matched exactly one approved profile band.",
+            reason=f"Deterministic {time_input} lookup matched exactly one approved profile band.",
         )
 
 

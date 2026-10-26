@@ -134,7 +134,10 @@ def main():
     parser.add_argument('--source-context',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--run-id',required=True)
-    parser.add_argument('--max-provider-attempts',type=int,default=0)
+    parser.add_argument('--max-provider-attempts',type=lambda value: None if value.lower() == 'none' else int(value),default=0,
+        help='Explicitly authorized request limit; none records every attempt without a fixed cap')
+    parser.add_argument('--provider-ledger',type=Path,
+        help='Continue an existing cumulative transport ledger; its run identity and spent attempts are preserved')
     mode=parser.add_mutually_exclusive_group();mode.add_argument('--live',action='store_true');mode.add_argument('--offline',action='store_true')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--symbolic-drive',action='store_true',help='Offline fixture only; exercises symbolic proposal through reporting')
@@ -150,8 +153,10 @@ def main():
         parser.error('--interaction-coverage requires offline scripted replies without saved physical replay or symbolic-drive')
     if args.replay_physical_checkpoint and (not args.offline or args.symbolic_drive):
         parser.error('--replay-physical-checkpoint requires --offline and cannot edit saved replies via --symbolic-drive')
-    if args.live and args.max_provider_attempts<1:
-        parser.error('--live requires the explicitly authorized positive request budget')
+    if args.live and args.max_provider_attempts is not None and args.max_provider_attempts<1:
+        parser.error('--live requires an authorized positive limit or explicit none')
+    if args.provider_ledger and (not args.live or not args.provider_ledger.is_file()):
+        parser.error('--provider-ledger requires --live and an existing ledger')
     # Preview/offline uses a non-transport budget object for the production
     # bounded-sample contract; no transport or environment is constructed.
     state,config,plan=prepare(args.source_context,args.output,args.run_id,args.max_provider_attempts if args.live else 1,
@@ -162,6 +167,8 @@ def main():
     if args.replay_physical_checkpoint:
         plan['saved_physical_checkpoint_sha256'] = hashlib.sha256(args.replay_physical_checkpoint.read_bytes()).hexdigest()
     plan['budget_limit']=args.max_provider_attempts if args.live else 0
+    if args.provider_ledger:
+        plan['provider_ledger'] = str(args.provider_ledger.resolve())
     args.output.mkdir(parents=True,exist_ok=args.resume)
     plan_path=args.output/'sample_plan.json'
     if args.resume:
@@ -175,14 +182,24 @@ def main():
     os.environ['HARA_REVIEW_ARTIFACT_DIR']=str(args.output/'review')
     if args.live:
         load_local_env(); app=HARAApplication.from_env(config)
+        if args.provider_ledger:
+            records = [json.loads(line) for line in args.provider_ledger.read_text().splitlines()]
+            if not records:
+                raise ValueError('Shared ledger must already identify its accounting run')
+            app.llm_client.attempt_budget=ProviderAttemptBudget(args.provider_ledger,
+                run_id=records[0]['run_id'],limit=args.max_provider_attempts)
     else:
         client=(SavedPhysicalProposalClient(args.output,args.replay_physical_checkpoint) if args.replay_physical_checkpoint
                 else OfflinePhysicalClient(args.output,symbolic_drive=args.symbolic_drive,interaction_coverage=args.interaction_coverage))
         client.attempt_budget=ProviderAttemptBudget(config.run_dir/f'{config.run_id}.provider-attempts.jsonl',run_id=config.run_id,limit=1)
         app=HARAApplication(config,client)
+    initial_attempts = app.llm_client.attempt_budget.attempts
     if not args.resume:
         state.record('offline_source_context_replay' if args.offline else 'source_context_replay', source=str(args.source_context), sha256=plan['source_sha256'])
         state.record('bounded_sample_configured',scope=config.sample_scope(),source_context=app.bounded_source_context(state.method_contract))
+        state.record('provider_accounting_configured',ledger=str(app.llm_client.attempt_budget.path),
+            accounting_run_id=app.llm_client.attempt_budget.run_id, limit=app.llm_client.attempt_budget.limit,
+            prior_attempts=initial_attempts)
         repo.save(state)
     try:
         result=app.run()
@@ -191,6 +208,7 @@ def main():
         summary={'reason':result.reason,'scenarios':len(result.state.scenarios),'risk_results':len(result.state.risk_results),
             'physical_metrics':result.state.item_definition.get('physical_analysis_metrics'),
             'live_requests':app.llm_client.attempt_budget.attempts,
+            'transport_attempts_this_execution':app.llm_client.attempt_budget.attempts-initial_attempts,
             'mode':'LIVE' if args.live else 'OFFLINE_SAVED_PHYSICAL_SCRIPTED_CAUSAL' if args.replay_physical_checkpoint else 'OFFLINE_SCRIPTED',
             'scripted_calls':dict(app.llm_client.calls) if args.offline else {}}
         (args.output/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n')

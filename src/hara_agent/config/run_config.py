@@ -33,7 +33,10 @@ class RunConfig:
 
     @property
     def bounded_sample(self) -> bool:
-        return self.provider_attempt_limit is not None
+        return self.provider_attempt_limit is not None or any(value is not None for value in (
+            self.sample_function_limit, self.sample_malfunction_limit, self.sample_parent_scenario_limit,
+        )) or any((self.sample_function_ids, self.sample_malfunction_ids,
+                   self.sample_parent_scenario_ids, self.sample_generated_scenario_ids))
 
     def sample_scope(self) -> dict[str, object]:
         if not self.bounded_sample:
@@ -44,7 +47,7 @@ class RunConfig:
             "malfunction_limit": int(self.sample_malfunction_limit or 0),
             "parent_scenario_limit": int(self.sample_parent_scenario_limit or 0),
             "scenario_pair_limit": self.sample_scenario_pair_limit,
-            "provider_attempt_limit": int(self.provider_attempt_limit or 0),
+            "provider_attempt_limit": self.provider_attempt_limit,
             "function_ids": list(self.sample_function_ids),
             "malfunction_ids": list(self.sample_malfunction_ids),
             "parent_scenario_ids": list(self.sample_parent_scenario_ids),
@@ -94,8 +97,8 @@ class RunConfig:
             self.sample_parent_scenario_ids,
         )
         if self.bounded_sample or any(value is not None for value in sample_limits) or any(selectors):
-            if self.provider_attempt_limit is None or self.provider_attempt_limit < 1:
-                raise ValueError("Bounded sample requires a positive Provider attempt limit")
+            if self.provider_attempt_limit is not None and self.provider_attempt_limit < 1:
+                raise ValueError("Provider attempt limit must be positive or None")
             if any(value is None or value < 1 for value in sample_limits):
                 raise ValueError("Bounded sample requires positive Function, Malfunction, and parent Scenario limits")
             if self.sample_scenario_pair_limit < 1:

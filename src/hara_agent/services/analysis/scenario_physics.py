@@ -273,8 +273,8 @@ def rectilinear_moving_contact(facts: dict) -> dict:
             or direction not in {"FORWARD", "REVERSE"} or target_direction not in vectors
             or facts.get("object_extent") != "FINITE_CONTACT_ENVELOPE"):
         return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE"}
-    if target_direction in {"LEFT", "RIGHT"} and not is_lateral_collision(facts.get("collision_type")):
-        return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "CROSSING_REQUIRES_SIDE_CONTACT"}
+    # Target travel direction is not an impact-side classification. A crossing
+    # pedestrian can meet the ego front; the finite envelopes decide contact.
     position = facts.get("object_position")
     if not {"FRONT": dx > 0, "REAR": dx < 0, "LEFT": dy > 0, "RIGHT": dy < 0}.get(position, False):
         return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "TARGET_OFFSET_POSITION_CONFLICT"}

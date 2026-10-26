@@ -4,7 +4,7 @@ from collections.abc import Mapping
 import re
 from typing import Any
 
-from .quantity_format import quantity, quantity_range, FIELD_UNITS
+from .quantity_format import quantity, quantity_range, narrative_quantities, FIELD_UNITS
 
 
 def _status(evidence: Any) -> str:
@@ -641,8 +641,14 @@ class EngineeringReportTextMapper:
         return operational, "；".join(details) + "。" if details else "运行细节未确定。"
 
     @classmethod
-    def hazardous_event(cls, value: Any) -> str:
-        text = str(value or "").strip()
+    def hazardous_event(cls, value: Any, scenario: Any = None) -> str:
+        text = narrative_quantities(str(value or "").strip())
+        if scenario is not None:
+            identity = str((getattr(scenario, "facts", {}) or {}).get("object_id") or "")
+            label = cls._first_category(cls._categories(scenario), (
+                "OBJECT_PEDESTRIAN", "OBJECT_CYCLIST", "OBJECT_VEHICLE", "OBJECT_STATIC", "OBJECT_TRAM"))
+            if identity and label:
+                text = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(identity)}(?![A-Za-z0-9_])", lambda _: label, text)
         text = re.sub(r"(?<![A-Za-z])EPB(?![A-Za-z])", "电子驻车制动", text, flags=re.IGNORECASE)
         text = re.sub(r"(?<![A-Za-z])System\s+OK(?![A-Za-z])", "系统正常", text, flags=re.IGNORECASE)
         for raw, display in cls._MODE_TEXT.items():

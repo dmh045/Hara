@@ -17,7 +17,7 @@ from .item_supplement_agent import RoutedDocumentBlocks
 class TargetedProjectFactExtractionAgent:
     """One bounded schema-guided call for one Project Fact category."""
 
-    PROMPT_VERSION = "targeted-project-facts-v7-phase-source-context-atomic-speed-shape"
+    PROMPT_VERSION = "targeted-project-facts-v8-mode-role-atomic-speed-shape"
 
     def __init__(self, client: LLMClient, normalizer: ProjectFactNormalizer | None = None):
         self.client = client
@@ -54,9 +54,13 @@ class TargetedProjectFactExtractionAgent:
             prompt_version=self.PROMPT_VERSION,
             system_prompt=(
                 "For SPEED_ENVELOPE, an explicit activation, entry, transition, "
-                "or operating condition that names the requested operating mode "
+                "or operating condition that describes the requested operating role "
                 "and states a speed inequality/range is valid evidence for that "
-                "mode. Return FOUND for that atomic bound; do not require a section "
+                "mode. The context_hint is the caller's identifier, not a literal "
+                "source phrase: interpret its operating role across languages. "
+                "Keep entry/activation, search, and vehicle control scopes distinct; "
+                "an ambiguous generic mode must not choose among these scopes. "
+                "Return FOUND for that atomic bound; do not require a section "
                 "whose title says speed envelope. Select only the relevant bound "
                 "when the same source block contains additional speed conditions. "
                 "A structural speed candidate is FOUND only when its excerpt states "

@@ -525,16 +525,16 @@ def _shared_provider_budget(args):
         if not ancestor or ancestor == source_run_id:
             break
         source_run_id = ancestor
-    if expected_budget_run_id and limit is None:
+    if expected_budget_run_id and not budget_run_id:
         raise ValueError("Bounded sample child run must reuse its parent Provider budget")
-    if (limit is None) != (budget_run_id is None):
+    if not expected_budget_run_id and (limit is None) != (budget_run_id is None):
         raise ValueError(
             "Child Provider budget requires both --provider-attempt-limit "
             "and --provider-budget-run-id"
         )
-    if limit is None:
+    if limit is None and budget_run_id is None:
         return None
-    if limit < 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", budget_run_id):
+    if (limit is not None and limit < 1) or not re.fullmatch(r"[A-Za-z0-9_-]+", budget_run_id):
         raise ValueError("Child Provider budget limit/run ID is invalid")
     if expected_budget_run_id and (
         budget_run_id != expected_budget_run_id or limit != expected_limit

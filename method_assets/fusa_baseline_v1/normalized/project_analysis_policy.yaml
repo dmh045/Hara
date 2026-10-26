@@ -81,6 +81,23 @@ controllability:
   basis: POSITIVE_OVERRIDE_ONLY_THEN_TTC_FALLBACK
   status: CONFIRMED_FOR_CURRENT_PROJECT
   conditional_reference_rules:
+    - rule_id: IAV_CROSSING_CONTACT_BRAKING_TIME_TRANSFER
+      status: CONDITIONAL_REFERENCE
+      result: ACTIVE_PROFILE
+      profile_time_input: first_contact_time_s
+      requires_contact: true
+      source_document: method_assets/fusa_baseline_v1/raw/c_profiles/iav_avp.yaml
+      source_location: applies_when; ttc_applicability; ttc_thresholds
+      source_sha256: 98468b3e57fb492b1bf498ee83e3cfb85c4b813ba50270fc389db0dc49ea6239
+      source_statement: "The selected IAV profile uses available braking reaction time with an in-seat driver and available emergency braking. Its numerical bands are reused without alteration. The source does not itself establish a crossing-target application."
+      limitation: "Conditional project transfer: the ego travels straight toward a crossing conflict with a predicted finite contact envelope. The driver is assumed to monitor and recognize the conflict from the modeled initial instant, with an independent manual braking path. Use trajectory first contact as the available intervention interval, not longitudinal gap/speed TTC. This is not a validated avoidance probability, a stopping-distance proof or engineering approval; it does not cover rear approaches, curved ego motion, unavailable/unknown braking, occlusion or delayed recognition."
+      when:
+        operating_mode: [parking_vehicle_control]
+        fault_motion_model: [RECTILINEAR_MOVING_TARGET_CONTACT]
+        object_longitudinal_direction: [LEFT, RIGHT]
+        driver_in_vehicle: true
+        emergency_braking_available: true
+      rationale: "驾驶员在驾驶位且独立制动可用；在从当前初始时刻持续监控、可识别横穿冲突的条件下，以二维轨迹的首次接触时间作为可干预时窗，借用当前制动反应时间分档。保留实际接触几何，不伪造纵向 TTC；这是条件性方法迁移，尚不是避险效果验证或工程批准。"
     - rule_id: MQB_LOW_SPEED_ERRONEOUS_STEERING_REFERENCE
       status: CONDITIONAL_REFERENCE
       result: C1

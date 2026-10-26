@@ -45,6 +45,30 @@ def test_explicit_requested_mode_limits_speed_extraction_scope():
     ) == ("Active",)
 
 
+def test_requested_mode_routes_source_speed_even_when_identifier_is_not_literal():
+    from hara_agent.services.extraction.evidence_retrieval import DeterministicEvidenceRetriever
+    from hara_agent.services.analysis.project_fact_resolver import ProjectFactResolver
+    from hara_agent.models import ItemDefinitionFacts
+    spec = build_project_fact_spec_batches(("parking_vehicle_control",), ())["mode_speed_envelopes"][0]
+    block = {"block_id": "B1", "location": "table[2].row[3]", "kind": "table_row",
+             "text": "速度范围 | 搜索车位0-40kph，控车范围0-12kph"}
+    ranked = DeterministicEvidenceRetriever().rank([block], [spec.retrieval_spec()])
+    assert [b.block_id for b in ranked[spec.fact_type]] == ['B1']
+    raw = {"fact_type": spec.fact_type, "status": "FOUND", "operator": "RANGE",
+           "value": 0, "value_max": 12, "unit": "kph", "operating_mode": "parking_vehicle_control",
+           "semantic_scope": "OPERATIONAL_SPEED", "source_block_id": "B1", "source_excerpt": "控车范围0-12kph"}
+    normalized = ProjectFactNormalizer().normalize([spec], [raw], [block], 'item', {spec.fact_type: {'B1'}})
+    assert not normalized.failures
+    facts = ItemDefinitionFacts(system_description='AVP', item_boundary='Vehicle',
+        speed_envelopes=normalized.speed_envelopes, sources=normalized.speed_envelopes[0].sources)
+    resolved = ProjectFactResolver().resolve_speed_context(facts, 'parking_vehicle_control')
+    assert resolved.resolved_value == 12 and not resolved.fallback_used
+    assert resolved.source_refs[0].excerpt == '控车范围0-12kph'
+    for mutation in ({'semantic_scope': 'CAPABILITY'}, {'source_excerpt': '控车范围0-7kph'}, {'source_block_id': 'UNKNOWN'}):
+        rejected = ProjectFactNormalizer().normalize([spec], [{**raw, **mutation}], [block], 'item', {spec.fact_type: {'B1'}})
+        assert rejected.failures and not rejected.speed_envelopes
+
+
 def test_declared_modes_are_used_when_no_mode_was_requested():
     assert _speed_extraction_modes((), ("search", "parking")) == (
         "search", "parking",

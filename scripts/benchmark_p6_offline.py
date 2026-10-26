@@ -112,7 +112,8 @@ def historical_audit(saved: dict, review: Path, corrected_report: Path | None) -
 
 
 def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: Path,
-        corrected_report: Path | None = None, item: Path | None = None, *, generation_only: bool = False) -> dict:
+        corrected_report: Path | None = None, item: Path | None = None, *, generation_only: bool = False,
+        operating_mode: str | None = None) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     with checkpoint.open('rb') as stream:
         before_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -131,7 +132,9 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
         document = DocumentReader().read(item)
         project = ItemDefinitionNormalizer.normalize_source_scope(project, document.blocks, document.source_id)
     service = MethodScenarioCandidateService(method)
-    mode = next(s['operating_mode'] for s in saved['scenarios'] if s.get('operating_mode'))
+    mode = operating_mode or next((s['operating_mode'] for s in saved['scenarios'] if s.get('operating_mode')), None)
+    if not mode:
+        raise ValueError('A checkpoint without generated scenarios requires --operating-mode')
     speed = ProjectFactResolver().resolve_speed_context(project, mode)
     functions = {f['function_id']: selection_function(f) for f in saved['functions']}
     parents, parent_audit = service.generate(project_facts=project, operating_mode=mode,
@@ -210,7 +213,7 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
         print(f'[P6 offline] {index}/{len(saved["malfunctions"])} {malfunction.malfunction_id}: {len(children)} candidates', flush=True)
     old_audit = ({'status': 'NOT_REQUESTED_GENERATION_ONLY'} if generation_only else
         historical_audit(saved, checkpoint.parent.parent / 'review' / saved['run_id'], corrected_report))
-    old_assessments = saved['item_definition']['scenario_assessments']
+    old_assessments = saved['item_definition'].get('scenario_assessments', [])
     latest = {a['malfunction_id']: a for a in saved['audit_trail'] if a.get('event') == 'scenario_feasibility_assessed'}
     historical_ratings = {field: dict(Counter(r[field]['status'] for r in saved['risk_results']))
                           for field in ('severity', 'exposure', 'controllability', 'asil')}
@@ -258,6 +261,7 @@ if __name__ == '__main__':
     parser.add_argument('--corrected-report', type=Path)
     parser.add_argument('--item', type=Path, help='Reapply production source-scope normalization to the original Item')
     parser.add_argument('--generation-only', action='store_true', help='Compare production candidate generation without requiring historical review sidecars')
+    parser.add_argument('--operating-mode', help='Explicit scope for a pre-generation checkpoint')
     args = parser.parse_args()
     run(args.checkpoint, args.method_baseline, args.report_template, args.output, args.corrected_report, args.item,
-        generation_only=args.generation_only)
+        generation_only=args.generation_only, operating_mode=args.operating_mode)

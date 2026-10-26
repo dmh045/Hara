@@ -99,8 +99,9 @@ def _speed_spec(mode: str) -> RequiredProjectFactSpec:
         context_hints=(normalized,),
         required_fields=(
             "status", "operator", "value", "unit",
-            "operating_mode", "source_block_id",
+            "operating_mode", "source_block_id", "source_excerpt", "semantic_scope",
         ),
+        structural_kind="OPERATIONAL_SPEED_CANDIDATE",
     )
 
 

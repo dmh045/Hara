@@ -106,3 +106,55 @@ def test_successful_ttc_and_positive_override_keep_priority(method):
     assert score(method, sc) == score(replace(method, metadata=metadata), sc)
     sc.facts.update(driver_in_vehicle=False, remote_intervention_available=True)
     assert score(method, sc)["controllability"]["decision_status"] == "OVERRIDE_MATCH"
+
+
+def crossing_candidate(method, *, offset=4):
+    from test_bounded_interaction_coverage import moving_plan
+    parent = make_candidate(3.6)
+    parent.facts.update(operating_mode="parking_vehicle_control", component_category="computing",
+        scenario_atom_ids=["CN_parking_multistory", "FB001", "FA040"])
+    return instantiate(method, moving_plan(target_direction="RIGHT", x=offset, y=offset,
+        position="LEFT", collision="SIDE"), parent)[0]
+
+
+@pytest.mark.parametrize("offset,expected", [(3.5, "C3"), (4, "C2"), (5, "C1"), (6, "C0")])
+def test_crossing_contact_uses_active_profile_without_fabricating_longitudinal_ttc(method, offset, expected):
+    sc = crossing_candidate(method, offset=offset)
+    before = deepcopy(sc)
+    result = score(method, sc)
+    c = result["controllability"]
+    assert c["controllability_score"] == expected
+    assert c["engineering_status"] == "PENDING"
+    assert c["calculation_nature"] == "CONDITIONAL"
+    lookup = c["reference_rule"]["profile_lookup"]
+    assert lookup["time_input"] == "first_contact_time_s"
+    assert lookup["time_value_s"] == offset - .5
+    assert lookup["band_rule_id"] in {b.rule_id for b in method.structured_risk_method.controllability_profile.bands}
+    assert "ttc_s" not in sc.facts and "ttc_s" not in c["inputs_used"]
+    assert sc == before
+    for branch in result["branch_evaluations"]:
+        assert branch["C"] == expected
+        assert branch["ASIL"] == MethodContractASILService(method).determine(branch["S"], branch["E"], branch["C"])
+
+
+@pytest.mark.parametrize("mutation", ["unknown_braking", "failed_shared_braking", "no_contact", "unscoped_time", "rear_target", "search"])
+def test_crossing_transfer_does_not_bypass_applicability_or_provenance(method, mutation):
+    sc = crossing_candidate(method)
+    view = branch_physics_view({**sc.facts, "scenario_id": sc.scenario_id, "malfunction_id": "MF",
+        "_fact_provenance": deepcopy(sc.fact_provenance)}, sc.facts["collision_branches"][0])
+    if mutation == "unknown_braking":
+        view["emergency_braking_available"] = None
+    elif mutation == "failed_shared_braking":
+        view["emergency_braking_available"] = False
+    elif mutation == "no_contact":
+        view["motion_model_outcome"] = {"status": "NO_CONTACT_WITHIN_MODEL"}
+    elif mutation == "unscoped_time":
+        metadata = view["_fact_provenance"]["first_contact_time_s"]
+        while metadata.get("input_fact_metadata"):
+            metadata = metadata["input_fact_metadata"][0]
+        metadata["applicable_scope"] = {"malfunction_id": "MF", "scenario_id": "other"}
+    elif mutation == "rear_target":
+        view["object_longitudinal_direction"] = "FORWARD"
+    else:
+        view["operating_mode"] = "parking_search"
+    assert StructuredRiskScoringService(method)._conditional_reference_control(view) is None

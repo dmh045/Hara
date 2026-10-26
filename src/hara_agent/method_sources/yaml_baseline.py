@@ -564,7 +564,7 @@ class YamlBaselineCompiler:
             if not isinstance(reference_rules, list):
                 raise YamlBaselineCompileError("conditional_reference_rules must be a list")
             seen_reference_rules = set()
-            reference_scope_fields = {"component_category", "failure_type", "operating_mode", "fault_motion_model"}
+            reference_scope_fields = {"component_category", "failure_type", "operating_mode", "fault_motion_model", "object_longitudinal_direction"}
             reference_capability_fields = {"driver_in_vehicle", "emergency_braking_available", "steering_control_available"}
             for index, rule in enumerate(reference_rules):
                 conditions = rule.get("when", {}) if isinstance(rule, dict) else {}
@@ -572,7 +572,13 @@ class YamlBaselineCompiler:
                 if (not isinstance(rule, dict) or not rule.get("rule_id")
                         or rule["rule_id"] in seen_reference_rules
                         or rule.get("status") != "CONDITIONAL_REFERENCE"
-                        or rule.get("result") not in {"C0", "C1", "C2", "C3"}
+                        or rule.get("result") not in {"C0", "C1", "C2", "C3", "ACTIVE_PROFILE"}
+                        or (rule.get("result") == "ACTIVE_PROFILE" and (
+                            rule.get("profile_time_input") != "first_contact_time_s"
+                            or not rule.get("requires_contact")
+                            or conditions.get("driver_in_vehicle") is not True
+                            or conditions.get("emergency_braking_available") is not True))
+                        or (rule.get("result") != "ACTIVE_PROFILE" and "profile_time_input" in rule)
                         or not all(rule.get(key) for key in ("source_document", "source_location",
                             "source_sha256", "source_statement", "limitation", "rationale"))
                         or not isinstance(rule.get("function_output_terms", []), list)
