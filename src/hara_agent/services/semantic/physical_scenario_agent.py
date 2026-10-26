@@ -394,11 +394,15 @@ class PhysicalScenarioAgent:
                             continue
                         proposal = hypothesis.get("safe_state_proposal")
                         controls = proposal.get("required_controls") if isinstance(proposal, dict) else None
+                        remaining = hypothesis.get("remaining_controls")
+                        failed = hypothesis.get("failed_controls")
                         if (isinstance(controls, list) and controls
                                 and all(isinstance(c, str) for c in controls)
-                                and set(controls) - set(hypothesis.get("remaining_controls", []))
+                                and isinstance(remaining, list) and isinstance(failed, list)
+                                and all(isinstance(c, str) for c in remaining + failed)
+                                and set(controls) - set(remaining)
                                 and set(controls) <= CONTROL_IDENTITIES
-                                and not set(controls) & set(hypothesis.get("failed_controls", []))
+                                and not set(controls) & set(failed)
                                 and isinstance(hypothesis.get("uncovered_conditions"), list)):
                             deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),
                                 "reason": "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL", "proposal": hypothesis.pop("safe_state_proposal")})

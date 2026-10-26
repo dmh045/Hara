@@ -515,3 +515,28 @@ def test_control_array_repair_identifies_the_actual_field():
     with pytest.raises(ValueError, match=r'remaining_controls\[0\].*received dict'):
         PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
     assert raw == before
+
+
+def test_optional_safe_state_does_not_mask_control_array_diagnostic():
+    bad = raw_plan()
+    h = bad['hypotheses'][0]
+    h['remaining_controls'] = [{'control': 'driver_braking'}]
+    h['safe_state_proposal'] = {
+        'description': '停止车辆', 'required_controls': ['driver_braking'],
+        'basis_refs': ['MF.description'], 'conditions': ['独立人工制动仍可用']}
+    good = deepcopy(bad)
+    good['hypotheses'][0]['remaining_controls'] = ['driver_braking']
+    requests = []
+
+    class Frozen:
+        def complete_json(self, request):
+            requests.append(json.loads(request.user_prompt))
+            return LLMResponse(deepcopy(bad if len(requests) == 1 else good), 'OFFLINE')
+
+    plan, audit = PhysicalScenarioAgent(Frozen()).propose(
+        {'plan_key': 'control-shape', 'evidence': {'MF.description': 'drive fault'}})
+    assert len(requests) == 2
+    assert 'remaining_controls[0]' in requests[1]['repair_errors'][0]
+    assert requests[1]['previous_invalid_response'] == bad
+    assert plan.to_dict()['hypotheses'][0]['remaining_controls'] == ['driver_braking']
+    assert audit['schema_repairs'] == 1 and not audit['deferred_safe_states']
