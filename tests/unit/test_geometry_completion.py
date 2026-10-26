@@ -334,3 +334,31 @@ def test_actual_repeated_request_is_not_hidden_as_a_cache_hit(method, tmp_path):
     assert result['MF'][0].facts['longitudinal_acceleration_mps2'] == 3
     assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_requests'] == 2
     assert state.item_definition['physical_analysis_metrics']['token_usage'] == {'prompt_tokens': 22, 'completion_tokens': 14}
+
+
+def test_invalid_semantic_correction_preserves_valid_sibling_and_local_gap(method, tmp_path):
+    original = raw_plan(assessed=True)
+    incomplete = deepcopy(original['hypotheses'][0])
+    incomplete['hypothesis_id'] = 'needs-distance'
+    incomplete['parameters'] = [p for p in incomplete['parameters'] if p['field'] != 'relative_distance_m']
+    original['hypotheses'].append(incomplete)
+    malformed = {'geometry': {'object_position': 'FRONT'}}
+    client = Client([original, malformed, malformed])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    parent = make_candidate()
+    before = deepcopy(parent)
+    state, result = run(method, agent, candidates={'MF': [parent]})
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert len(client.requests) == 3 and len(entry['responses']) == 3
+    assert entry['status'] == 'VALIDATED' and entry['semantic_correction_completed']
+    assert 'schema repair exhausted' in entry['semantic_correction_error']
+    assert entry['plan']['hypotheses'] == original['hypotheses']
+    assert entry['responses'][0]['response']['data'] == original
+    assert entry['responses'][-1]['response']['data'] == malformed
+    assert parent == before
+    contact = [c for c in result['MF'] if c.facts.get('motion_model_outcome', {}).get('status') == 'CONTACT']
+    assert len(contact) == 1 and score(method, contact[0])['severity']['severity_score']
+    assert entry['instantiations'][parent.scenario_id]['failures']
+    assert all(c.facts['physical_analysis']['engineering_approval'] == 'NOT_GRANTED' for c in result['MF'])
+    _, resumed = run(method, agent, state=state, candidates={'MF': [parent]})
+    assert resumed == result and len(client.requests) == 3

@@ -379,14 +379,25 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     correction_context = {**context, "previous_plan": entry["initial_plan"],
                         "correction_diagnostics": entry["correction_diagnostics"],
                         "correction_policy": "Correct only reported conflicts or omitted assessments; preserve valid hypotheses and motion. Explicitly unresolved controls are allowed. One semantic correction allowed."}
-                    plan, audit = agent.propose(correction_context, on_response=persist_response)
-                    entry.update(status="VALIDATED", plan=plan.to_dict(), audit=audit,
-                                 semantic_correction_completed=True)
                     metrics["semantic_corrections"] += 1
-                    metrics["plan_requests"] += audit["request_count"]
-                    metrics["schema_repairs"] += audit["schema_repairs"]
-                    metrics["response_cache_hits"] += audit["response_cache_hits"]
-                    instantiated = instantiate_family(plan)
+                    try:
+                        corrected_plan, audit = agent.propose(correction_context, on_response=persist_response)
+                    except (ValueError, KeyError, TypeError) as error:
+                        # A malformed correction cannot erase the previously
+                        # validated proposal. Keep its valid motion and local
+                        # input gaps; all failed replies remain in responses.
+                        entry.update(status="VALIDATED", semantic_correction_completed=True,
+                                     semantic_correction_error=str(error))
+                        metrics["diagnostics"].append({"plan_key": key,
+                            "reason": "PHYSICAL_CORRECTION_INVALID_ORIGINAL_RETAINED", "error": str(error)})
+                    else:
+                        plan = corrected_plan
+                        entry.update(status="VALIDATED", plan=plan.to_dict(), audit=audit,
+                                     semantic_correction_completed=True)
+                        metrics["plan_requests"] += audit["request_count"]
+                        metrics["schema_repairs"] += audit["schema_repairs"]
+                        metrics["response_cache_hits"] += audit["response_cache_hits"]
+                        instantiated = instantiate_family(plan)
                 reuse_kind = "control_plan_reuse" if task_scope == "CONTROL_INPUTS_ONLY" else "physical_plan_reuse"
                 metrics[reuse_kind] = metrics.get(reuse_kind, 0) + len(family) - 1
                 metrics["plan_reuse_records"].append({"plan_key": key,
