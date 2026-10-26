@@ -46,12 +46,16 @@ def test_outside_reference_preserves_unknown_capabilities_and_branch_matrix(meth
 
 
 @pytest.mark.parametrize("failure", ["loss", "degraded", "stuck", "delayed"])
-def test_additional_steering_reference_is_scoped_and_keeps_risk_tuple(method, failure):
+@pytest.mark.parametrize("component", ["computing", "hmi", "actuator_longitudinal", "actuator_lateral"])
+def test_additional_steering_reference_is_scoped_and_keeps_risk_tuple(method, failure, component):
     sc = steering_candidate(method)
     sc.facts["failure_type"] = failure
+    sc.facts["component_category"] = component
+    before = deepcopy(sc)
     result = score(method, sc)
     assert result["controllability"]["controllability_score"] == "C1"
     assert result["controllability"]["engineering_rule_id"] == "IAV_LOW_SPEED_STEERING_DEVIATION_BRAKING_REFERENCE"
+    assert sc == before  # The C scope must not rewrite the component or its E domain.
     # An unrelated function name cannot undo an evidenced steering consequence;
     # absence of that consequence must, even with the same lateral geometry.
     sc.facts["steering_control_available"] = True

@@ -123,9 +123,8 @@ controllability:
       source_location: "6-HARA Analyses!M36:N40; MQBEvo-RHP2.0-SOTIF-GuR.xlsx:Prerequisite & Assumptions park!D17"
       source_sha256: 0698cc8e2f87ae861480c67ce8df89910f59d635a0cb49587e85b723e1d48898
       source_statement: "IAV steering loss/insufficient steering cases credit available emergency braking or an explicitly described other-vehicle evasion path as C1. MQB limits its erroneous-steering C1 assumption to v < 15 kph."
-      limitation: "Selected project transfer on 2026-10-26: apply the low-speed scope to a source-scoped failed steering control, including an upstream fault whose validated physical plan identifies that consequence, only when an in-seat driver retains braking. Assumes monitoring and timely manual interruption; does not cover brake loss, independent vehicle instability, or higher trajectory speeds. This is a project reference judgement, not a validated avoidance probability."
+      limitation: "Selected project transfer on 2026-10-26: apply the low-speed scope to a source-scoped failed steering control, including an upstream fault whose validated physical plan identifies that consequence, only when an in-seat driver retains braking. The upstream component category does not determine vehicle-level controllability and remains unchanged for Exposure. Assumes monitoring and timely manual interruption; does not cover brake loss, independent vehicle instability, or higher trajectory speeds. This is a project reference judgement, not a validated avoidance probability."
       when:
-        component_category: [computing]
         operating_mode: [parking_vehicle_control]
         fault_motion_model: [CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, CONSTANT_SPEED_CURVATURE_TO_CONTACT]
         driver_in_vehicle: true

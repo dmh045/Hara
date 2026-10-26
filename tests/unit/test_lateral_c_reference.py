@@ -72,7 +72,8 @@ def test_reference_does_not_generalize_to_other_failures_or_drivers(method, chan
     # evidence that this narrower MQB rule applies.
     metadata = deepcopy(method.metadata)
     rules = metadata['project_analysis_policy']['controllability']['conditional_reference_rules']
-    metadata['project_analysis_policy']['controllability']['conditional_reference_rules'] = rules[:1]
+    metadata['project_analysis_policy']['controllability']['conditional_reference_rules'] = [
+        rule for rule in rules if rule['rule_id'] == 'MQB_LOW_SPEED_ERRONEOUS_STEERING_REFERENCE']
     method = replace(method, metadata=metadata)
     sc = steering_candidate(method)
     # No remote/other-party override: inspect just reference scope.
