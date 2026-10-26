@@ -74,8 +74,18 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
     timing = {"merge_lock_wait_s": 0.0, "changed_entry_copy_s": 0.0,
               "checkpoint_s": 0.0, "checkpoint_count": 0, "copied_plan_entries": 0, "workers": {}}
     state.item_definition["physical_analysis_timing"] = timing
+    needs_snapshot = False
 
-    def merge(malfunction_id, key, entry, report):
+    def save_snapshot():
+        nonlocal needs_snapshot
+        saving = perf_counter()
+        checkpoint(state)
+        timing["checkpoint_s"] += perf_counter() - saving
+        timing["checkpoint_count"] += 1
+        needs_snapshot = False
+
+    def merge(malfunction_id, key, entry, report, *, cached_refresh=False):
+        nonlocal needs_snapshot
         copying = perf_counter()
         isolated_entry = deepcopy(entry) if entry is not None else None
         isolated_report = deepcopy(report)
@@ -88,6 +98,7 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
                 cache[key] = isolated_entry
                 _update_response_totals(totals, isolated_entry.get("responses", []))
                 timing["copied_plan_entries"] += 1
+                needs_snapshot = True
             reports[malfunction_id] = isolated_report
             metrics = {}
             for report in reports.values():
@@ -104,11 +115,8 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
                 metrics_scope="PHYSICAL_PROPOSALS_AND_SOLVES; causal reuse is accounted in scenario audits",
             )
             state.item_definition["physical_analysis_metrics"] = metrics
-            if checkpoint and key is not None:
-                saving = perf_counter()
-                checkpoint(state)
-                timing["checkpoint_s"] += perf_counter() - saving
-                timing["checkpoint_count"] += 1
+            if checkpoint and key is not None and not cached_refresh:
+                save_snapshot()
 
     def worker(mf):
         started = perf_counter()
@@ -126,7 +134,7 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
             result = construct_physical_scenarios(local,
                 {mf.malfunction_id: deepcopy(candidates[mf.malfunction_id])}, [mf], method=method,
                 agent=agent, project_facts=project_facts,
-                _commit_plan=lambda key, entry, report: merge(mf.malfunction_id, key, entry, report))
+                _commit_plan=lambda key, entry, report, **options: merge(mf.malfunction_id, key, entry, report, **options))
             return result[mf.malfunction_id]
         finally:
             # Include no-proposal cases and failures without copying all plans
@@ -138,7 +146,15 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
                     "plan_groups": len(local.item_definition["physical_analysis_plans"]),
                     "candidate_count": len(candidates[mf.malfunction_id])}
 
-    results = ordered_parallel_map(malfunctions, worker, max_workers=max_workers, on_progress=progress)
+    try:
+        results = ordered_parallel_map(malfunctions, worker, max_workers=max_workers, on_progress=progress)
+    finally:
+        # Cached deterministic recalculation is reproducible without a request.
+        # Flush it together after workers drain; new responses/status changes
+        # still trigger immediate ordered snapshots inside merge().
+        with lock:
+            if checkpoint and needs_snapshot:
+                save_snapshot()
     return {mf.malfunction_id: result for mf, result in zip(malfunctions, results)}
 
 
@@ -245,9 +261,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             prior_responses = len(entry.get("responses", []))
             prior_instances = signature(entry.get("instantiations", {}))
 
-            def save_plan():
+            def save_plan(*, cached_refresh=False):
                 if _commit_plan:
-                    _commit_plan(key, entry, metrics)
+                    _commit_plan(key, entry, metrics, cached_refresh=cached_refresh)
                 elif checkpoint:
                     checkpoint(state)
 
@@ -405,9 +421,10 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 # Includes budget/transport exceptions. Successful earlier plans
                 # and every parsed response remain durable on resume.
                 reconcile_metrics()
-                if (checkpoint or _commit_plan) and (not saved or entry.get("status") != prior_status
-                        or len(entry.get("responses", [])) != prior_responses
+                new_result = (not saved or entry.get("status") != prior_status
+                              or len(entry.get("responses", [])) != prior_responses)
+                if (checkpoint or _commit_plan) and (new_result
                         or signature(entry.get("instantiations", {})) != prior_instances):
-                    save_plan()
+                    save_plan(cached_refresh=not new_result)
         candidates[mf.malfunction_id] = kept
     return candidates

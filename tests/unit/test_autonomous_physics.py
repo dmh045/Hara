@@ -476,6 +476,42 @@ def test_parallel_physical_plans_share_one_hard_budget_and_keep_responses(method
     assert restored.item_definition['physical_analysis_metrics']['provider_transport_attempts_this_stage'] == 1
 
 
+@pytest.mark.parametrize('change', ['diagnostic', 'derived_value'])
+def test_parallel_cached_recalculation_saves_one_complete_snapshot(method, tmp_path, change):
+    from hara_agent.workflow import HARAState, CheckpointRepository
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw_plan(assessed=True), 'offline')
+    client = Client(); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    repo = CheckpointRepository(tmp_path/'state'); state = HARAState('cached-refresh')
+    mfs = [mf(), replace(mf(), malfunction_id='MF2')]
+    candidates = {m.malfunction_id: [make_candidate()] for m in mfs}
+    writes = []
+    def save(current):
+        repo.save(current); writes.append(True)
+    def run():
+        return construct_physical_scenarios(state, deepcopy(candidates), mfs, method=method,
+            agent=agent, project_facts=None, max_workers=2, checkpoint=save)
+    original = run()
+    assert client.calls == 2
+    for entry in state.item_definition['physical_analysis_plans'].values():
+        saved = next(iter(entry['instantiations'].values()))['generated_scenarios'][0]
+        if change == 'diagnostic':
+            saved['context_resolution']['old_diagnostic'] = 'unused request'
+        else:
+            saved['facts']['ego_impact_speed_kph'] = 999
+    writes.clear()
+    assert run() == original and client.calls == 2
+    assert len(writes) == 1
+    restored = repo.load(state.run_id)
+    # Use the checkpoint's serialization contract (Enum/tuple -> JSON), while
+    # retaining every business field and all original response records.
+    assert restored.to_dict()['item_definition']['physical_analysis_plans'] == state.to_dict()['item_definition']['physical_analysis_plans']
+
+
 def test_negative_physical_range_keeps_signed_order():
     raw = raw_plan(acceleration=-7)
     raw["hypotheses"][0]["parameters"][-1].update(kind="RANGE", lower=-8, upper=-6.5)
