@@ -20,6 +20,10 @@ class EngineeringReportTextMapper:
     """
 
     _PENDING_VALUE = "待评定"
+    _COLLISION_TEXT = {
+        "FRONTAL": "正面碰撞", "REAR_END": "追尾碰撞",
+        "SIDE": "侧向碰撞", "LATERAL": "侧向碰撞",
+    }
 
     def __init__(self, language: Mapping[str, Any] | None = None):
         self.language = language or {}
@@ -653,6 +657,8 @@ class EngineeringReportTextMapper:
         text = re.sub(r"(?<![A-Za-z])System\s+OK(?![A-Za-z])", "系统正常", text, flags=re.IGNORECASE)
         for raw, display in cls._MODE_TEXT.items():
             text = re.sub(rf"(?<![A-Za-z]){re.escape(raw)}(?![A-Za-z])", display, text, flags=re.IGNORECASE)
+        for raw, display in cls._COLLISION_TEXT.items():
+            text = re.sub(rf"(?<![A-Za-z0-9_-]){raw}\s*(?:接触|碰撞)", display, text)
         clauses = [item.strip() for item in re.split(r"[；;]", text) if item.strip()]
         return "；".join(dict.fromkeys(clauses)).rstrip("。") + "。" if clauses else "待危险事件确认。"
 
@@ -781,14 +787,14 @@ class EngineeringReportTextMapper:
                         "hazardous_event": member.get("hazardous_event", "")}
         return original, {"original_goal": original, "reason": "No independently stated unsafe behavior to compress"}
 
-    @staticmethod
-    def branch_result(branch: Mapping[str, Any]) -> str:
+    @classmethod
+    def branch_result(cls, branch: Mapping[str, Any]) -> str:
         scores = " / ".join(str(branch.get(key) or "待评定") for key in ("S", "E", "C", "ASIL"))
         parts = [f"分支 {branch.get('branch_id', '')}：{scores}"]
         context = branch.get("risk_context", {})
         for field, labels in (
             ("road_user_type", {"PEDESTRIAN": "行人", "CYCLIST": "骑行者", "VEHICLE": "车辆", "PASSENGER_CAR": "乘用车", "FIXED_OBJECT": "固定障碍物"}),
-            ("collision_type", {"FRONTAL": "正面碰撞", "REAR_END": "追尾碰撞", "SIDE": "侧向碰撞", "LATERAL": "侧向碰撞"}),
+            ("collision_type", cls._COLLISION_TEXT),
         ):
             value = context.get(field, {})
             if isinstance(value, Mapping) and value.get("value") in labels:
@@ -820,7 +826,7 @@ class EngineeringReportTextMapper:
         if getattr(evidence, "value", None):
             inputs = trace.get("physical_inputs", {})
             speed = inputs.get("relative_speed_kph", trace.get("inputs", {}).get("relative_speed_kph"))
-            collision = {"REAR_END": "追尾碰撞", "FRONTAL": "正面碰撞", "SIDE": "侧向碰撞", "LATERAL": "侧向碰撞"}.get(inputs.get("collision_type"), "")
+            collision = self._COLLISION_TEXT.get(inputs.get("collision_type"), "")
             target = {"VEHICLE": "车辆", "PASSENGER_CAR": "乘用车", "PEDESTRIAN": "行人", "CYCLIST": "骑行者", "FIXED_OBJECT": "固定障碍物"}.get(inputs.get("road_user_type"), "")
             parts = [target + collision] if target or collision else []
             if isinstance(speed, (int, float)):

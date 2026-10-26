@@ -372,3 +372,14 @@ def test_event_prose_formats_physical_units_and_only_the_bound_object():
     assert 'target10' in display and 'target1，' not in display
     assert 'V1.2' in display and 'R0.154286s' in display and '−0.01 < 值 < 0米' in display
     assert '0.5633344678939333s' in original and scenario.facts['object_id'] == 'target1'
+
+
+def test_event_prose_translates_contact_labels_without_rewriting_identities():
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    original = '与前方0.3 m处行人发生FRONTAL接触；与后车发生REAR_END碰撞；侧方SIDE 接触；LATERAL碰撞；ID-FRONTAL接触；FRONTAL_RULE；SIDEWAYS'
+    display = EngineeringReportTextMapper.hazardous_event(original)
+    assert '0.3 m处行人发生正面碰撞' in display
+    assert '与后车发生追尾碰撞' in display
+    assert display.count('侧向碰撞') == 2
+    assert 'ID-FRONTAL接触' in display and 'FRONTAL_RULE' in display and 'SIDEWAYS' in display
+    assert 'FRONTAL接触' in original
