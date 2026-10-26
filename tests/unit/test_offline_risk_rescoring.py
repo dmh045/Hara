@@ -80,7 +80,10 @@ def source_state(tmp_path, method):
     return state
 
 
-def test_real_scoring_offline_preserves_source_and_writes_fresh_trace(tmp_path, method, source_state):
+@pytest.mark.parametrize("with_guidewords", [True, False])
+def test_real_scoring_offline_preserves_source_and_writes_fresh_trace(tmp_path, method, source_state, with_guidewords):
+    if not with_guidewords:
+        source_state.guideword_assessments = []
     repository = CheckpointRepository(tmp_path / "runs")
     source_path = repository.save(source_state)
     digest = file_hash(source_path)
@@ -105,7 +108,13 @@ def test_real_scoring_offline_preserves_source_and_writes_fresh_trace(tmp_path, 
     assert file_hash(source_path) == digest
     assert new.scenarios == source_state.scenarios
     assert new.scenario_contract_version == "atomic-scenario-v1"
-    assert not new.safety_goals
+    assert result["safety_goals_status"] == "DETERMINISTIC_REAGGREGATED"
+    assert len(new.safety_goals) == 1
+    goal = new.safety_goals[0]
+    assert goal.sg_id == new.risk_results[0].safety_goal_id
+    assert goal.associated_scenario_ids == ["SC-1"]
+    assert goal.status is ReviewStatus.PENDING and not goal.max_asil
+    assert goal.safe_state == "待确定"
     trace = json.loads((tmp_path / "review/new/risk_execution_trace.json").read_text(encoding="utf-8"))
     assert trace["assessments"][0]["parent_assessment_id"] == "OLD-1"
     assert trace["risk_execution_id"] == result["risk_execution_id"]

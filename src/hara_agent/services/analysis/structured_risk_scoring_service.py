@@ -214,7 +214,7 @@ class StructuredRiskScoringService:
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="Lateral first-contact time is not a longitudinal TTC; no applicable lateral C method is compiled.")
-        if (moving and not crossing and not override_match
+        if (moving and not crossing and not (override_match or reference_match)
                 and (scenario.get("ego_longitudinal_direction"), scenario.get("object_position"))
                 not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}):
             control.update(controllability_score="", engineering_status="PENDING",
@@ -225,11 +225,15 @@ class StructuredRiskScoringService:
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
                 calculation_status="PENDING_INPUT", pending_reason="ASSUMED_OBJECT_EXPOSURE_BINDING_UNRESOLVED")
         if (braking_path_unresolved
-                and result["controllability"].get("selected_profile_id") and not override_match):
+                and result["controllability"].get("selected_profile_id") and not (override_match or reference_match)):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="FAILED_CONTROL_PROFILE_DEPENDENCY_UNRESOLVED",
                 decision_status="MODEL_DEPENDENCY_UNRESOLVED", engineering_rule_id="",
                 reasoning="The failed braking path cannot establish an independent available braking avoidance path.")
+        if not control.get("controllability_score") and "collision_branches" not in scenario:
+            reference = self._conditional_reference_control(scenario, phase="AFTER_APPLICABLE_METHODS")
+            if reference is not None:
+                control.update(reference)
         if not control.get("controllability_score"):
             # A rejected lookup is not a finalized avoidance path. Keep its
             # attempted value for audit, separately from the usable result.
@@ -240,7 +244,7 @@ class StructuredRiskScoringService:
                         status=control["calculation_status"], reason=control.get("reasoning", ""))
         return result
 
-    def _conditional_reference_control(self, scenario: dict) -> dict | None:
+    def _conditional_reference_control(self, scenario: dict, *, phase="BEFORE_MODEL_GUARDS") -> dict | None:
         """Execute the selected reference's bounded scope; retain pending approval."""
         from hara_agent.contracts import SourceRef
         rules = self.method.metadata.get("project_analysis_policy", {}).get(
@@ -248,19 +252,41 @@ class StructuredRiskScoringService:
         metadata = scenario.get("_fact_provenance", {})
         scope = {key: scenario.get(key, "") for key in ("scenario_id", "malfunction_id")}
         for rule in rules:
+            if rule.get("evaluation_phase", "BEFORE_MODEL_GUARDS") != phase:
+                continue
             output = str(scenario.get("_function_output", "")).casefold()
-            if not any(term.casefold() in output for term in rule["function_output_terms"]):
+            if rule.get("function_output_terms") and not any(
+                    term.casefold() in output for term in rule["function_output_terms"]):
                 continue
             if any((scenario.get(key) not in expected if isinstance(expected, list)
                     else scenario.get(key) is not expected) for key, expected in rule["when"].items()):
                 continue
-            fields = ("trajectory_max_speed_kph", "driver_in_vehicle", "emergency_braking_available")
+            fields = tuple(key for key, value in rule["when"].items() if isinstance(value, bool))
+            limit = rule.get("trajectory_speed_upper_exclusive_kph")
+            if limit is not None:
+                fields += ("trajectory_max_speed_kph",)
             if not all(source_is_accepted_for(metadata.get(key, {}), **scope) for key in fields):
                 continue
             speed = scenario.get("trajectory_max_speed_kph")
-            if (isinstance(speed, bool) or not isinstance(speed, (int, float))
+            if limit is not None and (isinstance(speed, bool) or not isinstance(speed, (int, float))
                     or not math.isfinite(speed) or speed < 0
-                    or speed >= rule["trajectory_speed_upper_exclusive_kph"]):
+                    or speed >= limit):
+                continue
+            if rule.get("requires_contact"):
+                outcome = scenario.get("motion_model_outcome", {}).get("status")
+                contact_field = next((key for key in ("first_contact_time_s", "ttc_s")
+                    if isinstance(scenario.get(key), (int, float)) and not isinstance(scenario[key], bool)
+                    and math.isfinite(scenario[key]) and scenario[key] >= 0
+                    and source_is_accepted_for(metadata.get(key, {}), **scope)), None)
+                if outcome not in (None, "CONTACT") or contact_field is None:
+                    continue
+                fields += (contact_field,)
+            # A conflict is not an absence of credited intervention. Neither a
+            # reference classification nor a bound can resolve contradictory facts.
+            context = scenario.get("_hazardous_event_risk_context")
+            if context and any(getattr(context, key).status.value == "CONFLICT" for key in (
+                    "driver_in_vehicle", "emergency_braking_available", "remote_intervention_available",
+                    "other_road_user_avoidance_possible")):
                 continue
             result = self._result(value_key="controllability_score", value=rule["result"],
                 status=CalculationStatus.FINALIZED, reason=rule["rationale"],
@@ -271,8 +297,10 @@ class StructuredRiskScoringService:
                 selected_profile_id=rule["rule_id"], unknown_policy_action="REFERENCE_RULE_MATCH",
                 reference_rule={key: rule[key] for key in ("rule_id", "source_document", "source_location",
                     "source_sha256", "source_statement", "limitation", "when", "rationale",
-                    "trajectory_speed_upper_exclusive_kph")})
-            result["reference_rule"]["trajectory_max_speed_kph"] = speed
+                    "trajectory_speed_upper_exclusive_kph", "evaluation_phase", "requires_contact") if key in rule})
+            if limit is not None:
+                result["reference_rule"]["trajectory_max_speed_kph"] = speed
+            result["reference_rule"]["matched_inputs"] = {key: scenario.get(key) for key in (*fields, *rule["when"])}
             result["avoidance_paths"] = {"reference_scenario": {
                 "rule_id": rule["rule_id"], "status": "CONDITIONAL_TRIAL", "result": rule["result"]}}
             return result

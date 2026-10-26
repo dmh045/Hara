@@ -99,6 +99,54 @@ controllability:
         emergency_braking_available: true
       trajectory_speed_upper_exclusive_kph: 15
       rationale: "驾驶员在车内且剩余制动可用；低速非预期或错误转向干预，按参考工况评为 C1。跨项目适用性待审核；未使用纵向 TTC 分档。"
+    - rule_id: IAV_LOW_SPEED_STEERING_DEVIATION_BRAKING_REFERENCE
+      status: CONDITIONAL_REFERENCE
+      result: C1
+      source_document: 副本IAV_EHYREEV蓝海项目_代客泊车-HARA分析_V1.0.xlsx
+      source_location: "6-HARA Analyses!M36:N40; MQBEvo-RHP2.0-SOTIF-GuR.xlsx:Prerequisite & Assumptions park!D17"
+      source_sha256: 0698cc8e2f87ae861480c67ce8df89910f59d635a0cb49587e85b723e1d48898
+      source_statement: "IAV steering loss/insufficient steering cases credit available emergency braking or an explicitly described other-vehicle evasion path as C1. MQB limits its erroneous-steering C1 assumption to v < 15 kph."
+      limitation: "Selected project transfer on 2026-10-26: apply the low-speed scope to a source-scoped failed steering control, including an upstream fault whose validated physical plan identifies that consequence, only when an in-seat driver retains braking. Assumes monitoring and timely manual interruption; does not cover brake loss, independent vehicle instability, or higher trajectory speeds. This is a project reference judgement, not a validated avoidance probability."
+      when:
+        component_category: [computing]
+        operating_mode: [parking_vehicle_control]
+        fault_motion_model: [CONSTANT_LATERAL_ACCELERATION_TO_CONTACT]
+        driver_in_vehicle: true
+        emergency_braking_available: true
+        steering_control_available: false
+      trajectory_speed_upper_exclusive_kph: 15
+      rationale: "驾驶员在驾驶位，转向指令异常后仍可人工制动；在持续监控并及时中止的低速代表工况下，参考转向丢失/不足的可制动案例评为 C1。该规则不覆盖制动同时失效、车辆失稳或轨迹速度达到 15 km/h；未套用纵向 TTC。"
+    - rule_id: IAV_UNATTENDED_PARKING_REFERENCE
+      status: CONDITIONAL_REFERENCE
+      result: C3
+      evaluation_phase: AFTER_APPLICABLE_METHODS
+      requires_contact: true
+      source_document: 副本IAV_EHYREEV蓝海项目_代客泊车-HARA分析_V1.0.xlsx
+      source_location: "6-HARA Analyses!M2:N6,M24:N27,M34:N34,M38:N38,M41:N41,M51:N51"
+      source_sha256: 0698cc8e2f87ae861480c67ce8df89910f59d635a0cb49587e85b723e1d48898
+      source_statement: "The unattended parking braking, drive, erroneous steering and rollaway collision cases select C3 because the driver is outside the vehicle. Cases with specific remote braking or counterpart evasion instead use C1."
+      limitation: "Selected project reference judgement on 2026-10-26: outside-driver collision without an applicable evidenced avoidance override is evaluated without credit for an unestablished remote or counterpart intervention. Missing intervention facts stay missing; this does not prove that a remote interface is absent or a person cannot evade. Contact and driver-position inputs must be valid."
+      when:
+        operating_mode: [parking_vehicle_control]
+        fault_motion_model: [CONSTANT_SPEED_REPRESENTATIVE, CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE, GRADE_ROLLAWAY_TO_IMPACT_DISTANCE, CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, RECTILINEAR_MOVING_TARGET_CONTACT]
+        driver_in_vehicle: false
+      rationale: "驾驶员不在驾驶位，不能直接操作车内控制；当前碰撞分支没有成立的远程干预或他方避让规则。按无人直接接管的泊车参考工况评为 C3，不计入尚未成立的额外规避收益；已有有效干预规则优先。"
+    - rule_id: IAV_UNAVAILABLE_BRAKING_REFERENCE
+      status: CONDITIONAL_REFERENCE
+      result: C3
+      evaluation_phase: AFTER_APPLICABLE_METHODS
+      requires_contact: true
+      source_document: 副本IAV_EHYREEV蓝海项目_代客泊车-HARA分析_V1.0.xlsx
+      source_location: "6-HARA Analyses!D2:N6,D10:N15"
+      source_sha256: 0698cc8e2f87ae861480c67ce8df89910f59d635a0cb49587e85b723e1d48898
+      source_statement: "Reference brake-loss/insufficient-braking collision cases use C3 when the required intervention cannot be performed."
+      limitation: "Selected project transfer on 2026-10-26: for a proven contact trajectory with explicitly unavailable braking, no lower C credit is taken without a separately established avoidance path. In-seat use is a conditional extension of the reference, not its original outside-driver fact. Unknown braking availability does not match."
+      when:
+        operating_mode: [parking_vehicle_control]
+        fault_motion_model: [CONSTANT_SPEED_REPRESENTATIVE, CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE, GRADE_ROLLAWAY_TO_IMPACT_DISTANCE, CONSTANT_LATERAL_ACCELERATION_TO_CONTACT, RECTILINEAR_MOVING_TARGET_CONTACT]
+        driver_in_vehicle: true
+        emergency_braking_available: false
+      rationale: "当前故障条件明确不能使用制动避险，且轨迹计算存在接触；没有成立的独立避让规则时，按失去有效干预的代表工况评为 C3。保留其他剩余能力，不将它们自动等同于本场景已能避险；本项为参考方法的条件性扩展。"
 decisions:
   A1:
     status: CONFIRMED_FOR_CURRENT_PROJECT

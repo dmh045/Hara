@@ -19,8 +19,10 @@ must agree before scoring. No Excel or reduced trace is used as input truth.
 Committed snapshot decoding is separate from workflow resume invalidation.
 Rescoring retains the stored scenario-generation version and fingerprints:
 it consumes existing candidates, not the current generator. A causal-contract
-or method mismatch fails closed and requires an explicit dependency review;
-the command never restarts upstream stages or upgrades a version label.
+or method mismatch fails closed unless `--source-baseline` proves one of the
+supported C-only routing, applicability or conditional-reference changes.
+All other assets and generation/causal contracts must remain unchanged.
+The command never restarts upstream stages or upgrades a version label.
 
 The optional JSON supplement is checkpoint-hash bound. `scopes` maps group
 IDs to explicit `{malfunction_id, scenario_id}` pairs. Each `entries` item
@@ -38,8 +40,13 @@ The result includes original/new value counts, every original association's
 disposition in `risk_execution_trace.json`, source hashes, runtime, and
 `business_scoring_complete`. Exit code 0 means execution succeeded, not that
 all engineering inputs are available. Missing E never becomes QM and does
-not suppress ready S/C. Old risk/Harm/SG outputs are invalidated; the command
-does not generate semantic Safety Goals. FTTI remains not evaluated.
+not suppress ready S/C. Old risk/Harm results are invalidated. SG membership
+and highest known ASIL are recomputed by the same deterministic aggregator
+used by `analyze`, preserving recorded original text and scoped Safe State
+proposals. This does not call a semantic Provider or grant engineering approval.
+QM members still require no SG; unresolved members remain visible. FTTI remains
+not evaluated. A source-selected sample may have an empty guideword log when
+its committed malfunction identities and causal evidence are already present.
 
 The workbook's audit sheet contains the new trace reference and execution ID.
 `rescore_summary.json` is the execution handoff; `summary.json` remains the

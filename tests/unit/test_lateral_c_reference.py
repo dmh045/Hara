@@ -67,6 +67,13 @@ def test_reference_c_uses_generated_trajectory_and_preserves_se(method):
     {'operating_mode': 'parking_search'},
 ])
 def test_reference_does_not_generalize_to_other_failures_or_drivers(method, changes):
+    # Isolate the original MQB reference. The project now separately selects
+    # other references for unattended and lost-steering cases; those are not
+    # evidence that this narrower MQB rule applies.
+    metadata = deepcopy(method.metadata)
+    rules = metadata['project_analysis_policy']['controllability']['conditional_reference_rules']
+    metadata['project_analysis_policy']['controllability']['conditional_reference_rules'] = rules[:1]
+    method = replace(method, metadata=metadata)
     sc = steering_candidate(method)
     # No remote/other-party override: inspect just reference scope.
     sc.facts['remote_intervention_available'] = None

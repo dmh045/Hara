@@ -564,6 +564,8 @@ class YamlBaselineCompiler:
             if not isinstance(reference_rules, list):
                 raise YamlBaselineCompileError("conditional_reference_rules must be a list")
             seen_reference_rules = set()
+            reference_scope_fields = {"component_category", "failure_type", "operating_mode", "fault_motion_model"}
+            reference_capability_fields = {"driver_in_vehicle", "emergency_braking_available", "steering_control_available"}
             for index, rule in enumerate(reference_rules):
                 conditions = rule.get("when", {}) if isinstance(rule, dict) else {}
                 speed_limit = rule.get("trajectory_speed_upper_exclusive_kph") if isinstance(rule, dict) else None
@@ -573,18 +575,23 @@ class YamlBaselineCompiler:
                         or rule.get("result") not in {"C0", "C1", "C2", "C3"}
                         or not all(rule.get(key) for key in ("source_document", "source_location",
                             "source_sha256", "source_statement", "limitation", "rationale"))
-                        or not isinstance(rule.get("function_output_terms"), list)
-                        or not rule["function_output_terms"]
-                        or any(not isinstance(term, str) or not term.strip() for term in rule["function_output_terms"])
-                        or not isinstance(conditions, dict) or set(conditions) != {
-                            "component_category", "failure_type", "operating_mode", "fault_motion_model",
-                            "driver_in_vehicle", "emergency_braking_available"}
+                        or not isinstance(rule.get("function_output_terms", []), list)
+                        or any(not isinstance(term, str) or not term.strip() for term in rule.get("function_output_terms", []))
+                        or not isinstance(conditions, dict)
+                        or not {"operating_mode", "fault_motion_model"} <= set(conditions)
+                        or not set(conditions) <= reference_scope_fields | reference_capability_fields
+                        or not set(conditions) & reference_capability_fields
                         or any(not isinstance(conditions[key], list) or not conditions[key]
-                            for key in ("component_category", "failure_type", "operating_mode", "fault_motion_model"))
+                            or any(not isinstance(value, str) or not value for value in conditions[key])
+                            for key in set(conditions) & reference_scope_fields)
                         or any(not isinstance(conditions[key], bool)
-                            for key in ("driver_in_vehicle", "emergency_braking_available"))
-                        or isinstance(speed_limit, bool) or not isinstance(speed_limit, (int, float))
-                        or not math.isfinite(speed_limit) or speed_limit <= 0):
+                            for key in set(conditions) & reference_capability_fields)
+                        or rule.get("evaluation_phase", "BEFORE_MODEL_GUARDS") not in {
+                            "BEFORE_MODEL_GUARDS", "AFTER_APPLICABLE_METHODS"}
+                        or not isinstance(rule.get("requires_contact", False), bool)
+                        or (speed_limit is not None and (isinstance(speed_limit, bool)
+                            or not isinstance(speed_limit, (int, float))
+                            or not math.isfinite(speed_limit) or speed_limit <= 0))):
                     raise YamlBaselineCompileError("Invalid conditional controllability reference rule")
                 seen_reference_rules.add(rule["rule_id"])
             compiled_project_policy = {

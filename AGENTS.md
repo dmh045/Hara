@@ -74,6 +74,8 @@ After each project update, complete the required validation, commit the relevant
 
 Start each round by inspecting current source, uncommitted work and applicable instructions. Find the authoritative implementation and its production callers before editing; explain why an existing responsibility cannot serve any proposed new service, wrapper, state or switch. Locate and fix routine defects autonomously with the smallest demonstrated repair. Preserve effective behavior and verify the affected production path. Report material method or behavior changes; new paid Provider usage requires a current, unspent, explicit authorization. Cleanup never authorizes another paid full run.
 
+Keep edits targeted but assess their end-to-end impact: source extraction, scenario generation, capability binding, physical calculation, S/E/C, branch ASIL, SG associations and report projection. Use available representative and fixed-population checkpoints, and check cache/budget/resume behavior. Distinguish a local test pass from production-path evidence and full-run validation; a reduced Pending count alone is not closure.
+
 ## Safe code convergence
 
 - Before every delivery inspect touched modules and direct callers for duplicate responsibilities, obsolete paths, synonymous policies and extra side effects. After every three complete repair rounds, or before a full validation run (whichever comes first), inspect cross-module responsibilities. Count work rounds, not commits. A check does not require a deletion; record when no safe removal is proven.

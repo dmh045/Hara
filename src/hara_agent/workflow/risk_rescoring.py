@@ -11,6 +11,7 @@ from hara_agent.method_sources import MethodSourceResolver
 from hara_agent.method_sources.yaml_validation import validate_manifest
 from hara_agent.models import ItemDefinitionFacts, evaluate_risk_eligibility_payload
 from hara_agent.services.analysis.risk_services import RiskScoringServices
+from hara_agent.services.analysis.method_safety_goal_service import MethodSafetyGoalService
 from hara_agent.services.analysis.scenario_physics import source_is_accepted_for
 from hara_agent.services.reporting.canonical_renderer import HARAReportWorkbookRenderer
 from hara_agent.services.reporting.projection import HARAReportProjectionService
@@ -18,6 +19,7 @@ from hara_agent.services.reporting.report_schema import load_report_schema
 from hara_agent.services.semantic.scenario_evidence import SCENARIO_ASSESSMENT_CONTRACT_VERSION
 from .checkpoints import CheckpointRepository
 from .nodes.scoring import score_structured_scenarios, _validated_causal_assessment
+from .nodes.safety_goals import aggregate_safety_goals
 from .review_artifacts import ReviewArtifactWriter
 from .state import HARAState, WorkflowStage
 
@@ -142,7 +144,10 @@ class OfflineRiskRescorer:
         if (not raw.get("scenario_contract_version")
                 or raw.get("scenario_assessment_contract_version") != SCENARIO_ASSESSMENT_CONTRACT_VERSION):
             raise ValueError("Source causal/scenario contracts are incompatible; differential validation required")
-        for key in ("functions", "guideword_assessments", "malfunctions", "scenarios", "risk_results"):
+        # A scoped, source-selected production sample can start from existing
+        # malfunctions without rerunning guidewords. Scoring needs their typed
+        # identities and causal assessments, not a nonempty frontend log.
+        for key in ("functions", "malfunctions", "scenarios", "risk_results"):
             if not raw.get(key):
                 raise ValueError(f"Canonical checkpoint lacks {key}: {source_path}")
         source = HARAState.read_committed(raw)
@@ -282,6 +287,11 @@ class OfflineRiskRescorer:
         new_pairs = {(risk.malfunction_id, risk.scenario_id) for risk in state.risk_results}
         if new_pairs != eligible:
             raise ValueError("Offline scoring changed the original eligible queue")
+        # Recompute the same downstream associations as ordinary analyze. The
+        # old goal records only preserve original text/state proposals; the
+        # existing aggregator derives membership/max ASIL and never approves it.
+        state.safety_goals = deepcopy(source.safety_goals)
+        state = aggregate_safety_goals(state, MethodSafetyGoalService(method))
         trace_path = target_review / "risk_execution_trace.json"
         trace = json.loads(trace_path.read_text(encoding="utf-8"))
         trace.update(source_run_id=source_run_id, risk_execution_id=execution_id,
@@ -301,7 +311,7 @@ class OfflineRiskRescorer:
             writer.record_scenario_feasibility(item)
         writer.write_summary(state)
         state.record("offline_risk_rescoring_completed", source_run_id=source_run_id,
-                     risk_execution_id=execution_id, safety_goals_status="NOT_GENERATED_OFFLINE",
+                     risk_execution_id=execution_id, safety_goals_status="DETERMINISTIC_REAGGREGATED",
                      ftti_status="NOT_EVALUATED")
         state.stage = WorkflowStage.QUALITY_GATE
         repository.save(state)
@@ -329,7 +339,7 @@ class OfflineRiskRescorer:
             "supplement_sha256": file_hash(supplement) if supplement else "",
             "analytical_options_pending_validation": len(supplement_payload.get("analytical_options_pending_validation", [])),
             "source_file_hashes": hashes, "source_files_unchanged": False,
-            "output": str(output), "safety_goals_status": "NOT_GENERATED_OFFLINE", "ftti_status": "NOT_EVALUATED",
+            "output": str(output), "safety_goals_status": "DETERMINISTIC_REAGGREGATED", "ftti_status": "NOT_EVALUATED",
         }
         summary["scenario_eligibility_summary"] = trace["scenario_eligibility_summary"]
         schema = load_report_schema()
