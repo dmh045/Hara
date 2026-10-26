@@ -10,6 +10,28 @@ from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PH
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+from hara_agent.services.extraction.evidence_retrieval import (
+    CoverageFirstContextAssembler, DeterministicEvidenceRetriever, FactRetrievalSpec,
+)
+
+
+def _source_evidence(state, function):
+    """Route bounded original passages, never infer a control or interaction."""
+    specs = [
+        FactRetrievalSpec("intervention", ("制动踏板", "接管", "驾驶员干预", "remote", "brake pedal", "override")),
+        FactRetrievalSpec("interfaces", ("IPB", "EPS", "VDC", "EPB", "interface", "接口")),
+        FactRetrievalSpec("participants", ("行人", "两轮车", "车辆", "pedestrian", "traffic")),
+    ]
+    terms = tuple(str(function[k]) for k in ("name", "output") if function.get(k))
+    if terms:
+        specs.append(FactRetrievalSpec("function", terms))
+    blocks = state.item_definition.get("blocks", [])
+    context = CoverageFirstContextAssembler().assemble(blocks, specs,
+        DeterministicEvidenceRetriever().rank(blocks, specs), task="physical_analysis", max_characters=4000)
+    evidence = {"ITEM." + block["block_id"]: {"value": block["text"], "sources": [{
+        "source_type": "item_definition", "source_id": state.item_definition.get("source_id", ""),
+        "location": block["location"], "excerpt": block["text"]}]} for block in context.source_blocks}
+    return evidence, context.diagnostics.to_dict()
 
 
 def _update_response_totals(metrics, responses, sign=1):
@@ -96,6 +118,9 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
                 if value.get("context", {}).get("malfunction", {}).get("malfunction_id") == mf.malfunction_id}
         local = HARAState(state.run_id, functions=deepcopy(state.functions), item_definition={
             "physical_analysis_plans": deepcopy(references),
+            # Read-only source passages are shared; workers never change them.
+            "blocks": state.item_definition.get("blocks", []),
+            "source_id": state.item_definition.get("source_id", ""),
         })
         try:
             result = construct_physical_scenarios(local,
@@ -148,6 +173,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     config = getattr(agent.client, "config", None)
     route = {key: getattr(config, key, "") for key in ("provider", "model", "base_url", "scenario_thinking")}
     for mf in malfunctions:
+        source_evidence, source_routing = _source_evidence(state, functions.get(mf.function_id, {}))
+        driver_configurations = sorted({str(c.facts.get("driver_position", ""))
+                                        for c in candidates[mf.malfunction_id]})
         groups, kept = defaultdict(list), []
         for candidate in candidates[mf.malfunction_id]:
             task_scope = producer.task_scope(candidate, mf.malfunction_id)
@@ -166,7 +194,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             # The same motion plan can be instantiated for multiple driver
             # configurations. Causality and risk are still evaluated per world.
             inputs = {"conditions": scenario_conditions(first, without_driver=True),
-                "driver_policy": "Propose motion before driver intervention. Driver presence/enablement and causal relevance are evaluated independently for each instance; do not assume a driver's corrective action in the motion plan.",
+                "driver_policy": "Calculate the unmitigated trajectory, without subtracting a driver's action. Separately assess remaining control CAPABILITY and its conditional assumptions for the listed driver configurations; lack of intervention in the motion model does not mean lack of an available independent control path. Causality and controllability are assessed per instance.",
+                "driver_configurations": driver_configurations,
                 "malfunction": asdict(mf), "function": functions.get(mf.function_id, {}),
                 "project_context": {k: v for k, v in project.items() if k not in {"risk_facts", "method_risk_fact_bindings", "sources"}},
                 "project_physical_facts": [f for f in project.get("risk_facts", [])
@@ -191,12 +220,20 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     "alternative from project_context or explain the uncovered condition. Return operating_condition "
                     "with physical_effect linked to your geometry, motion, visibility or intervention assumptions. "
                     "One source axis per hypothesis; no Cartesian expansion. A label alone does not prove coverage.")
+            if task_scope == "MOTION_AND_CONTROLS":
+                inputs["interaction_coverage_policy"] = (
+                    "Compare physically compatible object motions before choosing representatives. "
+                    "Existing specific objects/constraints remain binding. For a justified new target, "
+                    "prefer distinct relevant interactions within this plan; do not repeat the same "
+                    "stationary-target mechanism only with another distance. Keep at most 3 total instances. "
+                    "If no distinct supported interaction is appropriate, explain why; never add an unrelated fault.")
             if task_scope == "CONTROL_INPUTS_ONLY":
                 inputs.update(task_scope=task_scope, prompt_version=agent.CONTROL_PROMPT_VERSION)
             evidence = {"MF.description": {"value": mf.description, "sources": [vars(ref) for ref in mf.sources]},
                         "MF.functional_effect": {"value": mf.functional_effect, "sources": [vars(ref) for ref in mf.sources]},
                         "PROJECT.operating_context": {"value": inputs["project_context"], "sources": project.get("sources", [])},
-                        "SCENARIO.conditions": inputs["conditions"]}
+                        "SCENARIO.conditions": inputs["conditions"], **source_evidence}
+            inputs["source_routing"] = source_routing
             inputs["evidence"] = evidence
             key = signature(inputs)
             context = {**inputs, "plan_key": key}

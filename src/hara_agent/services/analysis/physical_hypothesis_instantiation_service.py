@@ -45,11 +45,11 @@ def summarize_physical_hypotheses(state, method):
 
 
 class PhysicalInputConflict(ValueError):
-    def __init__(self, reason, field, old, proposed, *, relation="SAME_INITIAL_WORLD"):
+    def __init__(self, reason, field, old, proposed, *, relation="SAME_INITIAL_WORLD", resolution=None):
         super().__init__(reason + ":" + field)
         self.details = {"reason_code": reason, "field": field, "old_value": old,
             "proposed_value": proposed, "relation": relation,
-            "resolution": "Preserve the applicable input, or explicitly propose a supported new initial condition/target; do not silently overwrite."}
+            "resolution": resolution or "Preserve the applicable input, or explicitly propose a supported new initial condition/target; do not silently overwrite."}
 
 
 class PhysicalHypothesisInstantiationService:
@@ -356,7 +356,14 @@ class PhysicalHypothesisInstantiationService:
                 "scope": spec["scope"],
             }
         dimensions = candidate.facts.get("method_scenario_dimensions", {})
+        source = candidate.facts.get("source_operating_conditions", {})
+        slope_tag = candidate.facts.get("source_slope_direction", source.get("source_slope_direction"))
         return {"models": models,
+            "grade_reference_mapping": {
+                "selected_source_slope_direction": slope_tag,
+                "road_reference_heading_by_alignment": {alignment: self._road_heading(slope_tag, alignment)
+                    for alignment in ("SAME", "OPPOSITE")},
+                "meaning": "If choosing ROAD_REFERENCE, select a coherent alignment/heading pair from this mapping. The selected parent slope tag is not the project's entire allowed up/down set. These are coordinate relations, not evidence of the actual vehicle heading; declare an orientation assumption when unknown."},
             "derivable_conditions": {k: candidate.facts[k] for k in (
                 "source_slope_pct", "source_slope_direction", "slope_reference",
                 "ego_speed_constraint") if k in candidate.facts},
@@ -550,6 +557,13 @@ class PhysicalHypothesisInstantiationService:
         return {}, "; ".join(dict.fromkeys(reasons)) or "NO_APPLICABLE_OBJECT_ATOM"
 
     @staticmethod
+    def _road_heading(tag, alignment):
+        heading = {"上坡": "UPHILL", "下坡": "DOWNHILL", "UPHILL": "UPHILL", "DOWNHILL": "DOWNHILL"}.get(tag)
+        if heading and alignment == "OPPOSITE":
+            return "DOWNHILL" if heading == "UPHILL" else "UPHILL"
+        return heading
+
+    @staticmethod
     def _grade_mapping(parent, h):
         frame = h.get("grade_frame")
         if not frame:
@@ -563,16 +577,18 @@ class PhysicalHypothesisInstantiationService:
         if reference != "UNSPECIFIED" and frame["slope_reference"] != reference:
             raise PhysicalInputConflict("SLOPE_REFERENCE_CONFLICT", "slope_reference", reference, frame["slope_reference"])
         source_heading = parent.facts.get("ego_heading_relative_to_downhill")
-        tag_heading = {"上坡": "UPHILL", "下坡": "DOWNHILL", "UPHILL": "UPHILL", "DOWNHILL": "DOWNHILL"}.get(tag)
+        tag_heading = PhysicalHypothesisInstantiationService._road_heading(tag, "SAME")
         if tag_heading and frame["slope_reference"] == "EGO_FORWARD":
             source_heading = tag_heading
         elif tag_heading and frame["slope_reference"] == "ROAD_REFERENCE":
             alignment = frame.get("ego_forward_relative_to_reference")
             if not alignment:
                 raise PhysicalInputConflict("ROAD_TO_BODY_MAPPING_REQUIRED", "ego_forward_relative_to_reference", None, None)
-            source_heading = tag_heading if alignment == "SAME" else ("DOWNHILL" if tag_heading == "UPHILL" else "UPHILL")
+            source_heading = PhysicalHypothesisInstantiationService._road_heading(tag, alignment)
         if source_heading and source_heading != heading:
-            raise PhysicalInputConflict("GRADE_HEADING_CONFLICT", "heading_relative_to_downhill", source_heading, heading)
+            raise PhysicalInputConflict("GRADE_HEADING_CONFLICT", "heading_relative_to_downhill", source_heading, heading,
+                relation="GRADE_REFERENCE_AND_BODY_ALIGNMENT",
+                resolution="Make slope_reference, ego_forward_relative_to_reference and heading_relative_to_downhill mutually consistent with the source slope tag. For ROAD_REFERENCE, SAME preserves the source uphill/downhill direction and OPPOSITE reverses it. Changing only condition_changes.initial_state or its rationale cannot resolve a contradictory coordinate mapping. Preserve any explicitly sourced vehicle heading.")
         if frame["orientation_basis"] == "SOURCE" and not (parent.facts.get("ego_heading_relative_to_downhill") or reference != "UNSPECIFIED" and tag_heading):
             raise PhysicalInputConflict("GRADE_ORIENTATION_NOT_SOURCE_GROUNDED", "orientation_basis", "UNSPECIFIED", "SOURCE")
         direction = "REVERSE" if downhill == "REAR" else "FORWARD"

@@ -85,6 +85,60 @@ def test_scoped_existing_dynamics_are_in_request_and_can_be_inherited(method):
     assert field in status['models'][raw['hypotheses'][0]['model']]['excluded_parent_inputs']
 
 
+@pytest.mark.parametrize('workers', [1, 2])
+def test_original_control_passages_reach_serial_and_parallel_tasks_and_invalidate_cache(method, tmp_path, workers):
+    from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+    text = '制动踏板可触发正常退出；IPB执行制动请求。未证明本故障下人工通道独立，行人可以横穿通道。'
+    state = HARAState('source-controls', item_definition={'source_id': 'source-document', 'blocks': [
+        {'block_id': 'B-control', 'kind': 'paragraph', 'location': 'paragraph[3]', 'text': text}]})
+    mfs = [mf(), replace(mf(), malfunction_id='MF2')]
+    parents = {}
+    for m in mfs:
+        inside = make_candidate()
+        inside.facts['driver_position'] = 'IN_VEHICLE'
+        outside = replace(deepcopy(inside), scenario_id='SC-outside')
+        outside.facts.update(driver_position='OUTSIDE_VEHICLE', driver_in_vehicle=False)
+        parents[m.malfunction_id] = [inside, outside]
+    client = Client([raw_plan()] * 4)
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    _, children = run(method, agent, state=state, candidates=deepcopy(parents), malfunctions=mfs, workers=workers)
+    assert len(client.requests) == 2
+    for request in client.requests:
+        payload = json.loads(request.user_prompt)
+        context = expand_physical_prompt_view(payload['context'], payload.get('source_texts', {}))
+        evidence = context['evidence']['ITEM.B-control']
+        assert evidence['value'] == evidence['sources'][0]['excerpt'] == text
+        assert evidence['sources'][0]['source_id'] == 'source-document'
+        assert context['driver_configurations'] == ['IN_VEHICLE', 'OUTSIDE_VEHICLE']
+        assert context['source_routing']['selected_characters'] <= 4000
+    # Retrieval never converts the normal exit passage to proven braking.
+    assert all('emergency_braking_available' not in c.facts for values in children.values() for c in values)
+    _, restored = run(method, agent, state=state, candidates=deepcopy(parents), malfunctions=mfs, workers=workers)
+    assert len(client.requests) == 2 and restored == children
+    state.item_definition['blocks'][0]['text'] += '补充：当前对象被遮挡。'
+    _, changed = run(method, agent, state=state, candidates=deepcopy(parents), malfunctions=mfs, workers=workers)
+    assert len(client.requests) == 4
+    assert {c.scenario_id for values in changed.values() for c in values}.isdisjoint(
+        {c.scenario_id for values in children.values() for c in values})
+
+
+def test_actual_item_control_and_road_user_passages_are_bounded_not_summarized():
+    from dataclasses import asdict
+    from hara_agent.services.extraction import DocumentReader
+    from hara_agent.workflow.physical_analysis import _source_evidence
+    document = DocumentReader().read(Path('input/ItemDef.docx'))
+    state = HARAState('source-routing', item_definition={
+        'source_id': document.source_id, 'blocks': [asdict(b) for b in document.blocks]})
+    evidence, routing = _source_evidence(state, {'name': '输出驱动扭矩'})
+    originals = {b.text for b in document.blocks}
+    passages = [e['value'] for e in evidence.values()]
+    assert routing['selected_characters'] <= 4000
+    assert all(p in originals for p in passages)
+    assert any('Active/Override' in p and '驾驶员踩制动踏板' in p for p in passages)
+    assert any('IPB' in p and '执行' in p for p in passages)
+    assert any('行人' in p and '两轮车' in p for p in passages)
+
+
 def test_symbolic_geometry_and_no_contact_are_valid_without_correction(method):
     symbolic = raw_plan()
     p = symbolic['hypotheses'][0]['parameters'][1]

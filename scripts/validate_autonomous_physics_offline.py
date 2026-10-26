@@ -194,7 +194,9 @@ def source_state(saved, method, item, run_id):
     typed = asdict(ItemDefinitionNormalizer.normalize_source_scope(
         ItemDefinitionFacts.from_dict(typed), document.blocks, document.source_id))
     state = HARAState(run_id, stage=WorkflowStage.MALFUNCTIONS,
-        item_definition={"typed": typed, "source_path": str(item), "source_selection": selection.to_dict()},
+        item_definition={"typed": typed, "source_id": document.source_id, "source_path": str(item),
+                         "source_selection": selection.to_dict(),
+                         "blocks": [asdict(block) for block in selection.selected_blocks]},
         functions=[f for f in saved["functions"] if f["function_id"] in function_ids], malfunctions=malfunctions,
         method_contract={"template_hash": method.metadata["template_hash"]})
     return state

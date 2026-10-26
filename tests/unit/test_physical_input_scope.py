@@ -220,6 +220,31 @@ def test_road_reference_heading_maps_into_body_coordinates(method,alignment,head
     assert child.facts['motion_model_outcome']['status']=='CONTACT'
 
 
+def test_road_reference_conflict_feedback_requires_coordinate_repair(method):
+    parent = make_candidate()
+    parent.facts.update(source_slope_direction='上坡', slope_reference='ROAD_REFERENCE')
+    raw = grade_raw('DOWNHILL', 'FRONT')
+    h = raw['hypotheses'][0]
+    h['grade_frame'].update(slope_reference='ROAD_REFERENCE', ego_forward_relative_to_reference='SAME')
+    h['condition_changes'] = {'initial_state': True, 'target': False, 'rationale': 'Independent stopped initial condition'}
+    service = PhysicalHypothesisInstantiationService(method)
+    mapping = service.input_status(parent, 'MF')['grade_reference_mapping']
+    assert mapping['selected_source_slope_direction'] == '上坡'
+    assert mapping['road_reference_heading_by_alignment'] == {'SAME': 'UPHILL', 'OPPOSITE': 'DOWNHILL'}
+    children, errors = service.instantiate(parent, mf(), PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'}),
+        plan_key='frame-conflict', response_model='offline')
+    assert not children and errors[0]['reason_code'] == 'GRADE_HEADING_CONFLICT'
+    assert errors[0]['relation'] == 'GRADE_REFERENCE_AND_BODY_ALIGNMENT'
+    assert 'OPPOSITE' in errors[0]['resolution'] and 'condition_changes.initial_state' in errors[0]['resolution']
+    # A different rationale alone did not bypass the guard. A coherent body
+    # mapping does calculate, retaining the source uphill label and approval.
+    h['grade_frame']['ego_forward_relative_to_reference'] = 'OPPOSITE'
+    child = instantiate(method, raw, parent)[0]
+    assert child.facts['motion_model_outcome']['status'] == 'CONTACT'
+    assert parent.facts['source_slope_direction'] == '上坡'
+    assert child.fact_provenance['relative_speed_kph']['approval'] == 'PENDING'
+
+
 def test_budget_stop_during_semantic_correction_keeps_original_and_resumes(method,tmp_path):
     from hara_agent.workflow import HARAState, CheckpointRepository
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios

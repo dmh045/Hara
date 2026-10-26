@@ -72,10 +72,22 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v13-json-contract"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v2-json-contract"
+    PROMPT_VERSION = "post-fault-physical-scenario-v14-source-control-coverage"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v3-source-conditions"
+    CONTROL_ANALYSIS_POLICY = (
+        "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
+        "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
+        "也不能仅凭正常退出动作就把故障后独立性当成事实。允许在相容的代表工况中明确假设某独立通道仍可用，"
+        "用remaining_controls和conditions说明该假设成立所需条件及不覆盖的共同失效；"
+        "这些是待审核的分析假设，不要求原文逐字证明故障后可靠性。原文未证明不是拒绝所有条件性假设的理由。"
+        "对远程干预和目标规避，同样需要在本代表的几何、可见性、突发性和行为条件下判断；"
+        "有合理依据时提出明确true或false及条件，不能把未提及、静止、车外直接当作false。"
+        "不要为得到完整评级机械填值，也不要额外假定独立故障。若连条件性工况也无法合理成立，具体说明矛盾或方法缺口。"
+        "driver_configurations已列明将要实例化的驾驶员配置；能力是否保留与人员是否在驾驶位分开，不重写这些配置。"
+    )
     ANALYSIS_STRATEGY = (
-        "本任务先完成当前失效的一个条件性代表工况：对象、方向、净距、初始运动及故障运动必须共同成立。"
+        "本任务完成当前失效的有限条件性代表工况：先比较与故障有关的对象运动交互，再选择模型和取点。"
+        "对象、方向、净距、初始运动及故障运动必须共同成立。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
         "缺少实测距离、加速度或残余阻力时，可以自行选取有场景依据的POINT并解释选值、参考点、"
         "有效阶段和未覆盖范围。假设不等于测量、批准或车辆能力上界，不设通用数值。"
@@ -102,12 +114,18 @@ class PhysicalScenarioAgent:
                 "basis_refs": ["a supplied evidence ID"],
                 "geometry": {"road_user_type": "from method vocabulary", "collision_type": "from method vocabulary",
                     "object_position": "FRONT|REAR|LEFT|RIGHT", "ego_longitudinal_direction": "FORWARD|REVERSE",
+                    "object_longitudinal_direction": "FORWARD|REVERSE|LEFT|RIGHT; required for moving target, omit for stationary",
                     "object_extent": "POINT_ON_TRAVEL_PATH|EXTENDED_ALONG_TRAVEL_PATH|FINITE_CONTACT_ENVELOPE", "object_id": "target1"},
                 "parameters": [{"field": "one parameter_units key", "unit": "exact declared unit",
                     "kind": "POINT", "value": 0, "rationale": "why this conditional representative is useful"}],
                 "conditions": ["scope of this hypothesis"], "uncovered_conditions": ["limits of this analysis"],
                 "failed_controls": ["affected control"], "remaining_controls": ["independent control, if supported"],
                 "condition_changes": {"initial_state": False, "target": False, "rationale": "same initial world and target; set true only for a justified independent child condition"},
+                "grade_frame": {"coordinate_frame": "BODY_FORWARD_POSITIVE",
+                    "slope_reference": "EGO_FORWARD|ROAD_REFERENCE|UNSPECIFIED",
+                    "ego_forward_relative_to_reference": "SAME|OPPOSITE (required with ROAD_REFERENCE)",
+                    "heading_relative_to_downhill": "UPHILL|DOWNHILL", "downhill_body_direction": "FRONT|REAR",
+                    "orientation_basis": "SOURCE|ANALYSIS_ASSUMPTION", "rationale": "required for rollaway; omit grade_frame for other models"},
             }], "uncovered_conditions": ["not an exhaustive vehicle capability envelope"],
         }
         system = (
@@ -134,6 +152,9 @@ class PhysicalScenarioAgent:
             "焦点与当前机制或室内外环境不相容时，选择列表内另一相关条件并解释；没有适用条件时"
             "在uncovered_conditions明确记录。不能只复述标签就声称覆盖，也不为每个标签新增假设。"
             "优先覆盖既有条件允许的不同对象运动交互，同一接触关系仅数值变化不占新增机制槽位；"
+            "先比较静止、同向接近、对向接近或横穿哪些与当前失效和ODD相关，不能因为没有实测对象速度就默认全是静止目标。"
+            "无具体对象的上下文可提出有依据的移动目标代表；明确已有静止对象时保留原工况，"
+            "额外对象必须声明新条件。同一方案中优先补充不同且物理相容的机制，而不是只改变距离。"
             "三个实例预算由不同交互和范围采样共同使用，默认每种交互一个代表点。"
             "不得把假设声称为原文事实、车辆真实能力或可信上界。不得输出 S/E/C/ASIL、批准状态、"
             "碰撞速度、TTC、collision_branches 或 Atom ID。程序会计算这些量。"
@@ -181,10 +202,8 @@ class PhysicalScenarioAgent:
             "用 condition_changes 明确声明并说明依据；新对象给不同 object_id，程序重新绑定受影响 Atom。"
             "例如来源初速非零而坡道模型要求静止，必须明确 initial_state=true 及独立静止工况依据，"
             "不能一边写初速0一边声明初始条件未变；也可以保留原条件并说明当前模型不适用。"
-            "坡道模型必须提供 grade_frame：coordinate_frame=BODY_FORWARD_POSITIVE，"
-            "slope_reference=EGO_FORWARD|ROAD_REFERENCE|UNSPECIFIED，heading_relative_to_downhill=UPHILL|DOWNHILL，"
-            "downhill_body_direction=FRONT|REAR，orientation_basis=SOURCE|ANALYSIS_ASSUMPTION，rationale。"
-            "道路参考另给 ego_forward_relative_to_reference=SAME|OPPOSITE。车头朝上坡时重力向后，"
+            "坡道模型必须提供output_shape中的grade_frame，其他模型省略它；"
+            "道路参考必须选用model_input_status.grade_reference_mapping中相容的朝向组合。车头朝上坡时重力向后，"
             "车头朝下坡时向前；模型运动方向必须沿重力，目标是否在该方向由程序判断。"
             "静止起步纯重力向后时，不能声称撞上车前静止目标；可保留为不接触对照，"
             "另设车后目标必须声明新对象条件，不能只在文字中换目标。"
@@ -215,6 +234,9 @@ class PhysicalScenarioAgent:
                    "parameter_units": PARAMETER_UNITS, "output_shape": example,
                    "control_identities": sorted(CONTROL_IDENTITIES),
                    "contract_version": PHYSICAL_PLAN_VERSION}
+        if focus := context.get("source_condition_focus"):
+            example["hypotheses"][0]["operating_condition"] = {
+                **focus, "physical_effect": "Explain the actual effect on this geometry/motion/visibility; choose a compatible alternative from the allowed list if needed"}
         controls_only = context.get("task_scope") == "CONTROL_INPUTS_ONLY"
         if controls_only:
             # Same bounded agent/transport/repair ledger, with motion explicitly
@@ -246,6 +268,7 @@ class PhysicalScenarioAgent:
                 "failed_controls": [], "remaining_controls": [], "intervention_assumptions": {}}}
             content["model_catalog"] = {}
             content["parameter_units"] = {}
+        system += self.CONTROL_ANALYSIS_POLICY
         attempts = []
         errors = []
         previous_response = None

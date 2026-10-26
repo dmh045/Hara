@@ -24,12 +24,12 @@ MODEL_CATALOG = {
     "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": {
         "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "relative_distance_m", "longitudinal_acceleration_mps2"],
-        "scope": "Straight travel toward a stationary target; first contact before stop; acceleration may be negative or zero. Optional post_fault_speed_cap_kph represents an explicitly remaining independent limiter, not the normal operating speed.",
+        "scope": "Straight travel toward a stationary target; first contact before stop; acceleration may be negative or zero. relative_distance_m is the remaining ego travel to first contact (surface clearance), NOT vehicle center-to-center distance. Optional post_fault_speed_cap_kph represents an explicitly remaining independent limiter, not the normal operating speed.",
     },
     "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": {
         "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "relative_distance_m", "slope_percent", "residual_resistance_mps2"],
-        "scope": "Initially stationary ego, gravity down a constant grade toward a stationary target. Grade is rise/run percent; residual resistance includes remaining holding capability.",
+        "scope": "Initially stationary ego, gravity down a constant grade toward a stationary target. relative_distance_m is remaining travel to first contact (surface clearance), NOT vehicle center-to-center distance. Grade is rise/run percent; residual resistance includes remaining holding capability.",
     },
     "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": {
         "target_motion": "STATIONARY",
