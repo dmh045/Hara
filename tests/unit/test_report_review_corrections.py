@@ -135,8 +135,47 @@ def test_c_detail_only_reports_unknown_policy_when_actually_used(action, unknown
         'decision_status': 'TTC_AFTER_NO_MATCH', 'decision_tree_stage': 'TTC',
         'unknown_override_policy': 'SKIP_TO_TTC', 'unknown_policy_action': action,
         'derived_ttc': {'ttc_s': .154286}}})
-    assert ('干预条件未明确' in text) is unknown
+    assert ('未计入尚未确认的额外干预收益' in text) is unknown
     assert '预计首次接触：0.15 s' in text
+
+
+def test_ttc_text_separates_satisfied_braking_conditions_from_unknown_remote_help():
+    control = {'decision_status': 'TTC_AFTER_UNKNOWN_OVERRIDE', 'decision_tree_stage': 'TTC',
+        'unknown_policy_action': 'SKIP_TO_TTC', 'derived_ttc': {'ttc_s': 1.285714},
+        'profile_applicability': [
+            {'field': 'driver_in_vehicle', 'expected': True, 'actual': True},
+            {'field': 'emergency_braking_available', 'expected': True, 'actual': True}],
+        'inputs': {'driver_in_vehicle': True, 'emergency_braking_available': True,
+            'remote_intervention_available': None, 'other_road_user_avoidance_possible': False}}
+    before = deepcopy(control)
+    mapper = EngineeringReportTextMapper()
+    for text in (mapper.controllability_branch({'controllability': control}),
+                 mapper.controllability_rationale(EvidenceValue('C3', ReviewStatus.PENDING), control)):
+        assert '驾驶员在车内' in text and '故障后制动能力条件成立' in text
+        assert '远程干预未确认' in text and '他方避让未确认' not in text
+        assert '干预条件未明确' not in text and '1.29 s' in text
+    assert control == before
+    control['profile_applicability'][1]['actual'] = None
+    assert '故障后制动能力条件成立' not in mapper.controllability_branch({'controllability': control})
+
+
+def test_safety_intent_uses_reversed_requested_behavior_without_inventing_consequences():
+    member = {'function': '关闭低速辅助功能', 'malfunction': '关闭请求被解释为激活',
+        'vehicle_hazard': '车辆功能在驾驶员期望关闭时反而激活，可能产生与驾驶员操作相反的车辆行为。',
+        'hazardous_event': '非预期功能激活'}
+    before = deepcopy(member)
+    result = EngineeringReportTextMapper().safety_goal_presentation([member], '原目标描述')
+    assert result['text'] == '防止车辆功能在驾驶员期望关闭时反而激活。'
+    assert result['members'][0]['basis']['vehicle_hazard'] == member['vehicle_hazard']
+    assert result['nature'] == 'DISPLAY_ONLY_NO_ENGINEERING_APPROVAL' and member == before
+
+
+def test_hazard_event_translates_type_tokens_without_touching_ids_or_doubling_labels():
+    raw = '与静止VEHICLE其他车辆、PEDESTRIAN行人和CYCLIST接触；VEHICLE_01及VEHICLE-02保留为身份。'
+    text = EngineeringReportTextMapper.hazardous_event(raw)
+    assert '静止其他车辆、行人和骑行者接触' in text
+    assert 'VEHICLE_01' in text and 'VEHICLE-02' in text
+    assert '其他车辆其他车辆' not in text and '行人行人' not in text
 
 
 def test_pending_asil_explains_same_branch_matrix_without_assigning_c(active_method):

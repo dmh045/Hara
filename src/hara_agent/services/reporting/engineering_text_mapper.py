@@ -444,7 +444,26 @@ class EngineeringReportTextMapper:
         return "；".join(parts)
 
     @staticmethod
-    def controllability_branch(trace: Mapping[str, Any]) -> str:
+    def _ttc_intervention_basis(control: Mapping[str, Any]) -> str:
+        matched = {row.get("field"): row.get("actual")
+            for row in control.get("profile_applicability", [])
+            if isinstance(row.get("actual"), bool) and row.get("actual") == row.get("expected")}
+        parts = [yes if matched[key] else no for key, yes, no in (
+            ("driver_in_vehicle", "驾驶员在车内", "驾驶员不在车内"),
+            ("emergency_braking_available", "故障后制动能力条件成立", "故障后制动不可用"),
+        ) if key in matched]
+        if control.get("unknown_policy_action") == "SKIP_TO_TTC":
+            inputs = control.get("inputs", control.get("override_inputs", {}))
+            unknown = [label for key, label in (
+                ("remote_intervention_available", "远程干预"),
+                ("other_road_user_avoidance_possible", "他方避让"),
+            ) if key in inputs and inputs[key] is None]
+            parts.append(("、".join(unknown) + "未确认；" if unknown else "") +
+                         "未计入尚未确认的额外干预收益")
+        return "；".join(parts)
+
+    @classmethod
+    def controllability_branch(cls, trace: Mapping[str, Any]) -> str:
         control = trace.get("controllability", {})
         if not isinstance(control, Mapping) or not control:
             return ""
@@ -482,7 +501,7 @@ class EngineeringReportTextMapper:
         ttc = control.get("derived_ttc", {}).get("ttc_s")
         if isinstance(ttc, (float, int)):
             parts.append(f"预计首次接触：{quantity(ttc, 's')} s")
-        action = {"SKIP_TO_TTC": "干预条件未明确，按方法进入 TTC 分档",
+        action = {"SKIP_TO_TTC": cls._ttc_intervention_basis(control),
             "BLOCK_TTC": "干预条件未明确，保留待评定",
             "UNSPECIFIED_BLOCKED": "未知干预条件的处理方法尚未明确",
             "CONFLICT_BLOCKED": "干预条件冲突，保留待评定"}.get(control.get("unknown_policy_action"))
@@ -664,6 +683,12 @@ class EngineeringReportTextMapper:
                 "OBJECT_PEDESTRIAN", "OBJECT_CYCLIST", "OBJECT_VEHICLE", "OBJECT_STATIC", "OBJECT_TRAM"))
             if identity and label:
                 text = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(identity)}(?![A-Za-z0-9_])", lambda _: label, text)
+        for raw in ("VEHICLE", "PEDESTRIAN", "CYCLIST", "TRAM"):
+            display = cls._CATEGORY_TEXT["OBJECT_" + raw]
+            # Translate standalone type tokens, including an already appended
+            # Chinese label, without changing identifiers such as VEHICLE_01.
+            text = re.sub(rf"(?<![A-Za-z0-9_-]){raw}(?![A-Za-z0-9_-])(?:\s*{re.escape(display)})?",
+                          lambda _match, label=display: label, text)
         text = re.sub(r"(?<![A-Za-z])EPB(?![A-Za-z])", "电子驻车制动", text, flags=re.IGNORECASE)
         text = re.sub(r"(?<![A-Za-z])System\s+OK(?![A-Za-z])", "系统正常", text, flags=re.IGNORECASE)
         for raw, display in cls._MODE_TEXT.items():
@@ -790,7 +815,7 @@ class EngineeringReportTextMapper:
                     clause = re.sub(r"^.*?因(?=.+(?:失效|失去|无法|卡死|异常))", "", clause)
                 if re.search(r"\d", clause):
                     continue
-                if re.search(r"非预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)", clause):
+                if re.search(r"非预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)", clause):
                     clause = re.sub(r"^(?:发生|出现|产生)", "", clause)
                     clause = re.sub(r"^(?:车辆|本车)(?:发生|出现)", "车辆", clause)
                     return "防止" + clause + "。", {field: source, "selected_behavior": clause,
@@ -957,11 +982,10 @@ class EngineeringReportTextMapper:
             inputs = trace.get("physical_inputs", {})
             ttc = inputs.get("ttc_s", trace.get("derived_ttc", {}).get("ttc_s"))
             if isinstance(ttc, (int, float)):
-                unknown = ("；其他干预/避让信息未确定，按现有方法采用接触时间评定"
-                    if trace.get("unknown_policy_action") == "SKIP_TO_TTC" else "")
-                if unknown and override.get("driver_in_vehicle") is False:
-                    unknown += "；驾驶员在车外，当前时间分档未证明实际可用的干预路径"
-                return f"预计 {quantity(ttc, 's')} s 后首次接触，按当前纵向可控性时间分档为 {evidence.value}{unknown}。"
+                basis = self._ttc_intervention_basis(trace)
+                if trace.get("unknown_policy_action") == "SKIP_TO_TTC" and override.get("driver_in_vehicle") is False:
+                    basis += "；驾驶员在车外，当前时间分档未证明实际可用的干预路径"
+                return ((basis + "；") if basis else "") + f"预计 {quantity(ttc, 's')} s 后首次接触，按当前纵向可控性时间分档为 {evidence.value}。"
             available = [label for key, label in (("driver_in_vehicle", "驾驶员在车内"),
                 ("remote_intervention_available", "可远程干预"), ("other_road_user_avoidance_possible", "其他交通参与者可避让"))
                 if override.get(key) is True]
