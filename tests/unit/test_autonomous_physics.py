@@ -18,7 +18,7 @@ from hara_agent.services.analysis import StructuredRiskScoringService, ExposureD
 from hara_agent.services.analysis.hazardous_event_risk_context_service import HazardousEventRiskContextService
 
 
-def raw_plan(model="CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", initial=0, acceleration=2):
+def raw_plan(model="CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", initial=0, acceleration=2, *, assessed=False):
     if "LATERAL" in model and initial == 0:
         initial = 3.6
     parameters = [{"field": field, "unit": unit, "kind": "POINT", "value": value, "rationale": "offline analytical assumption"}
@@ -40,6 +40,7 @@ def raw_plan(model="CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", initial=0, accele
             object_position="LEFT" if lateral else "FRONT", ego_longitudinal_direction="FORWARD", object_id="object1",
             object_extent="EXTENDED_ALONG_TRAVEL_PATH" if lateral else "POINT_ON_TRAVEL_PATH"),
         "parameters": parameters, "conditions": ["stationary target"], "uncovered_conditions": ["moving targets; real capability bound unknown"],
+        **({"unresolved_controls": {"braking": "Synthetic unknown: this test supplies no basis for an independent braking path"}} if assessed else {}),
         "failed_controls": ["steering" if lateral else "parking_hold" if "ROLLAWAY" in model else "drive"], "remaining_controls": []}], "uncovered_conditions": ["offline proposal; no live validation"]}
 
 
@@ -249,7 +250,7 @@ def test_plan_reuse_resume_and_context_change_are_separate_from_causal_reuse(met
         calls = 0
         def complete_json(self, request):
             self.calls += 1
-            return LLMResponse(raw_plan(), "offline")
+            return LLMResponse(raw_plan(assessed=True), "offline")
     client = Client()
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
     a = make_candidate(); b = deepcopy(a); b.scenario_id = "SC-driver2"
@@ -278,7 +279,7 @@ def test_budget_stop_preserves_completed_physical_instances_before_next_plan(met
             self.calls += 1
             if self.calls > 1:
                 raise ProviderAttemptBudgetExceeded(limit=1, attempts=1, ledger_path=tmp_path/'ledger')
-            return LLMResponse(raw_plan(), 'OFFLINE')
+            return LLMResponse(raw_plan(assessed=True), 'OFFLINE')
     state = HARAState('physical-persistence')
     repo = CheckpointRepository(tmp_path/'state')
     a = make_candidate(); b = deepcopy(a); b.scenario_id = 'second'; b.facts['where'] = 'different condition'
@@ -363,7 +364,7 @@ def test_parallel_physical_plans_equal_serial_and_resume_without_requests(method
                 self.calls += 1
             if self.barrier:
                 self.barrier.wait(timeout=5)  # Both independent requests must overlap.
-            return LLMResponse(raw_plan(), 'offline')
+            return LLMResponse(raw_plan(assessed=True), 'offline')
     malfunctions = [mf(), replace(mf(), malfunction_id='MF2')]
     candidates = {}
     for m in malfunctions:
@@ -404,7 +405,7 @@ def test_physical_resume_skips_unchanged_writes_but_persists_recomputed_values(m
         calls = 0
         def complete_json(self, request):
             self.calls += 1
-            return LLMResponse(raw_plan(), 'offline')
+            return LLMResponse(raw_plan(assessed=True), 'offline')
     client = Client(); agent = PhysicalScenarioAgent(client)
     repo = CheckpointRepository(tmp_path)
     state = HARAState('resume-unchanged')
@@ -439,7 +440,7 @@ def test_parallel_physical_plans_share_one_hard_budget_and_keep_responses(method
         def complete_json(self, request):
             self.barrier.wait(timeout=5)
             self.attempt_budget.begin(request, model='offline')
-            return LLMResponse(raw_plan(), 'offline')
+            return LLMResponse(raw_plan(assessed=True), 'offline')
     state = HARAState('budget-parallel')
     repo = CheckpointRepository(tmp_path/'state')
     malfunctions = [mf(), replace(mf(), malfunction_id='MF2')]

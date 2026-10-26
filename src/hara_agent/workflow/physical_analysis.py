@@ -6,7 +6,7 @@ import sys
 from threading import Lock
 from time import perf_counter
 
-from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG
+from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
@@ -284,9 +284,43 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["schema_repairs"] += audit["schema_repairs"]
                     metrics["response_cache_hits"] += audit["response_cache_hits"]
                 def instantiate_family(current_plan):
-                    return [(candidate, *producer.instantiate(candidate, mf, current_plan,
+                    rows = [(candidate, *producer.instantiate(candidate, mf, current_plan,
                         plan_key=key, response_model=entry["audit"]["model"], project_context=project,
                         function=functions.get(mf.function_id))) for candidate in family]
+                    # A syntactically valid motion plan may have omitted the
+                    # capability analysis. Use the existing ONE family-level
+                    # correction, retaining useful motion even if still unknown.
+                    if "emergency_braking_available" in inputs["intervention_inputs"]:
+                        from hara_agent.services.analysis.scenario_physics import source_is_accepted_for
+                        from hara_agent.services.analysis.hazardous_event_risk_context_service import HazardousEventRiskContextService
+                        contexts = HazardousEventRiskContextService(method)
+                        for _, children, errors in rows:
+                            for child in children:
+                                if child.facts.get("driver_in_vehicle") is not True:
+                                    continue
+                                if (task_scope == "MOTION_AND_CONTROLS"
+                                        and child.facts.get("motion_model_outcome", {}).get("status") != "CONTACT"):
+                                    continue  # No numeric contact needing C, or a deliberately symbolic plan.
+                                analysis = child.facts.get("control_analysis") or child.facts.get("physical_analysis", {})
+                                hypothesis = analysis.get("hypothesis", {})
+                                if (braking_capability(hypothesis) is not None
+                                        or hypothesis.get("unresolved_controls", {}).get("braking")):
+                                    continue
+                                if (type(child.facts.get("emergency_braking_available")) is bool
+                                        and source_is_accepted_for(child.fact_provenance.get("emergency_braking_available", {}),
+                                            malfunction_id=mf.malfunction_id, scenario_id=child.scenario_id)):
+                                    continue
+                                context = contexts.build(malfunction_id=mf.malfunction_id,
+                                    scenario_id=child.scenario_id, hazard_node_id="control-completeness",
+                                    scenario={**child.facts, "_fact_provenance": child.fact_provenance})
+                                if contexts.controllability_readiness(context)["status"] == "READY":
+                                    continue  # A valid independent override already answers the active method.
+                                error = {"reason": "CONTROL_CAPABILITY_NOT_ASSESSED", "field": "emergency_braking_available",
+                                    "hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "resolution": "Assess braking against source and fault scope. Declare supported failed/remaining controls, or unresolved_controls.braking with a specific reason; preserve valid motion."}
+                                if error not in errors:
+                                    errors.append(error)
+                    return rows
 
                 instantiated = instantiate_family(plan)
                 failures = [{"scenario_id": candidate.scenario_id, **failure}
@@ -297,12 +331,18 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     # uses the identical response-checkpoint key.
                     entry.setdefault("initial_plan", plan.to_dict())
                     entry.setdefault("correction_diagnostics", failures)
+                    # Keep already computed motion recoverable if the shared
+                    # budget is exhausted during the capability correction.
+                    entry["instantiations"] = {candidate.scenario_id: {
+                        "generated_ids": [g.scenario_id for g in generated],
+                        "generated_scenarios": [asdict(g) for g in generated], "failures": errors}
+                        for candidate, generated, errors in instantiated}
                     entry.update(status="CORRECTION_REQUESTED")
                     if not getattr(agent, "responses", None):
                         save_plan()
                     correction_context = {**context, "previous_plan": entry["initial_plan"],
                         "correction_diagnostics": entry["correction_diagnostics"],
-                        "correction_policy": "Correct only conflicts; preserve valid hypotheses. One semantic correction allowed."}
+                        "correction_policy": "Correct only reported conflicts or omitted assessments; preserve valid hypotheses and motion. Explicitly unresolved controls are allowed. One semantic correction allowed."}
                     plan, audit = agent.propose(correction_context, on_response=persist_response)
                     entry.update(status="VALIDATED", plan=plan.to_dict(), audit=audit,
                                  semantic_correction_completed=True)

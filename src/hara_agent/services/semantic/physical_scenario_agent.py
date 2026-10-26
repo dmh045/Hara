@@ -72,8 +72,8 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v15-curved-steering"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v3-source-conditions"
+    PROMPT_VERSION = "post-fault-physical-scenario-v16-control-completeness"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v4-control-completeness"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -84,6 +84,10 @@ class PhysicalScenarioAgent:
         "有合理依据时提出明确true或false及条件，不能把未提及、静止、车外直接当作false。"
         "不要为得到完整评级机械填值，也不要额外假定独立故障。若连条件性工况也无法合理成立，具体说明矛盾或方法缺口。"
         "driver_configurations已列明将要实例化的驾驶员配置；能力是否保留与人员是否在驾驶位分开，不重写这些配置。"
+        "当intervention_inputs包含emergency_braking_available且存在车内驾驶员时，必须分析制动能力："
+        "用failed_controls或remaining_controls声明结论；若检查来源与故障后仍无法合理提出条件性结论，"
+        "在同一假设或control_assessment的unresolved_controls.braking中说明具体原因。"
+        "空的控制数组不等于已完成分析；不要为通过检查强填可用或不可用。"
     )
     ANALYSIS_STRATEGY = (
         "本任务完成当前失效的有限条件性代表工况：先比较与故障有关的对象运动交互，再选择模型和取点。"
@@ -120,6 +124,7 @@ class PhysicalScenarioAgent:
                     "kind": "POINT", "value": 0, "rationale": "why this conditional representative is useful"}],
                 "conditions": ["scope of this hypothesis"], "uncovered_conditions": ["limits of this analysis"],
                 "failed_controls": ["affected control"], "remaining_controls": ["independent control, if supported"],
+                "unresolved_controls": {"braking": "optional: specific unresolved cause after assessment; omit if braking capability is declared"},
                 "condition_changes": {"initial_state": False, "target": False, "rationale": "same initial world and target; set true only for a justified independent child condition"},
                 "grade_frame": {"coordinate_frame": "BODY_FORWARD_POSITIVE",
                     "slope_reference": "EGO_FORWARD|ROAD_REFERENCE|UNSPECIFIED",
@@ -168,7 +173,7 @@ class PhysicalScenarioAgent:
             "驾驶员制动路径用driver_braking。结合Item的接口、接管条件和本次失效作用范围，"
             "说明独立驾驶员制动路径是否仍可用；允许明确标识的条件性独立路径假设，"
             "但正常状态下可踩制动退出AVP，并不证明故障后制动通道一定独立有效。"
-            "不能仅为得到C值声称remaining_controls；不支持的独立性留在未覆盖条件。"
+            "不能仅为得到C值声称remaining_controls；无法合理作条件性判断的能力用unresolved_controls具体说明。"
             "intervention_inputs是下游实际需要的干预条件；应在同一次方案中逐项检查。"
             "emergency_braking_available由你明确声明的failed_controls/remaining_controls派生，"
             "请说明当前故障后驾驶员制动能力是否保留及其条件；它与驾驶员是否在车内是两个条件。"
@@ -221,6 +226,8 @@ class PhysicalScenarioAgent:
             "basis_ref_ids": sorted(context["evidence"]),
             "geometry_values": {field: sorted(values) for field, values in context.get("risk_vocabulary", {}).items()},
             "control_identities": sorted(CONTROL_IDENTITIES),
+            "unresolved_controls": {"optional_keys": sorted(CONTROL_IDENTITIES),
+                "values": "nonempty reasons after assessment, never a default for omitted analysis"},
             "intervention_assumptions": {
                 "type": "object", "optional_keys": sorted(INTERVENTION_ASSUMPTION_FIELDS),
                 "entry_shape": {"value": "boolean, never null", "rationale": "reason",
@@ -271,7 +278,8 @@ class PhysicalScenarioAgent:
             content["output_shape"] = {"hypotheses": [], "uncovered_conditions": [], "control_assessment": {
                 "rationale": "failure scope and capability basis", "basis_refs": ["MF.description"],
                 "conditions": ["explicit conditional applicability"], "uncovered_conditions": [],
-                "failed_controls": [], "remaining_controls": [], "intervention_assumptions": {}}}
+                "failed_controls": [], "remaining_controls": [], "intervention_assumptions": {},
+                "unresolved_controls": {}}}
             content["model_catalog"] = {}
             content["parameter_units"] = {}
         system += self.CONTROL_ANALYSIS_POLICY

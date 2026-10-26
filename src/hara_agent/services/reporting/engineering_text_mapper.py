@@ -326,6 +326,9 @@ class EngineeringReportTextMapper:
         ]
         model = facts.get("fault_motion_model")
         analysis = facts.get("physical_analysis", {})
+        control_hypothesis = (facts.get("control_analysis") or analysis).get("hypothesis", {})
+        if reason := control_hypothesis.get("unresolved_controls", {}).get("braking"):
+            parts.append("制动能力未决依据：" + reason)
         if controls := facts.get("control_analysis", {}).get("hypothesis"):
             parts.append("干预能力假设：" + "；".join(controls["conditions"]))
             for proposal in controls.get("intervention_assumptions", {}).values():
@@ -365,7 +368,7 @@ class EngineeringReportTextMapper:
             # Full conditions, parameter objects and exclusions remain in the
             # existing risk trace. Keep intervention assumptions visible here.
             parts.extend(text for text in analysis.get("hypothesis", {}).get("conditions", [])
-                if re.search(r"接管|介入|干预|interven", text, re.IGNORECASE))
+                if re.search(r"接管|介入|干预|制动通道|制动能力|interven|driver braking|braking path", text, re.IGNORECASE))
             if facts.get("first_contact_time_s") is not None and facts.get("ttc_s") is None:
                 parts.append(f"首次接触：{quantity(facts['first_contact_time_s'], 's')} s（不作为纵向 TTC）")
             if condition := facts.get("selected_source_condition"):

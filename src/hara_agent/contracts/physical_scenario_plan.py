@@ -114,6 +114,13 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         raise ValueError("A failed control cannot be a remaining control")
     if "braking" in h["failed_controls"] and "driver_braking" in h["remaining_controls"]:
         raise ValueError("A failed braking capability cannot provide remaining driver braking")
+    unresolved = _object(h.get("unresolved_controls", {}), set(), CONTROL_IDENTITIES)
+    for control, reason in unresolved.items():
+        _text(reason)
+        if control in h["failed_controls"] or control in h["remaining_controls"]:
+            raise ValueError("An unresolved control cannot also be declared failed or remaining")
+    if "braking" in unresolved and braking_capability(h) is not None:
+        raise ValueError("Unresolved braking conflicts with a declared braking capability")
     interventions = h.get("intervention_assumptions", {})
     _object(interventions, set(), INTERVENTION_ASSUMPTION_FIELDS)
     proposals = list(interventions.values())
@@ -160,7 +167,7 @@ class PhysicalScenarioPlan:
         control = raw.get("control_assessment")
         if control is not None:
             _object(control, {"rationale", "basis_refs", "conditions", "uncovered_conditions",
-                              "failed_controls", "remaining_controls"}, {"intervention_assumptions"})
+                              "failed_controls", "remaining_controls"}, {"intervention_assumptions", "unresolved_controls"})
             _text(control["rationale"])
             if not _texts(control["basis_refs"]) or not set(control["basis_refs"]) <= evidence_ids:
                 raise ValueError("Control assessment requires supplied evidence IDs")
@@ -179,7 +186,7 @@ class PhysicalScenarioPlan:
         for h in hypotheses:
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition"})
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls"})
             if "operating_condition" in h:
                 condition = _object(h["operating_condition"], {"source_field", "value", "physical_effect"})
                 if condition["source_field"] not in {"odd_road_types", "odd_weather_conditions"}:

@@ -346,3 +346,138 @@ def test_driver_only_safe_state_is_not_applied_to_outside_driver_child(method):
     aggregate_safety_goals(state, MethodSafetyGoalService(method))
     assert all(g.safe_state == '待确定' for g in state.safety_goals)
     assert all(not g['safe_state_candidates'] for g in state.item_definition['safety_goal_catalog'].values())
+
+
+@pytest.mark.parametrize('outcome', ['available', 'unresolved', 'omitted_again'])
+def test_motion_control_omission_corrects_once_per_plan_not_per_point_or_driver(method, tmp_path, outcome):
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    raw = raw_plan()
+    raw['hypotheses'][0]['parameters'][-1].update(kind='RANGE', lower=.5, upper=3)
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            context = json.loads(request.user_prompt)['context']
+            reply = deepcopy(raw)
+            if self.calls == 2:
+                assert {d['reason'] for d in context['correction_diagnostics']} == {'CONTROL_CAPABILITY_NOT_ASSESSED'}
+                if outcome == 'available':
+                    reply['hypotheses'][0]['remaining_controls'] = ['driver_braking']
+                    reply['hypotheses'][0]['conditions'].append('Independent driver braking remains outside the drive fault')
+                elif outcome == 'unresolved':
+                    reply['hypotheses'][0]['unresolved_controls'] = {'braking': '故障是否同时影响人工制动通道尚无相容的分析依据'}
+            return LLMResponse(reply, 'OFFLINE_SYNTHETIC')
+    client = Frozen()
+    parents = [make_candidate(), make_candidate()]
+    parents[1].scenario_id = 'OUTSIDE'
+    for p, inside in zip(parents, (True, False)):
+        p.facts.update(driver_in_vehicle=inside, driver_position='in_driver_seat' if inside else 'outside_driver_seat')
+    before = deepcopy([asdict(p) for p in parents])
+    state = HARAState('control-completeness', malfunctions=[asdict(mf())])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    def run():
+        return construct_physical_scenarios(state, {'MF': parents}, [mf()], method=method,
+            agent=agent, project_facts=None)['MF']
+    children = run()
+    assert len(children) == 6 and client.calls == 2
+    assert [asdict(p) for p in parents] == before
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['responses'][0]['response']['data'] == raw
+    assert len(entry['responses']) == 2 and entry['semantic_correction_completed']
+    assert len(entry['correction_diagnostics']) == 1  # no point-wise duplicate feedback
+    inside = [c for c in children if c.facts['driver_in_vehicle']]
+    assert all(bool(score(method, c)['controllability']['controllability_score']) == (outcome == 'available') for c in inside)
+    if outcome == 'unresolved':
+        assert '制动能力未决依据：故障是否同时影响人工制动' in EngineeringReportTextMapper.physical_inputs(inside[0], {})
+    elif outcome == 'available':
+        assert 'Independent driver braking remains outside the drive fault' in EngineeringReportTextMapper.physical_inputs(inside[0], {})
+    if outcome == 'omitted_again':
+        assert inside[0].analysis_instance['physical_plan_diagnostics'][0]['reason'] == 'CONTROL_CAPABILITY_NOT_ASSESSED'
+    # Numerical motion remains available even if the one correction fails.
+    assert all(c.facts['ego_impact_speed_kph'] > 0 for c in children)
+    assert all(c.status is ReviewStatus.PENDING for c in children)
+    state = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    assert run() == children and client.calls == 2
+
+
+def test_explicit_unresolved_or_accepted_parent_braking_needs_no_correction(method):
+    from test_p7_closure import source
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            raw = raw_plan(assessed=assessed)
+            return LLMResponse(raw, 'OFFLINE_SYNTHETIC')
+    for assessed in (False, True):
+        parent = make_candidate()
+        if not assessed:
+            parent.facts['emergency_braking_available'] = True
+            parent.fact_provenance['emergency_braking_available'] = source()
+        client = Frozen()
+        construct_physical_scenarios(HARAState('no-extra-call'), {'MF': [parent]}, [mf()],
+            method=method, agent=PhysicalScenarioAgent(client), project_facts=None)
+        assert client.calls == 1
+
+
+def test_unresolved_controls_are_bounded_and_cannot_contradict_declared_capability():
+    for unresolved, remaining in [({'unrecognised': 'reason'}, []), ({'braking': ''}, []),
+                                  ({'braking': 'unknown'}, ['driver_braking'])]:
+        raw = raw_plan()
+        raw['hypotheses'][0].update(unresolved_controls=unresolved, remaining_controls=remaining)
+        with pytest.raises(ValueError):
+            PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+
+
+def test_budget_stop_during_control_correction_saves_valid_motion_and_resumes(method, tmp_path):
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudgetExceeded
+    from hara_agent.workflow import CheckpointRepository
+    class Frozen:
+        calls = 0
+        stopped = False
+        def complete_json(self, request):
+            self.calls += 1
+            context = json.loads(request.user_prompt)['context']
+            raw = raw_plan()
+            if context.get('correction_diagnostics'):
+                if not self.stopped:
+                    self.stopped = True
+                    raise ProviderAttemptBudgetExceeded(limit=1, attempts=1, ledger_path=tmp_path/'synthetic')
+                raw['hypotheses'][0]['remaining_controls'] = ['driver_braking']
+            return LLMResponse(raw, 'OFFLINE_SYNTHETIC')
+    client = Frozen()
+    state = HARAState('control-budget')
+    repo = CheckpointRepository(tmp_path/'state')
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    def run():
+        return construct_physical_scenarios(state, {'MF': [make_candidate()]}, [mf()],
+            method=method, agent=agent, project_facts=None, checkpoint=repo.save)['MF']
+    with pytest.raises(ProviderAttemptBudgetExceeded):
+        run()
+    state = repo.load(state.run_id)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'CORRECTION_REQUESTED' and len(entry['responses']) == 1
+    initial = next(iter(entry['instantiations'].values()))['generated_scenarios'][0]
+    assert initial['facts']['ego_impact_speed_kph'] > 0
+    assert initial['analysis_instance'].get('physical_plan_diagnostics') is None
+    children = run()
+    assert children[0].facts['ego_impact_speed_kph'] == initial['facts']['ego_impact_speed_kph']
+    assert children[0].scenario_id != initial['scenario_id']  # New control assumptions require causal validation.
+    assert client.calls == 3 and len(entry['responses']) == 2
+    assert run() == children and client.calls == 3
+
+
+def test_independent_evasion_rule_avoids_unnecessary_braking_request(method):
+    from test_p7_closure import source
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw_plan(), 'OFFLINE_SYNTHETIC')
+    parent = make_candidate()
+    parent.facts['other_road_user_avoidance_possible'] = True
+    parent.fact_provenance['other_road_user_avoidance_possible'] = source()
+    client = Frozen()
+    children = construct_physical_scenarios(HARAState('independent-evasion'), {'MF': [parent]}, [mf()],
+        method=method, agent=PhysicalScenarioAgent(client), project_facts=None)['MF']
+    assert client.calls == 1
+    assert score(method, children[0])['controllability']['controllability_score'] == 'C1'

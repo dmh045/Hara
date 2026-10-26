@@ -184,7 +184,7 @@ def test_source_focus_and_plan_cache_are_independent_of_input_order(method):
     second.facts['road_surface_conditions'] = 'separate declared condition'
     project = ItemDefinitionFacts('parking', 'test', odd_road_types=['水平车位', '垂直车位'],
         odd_weather_conditions=['小雨'], sources=[SourceRef('item_definition', 'offline', 'scope', '水平/垂直车位，小雨')])
-    client = Client([raw_plan(), raw_plan()])
+    client = Client([raw_plan(assessed=True), raw_plan(assessed=True)])
     agent = PhysicalScenarioAgent(client)
     state = HARAState('order-independent')
     for values in ([first, second], [second, first]):

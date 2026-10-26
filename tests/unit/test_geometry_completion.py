@@ -74,7 +74,7 @@ def test_scoped_existing_dynamics_are_in_request_and_can_be_inherited(method):
     field = 'longitudinal_acceleration_mps2'
     parent.facts[field] = .7
     parent.fact_provenance[field] = {**source(), 'object_id': 'EGO', 'analysis_value_semantic': 'POST_FAULT_MOTION_PARAMETER'}
-    raw = raw_plan(); raw['hypotheses'][0]['parameters'].pop()
+    raw = raw_plan(assessed=True); raw['hypotheses'][0]['parameters'].pop()
     client = Client([raw])
     _, result = run(method, PhysicalScenarioAgent(client), candidates={'MF': [parent]})
     status = json.loads(client.requests[0].user_prompt)['context']['model_input_status']
@@ -99,7 +99,7 @@ def test_original_control_passages_reach_serial_and_parallel_tasks_and_invalidat
         outside = replace(deepcopy(inside), scenario_id='SC-outside')
         outside.facts.update(driver_position='OUTSIDE_VEHICLE', driver_in_vehicle=False)
         parents[m.malfunction_id] = [inside, outside]
-    client = Client([raw_plan()] * 4)
+    client = Client([raw_plan(assessed=True)] * 4)
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
     _, children = run(method, agent, state=state, candidates=deepcopy(parents), malfunctions=mfs, workers=workers)
     assert len(client.requests) == 2
@@ -199,7 +199,7 @@ def test_partial_conflict_does_not_correct_forever(method):
 
 
 def test_response_survives_full_snapshot_failure_and_scope_change_invalidates(method, tmp_path):
-    client = Client([raw_plan(), raw_plan()])
+    client = Client([raw_plan(assessed=True), raw_plan(assessed=True)])
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
     def fail(_):
         raise OSError('full snapshot disk failure')
@@ -292,7 +292,7 @@ def test_actual_repeated_request_is_not_hidden_as_a_cache_hit(method, tmp_path):
         writes += 1
         if writes == 1:
             raise RuntimeError('interrupted before plan parse')
-    client = Client([raw_plan(), raw_plan(acceleration=3)])
+    client = Client([raw_plan(assessed=True), raw_plan(acceleration=3, assessed=True)])
     agent = PhysicalScenarioAgent(client)  # Intentionally no durable response cache.
     with pytest.raises(RuntimeError, match='before plan parse'):
         run(method, agent, checkpoint=interrupt_after_saved_response)
@@ -300,8 +300,8 @@ def test_actual_repeated_request_is_not_hidden_as_a_cache_hit(method, tmp_path):
     state, result = run(method, agent, state=restored, checkpoint=repo.save)
     entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
     assert len(client.requests) == len(entry['responses']) == 2
-    assert entry['responses'][0]['response']['data'] == raw_plan()
-    assert entry['responses'][1]['response']['data'] == raw_plan(acceleration=3)
+    assert entry['responses'][0]['response']['data'] == raw_plan(assessed=True)
+    assert entry['responses'][1]['response']['data'] == raw_plan(acceleration=3, assessed=True)
     assert result['MF'][0].facts['longitudinal_acceleration_mps2'] == 3
     assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_requests'] == 2
     assert state.item_definition['physical_analysis_metrics']['token_usage'] == {'prompt_tokens': 22, 'completion_tokens': 14}

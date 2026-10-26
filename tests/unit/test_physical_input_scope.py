@@ -198,6 +198,7 @@ def test_bounded_semantic_correction_retains_initial_response_and_resumes(method
             self.calls+=1
             context=json.loads(request.user_prompt)['context']
             raw=grade_raw()
+            raw['hypotheses'][0]['unresolved_controls'] = {'braking': 'Synthetic test: independence of the braking path is not resolved'}
             if not context.get('correction_diagnostics'):
                 raw['hypotheses'][0].pop('grade_frame')
             return LLMResponse(raw,'OFFLINE')

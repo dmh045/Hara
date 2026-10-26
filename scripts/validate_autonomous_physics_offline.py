@@ -75,6 +75,18 @@ class OfflinePhysicalClient:
             h["geometry"].update(ego_longitudinal_direction=direction,
                 object_position="REAR" if direction == "REVERSE" else "FRONT")
         if label == "rollaway":
+            if any(d.get("reason") == "CONTROL_CAPABILITY_NOT_ASSESSED"
+                   for d in context.get("correction_diagnostics", [])):
+                # A separate scripted SECOND reply exercises production's
+                # bounded correction. The first frozen fixture is unchanged;
+                # this is not a repaired real Provider response or source fact.
+                refs = [key for key, entry in context["evidence"].items()
+                    if key.startswith("ITEM.") and "制动踏板" in str(entry.get("value", ""))]
+                assert refs, "Source-based control correction requires the actual Item brake-pedal passage"
+                h["basis_refs"] += refs[:1]
+                h["remaining_controls"] = ["driver_braking"]
+                h["conditions"].append("离线条件性代表：驻车保持失效不同时破坏独立人工行车制动通道；驾驶员在位时可操作来源所述制动踏板")
+                h["uncovered_conditions"].append("未验证驻车保持与行车制动的实际硬件独立性，不覆盖共因失效")
             tag = facts.get("source_slope_direction", facts.get("source_operating_conditions", {}).get("source_slope_direction"))
             # This is an explicit test proposal, not a rule mapping all source
             # 'uphill' tags to reverse. Source orientation remains unconfirmed.
