@@ -122,8 +122,14 @@ def test_original_real_proposal_replays_through_production_physics_and_sec(metho
         function = next(f for f in source_state.functions if f['function_id'] == fault.function_id)
         generated, _ = service.generate_for_malfunction(fault, parents,
             project_facts=ItemDefinitionFacts.from_dict(frozen['project']), function=selection_function(function))
+        # Current coverage may assign the same motion to a different permitted
+        # parking enclosure. The saved proposal states no enclosure-specific
+        # assumption. Keep every non-WHERE Atom exact; do not reuse old causal
+        # approval or demand that a historical selection remains the default.
+        where = {a['atom_id'] for a in service.atom_resolver.catalog if 'WHERE' in a['filled_dimensions']}
+        non_where = set(frozen['candidate']['facts']['scenario_atom_ids']) - where
         parent = next(c for c in generated if c.facts.get('driver_in_vehicle') is True
-            and c.facts['scenario_atom_ids'] == frozen['candidate']['facts']['scenario_atom_ids'])
+            and set(c.facts['scenario_atom_ids']) - where == non_where)
     class Client:
         calls = 0
         def complete_json(self, request):

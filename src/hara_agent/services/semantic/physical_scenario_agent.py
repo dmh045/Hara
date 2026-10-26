@@ -298,13 +298,35 @@ class PhysicalScenarioAgent:
             attempts.append(record)
             on_response(record)  # Persist even a semantically invalid response before repair.
             try:
-                plan = PhysicalScenarioPlan.from_dict(response.data, evidence_ids=set(context["evidence"]))
+                candidate = deepcopy(response.data)
+                deferred_states = []
+                # An optional safe-state proposal cannot establish an unresolved
+                # control. Defer that proposal locally, retaining the raw reply;
+                # do not discard otherwise valid motion or approve the control.
+                if isinstance(candidate, dict) and isinstance(candidate.get("hypotheses"), list):
+                    for hypothesis in candidate["hypotheses"]:
+                        if not isinstance(hypothesis, dict):
+                            continue
+                        proposal = hypothesis.get("safe_state_proposal")
+                        controls = proposal.get("required_controls") if isinstance(proposal, dict) else None
+                        if (isinstance(controls, list) and controls
+                                and all(isinstance(c, str) for c in controls)
+                                and set(controls) - set(hypothesis.get("remaining_controls", []))
+                                and set(controls) <= set(hypothesis.get("unresolved_controls", {}))
+                                and not set(controls) & set(hypothesis.get("failed_controls", []))
+                                and isinstance(hypothesis.get("uncovered_conditions"), list)):
+                            deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),
+                                "reason": "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL", "proposal": hypothesis.pop("safe_state_proposal")})
+                            hypothesis["uncovered_conditions"].append(
+                                "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
+                plan = PhysicalScenarioPlan.from_dict(candidate, evidence_ids=set(context["evidence"]))
                 if controls_only != (plan.control_assessment is not None):
                     raise ValueError("Output must match task_scope; control-only tasks cannot replace existing motion")
                 return plan, {"responses": attempts, "validation_errors": errors,
                     "request_count": sum(not a["response"]["usage"].get("response_checkpoint_hit") for a in attempts),
                     "response_cache_hits": sum(bool(a["response"]["usage"].get("response_checkpoint_hit")) for a in attempts),
-                    "schema_repairs": int(repair), "model": response.model}
+                    "schema_repairs": int(repair), "model": response.model,
+                    "deferred_safe_states": deferred_states}
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))
                 previous_response = response.data

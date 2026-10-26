@@ -1675,6 +1675,14 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                     f"split_depth={split_depth}"
                 )
         interaction = item.get("physical_interaction", {})
+        # Some responses put the exact supplied target identity in the scope
+        # slot. This is a lossless field normalization, not a new target claim.
+        target_id = scenario.facts.get("object_id", scenario.scenario_id + ":target")
+        if (isinstance(target_id, str) and target_id and isinstance(interaction, dict)
+                and interaction.get("target") == target_id
+                and interaction.get("object_id", target_id) == target_id):
+            interaction = {**interaction, "target": "SCENARIO_OBJECT", "object_id": target_id}
+            item = {**item, "physical_interaction": interaction}
         if (not isinstance(interaction, dict) or set(interaction) - {
                 "target", "object_position", "object_id", "relation", "assessment_reference"}
                 or any(not isinstance(value, str) for value in interaction.values())

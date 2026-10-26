@@ -581,7 +581,8 @@ def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any
     interaction = interaction if isinstance(interaction, dict) else {}
     same_target = (interaction.get("target") == "SCENARIO_OBJECT"
                    and str(interaction.get("object_position", "")).upper() == position
-                   and (not interaction.get("object_id") or interaction["object_id"] == facts.get("object_id")))
+                   and (not interaction.get("object_id") or interaction["object_id"] == facts.get(
+                       "object_id", scenario.scenario_id + ":target")))
     same_phase = interaction.get("assessment_reference") in {"CURRENT_STATE", "MODEL_TRAJECTORY"}
     outcome = facts.get("motion_model_outcome", {})
     if (same_target and same_phase and interaction.get("relation") == "CONTACT"

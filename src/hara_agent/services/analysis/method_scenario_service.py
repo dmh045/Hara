@@ -515,6 +515,7 @@ class MethodScenarioCandidateService:
         from .scenario_method_service import ScenarioMethodService
         from .scenario_synthesis_service import ConstrainedScenarioSynthesisService
         from .scenario_equivalence import coalesce_candidates, scenario_conditions, signature
+        from .scenario_selection_quality import explicit_environment
 
         templates = ScenarioMethodService(self.method)
         if not self.atom_resolver.catalog or project_facts is None:
@@ -527,13 +528,15 @@ class MethodScenarioCandidateService:
         )
         synthesis = ConstrainedScenarioSynthesisService(self.method)
         project = asdict(project_facts)
-        generated, generation_audit = [], []
-        # Cover mechanism variation once per distinct physical input. Other
-        # source contexts retain a representative plus any novel primary
-        # variants. This is bounded coverage, not a risk-equivalence claim.
-        primary_coverage: dict[str, dict[str, str]] = {}
-        boundary_parent_id = parents[0].scenario_id if parents else ""
-        for option in options:
+        generated, generation_audit, coverage_pools = [], [], {}
+        # Select across source contexts, not first-parent-wins. Keep distinct
+        # physical options separate; the pool is already bounded by synthesis.
+        # Keep a project-wide slope boundary in the broadest supplied location;
+        # input ordering must not accidentally narrow it to indoor/outdoor.
+        boundary_parent_id = min(parents, key=lambda p: (
+            p.operating_scenario not in project_facts.odd_locations,
+            bool(explicit_environment(p.operating_scenario)), p.scenario_id)).scenario_id if parents else ""
+        for option in sorted(options, key=lambda c: c.scenario_id):
             physical = scenario_conditions(option)
             physical["facts"].pop("operating_scenario", None)
             physical["fact_authority"].pop("operating_scenario", None)
@@ -546,22 +549,34 @@ class MethodScenarioCandidateService:
                 include_source_boundaries=(
                     option.scenario_id == boundary_parent_id or option.source_scenario_id == boundary_parent_id
                 ),
-                covered_primary_conditions=primary_coverage.setdefault(coverage_key, {}),
             )
+            result["coverage_family_id"] = coverage_key
             # Keep an unresolved case visible for causal/review diagnostics;
             # never replace an empty pool with an arbitrary default atom.
-            generated.extend(children or [option])
+            if children:
+                context_audits = result.get("source_contexts", [result])
+                for child in children:
+                    context = next(a for a in context_audits if a["source_operating_conditions"]
+                                   == child.facts.get("source_operating_conditions"))
+                    coverage_pools.setdefault(coverage_key, []).append((child, context))
+            else:
+                generated.append(option)
             generation_audit.append(result)
+        for pool in coverage_pools.values():
+            generated.extend(self._select_context_representatives(pool))
+        for result in generation_audit:
+            if "source_contexts" in result:
+                result["scenario_ids"] = [sid for a in result["source_contexts"] for sid in a["scenario_ids"]]
         representatives, mapping = coalesce_candidates(generated)
         audit["atom_generation"] = {
-            "version": "ordinary-analyze-atoms-v3-source-axis-coverage", "provider_calls": 0,
+            "version": "ordinary-analyze-atoms-v4-joint-source-coverage", "provider_calls": 0,
             "raw_candidate_count": len(generated),
             "unique_condition_count": len(representatives),
             "coalesced_candidate_count": len(generated) - len(representatives),
             "equivalence_mapping": mapping, "parents": generation_audit,
             "source_boundary_policy": "ONE_SOURCE_ANCHOR_PER_PHYSICAL_OPTION",
             "source_boundary_parent_id": boundary_parent_id,
-            "coverage_policy": "PRIMARY_VARIANTS_PLUS_SOURCE_CONTEXT_REPRESENTATIVES",
+            "coverage_policy": "JOINT_PRIMARY_SOURCE_AND_ROAD_COVERAGE",
             "coverage_limit": "Unselected context/variant combinations are not evaluated or proven equivalent.",
         }
         children, audit = templates._with_driver_configurations(
@@ -585,6 +600,63 @@ class MethodScenarioCandidateService:
                         **candidate.analysis_instance, "generation_role": "BEFORE_EQUIVALENCE",
                     }))
         return children, audit
+
+    @staticmethod
+    def _select_context_representatives(pool):
+        """Cover existing alternatives without claiming untested combinations equivalent.
+
+        Primary combinations, source conditions and WHERE/ROAD choices survive. The
+        latter cannot be dropped just because another context owns the same
+        action. No new combinations, input values or risk grades are created.
+        """
+        from .scenario_equivalence import signature, scenario_conditions
+        from .scenario_selection_quality import explicit_environment
+        rows = []
+        for child, audit in pool:
+            bindings = child.facts.get("method_scenario_dimensions", {})
+            primary = audit["coverage_plan"]["primary_variation_dimensions"]
+            primary_key = signature({d: bindings.get(d, {}).get("atom_id") for d in primary})
+            source = child.facts.get("source_operating_conditions", {})
+            source_key = signature(source)
+            features = {("primary", primary_key), ("source", source_key),
+                        ("where", bindings.get("WHERE", {}).get("atom_id", "")),
+                        ("road", bindings.get("ROAD", {}).get("atom_id", ""))}
+            parent_environment = explicit_environment(source.get("operating_scenario", ""))
+            selected_environment = explicit_environment(bindings.get("WHERE", {}).get("atom_label", ""))
+            # Prefer a source-qualified representative. An unqualified parent
+            # should not acquire a narrower enclosure simply by lexical rank.
+            specificity = (bool(parent_environment), not bool(selected_environment - parent_environment))
+            rows.append((child, audit, features, source_key, specificity))
+        remaining = sorted(rows, key=lambda r: r[0].scenario_id)
+        selected, covered, source_counts = [], set(), {}
+        while remaining:
+            index = max(range(len(remaining)), key=lambda i: (
+                len(remaining[i][2] - covered),
+                -source_counts.get(remaining[i][3], 0), remaining[i][4], -i))
+            row = remaining[index]
+            if not row[2] - covered:
+                break
+            remaining.pop(index)
+            selected.append(row)
+            covered.update(row[2])
+            source_counts[row[3]] = source_counts.get(row[3], 0) + 1
+        exact_keys = {signature(scenario_conditions(r[0])) for r in selected if r[0].facts.get("scenario_atom_ids")}
+        for row in remaining:
+            child, audit, features, _, _ = row
+            if child.facts.get("scenario_atom_ids") and signature(scenario_conditions(child)) in exact_keys:
+                # Existing coalescing owns exact alias mapping. Coverage pruning
+                # must not turn a proven duplicate into an unevaluated identity.
+                selected.append(row)
+                continue
+            audit["deferred_context_variants"].append({
+                "scenario_id": child.scenario_id,
+                "selected_atoms": {d: b.get("atom_id") for d, b in child.facts.get("method_scenario_dimensions", {}).items()},
+                "coverage_representatives": {kind: next(r[0].scenario_id for r in selected if (kind, value) in r[2])
+                                             for kind, value in features},
+                "status": "COMBINATION_NOT_EVALUATED", "risk_equivalence_proven": False})
+        for _, audit in pool:
+            audit["scenario_ids"] = [r[0].scenario_id for r in selected if r[1] is audit]
+        return [row[0] for row in selected]
 
     @staticmethod
     def _source_dict(source: SourceRef) -> dict[str, str]:

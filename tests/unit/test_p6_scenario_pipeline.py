@@ -270,14 +270,15 @@ def test_source_axis_sampling_preserves_primary_variants_without_claiming_equiva
     sources = [replace(parent(str(i)), operating_scenario=place,
                        facts={**parent().facts, "operating_scenario": place})
                for i, place in enumerate(project().odd_locations)]
-    full, bounded, registry, audits = [], [], {}, []
+    full, pool, audits = [], [], []
     for source in sources:
         args = dict(malfunction=asdict(malfunction()), parent=source, project_context=asdict(project()))
-        full_children, _ = service.generate_candidates(**args)
-        chosen, audit = service.generate_candidates(**args, covered_primary_conditions=registry)
+        full_children, audit = service.generate_candidates(**args)
         full.extend(full_children)
-        bounded.extend(chosen)
+        pool.extend((child, audit) for child in full_children)
         audits.append(audit)
+    bounded = MethodScenarioCandidateService._select_context_representatives(pool)
+    assert [c.scenario_id for c in bounded] == [c.scenario_id for c in MethodScenarioCandidateService._select_context_representatives(list(reversed(deepcopy(pool))))]
     axes = set(audits[0]["coverage_plan"]["primary_variation_dimensions"])
     def primary_variants(children):
         return {tuple((d, b.get("atom_id")) for d, b in c.facts["method_scenario_dimensions"].items() if d in axes)
@@ -430,3 +431,46 @@ def test_ordinary_scenario_node_generates_atoms_before_causal_agent(method, tmp_
     scored = score_structured_scenarios(result, StructuredRiskScoringService(method), MethodContractASILService(method))
     assert len(scored.risk_results) == len(agent.seen)
     assert all(r.exposure.status is ReviewStatus.FINALIZED for r in scored.risk_results)
+
+
+def test_specific_residential_garage_is_not_inferred_from_indoor_parking(method):
+    service = ConstrainedScenarioSynthesisService(method)
+    def pool(label):
+        p = replace(parent(), operating_scenario=label, facts={**parent().facts, 'operating_scenario': label})
+        built = service.build_input(malfunction=asdict(malfunction()), parent=p, assessment={}, project_context=asdict(project()))
+        return {c.atom_id for d in built.dimension_candidate_sets for c in d.candidates}
+    assert 'VD013' not in pool('室内停车场')
+    assert 'VD013' in pool('Parking in garage with direct link to living area')
+
+
+def test_person_on_vehicle_is_not_a_generic_external_pedestrian(method):
+    from hara_agent.services.analysis.scenario_selection_quality import ScenarioSemanticCompatibilityClassifier
+    from hara_agent.contracts.scenario_synthesis import SemanticCompatibility
+    atom = {'atom_id': 'example-person', 'label': 'Persons on roof / hood', 'filled_dimensions': ['OBJECT']}
+    query = {'object_categories': ['OBJECT_PEDESTRIAN'], 'object_relations': []}
+    classify = ScenarioSemanticCompatibilityClassifier.classify
+    assert classify(dimension='OBJECT', atom=atom, query=query, fm_template={}) == (
+        SemanticCompatibility.CONTRADICTED, 'OBJECT_RELATION_UNPROVEN')
+    query['object_relations'] = ['ON_VEHICLE']
+    assert classify(dimension='OBJECT', atom=atom, query=query, fm_template={})[0] is SemanticCompatibility.SUPPORTED
+    service = ConstrainedScenarioSynthesisService(method)
+    p = replace(parent(), facts={**parent().facts, 'object_type': 'PEDESTRIAN', 'object_position': 'front'})
+    built = service.build_input(malfunction=asdict(malfunction()), parent=p, assessment={}, project_context=asdict(project()))
+    pool = {c.atom_id for d in built.dimension_candidate_sets for c in d.candidates}
+    assert 'PU001' not in pool and 'CN_persons_in_vehicle' not in pool
+    assert pool & {'PU002', 'PU004', 'PU005', 'CN_other_road_users', 'XP010'}
+
+
+def test_joint_source_coverage_is_order_independent_and_retains_grade_directions(method):
+    p = replace(project(), odd_road_surfaces=['上坡15%', '下坡15%'])
+    parents = [replace(parent(str(i)), operating_scenario=place,
+        facts={**parent().facts, 'operating_scenario': place})
+        for i, place in enumerate(['停车场', '室内停车场', '室外停车场'])]
+    service = MethodScenarioCandidateService(method)
+    a, audit = service.generate_for_malfunction(malfunction(), parents, project_facts=p, function=function())
+    b, _ = service.generate_for_malfunction(malfunction(), list(reversed(parents)), project_facts=p, function=function())
+    assert [asdict(c) for c in a] == [asdict(c) for c in b]
+    contexts = [c.facts['source_operating_conditions'] for c in a]
+    assert {c['operating_scenario'] for c in contexts} == {'停车场', '室内停车场', '室外停车场'}
+    assert {c.get('source_slope_direction') for c in contexts} >= {'上坡', '下坡'}
+    assert audit['atom_generation']['coverage_policy'] == 'JOINT_PRIMARY_SOURCE_AND_ROAD_COVERAGE'

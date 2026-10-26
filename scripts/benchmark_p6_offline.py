@@ -233,7 +233,7 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
                             'permitted_road_types': list(project.odd_road_types),
                             'road_type_coverage_status': 'SOURCE_SCOPE_PRESERVED; RISK_EQUIVALENCE_NOT_PROVEN',
                             'WHERE': dict(where_atoms), 'ROAD': dict(road_atoms),
-                            'policy': 'Primary variants plus a representative of each source context; novel primary variants retained. Not exhaustive joint ODD coverage.'},
+                            'policy': 'Joint coverage of primary variants, source contexts and WHERE/ROAD alternatives; unselected combinations remain unevaluated. Not exhaustive joint ODD coverage.'},
         'new_committed_risk_records': 0, 'new_causal_provider_validation': 'NOT_RUN',
         'new_s_c_asil': 'NOT_REVALIDATED; historical ratings unchanged',
         'candidate_generation_provider_calls': 0,

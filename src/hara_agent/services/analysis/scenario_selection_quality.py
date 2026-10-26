@@ -122,6 +122,22 @@ def explicit_environment(text: str) -> set[str]:
     }.items() if any(term in folded for term in terms)}
 
 
+def explicit_location_relations(text: str) -> set[str]:
+    """A garage adjoining living space is more specific than an indoor car park."""
+    return {"DIRECT_RESIDENTIAL_ACCESS"} if re.search(
+        r"direct (?:link|access|connection) to (?:the )?living area|"
+        r"(?:与|和)(?:居住区|居住空间|住宅|起居区)(?:直接)?(?:相连|连接)|direkter Anbindung.*Wohn",
+        text, re.IGNORECASE) else set()
+
+
+def explicit_object_relations(text: str) -> set[str]:
+    """Keep a person's vehicle-relative location separate from object type."""
+    return {name for name, pattern in {
+        "ON_VEHICLE": r"(?:persons?|people) on (?:roof|hood)|车顶|引擎盖|发动机盖",
+        "IN_VEHICLE": r"(?:persons?|people|passengers?|occupants?) (?:in|inside|of) (?:a |the |own |other )?vehicle|车内人员|本车乘员",
+    }.items() if re.search(pattern, text, re.IGNORECASE)}
+
+
 def normalize_object_category(value: Any) -> str:
     folded = str(value).strip().casefold()
     if any(token in folded for token in ("tram", "有轨电车")):
@@ -425,6 +441,9 @@ class ScenarioSemanticQueryBuilder:
             "control_consequence_action_categories": sorted(consequence_actions),
             "state_failure_action_categories": sorted(state_actions),
             "object_categories": sorted(categories & _OBJECT_CATEGORIES),
+            "object_relations": sorted(explicit_object_relations(_json_text({
+                key: facts.get(key, "") for key in ("object_type", "road_user_type", "object_position")
+            }))),
             "unmapped_object_sources": list(dict.fromkeys(unmapped_object_sources)),
             "traffic_relations": sorted(categories & _TRAFFIC_CATEGORIES),
             "road_relations": sorted(categories & _ROAD_CATEGORIES),
@@ -433,6 +452,7 @@ class ScenarioSemanticQueryBuilder:
             "project_location_categories": sorted(project_location_categories),
             "parent_location_categories": sorted(parent_location_categories),
             "parent_environment": sorted(explicit_environment(parent_location_text)),
+            "parent_location_relations": sorted(explicit_location_relations(parent_location_text)),
             "location_categories": sorted(
                 project_location_categories | parent_location_categories
             ),
@@ -714,6 +734,9 @@ class ScenarioSemanticCompatibilityClassifier:
                 return SemanticCompatibility.CONTRADICTED, "EGO_ACTION_CONTRADICTION"
 
         if dimension == "OBJECT":
+            relations = explicit_object_relations(str(atom.get("label", "")))
+            if relations - set(query.get("object_relations", [])):
+                return SemanticCompatibility.CONTRADICTED, "OBJECT_RELATION_UNPROVEN"
             active = fm_template.get("active_option", {})
             expected = normalize_object_category(
                 active.get("obj_type", "") if isinstance(active, dict) else ""

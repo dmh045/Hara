@@ -30,7 +30,7 @@ from hara_agent.models import (
 from .scenario_constraint_service import ScenarioConstraintExecutor, ScenarioConstraintStatus
 from .scenario_method_service import ScenarioMethodService
 from .scenario_selection_quality import (
-    explicit_environment, normalize_object_category,
+    explicit_environment, explicit_location_relations, normalize_object_category,
     ScenarioBindingPolicy, ScenarioCandidateRanker, ScenarioCoveragePlanner,
     ScenarioDimensionApplicabilityService, ScenarioSemanticQueryBuilder,
     ScenarioRefinementEvidencePolicy, ScenarioSemanticCompatibilityClassifier,
@@ -616,6 +616,8 @@ class ConstrainedScenarioSynthesisService:
                 return False, f"ODD_LOCATION_INCOMPATIBLE:{key}"
         parent_environment = set(query.get("parent_environment", []))
         atom_environment = explicit_environment(str(atom.get("label", "")))
+        if explicit_location_relations(str(atom.get("label", ""))) - set(query.get("parent_location_relations", [])):
+            return False, "PARENT_LOCATION_RELATION_UNPROVEN"
         if parent_environment and atom_environment and not parent_environment & atom_environment:
             return False, "PARENT_ENVIRONMENT_INCOMPATIBLE"
         if ("WHERE" in atom.get("filled_dimensions", [])
@@ -1479,7 +1481,6 @@ class ConstrainedScenarioSynthesisService:
         self, *, malfunction: dict[str, Any], parent: ScenarioCandidate,
         project_context: dict[str, Any], function: dict[str, Any] | None = None,
         include_source_boundaries: bool = True,
-        covered_primary_conditions: dict[str, str] | None = None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         """Use the existing shortlist, coverage plan and validator before causality.
 
@@ -1532,7 +1533,6 @@ class ConstrainedScenarioSynthesisService:
             selected, audit = self._generate_context_candidates(
                 malfunction=malfunction, parent=context, project_context=project_context,
                 function=function,
-                covered_primary_conditions=covered_primary_conditions,
             )
             if not selected and len(contexts) > 1:
                 source_conditions = self.source_operating_conditions(context)
@@ -1556,7 +1556,6 @@ class ConstrainedScenarioSynthesisService:
     def _generate_context_candidates(
         self, *, malfunction: dict[str, Any], parent: ScenarioCandidate,
         project_context: dict[str, Any], function: dict[str, Any] | None = None,
-        covered_primary_conditions: dict[str, str] | None = None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         synthesis_input = self.build_input(
             malfunction=malfunction, parent=parent, assessment={},
@@ -1596,8 +1595,7 @@ class ConstrainedScenarioSynthesisService:
             "context_refs": ["PROJECT.ODD", "MF.description", "MF.functional_effect", "METHOD.scenario_atom_catalog"],
         } for intent, atom_ids in zip(synthesis_input.coverage_plan.variant_intents, chosen)]}
         selections = self.validate_provider_payload(synthesis_input, payload)
-        children, deferred = [], []
-        primary = synthesis_input.coverage_plan.primary_variation_dimensions
+        children = []
         for selection in selections:
             selection = replace(selection, selection_authority="DETERMINISTIC_COVERAGE_PLAN")
             child, _ = self.materialize(
@@ -1606,26 +1604,10 @@ class ConstrainedScenarioSynthesisService:
                     "provider_calls": 0, "selection_authority": selection.selection_authority,
                 },
             )
-            primary_key = self._canonical_json({
-                dimension: selection.selected_atoms.get(dimension, ()) for dimension in primary
-            })
-            if (covered_primary_conditions is not None and children
-                    and primary_key in covered_primary_conditions):
-                deferred.append({
-                    "scenario_id": child.scenario_id,
-                    "selected_atoms": selection.selected_atoms,
-                    "primary_variant_representative": covered_primary_conditions[primary_key],
-                    "source_context_representative": children[0].scenario_id,
-                    "status": "COMBINATION_NOT_EVALUATED",
-                    "risk_equivalence_proven": False,
-                })
-                continue
             children.append(child)
-            if covered_primary_conditions is not None:
-                covered_primary_conditions.setdefault(primary_key, child.scenario_id)
         return children, {**audit, "status": "CANDIDATES_GENERATED",
                           "planned_pool_candidate_count": len(selections),
-                          "deferred_context_variants": deferred,
+                          "deferred_context_variants": [],
                           "scenario_ids": [c.scenario_id for c in children]}
 
     @staticmethod
