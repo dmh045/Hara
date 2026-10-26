@@ -313,3 +313,43 @@ def test_failed_control_safe_state_is_rejected_locally_without_losing_motion():
     raw['hypotheses'][0]['remaining_controls'].append('drive')
     with pytest.raises(ValueError, match='failed control cannot be a remaining'):
         PhysicalScenarioAgent(client).propose({'plan_key': 'contradiction', 'evidence': {'MF.description': 'Drive failure'}})
+
+
+@pytest.mark.parametrize('shape', ['object', 'pair'])
+def test_control_format_repair_preserves_qualifiers_and_original_reply(tmp_path, shape):
+    control = dict(rationale='Conditional independent manual channel', basis_refs=['MF.description'],
+        conditions=['Manual channel remains independent of automatic command'],
+        uncovered_conditions=['Shared actuator failure not covered'],
+        failed_controls=['automatic_braking_command'], remaining_controls=['driver_braking'])
+    corrected = dict(hypotheses=[], uncovered_conditions=[], control_assessment=control)
+    raw = deepcopy(corrected)
+    details = {key: deepcopy(control[key]) for key in ('rationale', 'basis_refs', 'conditions', 'uncovered_conditions')}
+    raw['control_assessment']['remaining_controls'] = [
+        {'control': 'driver_braking', **details} if shape == 'object' else ['driver_braking', details]]
+    original = deepcopy(raw)
+
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            payload = json.loads(request.user_prompt)
+            if request.metadata['schema_repair']:
+                assert payload['previous_invalid_response'] == original
+                diagnostic = payload['repair_errors'][0]
+                assert '"remaining_controls":["driver_braking"]' in diagnostic
+                assert 'do not discard or broaden' in diagnostic
+                assert 'do not restrict the whole motion hypothesis' in diagnostic
+                return LLMResponse(deepcopy(corrected), 'OFFLINE')
+            return LLMResponse(deepcopy(raw), 'OFFLINE')
+
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'control-shape', 'task_scope': 'CONTROL_INPUTS_ONLY',
+               'evidence': {'MF.description': 'Automatic command fault'}}
+    records = []
+    plan, audit = agent.propose(context, on_response=records.append)
+    assert plan.control_assessment == control
+    assert original == raw == records[0]['response']['data']
+    assert client.calls == 2 and audit['schema_repairs'] == 1
+    resumed, resumed_audit = agent.propose(context)
+    assert resumed == plan and resumed_audit['response_cache_hits'] == 2 and client.calls == 2

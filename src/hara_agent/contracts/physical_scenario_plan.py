@@ -93,7 +93,13 @@ def _texts(value: Any, *, path: str = "text_array") -> list[str]:
         raise ValueError(f"{path}: expected a bounded text array")
     for index, item in enumerate(value):
         if not isinstance(item, str) or not item.strip():
-            hint = (" Control arrays contain control identity strings; driver applicability belongs to hypothesis.driver_positions and conditions."
+            hint = (' Control arrays contain only control identity strings, e.g. '
+                    '"remaining_controls":["driver_braking"], never objects or [identity, details] pairs. '
+                    'Re-express every existing rationale, basis_refs, condition and limitation in the '
+                    'same hypothesis/control_assessment fields; do not discard or broaden them. '
+                    'Retaining the driver_braking channel is separate from the driver being present; '
+                    'do not restrict the whole motion hypothesis to the driver seat just to describe that channel. '
+                    'Return the complete output_shape, not just the corrected array.'
                     if path in {"failed_controls", "remaining_controls"} else "")
             raise ValueError(f"{path}[{index}]: expected a nonempty string, received {type(item).__name__}." + hint)
     return value
