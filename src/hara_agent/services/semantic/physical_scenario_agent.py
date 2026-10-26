@@ -372,7 +372,10 @@ class PhysicalScenarioAgent:
                 system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
                     **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str, separators=(",", ":")),
                 schema_name="PhysicalScenarioPlan", prompt_version=self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION,
-                metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair}, max_tokens=4096,
+                # Motion plans include up to three geometries and their parameter
+                # provenance; real complete plans can exceed 4096 output tokens.
+                metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair},
+                max_tokens=4096 if controls_only else 8192,
                 response_format=self.response_format)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
             record = {"request": asdict(request), "response": asdict(response), "schema_repair": repair}
