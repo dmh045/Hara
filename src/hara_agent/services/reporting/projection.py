@@ -645,17 +645,20 @@ class HARAReportProjectionService:
         return text
 
     @staticmethod
-    def _safe_state_display(goal: Any, catalog: Mapping, scenario_ids=None) -> str:
+    def _safe_state_display(goal: Any, catalog: Mapping, scenario_ids=None, *, scenarios=None) -> str:
         scope = set(goal.associated_scenario_ids if scenario_ids is None else scenario_ids)
         candidates = [c for c in catalog.get("safe_state_candidates", []) if c["scenario_id"] in scope]
         gaps = [g for g in catalog.get("safe_state_gaps", []) if g["scenario_id"] in scope]
         covered = {c["scenario_id"] for c in candidates}
         missing = len(scope - covered)
-        gap_text = "；".join(dict.fromkeys(g["reason"] for g in gaps))
+        def narrative(record, field):
+            scenario = (scenarios or {}).get(record["scenario_id"])
+            return EngineeringReportTextMapper.hazardous_event(record[field], scenario) if scenario is not None else record[field]
+        gap_text = "；".join(dict.fromkeys(narrative(g, "reason") for g in gaps))
         if candidates:
             variants = defaultdict(list)
             for candidate in candidates:
-                key = candidate["description"]
+                key = narrative(candidate, "description")
                 variants[key].append(candidate["scenario_id"])
             return "\n".join(f"候选：{text}（适用{len(set(ids))}个成员）" for text, ids in variants.items()) + (
                 f"\n另有{missing}个成员尚无适用方案：{gap_text or '见成员控制条件'}。" if missing else "")
@@ -964,7 +967,7 @@ class HARAReportProjectionService:
         ], goal.text) for goal in state.safety_goals}
         goal_texts = {sg_id: result["text"] for sg_id, result in goal_presentations.items()}
         goal_safe_states = {goal.sg_id: self._safe_state_display(goal,
-                            state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}))
+                            state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}), scenarios=scenarios)
                             for goal in state.safety_goals}
         severity_descriptions = ({level.level: level.description for level in method.severity.scale.levels}
                                  if hasattr(method, "severity") else {})
@@ -1071,7 +1074,7 @@ class HARAReportProjectionService:
                     (f"{sg_id}：" if len(group_goal_ids) > 1 else "") + self._safe_state_display(
                         next(goal for goal in state.safety_goals if goal.sg_id == sg_id),
                         state.item_definition.get("safety_goal_catalog", {}).get(sg_id, {}),
-                        [e["risk"].scenario_id for e in siblings if e["risk"].safety_goal_id == sg_id])
+                        [e["risk"].scenario_id for e in siblings if e["risk"].safety_goal_id == sg_id], scenarios=scenarios)
                     for sg_id in group_goal_ids) or (
                         "不适用（本行QM，无需分配SG）" if all(e["risk"].asil.value == "QM" for e in siblings)
                         else "待确定"),

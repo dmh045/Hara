@@ -92,6 +92,7 @@ class ScenarioEvidenceErrorCode(str, Enum):
     CAUSAL_FALSE_WITH_DIMENSIONS = "CAUSAL_FALSE_WITH_DIMENSIONS"
     CAUSAL_TRUE_WITHOUT_DIMENSIONS = "CAUSAL_TRUE_WITHOUT_DIMENSIONS"
     SELF_REFERENTIAL_CAUSAL_EVIDENCE = "SELF_REFERENTIAL_CAUSAL_EVIDENCE"
+    COUNTERFACTUAL_CONTACT_NOT_ADDRESSED = "COUNTERFACTUAL_CONTACT_NOT_ADDRESSED"
 
 
 class ScenarioEvidenceContractError(ValueError):
@@ -288,6 +289,8 @@ class CausalEvidenceSelector:
             return None
         if ref == "DERIVED.parameter_relations" and _conditional_evidence(record):
             return 0, "current conditional model relations"
+        if ref == "DERIVED.stationary_ego_counterfactual" and _conditional_evidence(record):
+            return 0, "same-world contact counterfactual"
         validated_atom = _is_validated_analytical_scenario_atom(record)
         if (
             record.provenance is FactProvenance.SCENARIO_DEFINED
@@ -498,6 +501,16 @@ def build_fact_registry(
         analysis, malfunction.malfunction_id, scenario.scenario_id,
     ):
         info = analysis.value
+        counterfactual = info.get("stationary_ego_counterfactual", {})
+        if counterfactual.get("status") == "CONTACT":
+            registry.register(EvidenceRecord(
+                "DERIVED.stationary_ego_counterfactual", counterfactual,
+                EvidenceKind.DERIVED_PHYSICS, FactProvenance.DERIVED,
+                ReviewStatus.PENDING, analysis.source_refs,
+                {**analysis.metadata, "derivation_type": "STATIONARY_EGO_COUNTERFACTUAL",
+                 "inputs": ["SCN.physical_analysis"], "causal_relevance": True,
+                 "input_fact_metadata": [dict(scenario.fact_provenance["physical_analysis"])]},
+            ))
         relations = info.get("sensitivity", {}).get("parameter_relations", [])
         if relations:
             registry.register(EvidenceRecord(
@@ -711,6 +724,21 @@ def validate_evidence_contract(
                              code=ScenarioEvidenceErrorCode.ASSUMPTION_IN_POSITIVE_CHAIN,
                              hop=hop_name, claim=claim, basis_type=basis.value, invalid_refs=[],
                              reason="causal=true cannot depend on assumption")
+
+    counterfactual_ref = "DERIVED.stationary_ego_counterfactual"
+    if causal and registry.resolve_record(counterfactual_ref) is not None and not any(
+        counterfactual_ref in chain.get(hop, {}).get("evidence_refs", [])
+        for hop in ("b_to_i", "i_to_h")
+    ):
+        raise _error(malfunction, scenario, prompt_version, batch, split_path, split_depth,
+                     code=ScenarioEvidenceErrorCode.COUNTERFACTUAL_CONTACT_NOT_ADDRESSED,
+                     hop="i_to_h", claim=chain["i_to_h"]["claim"],
+                     basis_type=chain["i_to_h"]["basis_type"], invalid_refs=[],
+                     reason="The same target also contacts stationary ego. Cite " + counterfactual_ref
+                     + " in b_to_i or i_to_h and explain the supported incremental hazard. "
+                     "Contact alone is insufficient. Immobilization requires evidence of the intended "
+                     "motion, not an assumption that stationary ego is always the healthy state. "
+                     "Without incremental support, use the appropriate causal breakpoint.")
 
     changes = item.get("risk_dimension_changes")
     if not isinstance(changes, list):

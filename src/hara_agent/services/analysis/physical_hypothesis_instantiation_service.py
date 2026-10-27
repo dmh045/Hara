@@ -926,15 +926,16 @@ class PhysicalHypothesisInstantiationService:
             facts[field] = record.value
             provenance[field] = {**record.metadata, "provenance": record.provenance.value,
                 "approval": record.approval_status.value, "source_refs": [vars(s) for s in record.source_refs]}
+        proposal = h.get("intervention_assumptions", {}).get("other_road_user_avoidance_possible", {})
+        if proposal.get("value") is True:
+            from .scenario_physics import moving_target_avoidance
+            check = moving_target_avoidance(facts, proposal)
+            info["avoidance_validation"] = check
+            if check["status"] != "CONDITIONAL_ESCAPE_VALIDATED":
+                facts.pop("other_road_user_avoidance_possible", None)
+                provenance.pop("other_road_user_avoidance_possible", None)
         if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT":
-            from .scenario_physics import moving_target_avoidance, rectilinear_moving_contact
-            proposal = h.get("intervention_assumptions", {}).get("other_road_user_avoidance_possible", {})
-            if proposal.get("value") is True:
-                check = moving_target_avoidance(facts, proposal)
-                info["avoidance_validation"] = check
-                if check["status"] != "CONDITIONAL_ESCAPE_VALIDATED":
-                    facts.pop("other_road_user_avoidance_possible", None)
-                    provenance.pop("other_road_user_avoidance_possible", None)
+            from .scenario_physics import rectilinear_moving_contact
             if facts.get("ego_speed_kph") == 0:
                 info["stationary_ego_counterfactual"] = rectilinear_moving_contact({**facts,
                     "longitudinal_acceleration_mps2": 0})

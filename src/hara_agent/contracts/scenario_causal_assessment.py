@@ -156,13 +156,21 @@ class ScenarioCausalAssessment:
         basis_type: EvidenceKind = EvidenceKind.APPROVED_RULE,
         review_status: ReviewStatus | None = None,
     ) -> "ScenarioCausalAssessment":
-        """Attach the deterministic H→Harm result after S has been resolved."""
+        """Bind the current S-derived harm, replacing a prior scoring tail."""
 
         if not potential_harm.strip() or not evidence_refs:
             raise ValueError("Deterministic harm attachment requires value and evidence")
-        if any(item.node_type is CausalNodeType.HARM for item in self.causal_graph.nodes):
-            raise ValueError("Scenario causal assessment already contains a harm node")
-        hazard_id = self.causal_chain[-1]
+        # Legacy five-node checkpoints may already contain a harm label. Keep
+        # their M→B→I→H evidence, but do not retain an obsolete H→Harm result.
+        old_harm_ids = {item.node_id for item in self.causal_graph.nodes
+                        if item.node_type is CausalNodeType.HARM}
+        chain = tuple(identity for identity in self.causal_chain if identity not in old_harm_ids)
+        bindings = tuple(item for item in self.evidence_bindings if item.edge_id != "H_TO_HARM")
+        old_harm_refs = {ref for item in self.evidence_bindings if item.edge_id == "H_TO_HARM"
+                         for ref in item.evidence_refs}
+        retained_refs = {ref for item in bindings for ref in item.evidence_refs}
+        provenance = tuple(ref for ref in self.provenance if ref not in old_harm_refs or ref in retained_refs)
+        hazard_id = chain[-1]
         harm_id = f"{self.scenario_id}:harm"
         harm_node = CausalNode(
             harm_id, CausalNodeType.HARM, potential_harm,
@@ -179,22 +187,22 @@ class ScenarioCausalAssessment:
             review_status or ReviewStatus.PENDING,
         )
         graph = CausalGraph(
-            nodes=(*self.causal_graph.nodes, harm_node),
-            edges=(*self.causal_graph.edges, edge),
+            nodes=(*(n for n in self.causal_graph.nodes if n.node_id not in old_harm_ids), harm_node),
+            edges=(*(e for e in self.causal_graph.edges if e.target not in old_harm_ids), edge),
         )
         return ScenarioCausalAssessment(
             scenario_id=self.scenario_id,
             causal_graph=graph,
-            causal_chain=(*self.causal_chain, harm_id),
+            causal_chain=(*chain, harm_id),
             breakpoint=self.breakpoint,
-            evidence_bindings=(*self.evidence_bindings, binding),
+            evidence_bindings=(*bindings, binding),
             unsupported_links=tuple(
                 item for item in self.unsupported_links if item != "H_TO_HARM"
             ),
             risk_dimension_changes=self.risk_dimension_changes,
             hazardous_event=self.hazardous_event,
             potential_harm=potential_harm,
-            provenance=tuple(dict.fromkeys((*self.provenance, *evidence_refs))),
+            provenance=tuple(dict.fromkeys((*provenance, *evidence_refs))),
             review_status=(
                 self.review_status
                 if review_status is None else review_status

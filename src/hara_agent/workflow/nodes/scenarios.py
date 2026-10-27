@@ -130,6 +130,10 @@ def _assess_instantiated_scenarios(
     prior = prior_batch or {}
     old_assessments = {row["scenario_id"]: row for row in prior.get("assessments", [])}
     old_tasks = {row["task_key"]: row for row in prior.get("audit", {}).get("causal_reuse", {}).get("exact_mapping", [])}
+    exhausted_ids = {row.get("scenario_id") for row in prior.get("audit", {}).get("item_salvage_audit", [])
+                     if row.get("outcome") == "repair_failed" and row.get("repair_failed") is True}
+    exhausted_ids.update(row.get("scenario_id") for row in prior.get("audit", {}).get("causal_reuse", {}).get("records", [])
+                         if row.get("reason") == "EXACT_TASK_BOUNDED_FAILURE_CHECKPOINT_HIT")
     for key, members in exact_groups.items():
         old = old_tasks.get(key)
         if not old:
@@ -156,6 +160,21 @@ def _assess_instantiated_scenarios(
                 "reused": True, "child_revalidated": True, "task_key": key,
                 "representative_scenario_id": old_ids[0], "reason": "EXACT_TASK_CHECKPOINT_HIT"})
         except ValueError as error:
+            # An exhausted response is a recoverable gap, not a positive or
+            # negative causal judgement. Exact, unchanged tasks must not spend
+            # the same bounded repair again merely because batches regrouped.
+            old_row = old_assessments[old_ids[0]]
+            if (all(identity in exhausted_ids for identity in old_ids)
+                    and old_row.get("status") == "PENDING"
+                    and not old_row.get("causal_chain") and not old_row.get("causally_relevant")
+                    and not old_row.get("hazardous_event")
+                    and not current.facts.get("physical_analysis", {}).get("stationary_ego_counterfactual")):
+                restored[current.scenario_id] = ScenarioFeasibilityAssessment.from_dict(
+                    {**old_row, "scenario_id": current.scenario_id})
+                cache_records.append({"scenario_id": current.scenario_id, "kind": "bounded_failure",
+                    "reused": True, "task_key": key, "child_revalidated": False,
+                    "reason": "EXACT_TASK_BOUNDED_FAILURE_CHECKPOINT_HIT"})
+                continue
             cache_records.append({"scenario_id": current.scenario_id, "kind": "exact_input",
                 "reused": False, "reason": "CACHED_CHILD_EVIDENCE_REVALIDATION_REQUIRED", "detail": str(error)})
     families = driver_families(unique) if any(
@@ -302,7 +321,8 @@ def _assess_instantiated_scenarios(
         "common_evidence_batches": audit.get("shared_context_batch_count", 0),
         "requests": audit.get("actual_llm_calls", 0),
         "response_checkpoint_hits": audit.get("response_checkpoint_hits", 0),
-        "exact_task_checkpoint_hits": len(restored),
+        "exact_task_checkpoint_hits": sum(r["kind"] == "exact_input" and r["reused"] for r in cache_records),
+        "bounded_failure_checkpoint_hits": sum(r["kind"] == "bounded_failure" for r in cache_records),
         "records": reuse_records,
         "exact_mapping": [{"task_key": key, "representative_scenario_id": members[0].scenario_id,
                            "scenario_ids": [member.scenario_id for member in members],
@@ -483,6 +503,20 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
             malfunction_id=malfunction.malfunction_id,
             expected_scenario_ids=expected_scenario_ids,
         )
+        if restored is not None:
+            # A saved positive claim must address an available same-world
+            # counterfactual too. Invalidating this batch still lets the exact
+            # task recovery below reuse every unaffected member.
+            try:
+                for assessment in restored[0]:
+                    candidate = candidate_by_id[assessment.scenario_id]
+                    if (assessment.causally_relevant and candidate.facts.get("physical_analysis", {})
+                            .get("stationary_ego_counterfactual", {}).get("status") == "CONTACT"):
+                        ScenarioFeasibilityAgent._parse(malfunction,
+                            rebind_assessment_payload(assessment.to_dict(), candidate, candidate),
+                            scenario=candidate, project_registry=project_registry)
+            except ValueError:
+                restored = None
         if restored is None:
             pending_malfunctions.append(malfunction)
         else:

@@ -353,6 +353,41 @@ def test_concrete_severity_gap_is_not_hidden_by_input_production_status():
     assert '碰撞相对速度' in text and '适用运动模型或速度包络' in text
 
 
+@pytest.mark.parametrize('target,collision,expected', [
+    ('PEDESTRIAN', 'REAR_END', '车辆后部与行人碰撞'),
+    ('PEDESTRIAN', 'VEHICLE_TO_ROAD_USER', '车辆与行人碰撞'),
+    ('CYCLIST', 'SIDE', '车辆侧面与骑行者碰撞'),
+    ('FIXED_OBJECT', 'FRONTAL', '车辆前部与固定障碍物碰撞'),
+    ('VEHICLE', 'REAR_END', '车辆追尾碰撞'),
+])
+def test_severity_description_does_not_call_a_reversing_pedestrian_contact_rear_ending(target, collision, expected):
+    trace = {'physical_inputs': {'road_user_type': target, 'collision_type': collision,
+                                'relative_speed_kph': 7.012}}
+    original = deepcopy(trace)
+    text = EngineeringReportTextMapper().severity_rationale(EvidenceValue('S2', ReviewStatus.PENDING), trace)
+    assert expected in text and '7 km/h' in text and 'S2' in text
+    assert trace == original
+    branch = {'branch_id':'different-project-branch', 'S':'S2', 'E':'E2', 'C':'C3', 'ASIL':'A',
+              'risk_context': {k:{'value':v} for k,v in trace['physical_inputs'].items()},
+              'relative_speed_kph':7.012, 'first_contact_time_s':.154286}
+    before = deepcopy(branch)
+    detail = EngineeringReportTextMapper.branch_result(branch)
+    assert expected in detail and '首次接触时间 0.15 s' in detail
+    assert 'S2 / E2 / C3 / A' in detail and branch == before
+    assert '侧向首次接触' not in detail and '非纵向 TTC' not in detail
+
+
+def test_safe_state_uses_member_object_semantics_without_rewriting_original_proposal():
+    from types import SimpleNamespace
+    goal = SimpleNamespace(associated_scenario_ids=['s1'], safe_state='original', status=ReviewStatus.PENDING)
+    catalog = {'safe_state_candidates':[{'scenario_id':'s1', 'description':'在接触target1前停车，target10另行分析'}]}
+    scenarios = {'s1':SimpleNamespace(facts={'object_id':'target1','road_user_type':'CYCLIST'}, analysis_instance={})}
+    original = deepcopy(catalog)
+    text = HARAReportProjectionService._safe_state_display(goal, catalog, scenarios=scenarios)
+    assert '接触骑行者前停车' in text and 'target10' in text
+    assert catalog == original
+
+
 def test_exposure_rank_labels_the_used_atom_not_the_search_phrase():
     mapper = EngineeringReportTextMapper(load_report_schema().presentation['language'])
     trace = {'result': 'E3', 'aggregation_rule': 'e3_e4_mix',

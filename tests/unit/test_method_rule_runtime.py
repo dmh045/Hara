@@ -242,6 +242,13 @@ def test_synthetic_causal_hara_regression_preserves_scoring_goal_gate_and_draft(
     assert calculation["potential_harm"]["potential_harm"] == risk.potential_harm
     assert calculation["potential_harm"]["status"] == "PENDING_INPUT"
     assert calculation["potential_harm"]["source_refs"]
+    causal = ScenarioCausalAssessment.from_dict(result.item_definition["scenario_assessments"][0]["causal_assessment"])
+    assert causal.potential_harm == risk.potential_harm and causal.is_validated
+    assert sum(n.node_type is CausalNodeType.HARM for n in causal.causal_graph.nodes) == 1
+    binding = next(b for b in causal.evidence_bindings if b.edge_id == "H_TO_HARM")
+    assert binding.status is ReviewStatus.PENDING and causal.review_status is ReviewStatus.PENDING
+    assert causal.with_harm(potential_harm=causal.potential_harm, evidence_refs=binding.evidence_refs,
+                            source_refs=binding.source_refs, review_status=ReviewStatus.PENDING) == causal
 
     aggregate_safety_goals(result, MethodSafetyGoalService(method))
     pass_quality_gate(result)

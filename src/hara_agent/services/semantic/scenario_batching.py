@@ -105,7 +105,12 @@ def _scenario_json(
                             "stationary_ego_counterfactual", "avoidance_validation")
                 if key in scenario.analysis_instance.get("physical_hypothesis", {})},
                 **({"parameter_relations_ref": "DERIVED.parameter_relations"}
-                   if "DERIVED.parameter_relations" in selection.selected_refs else {})},
+                   if "DERIVED.parameter_relations" in selection.selected_refs else {}),
+                **({"counterfactual_requirement": "本车静止也会与同一目标接触。若仍判定因果成立，"
+                    "b_to_i或i_to_h必须引用DERIVED.stationary_ego_counterfactual，"
+                    "结合实际轨迹说明新增危险；仅有接触不够。异常阻滞须有预期运动依据，"
+                    "不能一律把静止当作健康状态。无增量依据则返回具体因果断点。"}
+                   if "DERIVED.stationary_ego_counterfactual" in selection.selected_refs else {})},
             "causal_evidence_view": selection.compact_view,
             **({"shared_causal_evidence": scenario.analysis_instance["shared_causal_evidence"]}
                if scenario.analysis_instance.get("shared_causal_evidence") else {}),

@@ -533,12 +533,12 @@ def score_structured_scenarios(
             registry=evidence_registry,
         ) if method is not None else None
         potential_harm = harm.potential_harm if harm is not None else ""
-        if harm is not None and harm.status.value == "FINALIZED":
+        if harm is not None and harm.potential_harm and harm.evidence_refs:
             causal_assessment = causal_assessment.with_harm(
                 potential_harm=harm.potential_harm,
                 evidence_refs=harm.evidence_refs,
                 source_refs=harm.source_refs,
-                review_status=ReviewStatus.FINALIZED,
+                review_status=_review_status(harm.status.value),
             )
         exposure_method = str(scored["exposure"].get("exposure_method", "")).upper()
         valid_scores = (

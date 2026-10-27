@@ -68,6 +68,99 @@ def test_point_model_does_not_gain_symbolic_evidence(method):
     assert child.facts['ego_impact_speed_kph'] > 0
 
 
+def counterfactual_child(method):
+    from test_bounded_interaction_coverage import moving_plan
+    raw = moving_plan(initial=0, acceleration=.2, target_direction='LEFT',
+                      x=.5, y=-1.5, position='RIGHT', collision='SIDE')
+    return instantiate(method, raw, make_candidate(0))[0]
+
+
+def counterfactual_claim(child, *, address=False):
+    ref = 'DERIVED.stationary_ego_counterfactual'
+    return dict(scenario_id=child.scenario_id, physically_feasible=True, functionally_relevant=True,
+        causally_relevant=True, breakpoint='NONE', hazardous_event='fault increases contact speed',
+        causal_chain={
+            'm_to_b': dict(claim='defined excessive drive', basis_type='DIRECT_FACT', evidence_refs=['MF.description']),
+            'b_to_i': dict(claim='conditional motion', basis_type='DERIVED_PHYSICS', evidence_refs=['DERIVED.motion_model_outcome']),
+            'i_to_h': dict(claim='same target contacts stationary ego too; fault increases relative impact speed',
+                basis_type='DERIVED_PHYSICS', evidence_refs=['DERIVED.relative_speed_kph'] + ([ref] if address else []))},
+        risk_dimension_changes=[], confidence=.8, status='PENDING')
+
+
+def test_counterfactual_contact_is_citable_and_required_only_for_positive_current_world(method):
+    from hara_agent.services.semantic.scenario_evidence import ScenarioEvidenceContractError
+    child = counterfactual_child(method)
+    before = deepcopy(child)
+    ref = 'DERIVED.stationary_ego_counterfactual'
+    registry = build_fact_registry(mf(), child)
+    assert registry.resolve(ref)['approval_status'] == 'PENDING'
+    prompt = json.loads(_scenario_json(mf(), child, causal_evidence_budget=1))
+    assert ref in prompt['causal_evidence_view']
+    assert ref in prompt['conditional_physical_analysis']['counterfactual_requirement']
+    with pytest.raises(ScenarioEvidenceContractError, match='COUNTERFACTUAL_CONTACT_NOT_ADDRESSED'):
+        ScenarioFeasibilityAgent._parse(mf(), counterfactual_claim(child), scenario=child)
+    assert ScenarioFeasibilityAgent._parse(mf(), counterfactual_claim(child, address=True), scenario=child).causally_relevant
+    negative = counterfactual_claim(child)
+    negative.update(causally_relevant=False, breakpoint='I_TO_H', hazardous_event='')
+    negative['causal_chain']['i_to_h'] = dict(claim='no demonstrated incremental hazard',
+        basis_type='ASSUMPTION', evidence_refs=[])
+    assert not ScenarioFeasibilityAgent._parse(mf(), negative, scenario=child).causally_relevant
+    assert build_fact_registry(replace(mf(), malfunction_id='OTHER'), child).resolve(ref) is None
+    assert child == before
+
+
+def test_exact_recovery_reuses_unaffected_task_and_rechecks_counterfactual(method):
+    from hara_agent.services.analysis.scenario_equivalence import exact_task_key
+    from hara_agent.services.semantic.scenario_evidence import SCENARIO_ASSESSMENT_CONTRACT_VERSION
+    from hara_agent.workflow.nodes.scenarios import _assess_instantiated_scenarios
+    affected = counterfactual_child(method)
+    unaffected = instantiate(method)[0]
+    class Agent:
+        client = SimpleNamespace()
+        prompt_version = ScenarioFeasibilityAgent.PROMPT_VERSION
+        assessment_contract_version = SCENARIO_ASSESSMENT_CONTRACT_VERSION
+        calls = []
+        def assess(self, malfunction, candidates, project_registry=None):
+            self.calls.extend(c.scenario_id for c in candidates)
+            return [ScenarioFeasibilityAgent._parse(malfunction, counterfactual_claim(c, address=True), scenario=c)
+                    for c in candidates], {'llm_calls':1}
+    agent = Agent()
+    prior = {'assessments':[counterfactual_claim(c) for c in (affected, unaffected)],
+             'audit':{'causal_reuse':{'exact_mapping':[
+                 {'task_key':exact_task_key(agent, mf(), c), 'scenario_ids':[c.scenario_id]}
+                 for c in (affected, unaffected)]}}}
+    result, audit = _assess_instantiated_scenarios(agent, mf(), [affected, unaffected], {}, None, prior)
+    assert agent.calls == [affected.scenario_id]
+    assert len(result) == 2
+    assert audit['causal_reuse']['exact_task_checkpoint_hits'] == 1
+
+
+def test_exact_exhausted_response_is_recovered_as_gap_without_repeating_requests(method):
+    from hara_agent.models import ScenarioFeasibilityAssessment
+    from hara_agent.services.analysis.scenario_equivalence import exact_task_key
+    from hara_agent.workflow.nodes.scenarios import _assess_instantiated_scenarios
+    child = instantiate(method)[0]
+    agent = ScenarioFeasibilityAgent(SimpleNamespace())
+    def unexpected(*args, **kwargs):
+        raise AssertionError('unchanged exhausted task must not call again')
+    agent.assess = unexpected
+    pending = ScenarioFeasibilityAssessment(mf().malfunction_id, child.scenario_id, False, False, False,
+        [], 'bounded repair exhausted')
+    prior = {'assessments':[pending.to_dict()], 'audit':{
+        'item_salvage_audit':[{'scenario_id':child.scenario_id,'outcome':'repair_failed','repair_failed':True}],
+        'causal_reuse':{'exact_mapping':[{'task_key':exact_task_key(agent, mf(), child),
+                                        'scenario_ids':[child.scenario_id]}]}}}
+    for _ in range(2):
+        rows, audit = _assess_instantiated_scenarios(agent, mf(), [child], {}, None, prior)
+        assert rows[0].to_dict() == pending.to_dict()
+        assert audit['causal_reuse']['bounded_failure_checkpoint_hits'] == 1
+        assert audit['causal_reuse']['exact_task_checkpoint_hits'] == 0
+        prior = {'assessments':[r.to_dict() for r in rows], 'audit':audit}
+    changed = replace(child, facts={**child.facts, 'relative_distance_m':3})
+    with pytest.raises(AssertionError, match='must not call'):
+        _assess_instantiated_scenarios(agent, mf(), [changed], {}, None, prior)
+
+
 def test_actual_missing_brace_is_not_hand_repaired_and_json_mode_survives_one_retry(tmp_path):
     malformed = (Path(__file__).parents[1] / 'fixtures/physical_live_invalid_causal_20261019.txt').read_text()
     assert hashlib.sha256(malformed.encode()).hexdigest() == 'ce92856ecc34d36d3b79c91169935154e44699b8c3568766a9071bf214e6f7f4'

@@ -167,6 +167,29 @@ def test_hara_278_same_geometry_rejects_unclosed_escape_and_preserves_counterfac
     assert moving_target_avoidance(facts, proposal)['status'] == 'ESCAPE_CORRIDOR_TOO_SHORT'
 
 
+@pytest.mark.parametrize('model', ['CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE', 'GRADE_ROLLAWAY_TO_IMPACT_DISTANCE'])
+def test_static_contact_model_does_not_credit_unmodelled_target_escape(method, model):
+    from test_autonomous_physics import make_candidate
+    raw = raw_plan(model)
+    h = raw['hypotheses'][0]
+    h['remaining_controls'] = ['driver_braking']
+    h['intervention_assumptions'] = {'other_road_user_avoidance_possible':{
+        'value':True, 'rationale':'hypothetical target side step', 'basis_refs':['MF.description'],
+        'conditions':['target can see ego, side corridor assumed open'],
+        'avoidance':{'recognition_delay_s':.5,'escape_direction':'LEFT','escape_speed_mps':1.2,'available_clearance_m':1}}}
+    before = deepcopy(raw)
+    parent = make_candidate(0)
+    parent.facts.pop('other_road_user_avoidance_possible')
+    parent.fact_provenance.pop('other_road_user_avoidance_possible', None)
+    child = instantiate(method, raw, parent)[0]
+    assert child.facts['motion_model_outcome']['status'] == 'CONTACT'
+    assert child.facts['physical_analysis']['avoidance_validation']['status'] == 'UNSUPPORTED_AVOIDANCE_TRAJECTORY'
+    assert 'other_road_user_avoidance_possible' not in child.facts
+    result = score(method, child)
+    assert result['controllability']['controllability_score'] != 'C1'
+    assert result['severity']['severity_score'] and raw == before
+
+
 def test_new_hazard_origin_cannot_reuse_old_or_unsupported_response(method):
     from test_autonomous_physics import make_candidate
     child = instantiate(method, timed_plan(), make_candidate(3.6))[0]
@@ -178,6 +201,12 @@ def test_new_hazard_origin_cannot_reuse_old_or_unsupported_response(method):
     view['physical_analysis']['hypothesis'].pop('hazard_timing')
     assert service.ftti('MF',child.scenario_id,'',view,method=method).hazard_time_limit_s is None
     assert original['physical_analysis']['hypothesis'].get('hazard_timing')
+
+
+def test_absent_timing_hypothesis_is_distinct_from_wrong_world_scope(method):
+    result = RiskCalculationInputService().ftti('MF', 'SCN', '', {'ttc_s': .7}, method=method)
+    assert result.hazard_time_limit_s is None and result.contact_time_s == .7
+    assert '尚未形成' in result.reason and '不能继承其他成员' not in result.reason
 
 
 def test_control_only_safe_state_reaches_sg_and_reports_uncovered_driver_members(method):

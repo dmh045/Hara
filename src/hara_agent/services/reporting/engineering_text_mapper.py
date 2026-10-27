@@ -842,23 +842,31 @@ class EngineeringReportTextMapper:
         return original, {"original_goal": original, "reason": "No independently stated unsafe behavior to compress"}
 
     @classmethod
+    def _collision_description(cls, road_user_type: Any, collision_type: Any) -> str:
+        target = {"VEHICLE": "车辆", "PASSENGER_CAR": "乘用车", "PEDESTRIAN": "行人", "CYCLIST": "骑行者", "FIXED_OBJECT": "固定障碍物"}.get(road_user_type, "")
+        collision = cls._COLLISION_TEXT.get(collision_type, "")
+        if (collision or collision_type == "VEHICLE_TO_ROAD_USER") and road_user_type in {"PEDESTRIAN", "CYCLIST", "FIXED_OBJECT"}:
+            side = {"FRONTAL": "前部", "REAR_END": "后部", "SIDE": "侧面", "LATERAL": "侧面"}.get(collision_type, "")
+            return f"车辆{side}与{target}碰撞"
+        return target + collision
+
+    @classmethod
     def branch_result(cls, branch: Mapping[str, Any]) -> str:
         scores = " / ".join(str(branch.get(key) or "待评定") for key in ("S", "E", "C", "ASIL"))
         parts = [f"分支 {branch.get('branch_id', '')}：{scores}"]
         context = branch.get("risk_context", {})
-        for field, labels in (
-            ("road_user_type", {"PEDESTRIAN": "行人", "CYCLIST": "骑行者", "VEHICLE": "车辆", "PASSENGER_CAR": "乘用车", "FIXED_OBJECT": "固定障碍物"}),
-            ("collision_type", cls._COLLISION_TEXT),
-        ):
-            value = context.get(field, {})
-            if isinstance(value, Mapping) and value.get("value") in labels:
-                parts.append(labels[value["value"]])
+        def value(field):
+            evidence = context.get(field, {})
+            return evidence.get("value") if isinstance(evidence, Mapping) else None
+        description = cls._collision_description(value("road_user_type"), value("collision_type"))
+        if description:
+            parts.append(description)
         if branch.get("relative_speed_kph") is not None:
             parts.append("碰撞相对速度 " + quantity(branch["relative_speed_kph"], "km/h") + " km/h")
         if branch.get("ttc_s") is not None:
             parts.append("TTC " + quantity(branch["ttc_s"], "s") + " s")
         elif branch.get("first_contact_time_s") is not None:
-            parts.append("侧向首次接触 " + quantity(branch["first_contact_time_s"], "s") + " s（非纵向 TTC）")
+            parts.append("首次接触时间 " + quantity(branch["first_contact_time_s"], "s") + " s")
         else:
             parts.append("接触时间待定")
         return "；".join(parts)
@@ -880,9 +888,8 @@ class EngineeringReportTextMapper:
         if getattr(evidence, "value", None):
             inputs = trace.get("physical_inputs", {})
             speed = inputs.get("relative_speed_kph", trace.get("inputs", {}).get("relative_speed_kph"))
-            collision = self._COLLISION_TEXT.get(inputs.get("collision_type"), "")
-            target = {"VEHICLE": "车辆", "PASSENGER_CAR": "乘用车", "PEDESTRIAN": "行人", "CYCLIST": "骑行者", "FIXED_OBJECT": "固定障碍物"}.get(inputs.get("road_user_type"), "")
-            parts = [target + collision] if target or collision else []
+            description = self._collision_description(inputs.get("road_user_type"), inputs.get("collision_type"))
+            parts = [description] if description else []
             if isinstance(speed, (int, float)):
                 parts.append("碰撞相对速度 " + quantity(speed, "km/h") + " km/h")
             if parts:

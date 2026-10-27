@@ -257,7 +257,11 @@ def test_new_target_does_not_inherit_old_target_evasion(method, new_value):
     children, errors = PhysicalHypothesisInstantiationService(method).instantiate(parent, mf(), plan,
         plan_key='new-target', response_model='OFFLINE')
     assert children and not errors
-    assert children[0].facts.get('other_road_user_avoidance_possible') is new_value
+    assert children[0].facts.get('other_road_user_avoidance_possible') is None
+    if new_value is True:
+        analysis = children[0].facts['physical_analysis']
+        assert analysis['hypothesis']['intervention_assumptions']['other_road_user_avoidance_possible']['value'] is True
+        assert analysis['avoidance_validation']['status'] == 'UNSUPPORTED_AVOIDANCE_TRAJECTORY'
     assert parent.facts['other_road_user_avoidance_possible'] is False
 
 

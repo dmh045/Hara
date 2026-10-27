@@ -33,6 +33,8 @@ class FTTIMethodExecutor:
         def pending(reason):
             return replace(inputs, reason=reason, status=CalculationStatus.PENDING_INPUT,
                            method_rule_ids=(policy["rule_id"],))
+        if not analysis:
+            return pending("当前场景尚未形成故障起点、危险判据及安全处置假设；已有接触时间单列。")
         analysis_field = "control_analysis" if scenario.get("control_analysis") else "physical_analysis"
         if not source_is_accepted_for(scenario.get("_fact_provenance", {}).get(analysis_field, {}),
                 malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id):

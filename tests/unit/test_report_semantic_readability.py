@@ -35,6 +35,34 @@ def real_sample():
     return HARAState.read_committed(fixture['state']), fixture['trace']
 
 
+def test_real_conditional_harm_is_bound_to_causal_record_without_approval(active_method, real_sample):
+    from hara_agent.contracts import ScenarioCausalAssessment
+    from hara_agent.services.analysis.risk_services import RiskScoringServices
+    from hara_agent.services.validation.release_gate import ReleaseGateValidator
+    from hara_agent.workflow.nodes.scoring import score_structured_scenarios
+    from hara_agent.workflow.risk_rescoring import clean_risk_stage
+    state, _ = real_sample
+    saved = json.loads((Path(__file__).parents[1] / 'fixtures/report_numeric_physics_e2e_20261019.json').read_text())
+    state.item_definition['typed'] = saved['physical_replay']['project']
+    clean_risk_stage(state)
+    services = RiskScoringServices.from_method(active_method)
+    score_structured_scenarios(state, services.scoring, services.asil,
+                               risk_fact_binding=services.binding)
+    risk = state.risk_results[0]
+    assert risk.severity.value and risk.severity.status is ReviewStatus.PENDING
+    assessment = next(a for a in state.item_definition['scenario_assessments']
+                      if a['scenario_id'] == risk.scenario_id)
+    causal = ScenarioCausalAssessment.from_dict(assessment['causal_assessment'])
+    assert risk.potential_harm and causal.potential_harm == risk.potential_harm
+    assert causal.is_validated and causal.review_status is ReviewStatus.PENDING
+    harm = next(b for b in causal.evidence_bindings if b.edge_id == 'H_TO_HARM')
+    assert harm.evidence_refs and harm.source_refs and harm.status is ReviewStatus.PENDING
+    result = ReleaseGateValidator().evaluate(state)
+    assert result.checks['risk_causal_assessments']['invalid_count'] == 0
+    assert result.checks['risk_causal_assessments']['unapproved_count'] > 0
+    assert not result.ready_for_release
+
+
 @pytest.mark.parametrize('validated', [True, False])
 def test_conditional_stationary_start_is_not_reported_as_zero_fault_speed(validated):
     scenario = SimpleNamespace(facts={
