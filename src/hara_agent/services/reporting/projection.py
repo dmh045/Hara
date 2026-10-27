@@ -1290,7 +1290,7 @@ class HARAReportProjectionService:
             exposure=("基于活动项目方法；E 聚合政策与未定源值参与性见风险轨迹，不等同通用标准规定"),
             controllability="基于 MethodContract 的可控性模型；TTC 证据保持可追溯",
             asil="当前 MethodContract 矩阵",
-            ftti=("支持静止障碍物的条件性停车避碰时间边界；需明确故障起点和剩余净减速响应。移动目标等未覆盖路径仅列接触时间证据，不冒充已批准FTTI。"
+            ftti=("支持活动方法列明轨迹的条件性制动避碰时间边界；需明确故障起点和剩余净减速响应。直线移动目标还需检查停车保持后的交互；未覆盖路径仅列接触证据，不冒充已批准FTTI。"
                   if getattr(method, "metadata", {}).get("project_analysis_policy", {}).get("timing_analysis") else
                   "本次方法未配置响应时间规则；轨迹接触时间仅作证据，不作为FTTI。"),
         )

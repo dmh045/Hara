@@ -21,7 +21,7 @@ class FTTIMethodExecutor:
     @staticmethod
     def evaluate(inputs, scenario, method):
         import math
-        from .scenario_physics import braking_avoidability_boundary, source_is_accepted_for
+        from .scenario_physics import braking_avoidability_boundary, moving_braking_avoidability_boundary, source_is_accepted_for
         policy = method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {})
         if not policy:
             return inputs
@@ -33,14 +33,14 @@ class FTTIMethodExecutor:
         def pending(reason):
             return replace(inputs, reason=reason, status=CalculationStatus.PENDING_INPUT,
                            method_rule_ids=(policy["rule_id"],))
-        if (not timing or timing.get("hazard_criterion") != policy["hazard_criterion"]):
-            return pending("已有接触时间仅作证据；尚未建立故障起点与失去避碰能力的危险判据。")
         analysis_field = "control_analysis" if scenario.get("control_analysis") else "physical_analysis"
         if not source_is_accepted_for(scenario.get("_fact_provenance", {}).get(analysis_field, {}),
                 malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id):
             return pending("时间假设未绑定当前失效与场景，不能继承其他成员的处置时间。")
-        if scenario.get("fault_motion_model") not in policy["supported_models"] or scenario.get("object_speed_kph") != 0:
-            return pending("当前目标/运动不适用静止障碍物停车避碰时间模型；接触时间单列。")
+        moving = scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
+        if (scenario.get("fault_motion_model") not in policy["supported_models"]
+                or not moving and scenario.get("object_speed_kph") != 0):
+            return pending("当前目标/运动不适用已接入的制动避碰响应模型；接触时间单列。")
         controls = set(proposal.get("required_controls", []))
         remaining = set(hypothesis.get("remaining_controls", []))
         driver = "in_driver_seat" if scenario.get("driver_in_vehicle") is True else "outside_driver_seat"
@@ -68,23 +68,37 @@ class FTTIMethodExecutor:
             d = v / 3.6 * outcome["time_s"] if isinstance(v, (int, float)) and outcome.get("time_s") is not None else None
         b = response.get("net_deceleration_mps2")
         offset = timing.get("fault_to_model_start_s")
-        if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in (v, a, d, b, offset)):
+        numeric_inputs = (v, a, b) if moving else (v, a, d, b)
+        if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in numeric_inputs):
+            if moving:
+                return pending("移动目标响应仍有符号参数；需在同一包络内关联故障行驶、制动和停车保持三段轨迹。")
             return pending("当前条件仍有符号参数；时间边界关系为 v0·t+a·t²/2+(v0+a·t)²/(2·b净)=可用行程。")
-        result = braking_avoidability_boundary(v/3.6, a, d, b)
+        if moving and response.get("post_stop_motion") != policy.get("moving_target_response", {}).get("post_stop_motion", "HOLD_POSITION"):
+            return pending("移动目标需明确制动后保持静止及其控制依据，不能在停车瞬间截断交互。")
+        result = (moving_braking_avoidability_boundary(scenario, b) if moving else
+                  braking_avoidability_boundary(v/3.6, a, d, b))
         cap = scenario.get("post_fault_speed_cap_kph")
         if (cap is not None and result.get("brake_onset_speed_mps", 0) > cap/3.6):
             return pending("当前轨迹含故障后速度限幅；现有制动边界不能跨限幅阶段外推，接触时间仍保留。")
         if result.get("time_s") is None:
+            if result["status"] == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW":
+                return replace(pending("同一移动目标轨迹下，即刻制动并停车保持仍不能建立避碰窗口；不能把停车直接当安全。其他处置策略需另行建模。"), timing_trace=result)
             return pending("未形成该危险判据的数值边界：" + result["status"])
         horizon = scenario.get("model_valid_until_s")
         if horizon is not None and result["time_s"] > horizon:
             return pending("停车避碰边界超出当前运动模型有效时域，不能外推为FTTI。")
+        # A response can already be physically impossible even when its fault
+        # clock has not been specified. Preserve that evidence for Safe State;
+        # do not issue an FTTI number until the temporal meaning is established.
+        if (timing.get("hazard_criterion") != policy["hazard_criterion"]
+                or isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset)):
+            return replace(pending("响应轨迹已检查；尚未绑定故障起点及失去避碰能力判据，不能作为FTTI。"), timing_trace=result)
         return replace(inputs, hazard_time_limit_s=offset+result["time_s"],
             safe_state_transition_time_s=result["stopping_time_s"],
             method_rule_ids=(policy["rule_id"],), status=CalculationStatus.CONDITIONAL,
             calculation_nature="CONDITIONAL", hazard_criterion=policy["hazard_criterion"], time_origin="FAULT_ONSET",
             reason=("初始状态已失去停车避碰能力：即刻制动也没有正的处置余量。" if result["status"] == "AVOIDABILITY_ALREADY_LOST" else
-                "条件性危险时限：失去停车避碰能力。检测、决策和制动建立延迟必须小于可用制动起始窗口；制动完成时间不再加到该时限。"),
+                "条件性危险时限：在所建模交互时段内失去制动避碰能力。检测、决策和制动建立延迟必须小于可用制动起始窗口；制动完成时间不再加到该时限。"),
             timing_trace={**result, "fault_to_model_start_s": offset, "net_deceleration_mps2": b,
                 "available_path_distance_m": d, "required_controls": sorted(controls),
                 "safe_state": proposal["description"], "conditions": proposal["conditions"],

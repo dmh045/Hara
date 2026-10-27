@@ -317,7 +317,13 @@ def test_environment_alternatives_survive_primary_bundle_selection(method):
     assignments = service.logical_selection_assignments(inputs)
     assert 0 < len(assignments) <= 24
     assert all(len(a) == inputs.coverage_plan.desired_variant_count <= 3 for a in assignments)
-    assert all(a[0] == bundles[0] for a in assignments)  # typical is retained
+    # The first lexical bundle is not a mandatory engineering condition. Each
+    # bounded sibling assignment still satisfies the same coverage contract.
+    covered = {(d, atom_id) for d in ("WHERE", "ROAD") for atom_id in expanded[0].get(d, ())}
+    alternatives = service.logical_selection_assignments(inputs, covered_environment=covered)
+    assert alternatives and all(bundles[0] not in a for a in alternatives)
+    assert all(not service.diversity_validator.reasons(inputs.coverage_plan,
+        [service.expand_logical_atom_ids(inputs, b) for b in a]) for a in (*assignments, *alternatives))
 
 
 def test_crossing_causal_claim_uses_simultaneous_contact_not_path_intersection(method):

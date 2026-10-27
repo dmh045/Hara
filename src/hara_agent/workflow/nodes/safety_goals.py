@@ -63,6 +63,10 @@ def aggregate_safety_goals(
                 proposal = None
                 gap = "按当前净减速假设，即刻制动也不能在障碍物前停止；原提案保留在物理方案中"
                 gap_code = "RESPONSE_INSUFFICIENT"
+            elif timing.timing_trace.get("status") == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW":
+                proposal = None
+                gap = timing.reason
+                gap_code = "RESPONSE_INTERACTION_UNSAFE"
         registration = catalog.register_intent(
             function_name=function_name,
             malfunction=str(malfunction.get("description", "")),

@@ -252,9 +252,15 @@ timing_analysis:
     - CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE
     - GRADE_ROLLAWAY_TO_IMPACT_DISTANCE
     - CONSTANT_SPEED_CURVATURE_TO_CONTACT
+    - RECTILINEAR_MOVING_TARGET_CONTACT
+  moving_target_response:
+    post_stop_motion: HOLD_POSITION
+    criterion: FIRST_LOSS_OF_IMMEDIATE_BRAKING_CONNECTED_SAFE_WINDOW
+    scope: "目标恒速直线；同一有限接触包络及有效时域；故障行驶、净减速制动、停止保持三段。净制动不弱于故障前响应阶段减速时，以纵向间距对响应延迟的单调性求首次失去安全间隔的界限，不对一般横穿接触结果盲目二分。"
+    limitations: "即时制动也不能安全避开目标时，不宣称所有处置均失败；保留具体接触关系，其他转向/加速逃逸策略需要相应模型。时域以外不外推。"
   equation: "v0*t + a*t^2/2 + (v0+a*t)^2/(2*b_net) = available_path_distance"
-  meaning: "故障发生后，在当前静止障碍物轨迹及剩余独立制动假设下，失去停车避碰能力的时刻。达到该边界前须开始有效制动；从故障起点累计的检测、决策和执行延迟合计须小于该时刻；从模型初态起的剩余窗口则扣除模型起点偏移。不是接触后再停止所需时间。"
-  limitations: "仅为所列假设和危险判据的条件性时间界限，不代表完整车辆已批准FTTI；不覆盖移动目标、追尾逃逸或未知安全状态。有限样本最小值不是全ODD连续最小值。"
+  meaning: "故障发生后，在所声明静止或恒速移动目标轨迹及剩余独立制动假设下，失去制动避碰能力的时刻。上述行程方程适用于静止目标，移动目标按三段相对轨迹求安全间隔边界。达到该边界前须开始有效制动；从故障起点累计的检测、决策和执行延迟合计须小于该时刻；从模型初态起的剩余窗口则扣除模型起点偏移。不是接触后再停止所需时间。"
+  limitations: "仅为所列假设和危险判据的条件性时间界限，不代表完整车辆已批准FTTI；不覆盖目标转向/加速度、转向或加速逃逸、跨限幅阶段或未知安全状态。有限样本最小值不是全ODD连续最小值。"
   source_document: "https://www.ti.com/lit/fs/sffs889/sffs889.pdf"
   source_location: "4.2.2: fault tolerant time interval and fault reaction time"
   legacy_formula_disposition: "保留原始ftti_formulas.yaml用于追溯，不执行t1接触时间+t2接触后制动时间；不引入-12m/s²默认能力。"

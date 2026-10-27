@@ -139,8 +139,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v25-response-completeness"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v10-response-completeness"
+    PROMPT_VERSION = "post-fault-physical-scenario-v28-moving-response-shape"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v11-moving-response"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -386,11 +386,15 @@ class PhysicalScenarioAgent:
             "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
             "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
             "的净减速度假设，不是车辆实测能力，不得沿用方法示例的默认减速度。停止是否安全仍须考虑目标轨迹。"
+            "移动目标使用该响应时，transition还须包含post_stop_motion:HOLD_POSITION，说明停止后由哪个剩余控制"
+            "持续保持；目标仍按原轨迹运动，不能在本车停车时结束分析。停车后仍被横穿者/后车撞到就不是避碰安全状态。"
+            "停车保持不必机械依赖EPB：若本代表可由持续的人工/常规制动维持静止，应清楚声明这一路径及条件；"
+            "若确实需要parking_hold，则必须单独分析其可用性，不能把未声明能力藏进safe_state_proposal。"
             "不能只声明可以停车却省略响应建模；若连条件性响应也不适用，在同一hypothesis/control_assessment的"
             "timing_unresolved_reason中写具体障碍，单纯缺少实测减速度不能作为拒绝分析假设的理由。"
             "可附hazard_timing={time_origin:FAULT_ONSET,fault_to_model_start_s:非负数,"
             "hazard_criterion:LOSS_OF_BRAKING_AVOIDABILITY或FIRST_CONTACT_BOUND,rationale:理由,basis_refs:引用数组}。"
-            "前者用于有制动路径且静止障碍物的失去停车避碰能力边界；后者只是接触时间证据。"
+            "前者用于有制动响应路径的失去避碰能力边界，包括静止目标和同一有限包络的直线移动目标；后者只是接触时间证据。"
             "不能把模型初态自动当故障时刻，需说明二者关系；不输出计算结果或最终FTTI。"
             "移动目标的other_road_user_avoidance_possible=true必须给出同一项中的avoidance={"
             "recognition_delay_s:非负秒,escape_direction:FORWARD|REVERSE|LEFT|RIGHT,escape_speed_mps:正数,"
@@ -398,6 +402,25 @@ class PhysicalScenarioAgent:
             "初始静止的本车被横穿者接触时，要检查即使本车不动是否仍会接触；不能把原本就发生的接触归因于溜车。"
         )
         if not controls_only and context.get("operating_atom_options"):
+            # Keep the output example consistent with the enforced contract.
+            # Otherwise live models repeatedly follow the incomplete example
+            # and consume a schema-repair request just to add these bindings.
+            example["hypotheses"][0]["operating_atoms"] = {
+                "EGO_ACTION": "atom_id from context.operating_atom_options.EGO_ACTION",
+                "EGO_DYNAMICS": "atom_id from context.operating_atom_options.EGO_DYNAMICS",
+                "TRAFFIC_PATTERN": None,
+            }
+            output_contract["operating_atoms"] = {
+                "required_per_hypothesis": True,
+                "allowed_ids": {dimension: [a["atom_id"] for a in options]
+                                for dimension, options in context["operating_atom_options"].items()},
+                "nullable": ["TRAFFIC_PATTERN"],
+                "compound_selections": list({row["atom_id"]: {
+                    dimension: row["atom_id"] for dimension in row.get("fills", [])}
+                    for options in context["operating_atom_options"].values() for row in options
+                    if len(row.get("fills", [])) > 1}.values()),
+                "compound_rule": "Each compound selection is indivisible in the base AND every driver-specific effective selection. Do not combine one of its dimensions with a different atom. Driver outside does not imply vehicle parked/holding; keep the shared moving action unless its definition actually restricts the driver.",
+            }
             system += (
                 "operating_atom_options是当前方法的有界候选，不是评级规则。每个假设必须输出operating_atoms="
                 "{EGO_ACTION:候选ID,EGO_DYNAMICS:候选ID,TRAFFIC_PATTERN:候选ID或null}，"
@@ -432,6 +455,14 @@ class PhysicalScenarioAgent:
             try:
                 candidate = deepcopy(response.data)
                 envelope_normalization = ""
+                if (not controls_only and isinstance(candidate, dict) and "hypotheses" not in candidate
+                        and {"hypothesis_id", "model", "geometry", "parameters", "basis_refs", "uncovered_conditions"} <= candidate.keys()):
+                    # A real single-hypothesis reply omitted only the outer
+                    # list. Preserve every field and still validate the full
+                    # hypothesis; this is not a repair of its physical claims.
+                    candidate = {"hypotheses": [candidate],
+                        "uncovered_conditions": deepcopy(candidate["uncovered_conditions"])}
+                    envelope_normalization = "WRAPPED_SINGLE_MOTION_HYPOTHESIS"
                 if controls_only and isinstance(candidate, dict):
                     # Real control-only replies sometimes omit the outer plan
                     # envelope. Preserve the complete control object and its

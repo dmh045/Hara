@@ -244,11 +244,24 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             if task_scope == "MOTION_AND_CONTROLS":
                 inputs["operating_atom_options"] = producer.operating_atom_options(
                     first, mf, project, functions.get(mf.function_id))
+                object_id = first.facts.get("method_scenario_dimensions", {}).get("OBJECT", {}).get("atom_id")
+                selected_object = next((a for a in method.metadata.get("scenario_atom_catalog", []) if a.get("atom_id") == object_id), None)
+                if selected_object:
+                    inputs["selected_object_scope"] = {k: selected_object[k] for k in ("atom_id", "label", "physical_semantics") if k in selected_object}
+                    # Distribute explicitly named road-user classes over existing
+                    # worlds, like the source-condition focus above. This is a
+                    # task focus, not a fact binding or another expansion axis.
+                    import re
+                    label = selected_object.get("label", "").casefold()
+                    object_types = sorted(name for name, word in inputs["risk_vocabulary"]["road_user_type"].items()
+                        if re.search(r"\b" + re.escape(word.casefold()) + r"s?\b", label))
+                    if len(object_types) > 1 and not first.facts.get("road_user_type"):
+                        inputs["road_user_focus"] = object_types[(coverage_offset + int(condition_key[:8], 16)) % len(object_types)]
                 inputs["interaction_coverage_policy"] = (
                     "Compare physically compatible object motions before choosing representatives. "
                     "Existing specific objects/constraints remain binding. For a justified new target, "
                     "prefer distinct relevant interactions within this plan; do not repeat the same "
-                    "stationary-target mechanism only with another distance. Keep at most 3 total instances. "
+                    "stationary-target mechanism only with another distance. When road_user_focus is supplied, use at least one existing hypothesis slot for that explicitly source-named class, with its actual motion/interaction; if incompatible, give the specific uncovered condition instead. Other explicit classes remain alternatives, not mandatory extra instances. When the selected method object explicitly includes multiple road-user types, compare their distinct movement/escape mechanisms; do not silently narrow that scope to only the most familiar type. Replace redundant hypotheses rather than multiplying them. Keep at most 3 total instances. "
                     "If no distinct supported interaction is appropriate, explain why; never add an unrelated fault.")
             if task_scope == "CONTROL_INPUTS_ONLY":
                 inputs.update(task_scope=task_scope, prompt_version=agent.CONTROL_PROMPT_VERSION)
@@ -319,15 +332,26 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                             analysis = child.facts.get("physical_analysis", {})
                             response_hypothesis = (child.facts.get("control_analysis") or analysis).get("hypothesis", {})
                             proposal = response_hypothesis.get("safe_state_proposal", {})
-                            if (child.facts.get("object_speed_kph") == 0
-                                    and child.facts.get("fault_motion_model") in method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {}).get("supported_models", [])
+                            response_missing = (not proposal.get("transition") or
+                                child.facts.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
+                                and proposal.get("transition", {}).get("post_stop_motion") != "HOLD_POSITION")
+                            if (child.facts.get("fault_motion_model") in method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {}).get("supported_models", [])
                                     and set(proposal.get("required_controls", [])) & {"braking", "driver_braking"}
-                                    and not proposal.get("transition") and not response_hypothesis.get("timing_unresolved_reason")):
+                                    and response_missing and not response_hypothesis.get("timing_unresolved_reason")):
                                 errors.append({"reason": "SAFE_STOP_RESPONSE_NOT_MODELED",
                                     "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
-                                    "resolution": "Preserve this motion. Complete the proposed braking safe-state response with an explained conditional net-deceleration transition, or timing_unresolved_reason for a concrete incompatibility. A missing measured value alone does not prohibit a conditional assumption. One existing correction only."})
+                                    "resolution": "Preserve this motion. Complete the proposed braking safe-state response with an explained conditional net-deceleration transition and, for a moving target, explicit post_stop_motion:HOLD_POSITION with a remaining-control basis; alternatively give timing_unresolved_reason for a concrete incompatibility. A missing measured value alone does not prohibit a conditional assumption. One existing correction only."})
+                            if proposal and not response_missing:
+                                from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+                                timing = RiskCalculationInputService().ftti(mf.malfunction_id, child.scenario_id, "",
+                                    {**child.facts, "_fact_provenance": child.fact_provenance}, method=method)
+                                if timing.timing_trace.get("status") in {"AVOIDABILITY_ALREADY_LOST", "NO_IMMEDIATE_SAFE_BRAKING_WINDOW"}:
+                                    errors.append({"reason": "SAFE_STOP_RESPONSE_UNREACHABLE",
+                                        "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
+                                        "evidence": timing.timing_trace,
+                                        "resolution": "Preserve the unmitigated world. This proposed response does not avoid its target. Reconcile the safe-state claim with the available controls/model, or explicitly retain the unsupported strategy in safe_state_unresolved_reason. Do not move the target or increase braking just to force a safe result. No extra correction loop."})
                             avoidance = analysis.get("avoidance_validation", {})
-                            if avoidance and avoidance.get("status") != "CONDITIONAL_ESCAPE_VALIDATED":
+                            if avoidance and avoidance.get("status") not in {"CONDITIONAL_ESCAPE_VALIDATED", "NO_CONTACT_TO_AVOID"}:
                                 errors.append({"reason": avoidance["status"], "evidence": avoidance,
                                     "hypothesis_id": analysis.get("hypothesis_id"),
                                     "resolution": "Reconcile the proposed escape with this trajectory and corridor. Do not retain an unsupported positive avoidance claim or tune geometry just to obtain C1."})
@@ -383,6 +407,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 instantiated = instantiate_family(plan)
                 failures = [{"scenario_id": candidate.scenario_id, **failure}
                     for candidate, _, errors in instantiated for failure in errors]
+                failures.extend({"reason": "SAFE_STATE_CONTROL_DEPENDENCY_UNRESOLVED", **deferred,
+                    "resolution": "Reconcile the original safe-state proposal with failed/remaining controls. Assess the undeclared dependency from the provided source, or propose a reachable state using the remaining path (including continued service braking if physically supported). Do not silently assume a control works or delete a needed dependency. Preserve valid motion; one existing correction only."}
+                    for deferred in entry.get("audit", {}).get("deferred_safe_states", []))
                 if (failures or entry.get("status") == "CORRECTION_REQUESTED") and not entry.get("semantic_correction_completed"):
                     # One explicit, budgeted semantic correction. Persist the
                     # original response and feedback before transport so resume

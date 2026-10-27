@@ -534,6 +534,9 @@ class YamlBaselineCompiler:
                     or timing_policy.get("response_model") != "CONSTANT_NET_DECELERATION"
                     or not timing_policy.get("supported_models") or not timing_policy.get("rule_id")):
                 raise ValueError("Invalid conditional timing method policy")
+            if ("RECTILINEAR_MOVING_TARGET_CONTACT" in timing_policy.get("supported_models", [])
+                    and timing_policy.get("moving_target_response", {}).get("post_stop_motion") != "HOLD_POSITION"):
+                raise ValueError("Moving target response timing requires an explicit held-stop policy")
             selection = project_policy.get("input_selection", {})
             speed = project_policy.get("ego_speed_point_selection", {})
             controllability = project_policy.get("controllability", {})
@@ -1498,7 +1501,7 @@ class YamlBaselineCompiler:
                 severity=CompilerDiagnosticSeverity.WARNING,
                 code=CompilerDiagnosticCode.FTTI_METHOD_UNCOMPILED,
                 message=(
-                    "Conditional loss-of-braking-avoidability timing is executable for supported static-target "
+                    "Conditional loss-of-braking-avoidability timing is executable for supported static/moving-target "
                     "models with explicit fault origin and net response assumptions. Legacy contact-plus-stop "
                     "formulas remain inactive; other hazard/response paths are not covered by this criterion."
                     if compiled_project_policy.get("timing_analysis") else

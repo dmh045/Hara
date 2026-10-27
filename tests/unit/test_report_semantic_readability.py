@@ -13,6 +13,22 @@ from hara_agent.workflow.state import HARAState
 from test_reuse_reporting_acceptance import active_method
 
 
+@pytest.mark.parametrize('target,expected,stale', [
+    ('VEHICLE','OBJECT_VEHICLE','OBJECT_PEDESTRIAN'),
+    ('CYCLIST','OBJECT_CYCLIST','OBJECT_VEHICLE'),
+    ('PEDESTRIAN','OBJECT_PEDESTRIAN','OBJECT_STATIC'),
+])
+def test_bound_child_object_replaces_parent_search_categories(target,expected,stale):
+    child=SimpleNamespace(facts={'road_user_type':target,
+        'scenario_object_atom':'Passenger of own and other vehicles'},
+        analysis_instance={'structured_semantic_query':{'object_categories':[stale],
+            'action_categories':['ACTION_PARK']}})
+    before=deepcopy(child)
+    categories=EngineeringReportTextMapper._categories(child)
+    assert expected in categories and stale not in categories and 'ACTION_PARK' in categories
+    assert child==before
+
+
 @pytest.fixture
 def real_sample():
     fixture = json.loads((Path(__file__).parents[1] / 'fixtures/report_numeric_physics_e2e_20261019.json').read_text())

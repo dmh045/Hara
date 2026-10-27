@@ -160,7 +160,9 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
                 raise ValueError("Safe state driver_positions must select supported configurations")
         if "transition" in proposal:
             transition = _object(proposal["transition"],
-                {"model", "net_deceleration_mps2", "rationale", "basis_refs"})
+                {"model", "net_deceleration_mps2", "rationale", "basis_refs"}, {"post_stop_motion"})
+            if "post_stop_motion" in transition and transition["post_stop_motion"] != "HOLD_POSITION":
+                raise ValueError("Safe stop response only supports explicit HOLD_POSITION after braking")
             if transition["model"] != "CONSTANT_NET_DECELERATION" or _number(transition["net_deceleration_mps2"]) <= 0:
                 raise ValueError("Safe state transition requires positive net braking deceleration")
             if not set(controls) & {"driver_braking", "braking"}:

@@ -184,6 +184,17 @@ class EngineeringReportTextMapper:
             for item in query.get(field, [])
         }
         facts = getattr(scenario, "facts", {}) or {}
+        scoped_object = {
+            "VEHICLE": "OBJECT_VEHICLE", "PASSENGER_CAR": "OBJECT_VEHICLE",
+            "PEDESTRIAN": "OBJECT_PEDESTRIAN", "CYCLIST": "OBJECT_CYCLIST",
+            "FIXED_OBJECT": "OBJECT_STATIC",
+        }.get(str(facts.get("road_user_type", "")).upper())
+        if scoped_object:
+            # The synthesis query describes the parent search space. A bound
+            # child's concrete object must not retain another parent's class.
+            categories = {category for category in categories if not category.startswith("OBJECT_")}
+            categories.add(scoped_object)
+            return categories
         object_value = str(
             facts.get("object_type") or facts.get("scenario_object_atom") or facts.get("road_user_type", "") or ""
         ).casefold()
@@ -1049,7 +1060,10 @@ class EngineeringReportTextMapper:
         calculated = [item for item in timing_inputs or [] if item.get("hazard_time_limit_s") is not None]
         if calculated:
             missing = len(timing_inputs or []) - len(calculated)
-            return ("条件性时间边界：从故障发生到失去停车避碰能力；依据同一轨迹、静止目标及剩余净减速假设计算。"
+            moving = any(item.get("timing_trace", {}).get("response_model_family") == "MOVING_TARGET_BRAKING" for item in calculated)
+            return ("条件性时间边界：从故障发生到失去制动避碰能力；"
+                    + ("移动目标按原轨迹继续运动，检查故障行驶、制动及停车保持三段，在模型有效时段内确定首次失去避碰余量的边界。" if moving else
+                       "依据同一轨迹、静止目标及剩余净减速假设计算。") +
                     "检测、决策和制动建立必须在该边界前完成；制动完成耗时不与此边界相加。"
                     "尚未经工程批准，不是完整ODD的FTTI；假设与逐成员计算见时间追溯。"
                     + (f"仍有{missing}个成员缺少适用时间模型，已知最小值不代表全组结论。" if missing else ""))

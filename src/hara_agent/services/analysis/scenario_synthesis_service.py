@@ -1452,6 +1452,7 @@ class ConstrainedScenarioSynthesisService:
 
     def logical_selection_assignments(
         self, synthesis_input: ScenarioSynthesisInput, *, limit: int = 24,
+        covered_environment: set[tuple[str, str]] | None = None,
     ) -> tuple[tuple[tuple[str, ...], ...], ...]:
         """Build bounded whole-sibling assignments that satisfy the Coverage Plan."""
         desired = synthesis_input.coverage_plan.desired_variant_count
@@ -1476,10 +1477,13 @@ class ConstrainedScenarioSynthesisService:
         }
         # At most 32 * 32 * 3 extensions; never a Cartesian-product scan whose
         # runtime depends on how late the first valid sibling set appears.
-        beam = [(pool[0],)] if desired > 1 else [(bundle,) for bundle in pool]
+        beam = [(bundle,) for bundle in pool]
         def novelty(assignment):
-            return sum(len({tuple(expanded[b].get(d, ())) for b in assignment})
-                       for d in (*synthesis_input.coverage_plan.primary_variation_dimensions, "WHERE", "ROAD"))
+            primary = sum(len({tuple(expanded[b].get(d, ())) for b in assignment})
+                          for d in synthesis_input.coverage_plan.primary_variation_dimensions)
+            environment = {(d, atom_id) for b in assignment for d in ("WHERE", "ROAD")
+                           for atom_id in expanded[b].get(d, ())}
+            return (primary, len(environment - (covered_environment or set())), len(environment))
         for _ in range(1, desired):
             extended = [(*a, b) for a in beam for b in pool
                         if fingerprints[b] not in {fingerprints[item] for item in a}
@@ -1543,11 +1547,17 @@ class ConstrainedScenarioSynthesisService:
                         "source_refs": deepcopy(project_context.get("sources", [])),
                     }
                 contexts.append(replace(parent, facts=facts, fact_provenance=provenance))
-        children, audits = [], []
-        for context in contexts:
+        # Resolve explicit boundary contexts first. The unconstrained parent
+        # can then represent other valid environments instead of repeating the
+        # same strong-slope condition already covered by both source boundaries.
+        resolved = {}
+        covered_environment = set()
+        order = sorted(range(len(contexts)), key=lambda i: contexts[i].facts.get("source_slope_pct") is None)
+        for index in order:
+            context = contexts[index]
             selected, audit = self._generate_context_candidates(
                 malfunction=malfunction, parent=context, project_context=project_context,
-                function=function,
+                function=function, covered_environment=covered_environment,
             )
             if not selected and len(contexts) > 1:
                 source_conditions = self.source_operating_conditions(context)
@@ -1560,8 +1570,12 @@ class ConstrainedScenarioSynthesisService:
                         **context.analysis_instance, "validation_status": "PENDING",
                         "source_context_gap": audit["status"],
                     })]
-            children.extend(selected)
-            audits.append(audit)
+            covered_environment.update((dimension, binding.get("atom_id"))
+                for child in selected for dimension, binding in child.facts.get("method_scenario_dimensions", {}).items()
+                if dimension in {"WHERE", "ROAD"} and binding.get("atom_id"))
+            resolved[index] = selected, audit
+        children = [child for i in range(len(contexts)) for child in resolved[i][0]]
+        audits = [resolved[i][1] for i in range(len(contexts))]
         if len(audits) == 1:
             return children, audits[0]
         return children, {**audits[0], "source_contexts": audits,
@@ -1571,12 +1585,13 @@ class ConstrainedScenarioSynthesisService:
     def _generate_context_candidates(
         self, *, malfunction: dict[str, Any], parent: ScenarioCandidate,
         project_context: dict[str, Any], function: dict[str, Any] | None = None,
+        covered_environment: set[tuple[str, str]] | None = None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         synthesis_input = self.build_input(
             malfunction=malfunction, parent=parent, assessment={},
             project_context=project_context, function=function,
         )
-        assignments = self.logical_selection_assignments(synthesis_input)
+        assignments = self.logical_selection_assignments(synthesis_input, covered_environment=covered_environment)
         audit = {
             "parent_scenario_id": parent.scenario_id,
             "semantic_group_id": synthesis_input.semantic_group_id,
@@ -1603,7 +1618,10 @@ class ConstrainedScenarioSynthesisService:
             # Equal coverage can still concentrate nearly every primary case
             # on one condition. Prefer the less concentrated existing valid
             # assignment, without adding combinations or using E grades.
-            return (sum(len(c) for c in counts), -sum(n*n for c in counts for n in c.values()))
+            features = {(dimension, atom_id) for row in expanded for dimension in ("WHERE", "ROAD")
+                        for atom_id in row.get(dimension, ())}
+            return (len(features - (covered_environment or set())),
+                    sum(len(c) for c in counts), -sum(n*n for c in counts for n in c.values()))
         chosen = max(assignments, key=environmental_coverage)
         # Reuse the exact validation boundary used for bounded semantic
         # selection; no parallel atom/constraint or scoring implementation.

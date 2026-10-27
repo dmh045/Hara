@@ -37,15 +37,21 @@ def run(method, agent, state=None, candidates=None, checkpoint=None, workers=1, 
     return state, result
 
 
-def test_sample_scope_preserves_full_run_physical_request_and_response_reuse(method, tmp_path):
+@pytest.mark.parametrize('object_focus', [False, True])
+def test_sample_scope_preserves_full_run_physical_request_and_response_reuse(method, tmp_path, object_focus):
     from hara_agent.models import ItemDefinitionFacts
     from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
     raw = raw_plan(assessed=True)
+    if object_focus:
+        raw = {'hypotheses': [], 'uncovered_conditions': ['Context-only road-user scope regression; no motion proposed.']}
     candidates = []
     for i in range(3):
         candidate = make_candidate()
         candidate.scenario_id = f"scope-{i}"
         candidate.facts["operating_scenario"] = f"source-location-{i}"
+        if object_focus:
+            candidate.facts["method_scenario_dimensions"] = {"OBJECT": {"atom_id": "CN_other_road_users"}}
+            candidate.facts.pop("road_user_type", None)
         candidates.append(candidate)
     # Pick a non-first family, which previously shifted its focus in a sample.
     ordered = sorted(candidates, key=lambda c: signature(scenario_conditions(c, without_driver=True)))
@@ -62,8 +68,26 @@ def test_sample_scope_preserves_full_run_physical_request_and_response_reuse(met
     sample = execute([target])
     sample_key = next(iter(sample.item_definition['physical_analysis_plans']))
     assert sample_key in full.item_definition['physical_analysis_plans']
+    if object_focus:
+        assert {p['context']['road_user_focus'] for p in full.item_definition['physical_analysis_plans'].values()} == {'CYCLIST', 'PEDESTRIAN'}
+        request = json.loads(client.requests[0].user_prompt)
+        assert request['output_contract']['operating_atoms']['required_per_hypothesis']
+        assert set(request['output_shape']['hypotheses'][0]['operating_atoms']) == {'EGO_ACTION', 'EGO_DYNAMICS', 'TRAFFIC_PATTERN'}
+        assert {'EGO_ACTION':'FA005','EGO_DYNAMICS':'FA005'} in request['output_contract']['operating_atoms']['compound_selections']
     assert len(client.requests) == 3  # The sample uses the exact persisted response.
     assert sample.item_definition['physical_analysis_metrics']['response_cache_hits'] == 1
+
+
+def test_road_user_coverage_focus_cannot_replace_a_specific_target(method):
+    parent = make_candidate()
+    parent.facts['road_user_type'] = 'VEHICLE'
+    parent.facts['method_scenario_dimensions'] = {'OBJECT': {'atom_id': 'CN_other_road_users'}}
+    raw = {'hypotheses': [], 'uncovered_conditions': ['Context-only regression; no motion proposed.']}
+    client = Client([raw])
+    state, _ = run(method, PhysicalScenarioAgent(client), candidates={'MF': [parent]})
+    context = next(iter(state.item_definition['physical_analysis_plans'].values()))['context']
+    assert 'road_user_focus' not in context
+    assert context['conditions']['facts']['road_user_type'] == 'VEHICLE'
 
 
 @pytest.mark.parametrize('model,field,initial', [
