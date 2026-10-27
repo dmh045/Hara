@@ -21,6 +21,32 @@ def timed_plan():
     return raw
 
 
+def test_timing_report_does_not_label_every_missing_value_as_a_missing_model():
+    timings = [
+        {'hazard_time_limit_s': .4, 'reason': '条件性危险时限'},
+        {'hazard_time_limit_s': None, 'reason': '本成员没有适用的剩余制动安全状态路径；不能借用其他驾驶员分支。'},
+    ]
+    original = deepcopy(timings)
+    text = EngineeringReportTextMapper.ftti_rationale(timings)
+    assert '1个成员尚无数值时间边界' in text and '最小值不代表全组结论' in text
+    assert '缺少适用时间模型' not in text
+    assert timings == original
+
+
+@pytest.mark.parametrize('code,explanation', [
+    ('RESPONSE_NOT_STRONGER_THAN_FAULT_DECELERATION', '弱于故障轨迹'),
+    ('NO_UNMITIGATED_CONTACT_BOUNDARY', '未干预轨迹未形成接触'),
+    ('NO_CONTACT_UNDER_THIS_MOTION', '该运动假设下不会发生接触'),
+])
+def test_timing_report_explains_physical_boundary_diagnostics_without_internal_codes(code, explanation):
+    timings = [{'contact_time_s': .25, 'reason': '未形成该危险判据的数值边界：' + code}]
+    original = deepcopy(timings)
+    text = EngineeringReportTextMapper.ftti_rationale(timings)
+    assert explanation in text and code not in text
+    assert '接触时间不能作为 FTTI' in text
+    assert timings == original
+
+
 def test_scoped_optional_atom_exclusion_is_not_a_catalog_or_project_id_rule(method):
     from dataclasses import asdict
     from test_p6_scenario_pipeline import parent, project, malfunction, function

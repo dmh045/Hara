@@ -1062,8 +1062,22 @@ class EngineeringReportTextMapper:
 
     @staticmethod
     def ftti_rationale(timing_inputs: list[Mapping[str, Any]] | None = None) -> str:
-        reasons = "；".join(dict.fromkeys(str(x.get("reason", "")) for x in timing_inputs or []
-            if any("\u4e00" <= ch <= "\u9fff" for ch in str(x.get("reason", "")))))
+        boundary_reasons = {
+            "NO_UNMITIGATED_CONTACT_BOUNDARY": "当前未干预轨迹未形成接触，不能为该接触判据给出时间边界。",
+            "NO_CONTACT_UNDER_THIS_MOTION": "该运动假设下不会发生接触，没有该接触判据的时间边界。",
+            "RESPONSE_NOT_STRONGER_THAN_FAULT_DECELERATION": "假设的处置净减速度弱于故障轨迹的既有减速度，当前制动边界算法不适用。",
+            "RESPONSE_BOUNDARY_UNRESOLVED": "该处置轨迹尚未求得有效的时间边界。",
+            "RESPONSE_INPUTS_UNRESOLVED": "响应计算所需参数仍不完整或不满足物理条件。",
+        }
+        explanations = []
+        for item in timing_inputs or []:
+            reason = str(item.get("reason", ""))
+            if reason.startswith("未形成该危险判据的数值边界："):
+                code = reason.split("：", 1)[1]
+                reason = boundary_reasons.get(code, "当前轨迹尚未形成有效时间边界，具体原因见时间追溯。")
+            if any("\u4e00" <= ch <= "\u9fff" for ch in reason):
+                explanations.append(reason)
+        reasons = "；".join(dict.fromkeys(explanations))
         calculated = [item for item in timing_inputs or [] if item.get("hazard_time_limit_s") is not None]
         if calculated:
             missing = len(timing_inputs or []) - len(calculated)
@@ -1073,7 +1087,7 @@ class EngineeringReportTextMapper:
                        "依据同一轨迹、静止目标及剩余净减速假设计算。") +
                     "检测、决策和制动建立必须在该边界前完成；制动完成耗时不与此边界相加。"
                     "尚未经工程批准，不是完整ODD的FTTI；假设与逐成员计算见时间追溯。"
-                    + (f"仍有{missing}个成员缺少适用时间模型，已知最小值不代表全组结论。" if missing else ""))
+                    + (f"仍有{missing}个成员尚无数值时间边界，具体控制、轨迹或输入缺口见逐成员追溯；已知最小值不代表全组结论。" if missing else ""))
         timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]
         available = [item for item in timings if item.get("contact_time_s") is not None]
         if not available:
