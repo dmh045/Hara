@@ -139,8 +139,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v28-moving-response-shape"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v11-moving-response"
+    PROMPT_VERSION = "post-fault-physical-scenario-v30-response-contract"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v13-response-contract"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -307,6 +307,12 @@ class PhysicalScenarioAgent:
             "basis_ref_ids": sorted(context["evidence"]),
             "geometry_values": {field: sorted(values) for field, values in context.get("risk_vocabulary", {}).items()},
             "control_identities": sorted(CONTROL_IDENTITIES),
+            "control_arrays": {
+                "fields": ["failed_controls", "remaining_controls"],
+                "type": "flat JSON array of control identity strings; [] when none",
+                "shape_example": ["driver_braking", "braking"],
+                "meaning": "Shape only, not a default capability. Do not nest arrays or output expressions such as [[...]][0]. Put reasons and conditions in the existing rationale/conditions fields.",
+            },
             "driver_positions": {"optional": True, "allowed": context.get("driver_configurations", []),
                 "meaning": "hypothesis applicability; omitted means all supplied configurations"},
             "unresolved_controls": {"optional_keys": sorted(CONTROL_IDENTITIES | INTERVENTION_ASSUMPTION_FIELDS),
@@ -335,6 +341,12 @@ class PhysicalScenarioAgent:
         policy = prompt_inputs.get("method_identity", {}).get("project_analysis_policy", {})
         for downstream in ("controllability", "severity_evaluation"):
             policy.pop(downstream, None)
+        # Make the active response capability explicit alongside the motion
+        # catalog. Otherwise a proposal can incorrectly reject a supported
+        # response just because its deceleration is absent from the unmitigated
+        # motion model. This is a projection of MethodContract, not a new rule.
+        if timing := policy.get("timing_analysis"):
+            output_contract["response_timing"] = deepcopy(timing)
         prompt_context, source_texts = physical_prompt_view(prompt_inputs)
         content = {"output_contract": output_contract, "context": prompt_context, "source_texts": source_texts,
                    "model_catalog": MODEL_CATALOG,
@@ -383,6 +395,10 @@ class PhysicalScenarioAgent:
             "safe_state_proposal或safe_state_unresolved_reason。proposal包含description、required_controls、"
             "basis_refs、conditions，可选driver_positions限定人员位置。必须使用remaining_controls，"
             "只依赖人工踏板的方案不能覆盖车外驾驶员；车外无可用路径要明确说明。"
+            "先检查故障之外的自动/远程制动链是否仍可作为相容的条件性处置，不要默认所有停车都只能靠人工踏板。"
+            "自动路径须同时说明remaining_controls中的automatic_braking_command与braking，远程路径须说明remote_control与braking；"
+            "命令链、执行能力、故障独立性和响应条件分别交代，有App或完整执行器并不自动证明这条链可用。"
+            "优先采用适用于本工况的剩余路径；无法成立时保留明确局部缺口，不能转移目标来让停车看起来安全。"
             "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
             "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
             "的净减速度假设，不是车辆实测能力，不得沿用方法示例的默认减速度。停止是否安全仍须考虑目标轨迹。"
@@ -396,6 +412,9 @@ class PhysicalScenarioAgent:
             "hazard_criterion:LOSS_OF_BRAKING_AVOIDABILITY或FIRST_CONTACT_BOUND,rationale:理由,basis_refs:引用数组}。"
             "前者用于有制动响应路径的失去避碰能力边界，包括静止目标和同一有限包络的直线移动目标；后者只是接触时间证据。"
             "不能把模型初态自动当故障时刻，需说明二者关系；不输出计算结果或最终FTTI。"
+            "output_contract.response_timing若存在，是当前方法已接通的响应计算能力。"
+            "model_catalog描述无干预故障运动，不能仅因其中没有制动阶段就拒绝已列入supported_models的响应分析；"
+            "沿用同一几何、对象及模型适用假设，由程序检查响应是否真的避开接触。"
             "移动目标的other_road_user_avoidance_possible=true必须给出同一项中的avoidance={"
             "recognition_delay_s:非负秒,escape_direction:FORWARD|REVERSE|LEFT|RIGHT,escape_speed_mps:正数,"
             "available_clearance_m:正数}，并论证可见性和逃生空间；程序检验同一几何，不是只检查理由非空。"
@@ -415,6 +434,7 @@ class PhysicalScenarioAgent:
                 "allowed_ids": {dimension: [a["atom_id"] for a in options]
                                 for dimension, options in context["operating_atom_options"].items()},
                 "nullable": ["TRAFFIC_PATTERN"],
+                "omission_reason": "For a justified null, supply operating_atom_exclusions={TRAFFIC_PATTERN: explanation why the supplied catalog relations do not describe this particular world}. Null without explanation remains unresolved; no rule or approval is inferred.",
                 "compound_selections": list({row["atom_id"]: {
                     dimension: row["atom_id"] for dimension in row.get("fills", [])}
                     for options in context["operating_atom_options"].values() for row in options
@@ -425,7 +445,11 @@ class PhysicalScenarioAgent:
                 "operating_atom_options是当前方法的有界候选，不是评级规则。每个假设必须输出operating_atoms="
                 "{EGO_ACTION:候选ID,EGO_DYNAMICS:候选ID,TRAFFIC_PATTERN:候选ID或null}，"
                 "与本假设真实运行状态、动作和交互一致。只从所给相应候选选择，不能沿用矛盾的父动作。"
-                "故障后加速不改变正常使用暴露；EGO_DYNAMICS表示故障前初态。没有交通交互时traffic为null。"
+                "故障后加速不改变正常使用暴露；EGO_DYNAMICS表示故障前初态。"
+                "TRAFFIC_PATTERN只表达候选目录所定义的特殊交通关系，并非只要有移动目标就必须选一个。"
+                "若目录条目均不描述本假设，填null并给出operating_atom_exclusions={TRAFFIC_PATTERN:具体理由}，"
+                "说明本世界的关系以及为何候选关系不适用；不能用缺信息、较低评级或故障后速度替代适用性判断。"
+                "若关系尚不清楚则保留null而不声明排除；已有来源明确要求的交通关系不能被排除。"
                 "fills列明复合Atom占用的全部维度；选中复合Atom时，它占用的维度都填写同一个ID，不能与另一Atom重复占用。"
                 "WHERE/ROAD沿用来源，不为提高评级改动。不能把停车入位写成路口横穿或对向超车。"
                 "驻车保持必须选驻留动作，不能为了初速为0选红灯/人行横道交通停车。候选动作中的驾驶员位置限定也必须满足。"
@@ -520,6 +544,15 @@ class PhysicalScenarioAgent:
                         for atoms in hypothesis.get("driver_operating_atoms", {}).values():
                             if atoms["EGO_ACTION"] not in {row["atom_id"] for row in context["operating_atom_options"].get("EGO_ACTION", [])}:
                                 raise ValueError("driver_operating_atoms selection outside supplied shortlist: EGO_ACTION")
+                        from hara_agent.services.analysis.scenario_constraint_service import ScenarioConstraintExecutor
+                        fills = {row["atom_id"]: row.get("fills", [])
+                            for options in context["operating_atom_options"].values() for row in options}
+                        for override in ({}, *hypothesis.get("driver_operating_atoms", {}).values()):
+                            selection = {**hypothesis["operating_atoms"], **override}
+                            conflicts = ScenarioConstraintExecutor.compound_atom_conflicts(
+                                {d: {a} if a is not None else set() for d, a in selection.items()}, fills)
+                            if conflicts:
+                                raise ValueError("; ".join(conflicts) + "; preserve the same initial operation. Driver location alone does not change a moving vehicle into parking/holding. Keep shared compound selections intact unless a distinct compatible initial condition is actually proposed.")
                 if controls_only != (plan.control_assessment is not None):
                     raise ValueError("Output must match task_scope; control-only tasks cannot replace existing motion")
                 return plan, {"responses": attempts, "validation_errors": errors,

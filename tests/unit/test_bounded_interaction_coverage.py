@@ -198,6 +198,38 @@ def test_numeric_target_position_conflict_uses_one_existing_family_correction(me
     assert len(client.requests) == 2
 
 
+def test_geometry_and_control_gaps_share_the_same_correction(method, tmp_path):
+    bad = moving_plan(x=-8, position='FRONT')
+    h = bad['hypotheses'][0]
+    h.update(remaining_controls=[], unresolved_controls={
+        'braking': 'The short contact window does not prove avoidance',
+        'driver_braking': 'The short contact window does not prove avoidance'})
+    good = moving_plan(x=8, position='FRONT')
+    client = Client([bad, good])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    parent = make_candidate(3.6)
+    state, result = run(method, agent, candidates={'MF': [parent]})
+    assert len(client.requests) == 2
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    reasons = {e['reason'] for e in entry['correction_diagnostics']}
+    assert reasons == {'TARGET_OFFSET_POSITION_CONFLICT', 'CONDITIONAL_CONTROL_BASIS_UNRESOLVED'}
+    assert entry['initial_plan'] == bad
+    assert result['MF'][0].facts['emergency_braking_available'] is True
+    assert score(method, result['MF'][0])['controllability']['controllability_score']
+    run(method, agent, state=state, candidates={'MF': [deepcopy(parent)]})
+    assert len(client.requests) == 2
+
+
+def test_no_contact_does_not_request_control_correction(method):
+    raw = moving_plan(target_direction='FORWARD', target_speed=7.2)
+    raw['hypotheses'][0].update(remaining_controls=[], unresolved_controls={
+        'braking': 'Unknown independence', 'driver_braking': 'Unknown independence'})
+    client = Client([raw])
+    _, result = run(method, PhysicalScenarioAgent(client), candidates={'MF': [make_candidate(3.6)]})
+    assert len(client.requests) == 1
+    assert result['MF'][0].facts['motion_model_outcome']['status'] == 'NO_CONTACT_WITHIN_MODEL'
+
+
 @pytest.mark.parametrize("kwargs,status", [
     ({"target_direction": "RIGHT", "x": 4, "y": 8, "position": "LEFT", "collision": "SIDE"}, "NO_CONTACT_WITHIN_MODEL"),
     ({"target_direction": "FORWARD", "target_speed": 7.2}, "NO_CONTACT_WITHIN_MODEL"),

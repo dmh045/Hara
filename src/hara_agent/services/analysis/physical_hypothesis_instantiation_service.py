@@ -520,7 +520,7 @@ class PhysicalHypothesisInstantiationService:
         return options
 
     def _object_binding(self, parent, malfunction, geometry, project_context, function, *, initial=None,
-                        dimensions=("OBJECT",), explicit=None, current_facts=None):
+                        dimensions=("OBJECT",), explicit=None, current_facts=None, exclusions=None):
         """Refine changed initial conditions through the existing validator.
 
         Post-fault speed/direction never enter initial-operation Atom selection.
@@ -532,6 +532,11 @@ class PhysicalHypothesisInstantiationService:
         bindings = deepcopy(parent.facts.get("method_scenario_dimensions", {}))
         if not bindings:
             return {}, "NO_STRUCTURED_OBJECT_BINDING"
+        synthesis = ConstrainedScenarioSynthesisService(self.method)
+        for dimension in exclusions or {}:
+            authority = synthesis.binding_policy.decide(parent, dimension, None)
+            if authority.parent_atom_id and not authority.refinable:
+                return {}, "AUTHORITATIVE_CONDITION_CANNOT_BE_EXCLUDED:" + dimension
         for dimension in dimensions:
             bindings[dimension] = {"binding_authority": "ANALYTICAL_SELECTION", "refinable": True,
                 "resolution_status": "PENDING", "project_value": geometry["road_user_type"] if dimension == "OBJECT" else str(initial)}
@@ -541,7 +546,6 @@ class PhysicalHypothesisInstantiationService:
             "road_user_type": geometry["road_user_type"], "object_type": geometry["road_user_type"].lower(),
             **({"ego_speed_kph": initial, "ego_speed_constraint": {"min_kph": initial, "max_kph": initial}}
                if "EGO_DYNAMICS" in dimensions else {})})
-        synthesis = ConstrainedScenarioSynthesisService(self.method)
         inputs = synthesis.build_input(malfunction=asdict(malfunction), parent=query_parent,
             assessment={}, project_context=project_context or {}, function=function)
         # A local rebind must not re-rank unrelated, already materialized
@@ -550,6 +554,15 @@ class PhysicalHypothesisInstantiationService:
         pools = []
         for pool in inputs.dimension_candidate_sets:
             binding = bindings.get(pool.dimension, {})
+            # A scoped hypothesis may explicitly exclude catalog alternatives.
+            # Null alone remains unknown. Required/source-bound conditions still
+            # go through the ordinary validator and cannot be erased this way.
+            if (pool.dimension in (exclusions or {}) and explicit.get(pool.dimension) is None
+                    and pool.applicability.status is ScenarioDimensionApplicability.OPTIONAL):
+                pool = replace(pool, candidates=(), locked_atom_ids=(), applicability=replace(pool.applicability,
+                    status=ScenarioDimensionApplicability.NOT_APPLICABLE,
+                    reason=exclusions[pool.dimension],
+                    source_refs=("HYPOTHESIS.operating_atom_exclusions." + pool.dimension,)))
             if pool.dimension not in dimensions:
                 atom = synthesis.by_id.get(binding.get("atom_id"))
                 if atom and binding.get("resolution_status") == "RESOLVED":
@@ -621,6 +634,12 @@ class PhysicalHypothesisInstantiationService:
                 # The shared materializer supplies source-linked bindings; it
                 # cannot change unrelated original conditions through this API.
                 new_bindings = child.facts["method_scenario_dimensions"]
+                for pool in inputs.dimension_candidate_sets:
+                    if pool.applicability.source_refs == ("HYPOTHESIS.operating_atom_exclusions." + pool.dimension,):
+                        new_bindings[pool.dimension].update(
+                            dimension_source="PHYSICAL_HYPOTHESIS",
+                            applicability_source_refs=list(pool.applicability.source_refs),
+                            applicability_nature="CONDITIONAL", engineering_approval="NOT_GRANTED")
                 if any(new_bindings.get(dimension, {}).get("atom_id") != binding.get("atom_id")
                        for dimension, binding in bindings.items() if dimension not in dimensions):
                     continue
@@ -845,7 +864,8 @@ class PhysicalHypothesisInstantiationService:
         dimensions = list(dict.fromkeys([*dimensions, *explicit_atoms]))
         if dimensions:
             refinement, reason = self._object_binding(parent, malfunction, g, project_context, function,
-                initial=initial, dimensions=dimensions, explicit=explicit_atoms, current_facts=facts)
+                initial=initial, dimensions=dimensions, explicit=explicit_atoms, current_facts=facts,
+                exclusions=h.get("operating_atom_exclusions"))
             if explicit_atoms and not refinement:
                 raise PhysicalInputConflict("OPERATING_ATOM_BINDING_CONFLICT", "operating_atoms",
                     {d: b.get("atom_id") for d, b in parent.facts.get("method_scenario_dimensions", {}).items()},

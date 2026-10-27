@@ -240,7 +240,7 @@ class PhysicalScenarioPlan:
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
                     {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions", "post_stop_motion", "driver_operating_atoms",
-                     "operating_atoms", "hazard_timing", "safe_state_unresolved_reason", "timing_unresolved_reason"},
+                     "operating_atoms", "operating_atom_exclusions", "hazard_timing", "safe_state_unresolved_reason", "timing_unresolved_reason"},
                     path=f"hypotheses[{index}]")
             if "operating_atoms" in h:
                 atoms = _object(h["operating_atoms"], {"EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"})
@@ -248,6 +248,12 @@ class PhysicalScenarioPlan:
                     if dimension == "TRAFFIC_PATTERN" and atom is None:
                         continue
                     _text(atom)
+            if "operating_atom_exclusions" in h:
+                exclusions = _object(h["operating_atom_exclusions"], set(), {"EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"})
+                for dimension, reason in exclusions.items():
+                    _text(reason)
+                    if dimension not in h.get("operating_atoms", {}) or h["operating_atoms"][dimension] is not None:
+                        raise ValueError("An operating Atom exclusion must describe an explicitly empty selection")
             if "driver_operating_atoms" in h:
                 overrides = _object(h["driver_operating_atoms"], set(), {"in_driver_seat", "outside_driver_seat"})
                 if not overrides or "operating_atoms" not in h:

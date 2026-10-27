@@ -21,6 +21,70 @@ def timed_plan():
     return raw
 
 
+def test_scoped_optional_atom_exclusion_is_not_a_catalog_or_project_id_rule(method):
+    from dataclasses import asdict
+    from test_p6_scenario_pipeline import parent, project, malfunction, function
+    from hara_agent.services.analysis import ConstrainedScenarioSynthesisService
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    service = PhysicalHypothesisInstantiationService(method)
+    bases, _ = ConstrainedScenarioSynthesisService(method).generate_candidates(
+        malfunction=asdict(malfunction()), parent=parent('another-project-world'),
+        project_context=asdict(project()), function=asdict(function()))
+    base = next(c for c in bases if c.facts['method_scenario_dimensions']['EGO_ACTION']['atom_id'] == 'FA005')
+    before = deepcopy(base)
+    arguments = dict(parent=base, malfunction=malfunction(), geometry={'road_user_type':'VEHICLE'},
+        project_context=asdict(project()), function=asdict(function()), dimensions=('OBJECT','TRAFFIC_PATTERN'),
+        explicit={'TRAFFIC_PATTERN':None}, current_facts={'object_speed_kph':4.2,
+            'object_position':'FRONT','object_longitudinal_direction':'FORWARD'})
+    unresolved, _ = service._object_binding(**arguments)
+    assert unresolved['method_scenario_dimensions']['TRAFFIC_PATTERN']['applicability_status'] == 'OPTIONAL'
+    explanation = 'Same-lane following; no lane entry or adjacent-lane flow in this conditional world.'
+    scoped, _ = service._object_binding(**arguments, exclusions={'TRAFFIC_PATTERN':explanation})
+    binding = scoped['method_scenario_dimensions']['TRAFFIC_PATTERN']
+    assert binding['applicability_status'] == 'NOT_APPLICABLE'
+    assert binding['applicability_nature'] == 'CONDITIONAL'
+    assert binding['applicability_reason'] == explanation
+    assert binding['dimension_source'] == 'PHYSICAL_HYPOTHESIS'
+    assert base == before
+    # An explicit required traffic relation must survive a proposed omission.
+    base.facts['traffic_relation'] = 'cut_in'
+    rejected, reason = service._object_binding(**arguments, exclusions={'TRAFFIC_PATTERN':explanation})
+    assert not rejected and 'UNREPRESENTED_TRAFFIC_RELATION:TRAFFIC_CUT_IN' in reason
+    base.facts.pop('traffic_relation')
+    base.facts['method_scenario_dimensions']['TRAFFIC_PATTERN'] = {
+        'atom_id':'CN_cutting_in','resolution_status':'RESOLVED','binding_authority':'EXACT_PROJECT_FACT'}
+    rejected, reason = service._object_binding(**arguments, exclusions={'TRAFFIC_PATTERN':explanation})
+    assert not rejected and reason == 'AUTHORITATIVE_CONDITION_CANNOT_BE_EXCLUDED:TRAFFIC_PATTERN'
+
+
+def test_exclusion_cannot_contradict_selected_atom():
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    h['operating_atoms'] = {'EGO_ACTION':'custom-action','EGO_DYNAMICS':'custom-dynamics','TRAFFIC_PATTERN':'custom-traffic'}
+    h['operating_atom_exclusions'] = {'TRAFFIC_PATTERN':'does not apply'}
+    with pytest.raises(ValueError, match='explicitly empty selection'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+
+
+def test_existing_non_driver_response_path_is_usable_without_a_new_scorer(method):
+    from test_autonomous_physics import make_candidate
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    h['remaining_controls'] = ['automatic_braking_command','braking']
+    h['safe_state_proposal']['required_controls'] = h['remaining_controls']
+    h['safe_state_proposal']['driver_positions'] = ['in_driver_seat','outside_driver_seat']
+    h['safe_state_proposal']['conditions'] = ['Separate conditional command path and actuator remain after drive fault.']
+    parent = make_candidate(3.6); parent.facts['driver_in_vehicle'] = False
+    child = instantiate(method, raw, parent)[0]
+    timing = RiskCalculationInputService().ftti('MF',child.scenario_id,'',
+        {**child.facts,'_fact_provenance':child.fact_provenance},method=method)
+    assert timing.hazard_time_limit_s == pytest.approx(.9364916731)
+    assert timing.status.value == 'CONDITIONAL'
+    h['failed_controls'] = ['drive','braking']
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    with pytest.raises(ValueError, match='failed control'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+
+
 def test_response_boundary_includes_stopping_travel_not_post_contact_time():
     b = braking_avoidability_boundary(1, 1, 2, 3)
     t = b['time_s']
@@ -172,6 +236,33 @@ def test_driver_qualified_holding_reuses_motion_but_binds_each_actor(method):
     rejected, errors = service.instantiate(base, fault, bad, plan_key='wrong-actor', response_model='OFFLINE',
         project_context=asdict(project()), function=asdict(function()))
     assert not rejected and 'ATOM_DRIVER_CONDITION_CONFLICT' in str(errors)
+
+
+def test_driver_override_cannot_break_shared_compound_atom(tmp_path):
+    from test_geometry_completion import Client
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    raw = raw_plan(initial=5)
+    h = raw['hypotheses'][0]
+    h['operating_atoms'] = {'EGO_ACTION':'custom-moving', 'EGO_DYNAMICS':'custom-moving', 'TRAFFIC_PATTERN':None}
+    h['driver_operating_atoms'] = {'outside_driver_seat': {'EGO_ACTION':'custom-hold'}}
+    corrected = deepcopy(raw)
+    corrected['hypotheses'][0].pop('driver_operating_atoms')
+    context = {'plan_key':'compound-shared-driver', 'evidence':{'MF.description':'drive fault'},
+        'operating_atom_options':{
+            'EGO_ACTION':[{'atom_id':'custom-moving','fills':['EGO_ACTION','EGO_DYNAMICS']},
+                          {'atom_id':'custom-hold','fills':['EGO_ACTION']}],
+            'EGO_DYNAMICS':[{'atom_id':'custom-moving','fills':['EGO_ACTION','EGO_DYNAMICS']}],
+            'TRAFFIC_PATTERN':[]}}
+    client = Client([raw, corrected])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    plan, audit = agent.propose(context)
+    assert len(client.requests) == 2 and audit['schema_repairs'] == 1
+    assert 'COMPOUND_ATOM_CONFLICT' in str(audit['validation_errors'])
+    assert audit['responses'][0]['response']['data'] == raw
+    assert plan.hypotheses[0]['parameters'] == raw['hypotheses'][0]['parameters']
+    assert not plan.hypotheses[0].get('driver_operating_atoms')
+    agent.propose(context)
+    assert len(client.requests) == 2
 
 
 @pytest.mark.parametrize('explicit_model_gap', [False, True])

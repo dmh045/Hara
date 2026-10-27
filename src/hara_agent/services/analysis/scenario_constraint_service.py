@@ -29,6 +29,20 @@ class ScenarioConstraintExecutor:
     """Apply exact compiled cross-dimension constraints without rarity guessing."""
 
     @staticmethod
+    def compound_atom_conflicts(selected: dict[str, set[str]], fills: dict[str, Sequence[str]]) -> list[str]:
+        """A compiled compound Atom occupies all of its selected dimensions."""
+        reasons = []
+        for atom_id in sorted(set().union(*selected.values())):
+            dimensions = set(fills.get(atom_id, ())) & selected.keys()
+            missing = sorted(d for d in dimensions if atom_id not in selected[d])
+            conflicts = sorted(d for d in dimensions if selected[d] - {atom_id})
+            if missing:
+                reasons.append(f"COMPOUND_ATOM_INCOMPLETE:{atom_id}:{','.join(missing)}")
+            if conflicts:
+                reasons.append(f"COMPOUND_ATOM_CONFLICT:{atom_id}:{','.join(conflicts)}")
+        return reasons
+
+    @staticmethod
     def physical_semantic_conflicts(atoms: Sequence[dict[str, Any]]) -> list[str]:
         """Selected atoms describing one road must share a possible slope.
 

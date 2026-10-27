@@ -91,10 +91,15 @@ def _tokens(value: str) -> tuple[str, ...]:
 
 def _explicit_categories(text: str) -> set[str]:
     folded = text.casefold()
-    return {
+    categories = {
         category for category, markers in _CATEGORY_MARKERS.items()
         if any(marker.casefold() in folded for marker in markers)
     }
+    # Common vehicle-relative nouns, not project-specific hazard sentences.
+    # Do not confuse another vehicle with this vehicle's rear wheel/door/etc.
+    if re.search(r"(?:前车|后车)(?!轮|门|轴|厢|灯|盖)", text):
+        categories.add("OBJECT_VEHICLE")
+    return categories
 
 
 def _operating_action_categories(text: str) -> set[str]:
@@ -317,7 +322,9 @@ class ScenarioSemanticQueryBuilder:
         })) & {"ACTION_ABORT"}
         operating_action_fields = {
             "PARENT.operating_mode": parent.operating_mode,
-            "PARENT.situational_description": parent.situational_description,
+            # A synthesized description repeats the selected Method labels;
+            # it is not independent evidence of the original operation.
+            "PARENT.situational_description": ("" if facts.get("source_operating_conditions") else parent.situational_description),
             "PARENT.operating_scenario": parent.operating_scenario,
             "PARENT.facts.operating_scenario": facts.get("operating_scenario", ""),
             "PARENT.facts.vehicle_state": facts.get("vehicle_state", ""),
@@ -328,6 +335,10 @@ class ScenarioSemanticQueryBuilder:
             operating_actions.update(matched)
             for category in matched:
                 evidence.setdefault(category, []).append(ref)
+        operating_traffic = set().union(*(_explicit_categories(str(value)) & _TRAFFIC_CATEGORIES
+            for value in operating_action_fields.values()))
+        include(operating_action_fields, _TRAFFIC_CATEGORIES,
+                inference_rule="EXPLICIT_OPERATING_CONDITION")
         consequence_actions = _explicit_categories(_json_text({
             key: explicit_fields[key] for key in (
                 "MF.functional_effect", "MF.vehicle_level_hazard",
@@ -374,6 +385,7 @@ class ScenarioSemanticQueryBuilder:
 
         for field in ("traffic_relation", "interaction_relation", "relative_motion"):
             for relation in _normalize_traffic_relation(facts.get(field, "")):
+                operating_traffic.add(relation)
                 categories.add(relation)
                 structured_categories.add(relation)
                 ref = f"PARENT.facts.{field}"
@@ -449,6 +461,7 @@ class ScenarioSemanticQueryBuilder:
             "operating_mode": parent.operating_mode,
             "action_categories": sorted(categories & _ACTION_CATEGORIES),
             "operating_action_categories": sorted(operating_actions),
+            "operating_traffic_relations": sorted(operating_traffic),
             "control_consequence_action_categories": sorted(consequence_actions),
             "state_failure_action_categories": sorted(state_actions),
             "object_categories": sorted(categories & _OBJECT_CATEGORIES),
@@ -742,9 +755,25 @@ class ScenarioSemanticCompatibilityClassifier:
         # For example, encountering oncoming traffic does not entail overtaking.
         if dimension == "EGO_ACTION":
             atom_actions = atom_categories & _ACTION_CATEGORIES
-            query_actions = query_categories & _ACTION_CATEGORIES
+            query_actions = (set(query.get("operating_action_categories", []))
+                             or query_categories & _ACTION_CATEGORIES)
             if "ACTION_OVERTAKE" in atom_actions and query_actions and "ACTION_OVERTAKE" not in query_actions:
                 return SemanticCompatibility.CONTRADICTED, "EGO_ACTION_CONTRADICTION"
+            # Turning as a fault consequence does not establish the additional
+            # oncoming/crossing/cut-in condition of a qualified operating Atom.
+            # Explicit world relations remain supported; no Atom ID is special.
+            operational = set(query.get("operating_action_categories", []))
+            traffic_qualifiers = atom_categories & {"TRAFFIC_ONCOMING", "TRAFFIC_CROSSING", "TRAFFIC_CUT_IN"}
+            if operational and traffic_qualifiers - set(query.get("operating_traffic_relations", [])):
+                return SemanticCompatibility.CONTRADICTED, "OPERATING_TRAFFIC_QUALIFIER_UNPROVEN"
+        if dimension == "EGO_DYNAMICS":
+            operating = set(query.get("operating_action_categories", []))
+            consequences = set(query.get("control_consequence_action_categories", []))
+            # Lateral fault motion is calculated downstream; it cannot by
+            # itself establish a pre-fault lateral-acceleration exposure.
+            if ("ACTION_TURN" in atom_categories and "ACTION_TURN" in consequences
+                    and operating and "ACTION_TURN" not in operating):
+                return SemanticCompatibility.CONTRADICTED, "FAULT_LATERAL_MOTION_IS_NOT_INITIAL_EXPOSURE"
 
         if dimension == "OBJECT":
             relations = explicit_object_relations(str(atom.get("label", "")))

@@ -203,8 +203,9 @@ class StructuredRiskScoringService:
                 str(scenario.get("malfunction_id", "UNKNOWN")), str(scenario.get("scenario_id", "UNKNOWN")),
                 {**scenario, "remote_intervention_available": None}), self.structured)
             override_match = independent.decision_status == "OVERRIDE_MATCH" and independent.rule_id == control["engineering_rule_id"]
+        unresolved_reference_inputs = list(control.get("unresolved_reference_inputs", []))
         if not override_match and not braking_path_unresolved and "collision_branches" not in scenario:
-            reference = self._conditional_reference_control(scenario)
+            reference = self._conditional_reference_control(scenario, unresolved_inputs=unresolved_reference_inputs)
             if reference is not None:
                 control.update(reference)
         reference_match = control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH"
@@ -215,6 +216,12 @@ class StructuredRiskScoringService:
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="Lateral first-contact time is not a longitudinal TTC; no applicable lateral C method is compiled.")
+            if unresolved_reference_inputs:
+                control.update(calculation_status="PENDING_INPUT",
+                    pending_reason="CONDITIONAL_C_APPLICABILITY_INPUT_UNRESOLVED",
+                    decision_status="REFERENCE_APPLICABILITY_UNRESOLVED",
+                    unresolved_reference_inputs=unresolved_reference_inputs,
+                    reasoning="A compiled conditional C rule covers this scenario type, but its intervention inputs remain unknown; no C value is inferred from contact time alone.")
         if (moving and not crossing and not (override_match or reference_match)
                 and (scenario.get("ego_longitudinal_direction"), scenario.get("object_position"))
                 not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}):
@@ -257,7 +264,7 @@ class StructuredRiskScoringService:
                         status=control["calculation_status"], reason=control.get("reasoning", ""))
         return result
 
-    def _conditional_reference_control(self, scenario: dict, *, phase="BEFORE_MODEL_GUARDS") -> dict | None:
+    def _conditional_reference_control(self, scenario: dict, *, phase="BEFORE_MODEL_GUARDS", unresolved_inputs=None) -> dict | None:
         """Execute the selected reference's bounded scope; retain pending approval."""
         from hara_agent.contracts import SourceRef
         rules = self.method.metadata.get("project_analysis_policy", {}).get(
@@ -271,8 +278,15 @@ class StructuredRiskScoringService:
             if rule.get("function_output_terms") and not any(
                     term.casefold() in output for term in rule["function_output_terms"]):
                 continue
-            if any((scenario.get(key) not in expected if isinstance(expected, list)
-                    else scenario.get(key) is not expected) for key, expected in rule["when"].items()):
+            unmatched = {key: expected for key, expected in rule["when"].items()
+                if (scenario.get(key) not in expected if isinstance(expected, list)
+                    else scenario.get(key) is not expected)}
+            if unmatched:
+                if unresolved_inputs is not None and all(
+                        isinstance(expected, bool) and scenario.get(key) is None
+                        for key, expected in unmatched.items()):
+                    unresolved_inputs.append({"rule_id": rule["rule_id"],
+                        "unknown_conditions": unmatched, "source_ref": rule["source_ref"]})
                 continue
             fields = tuple(key for key, value in rule["when"].items() if isinstance(value, bool))
             limit = rule.get("trajectory_speed_upper_exclusive_kph")

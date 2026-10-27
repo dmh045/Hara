@@ -1263,7 +1263,7 @@ class ConstrainedScenarioSynthesisService:
         group_id = "SYNTH-" + hashlib.sha256(
             self._canonical_json(signature).encode("utf-8")
         ).hexdigest()[:20].upper()
-        return ScenarioSynthesisInput(
+        synthesis_input = ScenarioSynthesisInput(
             malfunction_id=str(malfunction.get("malfunction_id", "")),
             parent_scenario_id=parent.scenario_id,
             hazardous_event_id=hazard_id,
@@ -1280,6 +1280,26 @@ class ConstrainedScenarioSynthesisService:
             contextual_speed=contextual_speed,
             situation_selection_audit=selection_audit,
         )
+        if query["traffic_relations_represented_elsewhere"] and coverage_plan.desired_variant_count > 1:
+            # Count feasible mechanism alternatives, not independent shortlist
+            # entries. Two valid following-distance worlds must not both be
+            # lost merely because an unrelated action inflated the target to 3.
+            bundles = self.logical_selection_bundles(synthesis_input)
+            primary_signatures = {
+                tuple((d, tuple(self.by_id[a].get("v2") or self.by_id[a].get("v2_proper") or a
+                    for a in self.expand_logical_atom_ids(synthesis_input, bundle).get(d, ())))
+                    for d in coverage_plan.primary_variation_dimensions)
+                for bundle in bundles}
+            feasible = len(primary_signatures)
+            if 0 < feasible < coverage_plan.desired_variant_count:
+                query["bounded_feasible_coverage"] = {"requested": coverage_plan.desired_variant_count,
+                    "feasible_primary_variants": feasible, "valid_pool_size": len(bundles)}
+                coverage_plan = replace(coverage_plan, desired_variant_count=feasible,
+                    variant_intents=coverage_plan.variant_intents[:feasible])
+                signature["coverage_plan"] = coverage_plan.to_dict()
+                synthesis_input = replace(synthesis_input, coverage_plan=coverage_plan,
+                    semantic_group_id="SYNTH-" + hashlib.sha256(self._canonical_json(signature).encode()).hexdigest()[:20].upper())
+        return synthesis_input
 
     def logical_candidate_registry(
         self, synthesis_input: ScenarioSynthesisInput,
@@ -1778,28 +1798,25 @@ class ConstrainedScenarioSynthesisService:
         selected_union = {
             atom_id for atom_ids in selected_by_dimension.values() for atom_id in atom_ids
         }
+        # A structured relation defines this world; a possible consequence in
+        # a general malfunction description does not constrain every child.
+        required_relations = {e["category"] for e in synthesis_input.structured_semantic_query.get("traffic_relation_evidence", [])
+            if e.get("inference_rule") == "STRUCTURED_TRAFFIC_RELATION"}
+        # Catalog availability is only a way to represent a required relation.
+        selected_categories = set().union(*(self.ranker.atom_categories(self.by_id[a])
+            for a in selected_union if a in self.by_id))
+        for pool in candidate_sets.values():
+            for trigger in pool.applicability.trigger_evidence:
+                if trigger.startswith("REPRESENTED_ELSEWHERE:"):
+                    relation = trigger.split(":", 1)[1]
+                    if relation in required_relations and relation not in selected_categories:
+                        reasons.append("UNREPRESENTED_TRAFFIC_RELATION:" + relation)
         reasons.extend(self.constraint_executor.physical_semantic_conflicts(
             [self.by_id[atom_id] for atom_id in sorted(selected_union) if atom_id in self.by_id]))
-        for atom_id in selected_union:
-            atom = self.by_id.get(atom_id)
-            if atom is None:
-                continue
-            filled = {
-                str(item) for item in atom.get("filled_dimensions", [])
-                if str(item) in expected
-            }
-            missing = sorted(
-                dimension for dimension in filled
-                if atom_id not in selected_by_dimension.get(dimension, set())
-            )
-            if missing:
-                reasons.append(f"COMPOUND_ATOM_INCOMPLETE:{atom_id}:{','.join(missing)}")
-            conflicts = sorted(
-                dimension for dimension in filled
-                if selected_by_dimension.get(dimension, set()) - {atom_id}
-            )
-            if conflicts:
-                reasons.append(f"COMPOUND_ATOM_CONFLICT:{atom_id}:{','.join(conflicts)}")
+        reasons.extend(self.constraint_executor.compound_atom_conflicts(
+            {dimension: selected_by_dimension.get(dimension, set()) for dimension in expected},
+            {atom_id: self.by_id[atom_id].get("filled_dimensions", [])
+                for atom_id in selected_union if atom_id in self.by_id}))
         contextual_speed = synthesis_input.contextual_speed
         if contextual_speed.get("status") == "RESOLVED":
             envelope = (

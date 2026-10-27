@@ -37,7 +37,8 @@ class ItemDefinitionNormalizer:
                    for part in value.get("section_path", [])):
                 continue
             if value.get("kind") != "table_row" or not any(
-                    str(part).strip().casefold() in {"环境条件", "运行设计域", "odd", "operational design domain"}
+                    str(part).strip().casefold() in {"环境条件", "运行设计域", "运行范围", "运行条件",
+                        "odd", "operational design domain", "operating conditions", "operating domain"}
                     for part in value.get("section_path", [])):
                 continue
             cells = list(dict.fromkeys(cell.strip() for cell in value.get("text", "").split("|") if cell.strip()))

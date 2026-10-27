@@ -68,6 +68,24 @@ def test_where_scope_refinement_weather_is_not_road_and_slope_represented(method
     assert all(s.fact_provenance["source_slope_pct"]["approval"] == "PENDING" for s in slopes)
 
 
+@pytest.mark.parametrize('grade,speed', [(4.0, 5.0), (12.0, 11.0)])
+def test_changed_source_bounds_and_document_locations_flow_without_project_defaults(method, grade, speed):
+    rows = [dict(kind='table_row', location='table[91].row[27]', section_path=['运行范围'],
+        text=f'上下坡 | 上坡{grade:g}%，下坡{grade:g}%')]
+    facts = ItemDefinitionNormalizer.normalize_source_scope(
+        replace(project(), speed_max_kph=speed), rows, 'other-item-specification.docx')
+    base = parent('independent-source-context')
+    base.facts['ego_speed_constraint'] = {'min_kph':0, 'max_kph':speed}
+    children, _ = ConstrainedScenarioSynthesisService(method).generate_candidates(
+        malfunction=asdict(malfunction()), parent=base, project_context=asdict(facts), function=asdict(function()))
+    boundaries = [c for c in children if c.facts.get('source_slope_pct') is not None]
+    assert boundaries and {c.facts['source_slope_pct'] for c in boundaries} == {grade}
+    assert {c.facts['source_slope_direction'] for c in boundaries} == {'上坡','下坡'}
+    assert all(c.fact_provenance['source_slope_pct']['source_refs'][0]['source_id'] == 'other-item-specification.docx'
+               for c in boundaries)
+    assert all(c.facts['ego_speed_constraint']['max_kph'] <= speed for c in children)
+
+
 def test_symbolic_geometry_retains_range_relation_without_repeated_same_regime(method):
     raw = raw_plan()
     params = raw["hypotheses"][0]["parameters"]
@@ -122,14 +140,14 @@ def test_original_real_proposal_replays_through_production_physics_and_sec(metho
         function = next(f for f in source_state.functions if f['function_id'] == fault.function_id)
         generated, _ = service.generate_for_malfunction(fault, parents,
             project_facts=ItemDefinitionFacts.from_dict(frozen['project']), function=selection_function(function))
-        # Current coverage may assign the same motion to a different permitted
-        # parking enclosure. The saved proposal states no enclosure-specific
-        # assumption. Keep every non-WHERE Atom exact; do not reuse old causal
-        # approval or demand that a historical selection remains the default.
+        # Current generation additionally recognizes 前车 as a vehicle object.
+        # Preserve the original action/road/dynamics, and verify the newly bound
+        # object explicitly instead of requiring the old missing-object defect.
         where = {a['atom_id'] for a in service.atom_resolver.catalog if 'WHERE' in a['filled_dimensions']}
         non_where = set(frozen['candidate']['facts']['scenario_atom_ids']) - where
         parent = next(c for c in generated if c.facts.get('driver_in_vehicle') is True
-            and set(c.facts['scenario_atom_ids']) - where == non_where)
+            and set(c.facts['scenario_atom_ids']) - where == non_where | {'CN_passengers_own_and_other'})
+        assert parent.facts['method_scenario_dimensions']['OBJECT']['atom_id'] == 'CN_passengers_own_and_other'
     from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
     from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
     plan = PhysicalScenarioPlan.from_dict(deepcopy(frozen['response']['data']), evidence_ids=set(frozen['response']['data']['hypotheses'][0]['basis_refs']))

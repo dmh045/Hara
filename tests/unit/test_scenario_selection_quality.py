@@ -15,7 +15,7 @@ from hara_agent.services.analysis import ConstrainedScenarioSynthesisService
 from hara_agent.services.analysis.scenario_selection_quality import (
     ScenarioCandidateRanker, ScenarioCoveragePlanner,
     ScenarioDimensionApplicabilityService, ScenarioSemanticQueryBuilder,
-    ScenarioRefinementEvidencePolicy,
+    ScenarioRefinementEvidencePolicy, ScenarioSemanticCompatibilityClassifier,
 )
 from hara_agent.evaluation.scenario_selector import top_k_recall_audit
 from hara_agent.services.semantic.scenario_synthesis_agent import (
@@ -178,6 +178,27 @@ def test_rear_end_uses_source_defined_following_compounds_without_duplicate_traf
     }
 
 
+@pytest.mark.parametrize('hazard', ['急减速导致后车追尾', '前车停止，本车追尾',
+    'Unexpected braking causes a rear-end collision with the rear vehicle.'])
+def test_other_vehicle_nouns_preserve_real_following_representation(method, hazard):
+    service = ConstrainedScenarioSynthesisService(method)
+    parent = _parent(object_type='vehicle')
+    parent.facts['traffic_relation'] = 'following'
+    inputs = _build(service, hazard, parent=parent)
+    assert 'OBJECT_VEHICLE' in inputs.structured_semantic_query['object_categories']
+    bundles = service.logical_selection_bundles(inputs)
+    assert bundles
+    for bundle in bundles:
+        categories = set().union(*(service.ranker.atom_categories(service.by_id[a]) for a in bundle))
+        assert 'TRAFFIC_FOLLOWING' in categories
+
+
+@pytest.mark.parametrize('part', ['后车轮', '前车门', '后车轴', '后车厢'])
+def test_ego_parts_are_not_other_vehicles(part):
+    from hara_agent.services.analysis.scenario_selection_quality import ScenarioCandidateRanker
+    assert 'OBJECT_VEHICLE' not in ScenarioCandidateRanker.atom_categories({'label':part})
+
+
 def test_oncoming_relation_prioritizes_source_compatible_action_atom(method):
     service = ConstrainedScenarioSynthesisService(method)
     hazard = "Turning across oncoming traffic can cause a head-on collision."
@@ -185,7 +206,7 @@ def test_oncoming_relation_prioritizes_source_compatible_action_atom(method):
         service, hazard,
         parent=_parent(
             object_type="passenger_car", operating_scenario="motorway",
-            description="turning on motorway",
+            description="turning across oncoming traffic on motorway",
         ),
         project=_project("motorway", "normal road surface"),
     )
@@ -754,3 +775,38 @@ def test_selector_quality_counts_unrefined_parent_atom_as_integer(method):
     )
     audit = ScenarioSelectorQualityAudit().build((parent,), children=(child,))
     assert audit["ego_dynamics"]["broad_bucket_retained"] == 1
+
+
+def test_fault_turning_does_not_supply_initial_traffic_or_lateral_exposure():
+    from hara_agent.contracts import SemanticCompatibility
+    parent = _parent(description='parking maneuver')
+    parent.facts['source_operating_conditions'] = {'operating_scenario': 'parking garage'}
+    parent.operating_mode = 'parking_vehicle_control'
+    # Reproduce the old materialized wording; it must not prove itself.
+    parent.situational_description = 'Turn across oncoming lane in dense traffic; high lateral acceleration'
+    query = ScenarioSemanticQueryBuilder.build(malfunction=_malfunction(
+        'Unexpected steering may enter the oncoming area', description='steering output excessive'),
+        parent=parent, assessment={}, project_context=_project(), fm_template={})
+    assert 'ACTION_TURN' in query['control_consequence_action_categories']
+    assert 'ACTION_TURN' not in query['operating_action_categories']
+    for dimension, atom in [
+        ('EGO_ACTION', {'atom_id':'RENAMED_TURN', 'label':'Turn across oncoming lane in dense traffic'}),
+        ('EGO_ACTION', {'atom_id':'RENAMED_OVERTAKE', 'label':'Overtaking with lane change on opposite lane'}),
+        ('EGO_DYNAMICS', {'atom_id':'RENAMED_LATERAL', 'label':'High lateral acceleration'}),
+    ]:
+        result, reason = ScenarioSemanticCompatibilityClassifier.classify(
+            dimension=dimension, atom=atom, query=query, fm_template={})
+        assert result is SemanticCompatibility.CONTRADICTED
+    # An actual source-defined turning operation with oncoming traffic remains
+    # applicable, even with different names/IDs; no universal parking override.
+    parent.facts.pop('source_operating_conditions')
+    parent.situational_description = 'Turning across oncoming traffic at an intersection'
+    query = ScenarioSemanticQueryBuilder.build(malfunction=_malfunction('excessive steering'),
+        parent=parent, assessment={}, project_context=_project(), fm_template={})
+    for dimension, atom in [
+        ('EGO_ACTION', {'atom_id':'ANOTHER_TURN', 'label':'Turn across oncoming lane in dense traffic'}),
+        ('EGO_DYNAMICS', {'atom_id':'ANOTHER_LATERAL', 'label':'High lateral acceleration'}),
+    ]:
+        result, _ = ScenarioSemanticCompatibilityClassifier.classify(
+            dimension=dimension, atom=atom, query=query, fm_template={})
+        assert result is SemanticCompatibility.SUPPORTED

@@ -90,6 +90,28 @@ def test_road_user_coverage_focus_cannot_replace_a_specific_target(method):
     assert context['conditions']['facts']['road_user_type'] == 'VEHICLE'
 
 
+@pytest.mark.parametrize('label', ['Other road users (cyclists, pedestrians)', '其他道路使用者（骑行者、行人）'])
+def test_coverage_focus_uses_shared_semantics_not_project_ids_or_label_language(method, label):
+    catalog = deepcopy(method.metadata['scenario_atom_catalog'])
+    entry = next(a for a in catalog if a['atom_id'] == 'CN_other_road_users')
+    entry.update(atom_id='ALTERNATIVE_METHOD_USERS', label=label)
+    alternate = replace(method, metadata={**method.metadata, 'scenario_atom_catalog': catalog})
+    parents = []
+    for index in range(4):
+        child = make_candidate()
+        child.scenario_id = f'alternate-project-{index}'
+        child.facts.pop('road_user_type')
+        child.facts['operating_scenario'] = f'location-{index}'
+        child.facts['method_scenario_dimensions'] = {'OBJECT': {'atom_id': entry['atom_id']}}
+        parents.append(child)
+    raw = {'hypotheses': [], 'uncovered_conditions': ['Only task context is tested here.']}
+    client = Client([raw] * len(parents))
+    state, _ = run(alternate, PhysicalScenarioAgent(client), candidates={'MF': parents})
+    contexts = [e['context'] for e in state.item_definition['physical_analysis_plans'].values()]
+    assert {c['road_user_focus'] for c in contexts} == {'CYCLIST', 'PEDESTRIAN'}
+    assert all(c['selected_object_scope']['atom_id'] == entry['atom_id'] for c in contexts)
+
+
 @pytest.mark.parametrize('model,field,initial', [
     ('CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE', 'relative_distance_m', 0),
     ('CONSTANT_LATERAL_ACCELERATION_TO_CONTACT', 'lateral_clearance_m', 3.6),
@@ -109,7 +131,12 @@ def test_missing_geometry_is_one_shared_correction_not_silent_symbol(method, tmp
     entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
     assert entry['responses'][0]['response']['data'] == bad
     assert entry['semantic_correction_completed']
-    assert all(field in e['fields'] for e in entry['correction_diagnostics'])
+    geometry_errors = [e for e in entry['correction_diagnostics'] if 'fields' in e]
+    assert len(geometry_errors) == 2 and all(field in e['fields'] for e in geometry_errors)
+    control_errors = [e for e in entry['correction_diagnostics'] if 'fields' not in e]
+    assert len(control_errors) == 1
+    assert control_errors[0]['reason'] == 'CONTROL_CAPABILITY_NOT_ASSESSED'
+    assert control_errors[0]['scenario_id'] == parent.scenario_id
     context = json.loads(client.requests[0].user_prompt)['context']
     assert field in context['model_input_status']['models'][model]['needs_hypothesis']
     for child in result['MF']:

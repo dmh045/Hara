@@ -482,6 +482,13 @@ class EngineeringReportTextMapper:
             return control.get("reference_rule", {}).get("rationale", "按参考工况进行条件性 C 评定；适用性待审核")
         if control.get("decision_status") == "OVERRIDE_MATCH":
             return "C 分支：干预覆盖；依据已命中的干预条件评分，未使用 TTC 分档"
+        if control.get("decision_status") == "REFERENCE_APPLICABILITY_UNRESOLVED":
+            labels = {"emergency_braking_available": "独立制动能力", "driver_in_vehicle": "驾驶员位置",
+                "remote_intervention_available": "远程干预能力", "other_road_user_avoidance_possible": "他方避让条件"}
+            missing = dict.fromkeys(key for rule in control.get("unresolved_reference_inputs", [])
+                for key in rule.get("unknown_conditions", {}))
+            detail = "、".join(labels.get(key, "干预条件") for key in missing)
+            return f"已有适用场景类型的条件性 C 规则，但{detail or '必要干预条件'}尚未明确；不能仅凭接触时间给出等级"
         if control.get("decision_status") == "MODEL_NOT_APPLICABLE":
             reason = str(control.get("pending_reason", ""))
             if reason.startswith("REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):

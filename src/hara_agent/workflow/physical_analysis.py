@@ -251,10 +251,10 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     # Distribute explicitly named road-user classes over existing
                     # worlds, like the source-condition focus above. This is a
                     # task focus, not a fact binding or another expansion axis.
-                    import re
-                    label = selected_object.get("label", "").casefold()
-                    object_types = sorted(name for name, word in inputs["risk_vocabulary"]["road_user_type"].items()
-                        if re.search(r"\b" + re.escape(word.casefold()) + r"s?\b", label))
+                    from hara_agent.services.analysis.scenario_selection_quality import ScenarioCandidateRanker
+                    categories = ScenarioCandidateRanker.atom_categories(selected_object)
+                    object_types = sorted(name for name in inputs["risk_vocabulary"]["road_user_type"]
+                        if "OBJECT_" + name in categories)
                     if len(object_types) > 1 and not first.facts.get("road_user_type"):
                         inputs["road_user_focus"] = object_types[(coverage_offset + int(condition_key[:8], 16)) % len(object_types)]
                 inputs["interaction_coverage_policy"] = (
@@ -320,6 +320,19 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["schema_repairs"] += audit["schema_repairs"]
                     metrics["response_cache_hits"] += audit["response_cache_hits"]
                 def instantiate_family(current_plan):
+                    def control_gap(hypothesis):
+                        if braking_capability(hypothesis) is not None:
+                            return None
+                        unresolved_controls = hypothesis.get("unresolved_controls", {})
+                        unresolved = unresolved_controls.get("braking")
+                        if unresolved and (not unresolved_controls.get("driver_braking")
+                                           or entry.get("semantic_correction_completed")):
+                            return None
+                        return {"reason": "CONDITIONAL_CONTROL_BASIS_UNRESOLVED" if unresolved else "CONTROL_CAPABILITY_NOT_ASSESSED", "field": "emergency_braking_available",
+                            "hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
+                            "previous_reason": unresolved or "",
+                            "resolution": "Assess braking against source and fault scope. Distinguish control availability from whether its response can avoid this particular contact: a short contact window does not itself establish unavailable braking. An independent manual braking path may be a PENDING conditional assumption when compatible with the declared fault; deterministic analysis evaluates its time window separately. Preserve valid motion. If a specific shared failure, source conflict or model limit prevents even that conditional case, retain unresolved_controls.braking and explain that blocker. Do not invent proven capability; one correction only."}
+
                     rows = [(candidate, *producer.instantiate(candidate, mf, current_plan,
                         plan_key=key, response_model=entry["audit"]["model"], project_context=project,
                         function=functions.get(mf.function_id))) for candidate in family]
@@ -371,7 +384,17 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                         from hara_agent.services.analysis.scenario_physics import source_is_accepted_for
                         from hara_agent.services.analysis.hazardous_event_risk_context_service import HazardousEventRiskContextService
                         contexts = HazardousEventRiskContextService(method)
-                        for _, children, errors in rows:
+                        for parent, children, errors in rows:
+                            # Geometry can fail before producing a contact child.
+                            # Include that proposal's capability gap in the SAME
+                            # correction, rather than discovering it afterwards.
+                            failed_ids = {e.get("hypothesis_id") for e in errors}
+                            if parent.facts.get("driver_in_vehicle") is True:
+                                for hypothesis in current_plan.hypotheses:
+                                    if (hypothesis["hypothesis_id"] in failed_ids
+                                            and "in_driver_seat" in hypothesis.get("driver_positions", ["in_driver_seat"])
+                                            and (gap := control_gap(hypothesis)) and gap not in errors):
+                                        errors.append(gap)
                             for child in children:
                                 if child.facts.get("driver_in_vehicle") is not True:
                                     continue
@@ -380,13 +403,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     continue  # No numeric contact needing C, or a deliberately symbolic plan.
                                 analysis = child.facts.get("control_analysis") or child.facts.get("physical_analysis", {})
                                 hypothesis = analysis.get("hypothesis", {})
-                                if braking_capability(hypothesis) is not None:
+                                error = control_gap(hypothesis)
+                                if error is None:
                                     continue
-                                unresolved_controls = hypothesis.get("unresolved_controls", {})
-                                unresolved = unresolved_controls.get("braking")
-                                if unresolved and (not unresolved_controls.get("driver_braking")
-                                                   or entry.get("semantic_correction_completed")):
-                                    continue  # Preserve an assessed limit; review an explicit manual-path gap once.
                                 if (type(child.facts.get("emergency_braking_available")) is bool
                                         and source_is_accepted_for(child.fact_provenance.get("emergency_braking_available", {}),
                                             malfunction_id=mf.malfunction_id, scenario_id=child.scenario_id)):
@@ -396,10 +415,6 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     scenario={**child.facts, "_fact_provenance": child.fact_provenance})
                                 if contexts.controllability_readiness(context)["status"] == "READY":
                                     continue  # A valid independent override already answers the active method.
-                                error = {"reason": "CONDITIONAL_CONTROL_BASIS_UNRESOLVED" if unresolved else "CONTROL_CAPABILITY_NOT_ASSESSED", "field": "emergency_braking_available",
-                                    "hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
-                                    "previous_reason": unresolved or "",
-                                    "resolution": "Assess braking against source and fault scope. Distinguish lack of engineering validation from an impossible analysis hypothesis: an independent manual braking path may be a PENDING conditional assumption when compatible with the declared fault. Preserve valid motion. If a specific shared failure, source conflict or model limit prevents even that conditional case, retain unresolved_controls.braking and explain that blocker. Do not invent proven capability; one correction only."}
                                 if error not in errors:
                                     errors.append(error)
                     return rows

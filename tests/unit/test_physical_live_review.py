@@ -74,6 +74,8 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
         'method_identity': {'method_source_hash': 'full-method-hash', 'project_analysis_policy': {
             'controllability': {'result': 'C3', 'rationale': 'downstream-only'},
             'severity_evaluation': {'grading_policy': 'downstream-only'},
+            'timing_analysis': {'supported_models': ['GRADE_ROLLAWAY_TO_IMPACT_DISTANCE'],
+                'status': 'CONDITIONAL_REFERENCE', 'limitations': 'Selected method scope only'},
             'driver_location_convention': {'outside_driver_seat_is_outside_vehicle': True},
             'engineering_decisions': {'approved_template_id': 'existing-template'}}}}
     before = deepcopy(context)
@@ -85,7 +87,9 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v28-moving-response-shape')
+            assert request.prompt_version.endswith('v30-response-contract')
+            assert payload['output_contract']['response_timing'] == policy['timing_analysis']
+            assert payload['output_contract']['control_arrays']['shape_example'] == ['driver_braking', 'braking']
             return LLMResponse(raw_plan(), 'OFFLINE', usage={})
     PhysicalScenarioAgent(Client()).propose(context)
     assert context == before

@@ -167,6 +167,31 @@ def crossing_candidate(method, *, offset=4):
         position="LEFT", collision="SIDE"), parent)[0]
 
 
+def test_unknown_crossing_control_is_an_input_gap_not_an_absent_method(method):
+    from test_bounded_interaction_coverage import moving_plan
+    parent = make_candidate(3.6)
+    parent.facts['operating_mode'] = 'parking_vehicle_control'
+    raw = moving_plan(target_direction='RIGHT', x=4, y=4, position='LEFT', collision='SIDE')
+    raw['hypotheses'][0].update(remaining_controls=[], unresolved_controls={
+        'braking': 'Independent control not yet established'})
+    sc = instantiate(method, raw, parent)[0]
+    before = deepcopy(sc)
+    c = score(method, sc)['controllability']
+    assert not c['controllability_score']
+    assert c['calculation_status'] == 'PENDING_INPUT'
+    assert c['pending_reason'] == 'CONDITIONAL_C_APPLICABILITY_INPUT_UNRESOLVED'
+    assert c['unresolved_reference_inputs'][0]['unknown_conditions'] == {'emergency_braking_available': True}
+    assert sc == before and 'ttc_s' not in sc.facts
+    trace = RiskExecutionTraceService(method)._controllability_trace(sc.facts, c)
+    text = EngineeringReportTextMapper.controllability_branch({'controllability': trace})
+    assert '独立制动能力尚未明确' in text and '无适用 C 规则' not in text
+    assert trace['source_status'] == 'CONDITIONAL_REFERENCE' and trace['decision_tree_stage'] == 'REFERENCE'
+    assert trace['reference_rule'] == {} and trace['result'] == ''  # Candidate, not a matched rule.
+    absent = deepcopy(method.metadata)
+    absent['project_analysis_policy']['controllability']['conditional_reference_rules'] = []
+    assert score(replace(method, metadata=absent), sc)['controllability']['pending_reason'] == 'LATERAL_C_METHOD_NOT_AVAILABLE'
+
+
 @pytest.mark.parametrize("offset,expected", [(3.5, "C3"), (4, "C2"), (5, "C1"), (6, "C0")])
 def test_crossing_contact_uses_active_profile_without_fabricating_longitudinal_ttc(method, offset, expected):
     sc = crossing_candidate(method, offset=offset)
