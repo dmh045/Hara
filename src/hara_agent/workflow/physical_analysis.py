@@ -278,6 +278,18 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             entry = saved or {"context": context, "responses": [], "status": "REQUESTED"}
             cache[key] = entry
             prior_status = entry.get("status")
+            if prior_status == "VALIDATED" and entry.get("initial_plan"):
+                try:
+                    PhysicalScenarioPlan.validate_correction_scope(entry["initial_plan"], entry["plan"],
+                        entry.get("correction_diagnostics", []), context.get("driver_configurations", []))
+                except ValueError as error:
+                    # Re-enter the same proposal/correction through raw response
+                    # checkpoints. Preserve the old result; only an affected
+                    # correction may need its existing bounded repair request.
+                    entry.setdefault("correction_scope_history", []).append({"plan": entry["plan"], "error": str(error)})
+                    entry["status"] = "REQUESTED"
+                    entry.pop("semantic_correction_completed", None)
+                    entry.pop("semantic_correction_error", None)
             prior_validation = entry.get("response_validation_version")
             validation_version = getattr(agent, "RESPONSE_VALIDATION_VERSION", None)
             if prior_status == "INVALID" and prior_validation != validation_version:

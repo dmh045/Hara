@@ -570,6 +570,9 @@ class PhysicalScenarioAgent:
                                     + ". Change the inconsistent Atom bindings in your complete reply, or choose a compatible non-compound alternative from the supplied shortlist. Correcting these bindings does not require changing valid physical parameters. Driver location alone does not change a moving vehicle into parking/holding.")
                 if controls_only != (plan.control_assessment is not None):
                     raise ValueError("Output must match task_scope; control-only tasks cannot replace existing motion")
+                if context.get("previous_plan") is not None:
+                    PhysicalScenarioPlan.validate_correction_scope(context["previous_plan"], plan.to_dict(),
+                        context.get("correction_diagnostics", []), context.get("driver_configurations", []))
                 return plan, {"responses": attempts, "validation_errors": errors,
                     "request_count": sum((1 + a["response"]["usage"].get("format_retry_calls", 0))
                         for a in attempts if not a["response"]["usage"].get("response_checkpoint_hit")),

@@ -382,3 +382,60 @@ class PhysicalScenarioPlan:
     def to_dict(self) -> dict:
         return {"hypotheses": list(self.hypotheses), "uncovered_conditions": list(self.uncovered_conditions),
                 **({"control_assessment": self.control_assessment} if self.control_assessment is not None else {})}
+
+    @staticmethod
+    def validate_correction_scope(previous: dict, corrected: dict, diagnostics: list[dict], drivers=()) -> None:
+        """A control/response correction cannot replace the unmitigated world."""
+        def response_only(reason):
+            return reason.startswith(("CONTROL_", "CONDITIONAL_CONTROL_", "SAFE_STATE_", "SAFE_STOP_",
+                                      "AVOIDANCE_", "ESCAPE_")) or reason in {
+                "CONTACT_BEFORE_ESCAPE", "UNSUPPORTED_AVOIDANCE_TRAJECTORY"}
+
+        def positions(h):
+            return h.get("driver_positions") or drivers or ("in_driver_seat", "outside_driver_seat")
+
+        def world(h, driver):
+            return {
+                **{key: h.get(key) for key in ("model", "geometry", "post_stop_motion")},
+                "operating_atoms": {**h.get("operating_atoms", {}), **h.get("driver_operating_atoms", {}).get(driver, {})},
+                "parameters": {p["field"]: {k: v for k, v in p.items() if k not in {"rationale", "basis_refs"}}
+                               for p in h.get("parameters", [])},
+                "grade_frame": {k: v for k, v in h.get("grade_frame", {}).items() if k != "rationale"},
+                "condition_changes": {k: h.get("condition_changes", {}).get(k, False) for k in ("initial_state", "target")},
+                "driver_position": driver,
+                "operating_condition": {k: v for k, v in h.get("operating_condition", {}).items() if k != "physical_effect"},
+                "excluded_operating_dimensions": sorted(h.get("operating_atom_exclusions", {})),
+            }
+
+        old = {h["hypothesis_id"]: h for h in previous.get("hypotheses", [])}
+        new = {h["hypothesis_id"]: h for h in corrected.get("hypotheses", [])}
+        protected = set()
+        conflicts = []
+        for identity, hypothesis in old.items():
+            applicable = [d for d in diagnostics if d.get("hypothesis_id") in (None, identity)]
+            if any(not response_only(str(d.get("reason", ""))) for d in applicable):
+                continue  # This hypothesis has a reported motion/input conflict to correct.
+            protected.add(identity)
+            if identity in new and set(positions(new[identity])) - set(positions(hypothesis)):
+                conflicts.append(f"{identity}: added an unrequested driver scope")
+            # Splitting an unchanged world by driver to express different
+            # controls is legitimate. Compare effective inputs, not redundant
+            # Atom overrides or the spelling/order of a driver list.
+            replacements = [h for key, h in new.items() if key == identity or key not in old]
+            for driver in positions(hypothesis):
+                before = world(hypothesis, driver)
+                if any(driver in positions(h) and before == world(h, driver) for h in replacements):
+                    continue
+                current = new.get(identity)
+                changed = ([key for key in before if before[key] != world(current, driver)[key]]
+                           if current and driver in positions(current) else ["driver scope or hypothesis removal"])
+                conflicts.append(f"{identity}: changed {', '.join(changed)} ({driver})")
+        if protected == set(old):
+            original_worlds = [world(h, driver) for h in old.values() for driver in positions(h)]
+            if any(world(new[key], driver) not in original_worlds
+                   for key in set(new) - set(old) for driver in positions(new[key])):
+                conflicts.append("added an unrequested motion hypothesis")
+        if conflicts:
+            raise ValueError("CORRECTION_CHANGED_UNREPORTED_WORLD: " + "; ".join(conflicts)
+                + ". Restore the previous target, parameters, operating bindings and driver scope for these hypotheses. "
+                "Correct only the requested controls, avoidance or safe-state response. An unreachable response must remain a specific gap; do not replace the hazard to make it safe.")

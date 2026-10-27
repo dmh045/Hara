@@ -16,6 +16,112 @@ from hara_agent.services.analysis.physical_hypothesis_instantiation_service impo
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
 from hara_agent.workflow import HARAState, CheckpointRepository
 from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+
+
+def test_response_correction_preserves_world_but_allows_reported_geometry_completion():
+    previous = raw_plan()
+    good = deepcopy(previous)
+    good['hypotheses'][0].update(remaining_controls=['driver_braking'], driver_positions=['in_driver_seat'])
+    good['hypotheses'][0]['parameters'].reverse()
+    good['hypotheses'][0]['parameters'][0]['rationale'] = 'Clarified basis, same unrounded value'
+    diagnostics = [{'hypothesis_id': 'h1', 'reason': 'SAFE_STOP_RESPONSE_UNREACHABLE'}]
+    PhysicalScenarioPlan.validate_correction_scope(previous, good, diagnostics, ['in_driver_seat'])
+    previous['hypotheses'][0]['operating_atoms'] = {'EGO_ACTION': 'custom-action'}
+    good['hypotheses'][0]['operating_atoms'] = {'EGO_ACTION': 'custom-action'}
+    good['hypotheses'][0]['driver_operating_atoms'] = {'in_driver_seat': {'EGO_ACTION': 'custom-action'}}
+    PhysicalScenarioPlan.validate_correction_scope(previous, good, diagnostics, ['in_driver_seat'])
+    mutations = [
+        ('geometry', {**good['hypotheses'][0]['geometry'], 'object_id': 'different-object'}),
+        ('parameters', [{**p, 'value': p['value'] + .000001} for p in good['hypotheses'][0]['parameters']]),
+        ('driver_positions', ['outside_vehicle']),
+        ('operating_atoms', {'TRAFFIC_PATTERN': 'different-traffic'}),
+    ]
+    for field, value in mutations:
+        changed = deepcopy(good)
+        changed['hypotheses'][0][field] = value
+        with pytest.raises(ValueError, match='CORRECTION_CHANGED_UNREPORTED_WORLD'):
+            PhysicalScenarioPlan.validate_correction_scope(previous, changed, diagnostics, ['in_driver_seat'])
+    # A genuine missing geometry error permits that hypothesis to be completed,
+    # but does not permit changing a different, already valid world.
+    previous['hypotheses'].append({**deepcopy(previous['hypotheses'][0]), 'hypothesis_id': 'h2'})
+    previous['hypotheses'][1]['parameters'] = previous['hypotheses'][1]['parameters'][::2]
+    complete = deepcopy(previous)
+    complete['hypotheses'][1]['parameters'] = deepcopy(raw_plan()['hypotheses'][0]['parameters'])
+    errors = [{'hypothesis_id': 'h2', 'reason': 'MODEL_INPUTS_INCOMPLETE'}]
+    PhysicalScenarioPlan.validate_correction_scope(previous, complete, errors)
+    complete['hypotheses'][0]['geometry']['object_id'] = 'replacement'
+    with pytest.raises(ValueError, match='h1: changed geometry'):
+        PhysicalScenarioPlan.validate_correction_scope(previous, complete, errors)
+
+
+def test_control_correction_may_split_same_motion_by_driver_but_cannot_add_a_new_world():
+    original = raw_plan()
+    separated = deepcopy(original)
+    separated['hypotheses'][0].update(driver_positions=['in_driver_seat'], remaining_controls=['driver_braking'])
+    outside = deepcopy(original['hypotheses'][0])
+    outside.update(hypothesis_id='outside', driver_positions=['outside_driver_seat'])
+    separated['hypotheses'].append(outside)
+    diagnostics = [{'hypothesis_id': 'h1', 'reason': 'CONTROL_CAPABILITY_NOT_ASSESSED'}]
+    PhysicalScenarioPlan.validate_correction_scope(original, separated, diagnostics)
+    outside['geometry']['object_id'] = 'a-different-target'
+    with pytest.raises(ValueError, match='CORRECTION_CHANGED_UNREPORTED_WORLD'):
+        PhysicalScenarioPlan.validate_correction_scope(original, separated, diagnostics)
+
+
+@pytest.mark.parametrize('repair_succeeds', [True, False])
+def test_control_correction_cannot_change_numeric_world_and_resume_is_bounded(method, tmp_path, repair_succeeds):
+    original = raw_plan()
+    good = deepcopy(original)
+    good['hypotheses'][0]['remaining_controls'] = ['driver_braking']
+    changed = deepcopy(good)
+    changed['hypotheses'][0]['parameters'][1]['value'] = 9
+    client = Client([original, changed, good if repair_succeeds else changed])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    repo = CheckpointRepository(tmp_path/'state')
+    state, generated = run(method, agent, checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert len(client.requests) == 3  # Existing initial + semantic correction + one schema repair.
+    assert entry['responses'][1]['response']['data'] == changed
+    assert entry['plan']['hypotheses'][0]['parameters'][1]['value'] == 2
+    assert generated['MF'][0].facts['relative_distance_m'] == 2
+    assert score(method, generated['MF'][0])['severity']['severity_score']
+    assert generated['MF'][0].facts['physical_analysis']['engineering_approval'] == 'NOT_GRANTED'
+    if repair_succeeds:
+        assert score(method, generated['MF'][0])['controllability']['controllability_score']
+    else:
+        assert 'CORRECTION_CHANGED_UNREPORTED_WORLD' in entry['semantic_correction_error']
+    _, resumed = run(method, agent, state=repo.load(state.run_id), checkpoint=repo.save)
+    assert resumed == generated and len(client.requests) == 3
+
+
+def test_saved_world_changing_correction_is_repaired_through_original_response_cache(method, tmp_path, monkeypatch):
+    original = raw_plan()
+    good = deepcopy(original)
+    good['hypotheses'][0]['remaining_controls'] = ['driver_braking']
+    changed = deepcopy(good)
+    changed['hypotheses'][0]['parameters'][1]['value'] = 9
+    client = Client([original, changed, good])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    repo = CheckpointRepository(tmp_path/'state')
+    # Reproduce the old acceptance behavior with the actual durable workflow.
+    with monkeypatch.context() as old:
+        old.setattr(PhysicalScenarioPlan, 'validate_correction_scope', staticmethod(lambda *args: None))
+        state, generated = run(method, agent, checkpoint=repo.save)
+    assert len(client.requests) == 2 and generated['MF'][0].facts['relative_distance_m'] == 9
+    state, fixed = run(method, agent, state=repo.load(state.run_id), checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert len(client.requests) == 3  # Original and rejected correction both came from exact raw caches.
+    assert entry['correction_scope_history'][0]['plan'] == changed
+    assert entry['responses'][0]['response']['data'] == original
+    assert entry['responses'][1]['response']['data'] == changed
+    assert fixed['MF'][0].facts['relative_distance_m'] == 2
+    assert fixed['MF'][0].scenario_id != generated['MF'][0].scenario_id
+    assert score(method, fixed['MF'][0])['controllability']['controllability_score']
+    assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_requests'] == 3
+    _, resumed = run(method, agent, state=repo.load(state.run_id), checkpoint=repo.save)
+    assert resumed == fixed and len(client.requests) == 3
+    assert len(next(iter(state.item_definition['physical_analysis_plans'].values()))['correction_scope_history']) == 1
 
 
 class Client:
