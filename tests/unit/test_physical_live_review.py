@@ -357,3 +357,38 @@ def test_control_format_repair_preserves_qualifiers_and_original_reply(tmp_path,
     assert client.calls == 2 and audit['schema_repairs'] == 1
     resumed, resumed_audit = agent.propose(context)
     assert resumed == plan and resumed_audit['response_cache_hits'] == 2 and client.calls == 2
+
+
+def test_single_control_array_wrapper_is_lossless_and_avoids_a_format_request(tmp_path):
+    from test_geometry_completion import Client
+    raw = raw_plan()
+    h = raw['hypotheses'][0]
+    h['remaining_controls'] = [['driver_braking', 'braking']]
+    h['failed_controls'] = [['drive']]
+    before = deepcopy(raw)
+    client = Client([raw])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key':'control-wrapper', 'evidence':{'MF.description':'drive fault'}}
+    plan, audit = agent.propose(context)
+    assert len(client.requests) == 1 and audit['schema_repairs'] == 0
+    assert audit['responses'][0]['response']['data'] == before == raw
+    expected = deepcopy(raw['hypotheses'][0])
+    expected.update(remaining_controls=['driver_braking','braking'], failed_controls=['drive'])
+    assert plan.hypotheses[0] == expected
+    assert {r['field'] for r in audit['control_array_normalizations']} == {'remaining_controls','failed_controls'}
+    agent.propose(context)
+    assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize('values', [
+    [['driver_braking'], ['braking']], [['braking','unproven rationale']],
+    [['braking', {'rationale':'may work'}]],
+])
+def test_control_alternatives_and_details_are_not_flattened(values):
+    from test_geometry_completion import Client
+    raw = raw_plan(); raw['hypotheses'][0]['remaining_controls'] = values
+    before = deepcopy(raw)
+    client = Client([raw,raw])
+    with pytest.raises(ValueError, match='remaining_controls'):
+        PhysicalScenarioAgent(client).propose({'plan_key':'ambiguous-controls','evidence':{'MF.description':'fault'}})
+    assert len(client.requests) == 2 and raw == before

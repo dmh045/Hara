@@ -78,6 +78,11 @@ def _object(value: Any, required: set[str], optional: set[str] = frozenset(), *,
     if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - optional:
         detail = (f"; missing={sorted(required - value.keys())}, "
                   f"unexpected={sorted(value.keys() - required - optional)}" if isinstance(value, dict) else "; expected object")
+        if path.startswith("hypotheses[") and isinstance(value, dict):
+            if "control_assessment" in value:
+                detail += "; motion hypotheses carry controls, safe_state_proposal and hazard_timing directly at hypothesis level, not in a nested control_assessment. Preserve their conditions and reconcile conflicts explicitly."
+            if "remaining_controls" not in value:
+                detail += "; declare remaining_controls explicitly, using [] if no remaining path is credited. Preserve unresolved_controls; do not invent an available control to fill this field."
         raise ValueError(f"{path} keys must be {sorted(required)} plus {sorted(optional)}" + detail)
     return value
 
@@ -140,11 +145,14 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         if control in h["failed_controls"] or control in h["remaining_controls"]:
             raise ValueError("An unresolved control cannot also be declared failed or remaining")
     if "braking" in unresolved and braking_capability(h) is not None:
-        raise ValueError("Unresolved braking conflicts with a declared braking capability: choose one coherent conditional world. If driver_braking/braking is conditionally retained, put unverified independence/common-cause limits in conditions and uncovered_conditions, not unresolved_controls.braking. Otherwise remove the unsupported remaining capability and retain its specific unresolved reason.")
+        raise ValueError("Unresolved braking conflicts with a declared braking capability: choose one coherent conditional world. If driver_braking/braking is conditionally retained, put unverified independence/common-cause limits in conditions and uncovered_conditions, not unresolved_controls.braking. Otherwise remove the unsupported remaining capability and retain its specific unresolved reason. "
+            f"hypothesis={h.get('hypothesis_id', 'control_assessment')}; remaining_controls={h['remaining_controls']}; failed_controls={h['failed_controls']}; unresolved_controls.braking={unresolved['braking']}")
     interventions = h.get("intervention_assumptions", {})
     _object(interventions, set(), INTERVENTION_ASSUMPTION_FIELDS)
     if set(unresolved) & set(interventions):
-        raise ValueError("An unresolved intervention cannot also have an explicit assumption")
+        raise ValueError("An unresolved intervention cannot also have an explicit assumption: "
+            + ", ".join(sorted(set(unresolved) & set(interventions)))
+            + ". Keep either a scoped conditional value in intervention_assumptions with its limits, or an unknown in unresolved_controls. Do not choose false merely because evidence is absent.")
     proposals = list(interventions.values())
     if "safe_state_proposal" in h:
         proposal = _object(h["safe_state_proposal"],
@@ -231,7 +239,9 @@ class PhysicalScenarioPlan:
                 raise ValueError("Control-only assessment must preserve existing motion")
         hypotheses = raw["hypotheses"]
         if not isinstance(hypotheses, list) or not 0 <= len(hypotheses) <= 3:
-            raise ValueError("A physical plan contains 0..3 hypotheses")
+            raise ValueError("A physical plan contains 0..3 hypotheses as a JSON array. "
+                "Do not duplicate the same motion solely for driver position; use the existing scoped driver fields when appropriate. "
+                "Keep genuinely different worlds separate and state uncovered conditions. Controls and safe-state fields belong directly in each motion hypothesis, not in nested control_assessment objects.")
         uncovered = _texts(raw["uncovered_conditions"])
         if not hypotheses and not uncovered and control is None:
             raise ValueError("An empty physical plan requires a concrete model applicability gap")

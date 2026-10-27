@@ -298,6 +298,70 @@ def test_response_survives_full_snapshot_failure_and_scope_change_invalidates(me
     assert len(client.requests) == 2
 
 
+def test_invalid_plan_revalidates_saved_raw_reply_after_validator_change(method, tmp_path):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+
+    class OldStrictAgent(PhysicalScenarioAgent):
+        RESPONSE_VALIDATION_VERSION = 'old-strict-controls'
+
+        def propose(self, context, **kwargs):
+            plan, audit = super().propose(context, **kwargs)
+            # Reproduce the former rejection after the raw reply is durable.
+            PhysicalScenarioPlan.from_dict(audit['responses'][0]['response']['data'],
+                evidence_ids=set(context['evidence']))
+            return plan, audit
+
+    raw = raw_plan()
+    raw['hypotheses'][0]['remaining_controls'] = [['driver_braking']]
+    client = Client([raw])
+    cache = tmp_path/'responses'
+    repo = CheckpointRepository(tmp_path/'states')
+    state, _ = run(method, OldStrictAgent(client, response_checkpoint_dir=cache), checkpoint=repo.save)
+    failed = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert failed['status'] == 'INVALID'
+    original_error = failed['error']
+    original_response = deepcopy(failed['responses'])
+
+    current = PhysicalScenarioAgent(client, response_checkpoint_dir=cache)
+    state, recovered = run(method, current, state=repo.load(state.run_id), checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'VALIDATED' and 'error' not in entry
+    assert entry['validation_history'] == [{'version': 'old-strict-controls', 'error': original_error}]
+    assert entry['response_validation_version'] == current.RESPONSE_VALIDATION_VERSION
+    assert entry['responses'] == original_response
+    assert len(client.requests) == 1
+    assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_requests'] == 1
+    assert state.item_definition['physical_analysis_metrics']['token_usage'] == {'prompt_tokens': 11, 'completion_tokens': 7}
+    assert recovered['MF'][0].facts['motion_model_outcome']['status'] == 'CONTACT'
+    assert score(method, recovered['MF'][0])['controllability']['controllability_score']
+    assert recovered['MF'][0].facts['physical_analysis']['engineering_approval'] == 'NOT_GRANTED'
+    _, resumed = run(method, current, state=repo.load(state.run_id), checkpoint=repo.save)
+    assert resumed == recovered and len(client.requests) == 1
+
+
+def test_invalid_plan_revalidation_is_bounded_and_persisted_even_with_only_cache_hits(method, tmp_path):
+    raw = {'hypotheses': [], 'uncovered_conditions': []}
+    client = Client([raw, raw])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    repo = CheckpointRepository(tmp_path/'states')
+    state, _ = run(method, agent, checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'INVALID' and len(client.requests) == 2
+    # Old checkpoints have no validation marker; unchanged raw content is still invalid.
+    entry.pop('response_validation_version')
+    repo.save(state)
+    run(method, agent, state=repo.load(state.run_id), checkpoint=repo.save)
+    restored = repo.load(state.run_id)
+    entry = next(iter(restored.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'INVALID' and len(entry['validation_history']) == 1
+    assert entry['response_validation_version'] == agent.RESPONSE_VALIDATION_VERSION
+    assert len(client.requests) == len(entry['responses']) == 2
+    before = deepcopy(entry)
+    run(method, agent, state=restored, checkpoint=repo.save)
+    assert next(iter(restored.item_definition['physical_analysis_plans'].values())) == before
+    assert len(client.requests) == 2
+
+
 def test_abrupt_process_exit_after_response_does_not_pay_again(tmp_path):
     payload = tmp_path/'plan.json'; payload.write_text(json.dumps(raw_plan()))
     cache = tmp_path/'responses'

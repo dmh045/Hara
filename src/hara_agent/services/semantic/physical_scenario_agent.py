@@ -139,6 +139,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v2-scoped-controls"
     PROMPT_VERSION = "post-fault-physical-scenario-v30-response-contract"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v13-response-contract"
     CONTROL_ANALYSIS_POLICY = (
@@ -505,6 +506,7 @@ class PhysicalScenarioAgent:
                         envelope_normalization = "PROJECTED_CONTROL_LIMITS"
                 normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
                 deferred_states = []
+                control_array_normalizations = []
                 # An optional safe-state proposal cannot establish an unassessed
                 # or failed control. Reject that proposal locally, retaining the raw reply;
                 # do not discard otherwise valid motion or approve the control.
@@ -512,6 +514,14 @@ class PhysicalScenarioAgent:
                     for hypothesis in [*candidate["hypotheses"], candidate.get("control_assessment")]:
                         if not isinstance(hypothesis, dict):
                             continue
+                        for field in ("failed_controls", "remaining_controls"):
+                            values = hypothesis.get(field)
+                            if (isinstance(values, list) and len(values) == 1
+                                    and isinstance(values[0], list) and values[0]
+                                    and all(isinstance(v, str) and v in CONTROL_IDENTITIES for v in values[0])):
+                                hypothesis[field] = list(values[0])
+                                control_array_normalizations.append({"hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "field": field, "normalization": "UNWRAPPED_SINGLE_CONTROL_ARRAY"})
                         proposal = hypothesis.get("safe_state_proposal")
                         controls = proposal.get("required_controls") if isinstance(proposal, dict) else None
                         remaining = hypothesis.get("remaining_controls")
@@ -564,6 +574,7 @@ class PhysicalScenarioAgent:
                     "response_cache_hits": sum(bool(a["response"]["usage"].get("response_checkpoint_hit")) for a in attempts),
                     "schema_repairs": int(repair), "model": response.model,
                     "control_envelope_normalization": envelope_normalization,
+                    "control_array_normalizations": control_array_normalizations,
                     "deferred_safe_states": deferred_states, "normalized_basis_refs": normalized_refs}
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))

@@ -277,6 +277,16 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             entry = saved or {"context": context, "responses": [], "status": "REQUESTED"}
             cache[key] = entry
             prior_status = entry.get("status")
+            prior_validation = entry.get("response_validation_version")
+            validation_version = getattr(agent, "RESPONSE_VALIDATION_VERSION", None)
+            if prior_status == "INVALID" and prior_validation != validation_version:
+                # Revalidate the raw response through the existing checkpoint;
+                # successful plans do not need another model request. Same-version
+                # failures remain bounded, including across process restarts.
+                entry.setdefault("validation_history", []).append({
+                    "version": prior_validation, "error": entry.get("error", "")})
+                entry["status"] = "REQUESTED"
+                entry.pop("error", None)
             prior_responses = len(entry.get("responses", []))
             prior_instances = signature(entry.get("instantiations", {}))
 
@@ -313,6 +323,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["diagnostics"].append({"plan_key": key, "reason": entry["error"]})
                     continue
                 else:
+                    entry["response_validation_version"] = validation_version
                     print(f"[HARA] physical-plan {mf.malfunction_id}: {len(family)} instances, key={key[:12]}", file=sys.stderr, flush=True)
                     plan, audit = agent.propose(context, on_response=persist_response)
                     entry.update(status="VALIDATED", plan=plan.to_dict(), audit=audit)
@@ -501,7 +512,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 # and every parsed response remain durable on resume.
                 reconcile_metrics()
                 new_result = (not saved or entry.get("status") != prior_status
-                              or len(entry.get("responses", [])) != prior_responses)
+                              or len(entry.get("responses", [])) != prior_responses
+                              or entry.get("response_validation_version") != prior_validation)
                 if (checkpoint or _commit_plan) and (new_result
                         or signature(entry.get("instantiations", {})) != prior_instances):
                     save_plan(cached_refresh=not new_result)

@@ -277,6 +277,28 @@ def test_safe_state_field_location_is_explicit_without_moving_raw_values():
     assert raw == before
 
 
+@pytest.mark.parametrize('mutation,hint', [
+    ('nested', 'not in a nested control_assessment'),
+    ('missing', 'do not invent an available control'),
+    ('both', 'Do not choose false merely because evidence is absent'),
+])
+def test_correction_feedback_names_the_actual_control_contract_issue(mutation, hint):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    if mutation == 'nested':
+        h['control_assessment'] = {'unresolved_controls': {'braking':'unknown'}}
+    elif mutation == 'missing':
+        h.pop('remaining_controls')
+    else:
+        h['unresolved_controls'] = {'remote_intervention_available':'unknown'}
+        h['intervention_assumptions'] = {'remote_intervention_available': {
+            'value':False, 'rationale':'conditional no credited path', 'basis_refs':['MF.description'], 'conditions':['offline']}}
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match=hint):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    assert raw == before
+
+
 @pytest.mark.parametrize('explicit_model_gap', [False, True])
 def test_safe_stop_response_is_completed_once_in_production_workflow(method, tmp_path, explicit_model_gap):
     import json
