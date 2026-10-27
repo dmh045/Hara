@@ -149,7 +149,7 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
     if "safe_state_proposal" in h:
         proposal = _object(h["safe_state_proposal"],
             {"description", "required_controls", "basis_refs", "conditions"},
-            {"driver_positions", "transition"})
+            {"driver_positions", "transition"}, path="safe_state_proposal (post_stop_motion belongs inside transition)")
         _text(proposal["description"])
         controls = _texts(proposal["required_controls"])
         if not controls or not set(controls) <= set(h["remaining_controls"]):

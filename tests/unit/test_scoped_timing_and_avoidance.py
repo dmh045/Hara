@@ -258,11 +258,23 @@ def test_driver_override_cannot_break_shared_compound_atom(tmp_path):
     plan, audit = agent.propose(context)
     assert len(client.requests) == 2 and audit['schema_repairs'] == 1
     assert 'COMPOUND_ATOM_CONFLICT' in str(audit['validation_errors'])
+    assert 'required assignments' in str(audit['validation_errors'])
+    assert '"EGO_ACTION": "custom-moving", "EGO_DYNAMICS": "custom-moving"' in str(audit['validation_errors'])
     assert audit['responses'][0]['response']['data'] == raw
     assert plan.hypotheses[0]['parameters'] == raw['hypotheses'][0]['parameters']
     assert not plan.hypotheses[0].get('driver_operating_atoms')
     agent.propose(context)
     assert len(client.requests) == 2
+
+
+def test_safe_state_field_location_is_explicit_without_moving_raw_values():
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = timed_plan()
+    raw['hypotheses'][0]['safe_state_proposal']['post_stop_motion'] = 'HOLD_POSITION'
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match='safe_state_proposal .*post_stop_motion belongs inside transition'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    assert raw == before
 
 
 @pytest.mark.parametrize('explicit_model_gap', [False, True])

@@ -552,7 +552,11 @@ class PhysicalScenarioAgent:
                             conflicts = ScenarioConstraintExecutor.compound_atom_conflicts(
                                 {d: {a} if a is not None else set() for d, a in selection.items()}, fills)
                             if conflicts:
-                                raise ValueError("; ".join(conflicts) + "; preserve the same initial operation. Driver location alone does not change a moving vehicle into parking/holding. Keep shared compound selections intact unless a distinct compatible initial condition is actually proposed.")
+                                required = {a: {d: a for d in fills[a] if d in selection}
+                                    for a in selection.values() if a in fills and len(fills[a]) > 1}
+                                raise ValueError("; ".join(conflicts) + "; selected=" + json.dumps(selection)
+                                    + "; if retaining a selected compound Atom, its required assignments are " + json.dumps(required)
+                                    + ". Change the inconsistent Atom bindings in your complete reply, or choose a compatible non-compound alternative from the supplied shortlist. Correcting these bindings does not require changing valid physical parameters. Driver location alone does not change a moving vehicle into parking/holding.")
                 if controls_only != (plan.control_assessment is not None):
                     raise ValueError("Output must match task_scope; control-only tasks cannot replace existing motion")
                 return plan, {"responses": attempts, "validation_errors": errors,
