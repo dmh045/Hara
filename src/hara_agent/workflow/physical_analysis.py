@@ -43,10 +43,11 @@ def _update_response_totals(metrics, responses, sign=1):
         usage = r["response"]["usage"]
         for name, amount in (
             ("cumulative_proposal_responses", 1),
-            ("cumulative_uncached_requests", int(not usage.get("response_checkpoint_hit"))),
+            ("cumulative_uncached_requests", 0 if usage.get("response_checkpoint_hit") else
+                1 + usage.get("format_retry_calls", 0)),
             ("cumulative_schema_repair_responses", int(r.get("schema_repair", False))),
             ("cumulative_uncached_prompt_characters", 0 if usage.get("response_checkpoint_hit") else
-                len(r["request"].get("system_prompt", "")) + len(r["request"].get("user_prompt", ""))),
+                usage.get("input_characters", len(r["request"].get("system_prompt", "")) + len(r["request"].get("user_prompt", "")))),
         ):
             metrics[name] = metrics.get(name, 0) + sign * amount
         tokens = metrics.setdefault("token_usage", {})

@@ -17,6 +17,74 @@ from hara_agent.services.analysis.scenario_physics import constant_acceleration_
 from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
 
 
+def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_recovery(method, tmp_path):
+    from test_geometry_completion import run
+    from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+    from hara_agent.workflow import CheckpointRepository
+
+    raw = raw_plan(assessed=True)
+    broken = json.dumps(raw)[:-1]  # Nested geometry remains valid, outer world does not.
+    calls = []
+    client = _sequenced_scenario_client([broken, json.dumps(raw)], calls)
+    ledger = tmp_path/'attempts.jsonl'
+    client.attempt_budget = ProviderAttemptBudget(ledger, run_id='syntax-recovery', limit=2)
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    repo = CheckpointRepository(tmp_path/'states')
+    state, children = run(method, agent, checkpoint=repo.save)
+    assert len(calls) == client.attempt_budget.attempts == 2
+    repair = json.loads(calls[1])['messages'][-1]['content']
+    correction = json.loads(repair.split('FORMAT_CORRECTION_INPUT=', 1)[1])
+    assert correction['previous_invalid_response'] == broken
+    assert 'hypotheses' in correction['previous_invalid_response']
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'VALIDATED' and entry['plan'] == raw
+    assert entry['audit']['request_count'] == 2
+    usage = entry['responses'][0]['response']['usage']
+    prompt_chars = sum(len(m['content']) for call in calls for m in json.loads(call)['messages'])
+    assert usage['transport_attempts'] == 2 and usage['input_characters'] == prompt_chars
+    assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_requests'] == 2
+    assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_prompt_characters'] == prompt_chars
+    assert state.item_definition['physical_analysis_metrics']['token_usage'] == {'prompt_tokens': 20, 'completion_tokens': 40}
+    assert children['MF'][0].facts['motion_model_outcome']['status'] == 'CONTACT'
+    original = json.loads((tmp_path/'attempts.responses/000001.json').read_text())
+    assert original['response']['choices'][0]['message']['content'] == broken
+    _, restored = run(method, agent, state=repo.load(state.run_id), checkpoint=repo.save)
+    assert restored == children and len(calls) == 2 and client.attempt_budget.attempts == 2
+
+
+@pytest.mark.parametrize('syntax_first', [True, False])
+def test_physical_syntax_and_schema_correction_share_one_correction(syntax_first):
+    from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
+    raw = raw_plan()
+    broken = json.dumps(raw)[:-1]
+    invalid = json.dumps({'geometry': raw['hypotheses'][0]['geometry']})
+    calls = []
+    client = _sequenced_scenario_client([broken, invalid] if syntax_first else [invalid, broken], calls)
+    with pytest.raises(ValueError):
+        PhysicalScenarioAgent(client).propose({'plan_key':'bounded-syntax', 'evidence':{'MF.description':'fault'}})
+    assert len(calls) == 2
+
+
+def test_retry_transport_policy_does_not_invalidate_an_exact_successful_response(tmp_path):
+    from dataclasses import replace
+    from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
+    from hara_agent.infrastructure.llm.protocol import LLMRequest
+    from test_geometry_completion import Client
+    raw = raw_plan()
+    client = Client([raw, raw])
+    cache = ResponseCheckpoint(tmp_path)
+    request = LLMRequest('construct_post_fault_physical_scenario', 'system', 'same physics',
+        'PhysicalScenarioPlan', 'test', metadata={'schema_repair':True})
+    first = cache.complete(client, request)
+    stricter = replace(request, metadata={**request.metadata, 'strict_no_format_retry':True})
+    reused = cache.complete(client, stricter)
+    assert reused.data == first.data and reused.usage['response_checkpoint_hit']
+    assert len(client.requests) == 1
+    cache.complete(client, replace(stricter, user_prompt='different physics'))
+    assert len(client.requests) == 2
+
+
 def test_prompt_projection_is_lossless_and_preserves_different_scopes():
     excerpt = '仅限泊车，不适用于高速公路；坡向不等于车头方向。' * 100
     conditions = {'facts': {'ego_speed_kph': 7.0000001}, 'fact_authority': {

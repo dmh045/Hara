@@ -207,7 +207,7 @@ class OpenAICompatibleClient:
         format_retry_attempt = int(request.metadata.get("_format_retry_attempt", 0))
         markdown_fence_normalizations = 0
         try:
-            if request.task == "assess_scenario_feasibility":
+            if request.task in {"assess_scenario_feasibility", "construct_post_fault_physical_scenario"}:
                 data, fence_removed = self._parse_scenario_json_content(
                     content, request=request, finish_reason=finish_reason,
                 )
@@ -244,7 +244,7 @@ class OpenAICompatibleClient:
                 file=sys.stderr, flush=True,
             )
             if (
-                request.task == "assess_scenario_feasibility"
+                request.task in {"assess_scenario_feasibility", "construct_post_fault_physical_scenario"}
                 and format_retry_attempt == 0
                 and not bool(request.metadata.get("strict_no_format_retry"))
             ):
@@ -279,6 +279,14 @@ class OpenAICompatibleClient:
                 ) + 1
                 retry.usage["format_retry_successes"] = 1
                 retry.usage["format_retry_failures"] = 0
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    retry.usage[key] = retry.usage.get(key, 0) + raw_usage.get(key, 0)
+                retry.usage["latency_seconds"] = round(retry.usage.get("latency_seconds", 0) + latency_seconds, 3)
+                retry.usage["transport_attempts"] = retry.usage.get("transport_attempts", 0) + transport_diagnostics["attempts"]
+                retry.usage["input_characters"] = retry.usage.get("input_characters", 0) + input_characters
+                counts = retry.usage.setdefault("transient_error_counts", {})
+                for key, count in transport_diagnostics["error_counts"].items():
+                    counts[key] = counts.get(key, 0) + count
                 return retry
             diagnostics["format_retry_calls"] = format_retry_attempt
             diagnostics["format_retry_failures"] = int(format_retry_attempt > 0)

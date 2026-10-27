@@ -139,7 +139,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v2-scoped-controls"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v3-complete-json"
     PROMPT_VERSION = "post-fault-physical-scenario-v30-response-contract"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v13-response-contract"
     CONTROL_ANALYSIS_POLICY = (
@@ -470,7 +470,8 @@ class PhysicalScenarioAgent:
                 schema_name="PhysicalScenarioPlan", prompt_version=self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION,
                 # Motion plans include up to three geometries and their parameter
                 # provenance; real complete plans can exceed 4096 output tokens.
-                metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair},
+                metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair,
+                    **({"strict_no_format_retry": True} if repair else {})},
                 max_tokens=4096 if controls_only else 8192,
                 response_format=self.response_format)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
@@ -570,7 +571,8 @@ class PhysicalScenarioAgent:
                 if controls_only != (plan.control_assessment is not None):
                     raise ValueError("Output must match task_scope; control-only tasks cannot replace existing motion")
                 return plan, {"responses": attempts, "validation_errors": errors,
-                    "request_count": sum(not a["response"]["usage"].get("response_checkpoint_hit") for a in attempts),
+                    "request_count": sum((1 + a["response"]["usage"].get("format_retry_calls", 0))
+                        for a in attempts if not a["response"]["usage"].get("response_checkpoint_hit")),
                     "response_cache_hits": sum(bool(a["response"]["usage"].get("response_checkpoint_hit")) for a in attempts),
                     "schema_repairs": int(repair), "model": response.model,
                     "control_envelope_normalization": envelope_normalization,
@@ -579,4 +581,8 @@ class PhysicalScenarioAgent:
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))
                 previous_response = response.data
+                if response.usage.get("format_retry_calls"):
+                    # Syntax repair already used the single correction. Do not
+                    # stack another schema repair onto the same proposal task.
+                    break
         raise ValueError("Physical plan schema repair exhausted: " + "; ".join(errors))

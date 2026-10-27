@@ -27,10 +27,10 @@ class ResponseCheckpoint:
         # Full prompt/schema identity includes source facts, method and scenario
         # IDs. Credentials are neither part of the key nor written to disk.
         effective_request = asdict(request)
-        # Batch position is transport tracing, not analysis input. A completed
-        # singleton remains valid when another work item is added on resume.
+        # Batch position and retry permission do not change the model input.
+        # An exact successful response stays usable with stricter retry policy.
         effective_request["metadata"] = {key: value for key, value in effective_request["metadata"].items()
-            if key not in {"parent_batch", "split_path", "split_depth"}}
+            if key not in {"parent_batch", "split_path", "split_depth", "strict_no_format_retry"}}
         material = {"request": effective_request, "route": {
             key: getattr(config, key, "") for key in ("provider", "base_url", "model", "scenario_thinking")
         }}
