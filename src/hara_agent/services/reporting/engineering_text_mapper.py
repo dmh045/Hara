@@ -1033,11 +1033,30 @@ class EngineeringReportTextMapper:
         return "S/E/C 未全部确定，ASIL 暂不评定。"
 
     @staticmethod
+    def ftti_value(timing_inputs: list[Mapping[str, Any]]) -> str:
+        values = [x["hazard_time_limit_s"] for x in timing_inputs if x.get("hazard_time_limit_s") is not None]
+        if not values:
+            return "待确定"
+        label = quantity(min(values), "s") + " s"
+        if min(values) != max(values):
+            label += "～" + quantity(max(values), "s") + " s（样本统计）"
+        return label + ("；部分成员待确定" if len(values) != len(timing_inputs) else "")
+
+    @staticmethod
     def ftti_rationale(timing_inputs: list[Mapping[str, Any]] | None = None) -> str:
+        reasons = "；".join(dict.fromkeys(str(x.get("reason", "")) for x in timing_inputs or []
+            if any("\u4e00" <= ch <= "\u9fff" for ch in str(x.get("reason", "")))))
+        calculated = [item for item in timing_inputs or [] if item.get("hazard_time_limit_s") is not None]
+        if calculated:
+            missing = len(timing_inputs or []) - len(calculated)
+            return ("条件性时间边界：从故障发生到失去停车避碰能力；依据同一轨迹、静止目标及剩余净减速假设计算。"
+                    "检测、决策和制动建立必须在该边界前完成；制动完成耗时不与此边界相加。"
+                    "尚未经工程批准，不是完整ODD的FTTI；假设与逐成员计算见时间追溯。"
+                    + (f"仍有{missing}个成员缺少适用时间模型，已知最小值不代表全组结论。" if missing else ""))
         timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]
         available = [item for item in timings if item.get("contact_time_s") is not None]
         if not available:
-            return "缺少可用的接触时间；故障起点、危险判据及安全处置时间预算尚未确定，FTTI 待定。"
+            return "缺少可用的接触时间；" + (reasons or "故障起点、危险判据及安全处置时间预算尚未确定，FTTI待定。")
         kinds = {item.get("contact_time_kind") for item in available}
         label = "侧向首次接触" if kinds == {"first_contact_time_s"} else "轨迹接触"
         values = [item["contact_time_s"] for item in available]
@@ -1048,7 +1067,7 @@ class EngineeringReportTextMapper:
             item.get("time_origin") == "MODEL_INITIAL_STATE" for item in available)
             else "计时起点以各成员来源为准")
         return (f"已有{label}时间 {extent}（{origin}）；"
-                "尚未绑定故障起点及危险判据，不能作为 FTTI；安全处置及时间预算待确定。")
+                + (reasons or "尚未绑定故障起点及危险判据") + "接触时间不能作为 FTTI。")
 
 
 __all__ = ["EngineeringReportTextMapper"]

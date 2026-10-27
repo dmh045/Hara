@@ -18,6 +18,7 @@ def aggregate_safety_goals(
     }
     scenario_ids_by_goal: dict[str, list[str]] = {}
     risk_status_by_goal: dict[str, list[ReviewStatus]] = {}
+    safe_state_gaps: dict[str, list[dict]] = {}
     scenarios = {item.scenario_id: item for item in state.scenarios}
     previous_goals = {goal.sg_id: goal for goal in state.safety_goals}
 
@@ -32,17 +33,36 @@ def aggregate_safety_goals(
             raise ValueError(f"Safety Goal聚合缺少Function外键: {malfunction.get('function_id')!r}")
         function_name = str(function.get("name", ""))
         scenario = scenarios.get(risk.scenario_id)
-        analysis = scenario.facts.get("physical_analysis", {}) if scenario else {}
+        analysis = (scenario.facts.get("control_analysis") or scenario.facts.get("physical_analysis", {})) if scenario else {}
         proposal = analysis.get("hypothesis", {}).get("safe_state_proposal")
+        gap = analysis.get("hypothesis", {}).get("safe_state_unresolved_reason") or (
+            "本次方案未给出可达的安全状态及其控制路径" if analysis else "当前成员尚无安全状态分析方案")
+        gap_code = "NO_PROPOSAL" if analysis else "NO_ANALYSIS"
         if proposal:
             # A driver-only proposal does not apply to an outside-driver child.
             # The proposal remains in the saved plan for audit, not a new fact.
             if ("driver_braking" in proposal["required_controls"]
                     and scenario.facts.get("driver_in_vehicle") is not True):
                 proposal = None
+                gap = "已有方案依赖驾驶员操作制动踏板，但本成员驾驶员在车外"
+                gap_code = "DRIVER_CONTROL_UNAVAILABLE"
+            elif proposal.get("driver_positions") and (
+                    "in_driver_seat" if scenario.facts.get("driver_in_vehicle") else "outside_driver_seat") not in proposal["driver_positions"]:
+                proposal = None
+                gap = "已有安全状态方案不适用于本成员驾驶员位置"
+                gap_code = "DRIVER_POSITION_OUT_OF_SCOPE"
             else:
                 proposal = {**proposal, "plan_key": analysis["plan_key"],
-                            "hypothesis_id": analysis["hypothesis_id"]}
+                            "hypothesis_id": analysis.get("hypothesis_id", "control_assessment")}
+        if proposal and proposal.get("transition") and getattr(catalog, "method", None):
+            from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+            timing = RiskCalculationInputService().ftti(risk.malfunction_id, risk.scenario_id, risk.asil.value,
+                {**scenario.facts, "_fact_provenance": scenario.fact_provenance}, risk.branch_evaluations,
+                method=catalog.method)
+            if timing.timing_trace.get("status") == "AVOIDABILITY_ALREADY_LOST":
+                proposal = None
+                gap = "按当前净减速假设，即刻制动也不能在障碍物前停止；原提案保留在物理方案中"
+                gap_code = "RESPONSE_INSUFFICIENT"
         registration = catalog.register_intent(
             function_name=function_name,
             malfunction=str(malfunction.get("description", "")),
@@ -57,6 +77,8 @@ def aggregate_safety_goals(
             safe_state_proposal=proposal,
         )
         sg_id = registration["sg_id"]
+        if not proposal:
+            safe_state_gaps.setdefault(sg_id, []).append({"scenario_id": risk.scenario_id, "reason": gap, "reason_code": gap_code})
         risk.safety_goal_id = sg_id
         scenario_ids_by_goal.setdefault(sg_id, []).append(risk.scenario_id)
         risk_status_by_goal.setdefault(sg_id, []).extend([
@@ -70,6 +92,7 @@ def aggregate_safety_goals(
     prior_catalog = state.item_definition.get("safety_goal_catalog", {})
     current_catalog = catalog.to_dict()
     for sg_id, value in current_catalog.items():
+        value["safe_state_gaps"] = safe_state_gaps.get(sg_id, [])
         # Adding unresolved members must not replace the recorded original
         # description with whichever new member happens to be encountered first.
         original = prior_catalog.get(sg_id, {}).get("original_safety_goal")

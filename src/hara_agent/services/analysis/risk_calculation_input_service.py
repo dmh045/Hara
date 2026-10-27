@@ -127,6 +127,7 @@ class RiskCalculationInputService:
         self, malfunction_id: str, scenario_id: str, asil: str,
         scenario: dict[str, Any] | None = None,
         branches: list[dict[str, Any]] | None = None,
+        *, method=None,
     ) -> FTTIAssessmentInput:
         scenario = scenario or {}
         # Keep the calculator's kind and time origin. Neither longitudinal TTC
@@ -148,7 +149,7 @@ class RiskCalculationInputService:
         # time. Retain the actual branch identities, including unresolved ones.
         if branches:
             key, metadata = "", {}
-        return FTTIAssessmentInput(
+        inputs = FTTIAssessmentInput(
             malfunction_id=malfunction_id,
             scenario_id=scenario_id,
             asil=asil,
@@ -171,3 +172,7 @@ class RiskCalculationInputService:
                 "applicability must be resolved before execution, not filled with default user inputs."
             ),
         )
+        if method is not None:
+            from .deterministic_risk_executor import FTTIMethodExecutor
+            return FTTIMethodExecutor.evaluate(inputs, scenario, method)
+        return inputs

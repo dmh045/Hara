@@ -9,7 +9,7 @@ import math
 from typing import Any
 
 
-PHYSICAL_PLAN_VERSION = "physical-plan-v4-curved-contact"
+PHYSICAL_PLAN_VERSION = "physical-plan-v5-scoped-timing"
 PARAMETER_UNITS = {
     "ego_speed_kph": "km/h", "relative_distance_m": "m",
     "longitudinal_acceleration_mps2": "m/s2", "slope_percent": "%",
@@ -117,6 +117,15 @@ INTERVENTION_ASSUMPTION_FIELDS = frozenset({
 
 
 def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
+    if "hazard_timing" in h:
+        timing = _object(h["hazard_timing"], {"time_origin", "fault_to_model_start_s", "hazard_criterion", "rationale", "basis_refs"})
+        if timing["time_origin"] != "FAULT_ONSET" or _number(timing["fault_to_model_start_s"]) < 0:
+            raise ValueError("Hazard timing needs an explicit fault onset and nonnegative elapsed interval")
+        if timing["hazard_criterion"] not in {"LOSS_OF_BRAKING_AVOIDABILITY", "FIRST_CONTACT_BOUND"}:
+            raise ValueError("Unsupported hazard timing criterion")
+        _text(timing["rationale"])
+        if not _texts(timing["basis_refs"]) or not set(timing["basis_refs"]) <= evidence_ids:
+            raise ValueError("Hazard timing requires supplied evidence IDs")
     for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
         _texts(h[key], path=key)
     if not set(h["failed_controls"] + h["remaining_controls"]) <= CONTROL_IDENTITIES:
@@ -139,20 +148,47 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
     proposals = list(interventions.values())
     if "safe_state_proposal" in h:
         proposal = _object(h["safe_state_proposal"],
-            {"description", "required_controls", "basis_refs", "conditions"})
+            {"description", "required_controls", "basis_refs", "conditions"},
+            {"driver_positions", "transition"})
         _text(proposal["description"])
         controls = _texts(proposal["required_controls"])
         if not controls or not set(controls) <= set(h["remaining_controls"]):
             raise ValueError("Safe state proposal must depend on explicitly remaining controls")
+        if "driver_positions" in proposal:
+            positions = _texts(proposal["driver_positions"])
+            if not positions or not set(positions) <= {"in_driver_seat", "outside_driver_seat"}:
+                raise ValueError("Safe state driver_positions must select supported configurations")
+        if "transition" in proposal:
+            transition = _object(proposal["transition"],
+                {"model", "net_deceleration_mps2", "rationale", "basis_refs"})
+            if transition["model"] != "CONSTANT_NET_DECELERATION" or _number(transition["net_deceleration_mps2"]) <= 0:
+                raise ValueError("Safe state transition requires positive net braking deceleration")
+            if not set(controls) & {"driver_braking", "braking"}:
+                raise ValueError("Braking transition requires a remaining braking path")
+            _text(transition["rationale"])
+            if not _texts(transition["basis_refs"]) or not set(transition["basis_refs"]) <= evidence_ids:
+                raise ValueError("Safe state transition requires supplied evidence IDs")
         proposals.append(proposal)
+    for key in ("safe_state_unresolved_reason", "timing_unresolved_reason"):
+        if key in h:
+            _text(h[key])
     for proposal in proposals:
         if not isinstance(proposal, dict):
             raise ValueError("Control proposal must be an object")
         if "value" in proposal:
-            _object(proposal, {"value", "rationale", "basis_refs", "conditions"})
+            _object(proposal, {"value", "rationale", "basis_refs", "conditions"}, {"avoidance"})
             if type(proposal["value"]) is not bool:
                 raise ValueError("Intervention assumption requires an explicit boolean")
             _text(proposal["rationale"])
+            if "avoidance" in proposal:
+                avoidance = _object(proposal["avoidance"],
+                    {"recognition_delay_s", "escape_direction", "escape_speed_mps", "available_clearance_m"})
+                if avoidance["escape_direction"] not in {"LEFT", "RIGHT", "FORWARD", "REVERSE"}:
+                    raise ValueError("Avoidance direction must use the same body coordinate frame")
+                if (_number(avoidance["recognition_delay_s"]) < 0
+                        or _number(avoidance["escape_speed_mps"]) <= 0
+                        or _number(avoidance["available_clearance_m"]) <= 0):
+                    raise ValueError("Avoidance requires nonnegative delay and positive speed/clearance")
         elif proposal is not h.get("safe_state_proposal"):
             raise ValueError("Intervention assumption requires value and rationale")
         refs = _texts(proposal["basis_refs"])
@@ -181,7 +217,8 @@ class PhysicalScenarioPlan:
         control = raw.get("control_assessment")
         if control is not None:
             _object(control, {"rationale", "basis_refs", "conditions", "uncovered_conditions",
-                              "failed_controls", "remaining_controls"}, {"intervention_assumptions", "unresolved_controls"})
+                              "failed_controls", "remaining_controls"}, {"intervention_assumptions", "unresolved_controls",
+                              "safe_state_proposal", "safe_state_unresolved_reason", "hazard_timing", "timing_unresolved_reason"})
             _text(control["rationale"])
             if not _texts(control["basis_refs"]) or not set(control["basis_refs"]) <= evidence_ids:
                 raise ValueError("Control assessment requires supplied evidence IDs")
@@ -200,8 +237,21 @@ class PhysicalScenarioPlan:
         for index, h in enumerate(hypotheses):
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions", "post_stop_motion"},
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions", "post_stop_motion", "driver_operating_atoms",
+                     "operating_atoms", "hazard_timing", "safe_state_unresolved_reason", "timing_unresolved_reason"},
                     path=f"hypotheses[{index}]")
+            if "operating_atoms" in h:
+                atoms = _object(h["operating_atoms"], {"EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"})
+                for dimension, atom in atoms.items():
+                    if dimension == "TRAFFIC_PATTERN" and atom is None:
+                        continue
+                    _text(atom)
+            if "driver_operating_atoms" in h:
+                overrides = _object(h["driver_operating_atoms"], set(), {"in_driver_seat", "outside_driver_seat"})
+                if not overrides or "operating_atoms" not in h:
+                    raise ValueError("Driver operation overrides require shared operating_atoms and explicit driver positions")
+                for atoms in overrides.values():
+                    _text(_object(atoms, {"EGO_ACTION"})["EGO_ACTION"])
             if "driver_positions" in h:
                 positions = _texts(h["driver_positions"])
                 if not positions or len(set(positions)) != len(positions) or not set(positions) <= {

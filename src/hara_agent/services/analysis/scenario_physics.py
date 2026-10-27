@@ -331,6 +331,87 @@ def rectilinear_moving_contact(facts: dict) -> dict:
             "limiting_condition": "EGO_STOP" if stop < horizon and not held else "MODEL_HORIZON"}
 
 
+def moving_target_avoidance(facts: dict, proposal: dict) -> dict:
+    """Check a proposed two-phase escape against the same contact envelopes.
+
+    This establishes only the stated conditional trajectory, never human reaction
+    capability. No C threshold, default reaction time or speed is introduced.
+    """
+    if facts.get("fault_motion_model") != "RECTILINEAR_MOVING_TARGET_CONTACT":
+        return {"status": "UNSUPPORTED_AVOIDANCE_TRAJECTORY"}
+    escape = proposal.get("avoidance", {})
+    required = ("recognition_delay_s", "escape_speed_mps", "available_clearance_m")
+    if any(not isinstance(escape.get(k), (int, float)) or isinstance(escape[k], bool)
+           or not math.isfinite(escape[k]) for k in required):
+        return {"status": "AVOIDANCE_GEOMETRY_UNRESOLVED"}
+    original = rectilinear_moving_contact(facts)
+    if original.get("status") != "CONTACT":
+        return {"status": "NO_CONTACT_TO_AVOID", "original": original}
+    delay = escape["recognition_delay_s"]
+    if delay >= original["time_s"]:
+        return {"status": "CONTACT_BEFORE_ESCAPE", "contact_time_s": original["time_s"]}
+    remaining = facts["model_valid_until_s"] - delay
+    speed = escape["escape_speed_mps"]
+    if speed <= 0 or remaining * speed > escape["available_clearance_m"]:
+        return {"status": "ESCAPE_CORRIDOR_TOO_SHORT"}
+    vectors = {"FORWARD": (1, 0), "REVERSE": (-1, 0), "LEFT": (0, 1), "RIGHT": (0, -1)}
+    if escape.get("escape_direction") not in vectors:
+        return {"status": "AVOIDANCE_GEOMETRY_UNRESOLVED"}
+    v, a = facts["ego_speed_kph"] / 3.6, facts["longitudinal_acceleration_mps2"]
+    if v + a * delay < 0:
+        return {"status": "AVOIDANCE_STOP_PHASE_UNRESOLVED"}
+    sign = vectors[facts["ego_longitudinal_direction"]][0]
+    ux, uy = [x * facts["object_speed_kph"] / 3.6 for x in vectors[facts["object_longitudinal_direction"]]]
+    dx = facts["object_offset_x_m"] + ux*delay - sign*(v*delay + a*delay*delay/2)
+    dy = facts["object_offset_y_m"] + uy*delay
+    shifted = {**facts, "ego_speed_kph": (v+a*delay)*3.6,
+        "object_offset_x_m": dx, "object_offset_y_m": dy,
+        "object_speed_kph": speed*3.6, "object_longitudinal_direction": escape["escape_direction"],
+        "model_valid_until_s": remaining,
+        "object_position": ("FRONT" if dx > 0 else "REAR") if abs(dx) > facts["contact_half_length_m"]
+            else ("LEFT" if dy > 0 else "RIGHT")}
+    outcome = rectilinear_moving_contact(shifted)
+    valid = outcome.get("status") == "NO_CONTACT_WITHIN_MODEL" and outcome.get("evaluated_until_s") == remaining
+    return {"status": "CONDITIONAL_ESCAPE_VALIDATED" if valid else "ESCAPE_DOES_NOT_ESTABLISH_AVOIDANCE",
+            "original": original, "escape": outcome, "recognition_delay_s": delay,
+            "evaluated_horizon_s": facts["model_valid_until_s"]}
+
+
+def braking_avoidability_boundary(speed_mps: float, acceleration_mps2: float,
+                                  distance_m: float, net_deceleration_mps2: float) -> dict:
+    """Latest brake onset before a stationary obstruction, including stopping travel.
+
+    Net deceleration already includes the fault/grade forces. This is a physical
+    boundary; its use as a conditional hazard criterion belongs to MethodContract.
+    """
+    v, a, d, b = speed_mps, acceleration_mps2, distance_m, net_deceleration_mps2
+    if not all(math.isfinite(x) for x in (v, a, d, b)) or v < 0 or d <= 0 or b <= 0:
+        return {"status": "RESPONSE_INPUTS_UNRESOLVED"}
+    if v*v/(2*b) >= d:
+        return {"status": "AVOIDABILITY_ALREADY_LOST", "time_s": 0.0,
+                "stopping_time_s": v/b, "stopping_distance_m": v*v/(2*b)}
+    if a < 0 and v*v/(-2*a) < d or v == 0 and a <= 0:
+        return {"status": "NO_CONTACT_UNDER_THIS_MOTION"}
+    q = a/2 + a*a/(2*b)
+    linear = v*(1+a/b)
+    constant = v*v/(2*b)-d
+    if q == 0:
+        delay = -constant/linear if linear > 0 else None
+    else:
+        discriminant = linear*linear-4*q*constant
+        stable = -.5 * (linear + math.copysign(math.sqrt(max(0, discriminant)), linear))
+        roots = [] if discriminant < 0 else ([stable/q, constant/stable] if stable else [0.0])
+        roots = [t for t in roots if t >= 0 and v+a*t >= 0]
+        delay = min(roots) if roots else None
+    if delay is None:
+        return {"status": "RESPONSE_BOUNDARY_UNRESOLVED"}
+    onset_speed = v+a*delay
+    return {"status": "CONDITIONAL_BOUNDARY", "time_s": delay,
+            "stopping_time_s": onset_speed/b, "stopping_distance_m": onset_speed*onset_speed/(2*b),
+            "brake_onset_speed_mps": onset_speed,
+            "distance_residual_m": v*delay+a*delay*delay/2+onset_speed*onset_speed/(2*b)-d}
+
+
 def closing_relative_speed_kph(
     ego_speed_kph: Any, object_speed_kph: Any, *,
     ego_direction: Any, object_direction: Any, collision_type: Any,

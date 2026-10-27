@@ -1367,7 +1367,19 @@ class ConstrainedScenarioSynthesisService:
                 if previous is None or score > previous[2]:
                     unique[key] = (key, dimensions, score)
             ordered = sorted(unique.values(), key=lambda item: (-item[2], item[0]))
-            return ordered[: max(limit * 4, 192)]
+            budget = max(limit * 4, 192)
+            # Retain the best available representative of each environment
+            # before the bounded beam truncates combinations. Later balancing
+            # cannot recover a ROAD/WHERE already removed by score-only trim.
+            retained, seen = [], set()
+            for item in ordered:
+                features = {(d, atom_id) for atom_id in item[0]
+                            for d in registry[atom_id].dimensions if d in {"WHERE", "ROAD"}}
+                if features - seen:
+                    retained.append(item)
+                    seen.update(features)
+            keys = {item[0] for item in retained}
+            return (retained + [item for item in ordered if item[0] not in keys])[:budget]
 
         for dimension in targets:
             next_states = []
@@ -1397,6 +1409,7 @@ class ConstrainedScenarioSynthesisService:
         valid = []
         fingerprints = set()
         coverage = set()
+        environment_counts = Counter()
         ranked = []
         for atom_ids, dimensions, score in sorted(
             states, key=lambda item: (-item[2], item[0]),
@@ -1429,10 +1442,12 @@ class ConstrainedScenarioSynthesisService:
         while ranked and len(valid) < limit:
             index = max(range(len(ranked)), key=lambda i: (
                 sum(d in primary for d, _ in ranked[i][1] - coverage),
-                len(ranked[i][1] - coverage), -i))
+                len(ranked[i][1] - coverage),
+                -sum(environment_counts[f] for f in ranked[i][1] if f[0] in {"WHERE", "ROAD"}), -i))
             ids, features = ranked.pop(index)
             valid.append(ids)
             coverage.update(features)
+            environment_counts.update(f for f in features if f[0] in {"WHERE", "ROAD"})
         return tuple(valid)
 
     def logical_selection_assignments(
@@ -1584,7 +1599,11 @@ class ConstrainedScenarioSynthesisService:
         # environmental conditions, without adding another Cartesian product.
         def environmental_coverage(assignment):
             expanded = [self.expand_logical_atom_ids(synthesis_input, ids) for ids in assignment]
-            return sum(len({tuple(row.get(dimension, ())) for row in expanded}) for dimension in ("WHERE", "ROAD"))
+            counts = [Counter(tuple(row.get(dimension, ())) for row in expanded) for dimension in ("WHERE", "ROAD")]
+            # Equal coverage can still concentrate nearly every primary case
+            # on one condition. Prefer the less concentrated existing valid
+            # assignment, without adding combinations or using E grades.
+            return (sum(len(c) for c in counts), -sum(n*n for c in counts for n in c.values()))
         chosen = max(assignments, key=environmental_coverage)
         # Reuse the exact validation boundary used for bounded semantic
         # selection; no parallel atom/constraint or scoring implementation.

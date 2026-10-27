@@ -101,7 +101,8 @@ def _scenario_json(
                     if registry.resolve_record("DERIVED." + key) is not None},
             },
             "conditional_physical_analysis": {**{key: scenario.analysis_instance.get("physical_hypothesis", {}).get(key)
-                for key in ("hypothesis_id", "hypothesis", "sample_parameters", "calculation_nature")
+                for key in ("hypothesis_id", "hypothesis", "sample_parameters", "calculation_nature",
+                            "stationary_ego_counterfactual", "avoidance_validation")
                 if key in scenario.analysis_instance.get("physical_hypothesis", {})},
                 **({"parameter_relations_ref": "DERIVED.parameter_relations"}
                    if "DERIVED.parameter_relations" in selection.selected_refs else {})},

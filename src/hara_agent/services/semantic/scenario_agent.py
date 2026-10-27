@@ -68,7 +68,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v28-contact-outcome-consistency"
+    PROMPT_VERSION = "scenario-feasibility-v29-counterfactual-contact"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -85,6 +85,7 @@ MF.vehicle_level_hazard 是上游因果主张，不能单独证明 I_TO_H。每�
 DIRECT_FACT 只能引用 [kind=DIRECT_FACT]；DERIVED_PHYSICS 只能引用 [kind=DERIVED_PHYSICS] 的已有计算，不能把速度/距离原始事实伪装成已计算物理结论；APPROVED_RULE 只能引用 [kind=APPROVED_RULE]。一跳中不要混用不同 kind。
 已验证且限于当前场景的分析事实可引用；未验证 SCENARIO_DEFINED 假设不能支持正向因果链。
 conditional_physical_analysis 是程序已检查并实例化的条件性物理世界。它不是项目事实或工程批准；可用其中精确 SCN/DERIVED 引用证明“在这些假设成立时”的因果关系。不要因为假设未在 Item 原文逐字出现就拒绝条件分析。不得将该条件结论泛化为所有故障或真实能力上界。
+若stationary_ego_counterfactual表明本车不动也会与同一目标接触，不能仅凭接触肯定“故障运动导致碰撞”；必须证明故障增加了危险或伤害的具体环节。若无增量证据，保留相应因果缺口或排除该主张，不捏造目标行为。avoidance_validation未通过时，不能沿用原方案“他方可以避让”的断言。
 只有三跳均有支持时 causally_relevant=true、breakpoint=NONE。否则在第一跳证据不足处停止，breakpoint 为 M_TO_B/B_TO_I/I_TO_H，该跳 basis_type=ASSUMPTION，claim 指明缺少的必要条件，evidence_refs 可为 []，省略后续跳。保留前面已成立的跳，不得为了格式修复而降低已有证据结论。
 false 时 hazardous_event=""、risk_dimension_changes=[]。没有证据不等于证明不可能。positive 时 hazardous_event 非空，risk_dimension_changes 仍可为 []。
 

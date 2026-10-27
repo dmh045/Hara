@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from hara_agent.infrastructure.llm import LLMResponse
 from hara_agent.models import ItemDefinitionFacts, MalfunctionCandidate, ReviewStatus, SourceRef
-from hara_agent.services.analysis.scenario_equivalence import signature
+from hara_agent.services.analysis.scenario_equivalence import signature, scenario_conditions
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent, expand_physical_prompt_view
 from hara_agent.workflow import HARAState
 from hara_agent.workflow.physical_analysis import construct_physical_scenarios
@@ -42,22 +42,29 @@ def test_real_three_models_keep_geometry_and_reduce_only_redundant_sampling(acti
     candidates={key:[HARAState._scenario_from_dict(c) for c in group] for key,group in inputs['candidates'].items()}
     assert {c.scenario_id for group in candidates.values() for c in group}==set(fixture['selected_ids'])
     before=deepcopy(candidates)
-    class Frozen:
-        config=SimpleNamespace(provider='OFFLINE_FROZEN_REAL',model='recorded')
-        calls=0
-        def complete_json(self,request):
-            self.calls+=1
-            payload=json.loads(request.user_prompt)
-            context=expand_physical_prompt_view(payload['context'],payload['source_texts'])
-            match=next(p for p in fixture['plans'] if p['malfunction_id']==context['malfunction']['malfunction_id']
-                and signature(p['conditions'])==signature(context['conditions']))
-            return LLMResponse(**deepcopy(match['response']))
-    client=Frozen()
-    generated=construct_physical_scenarios(state,deepcopy(candidates),mfs,method=active_method,
-        agent=PhysicalScenarioAgent(client),project_facts=project)
-    assert candidates==before and client.calls==6
-    metrics=state.item_definition['physical_analysis_metrics']
-    assert metrics['diagnostics']==[] and metrics['physical_plan_reuse']==6
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    producer = PhysicalHypothesisInstantiationService(active_method)
+    generated = {}
+    # Legacy compatibility replay consumes the saved plan, not a new semantic request.
+    # Its missing operating_atoms must not masquerade as validation of the new prompt.
+    for fault in mfs:
+        children = []
+        for parent in candidates[fault.malfunction_id]:
+            if not producer.task_scope(parent, fault.malfunction_id):
+                children.append(parent)
+                continue
+            match = next(p for p in fixture['plans'] if p['malfunction_id'] == fault.malfunction_id
+                and signature(p['conditions']) == signature(scenario_conditions(parent, without_driver=True)))
+            raw = deepcopy(match['response']['data'])
+            evidence_ids = {ref for h in raw['hypotheses'] for ref in h['basis_refs']}
+            plan = PhysicalScenarioPlan.from_dict(raw, evidence_ids=evidence_ids)
+            selected, errors = producer.instantiate(parent, fault, plan, plan_key='archived-real-plan',
+                response_model=match['response']['model'], project_context=inputs['project_context'] if 'project_context' in inputs else state.item_definition['typed'])
+            assert not errors
+            children.extend(selected or [parent])
+        generated[fault.malfunction_id] = children
+    assert candidates == before
     children=[c for group in generated.values() for c in group]
     assert len(children)==24  # same real replies formerly produced 32
     physical=[c for c in children if c.facts.get('physical_analysis')]

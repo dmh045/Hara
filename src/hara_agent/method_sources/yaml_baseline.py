@@ -528,6 +528,12 @@ class YamlBaselineCompiler:
         project_policy = assets.get("project_analysis_policy", {})
         compiled_project_policy: dict[str, Any] = {}
         if project_policy:
+            timing_policy = project_policy.get("timing_analysis", {})
+            if timing_policy and (timing_policy.get("status") != "CONDITIONAL_REFERENCE"
+                    or timing_policy.get("hazard_criterion") != "LOSS_OF_BRAKING_AVOIDABILITY"
+                    or timing_policy.get("response_model") != "CONSTANT_NET_DECELERATION"
+                    or not timing_policy.get("supported_models") or not timing_policy.get("rule_id")):
+                raise ValueError("Invalid conditional timing method policy")
             selection = project_policy.get("input_selection", {})
             speed = project_policy.get("ego_speed_point_selection", {})
             controllability = project_policy.get("controllability", {})
@@ -615,6 +621,8 @@ class YamlBaselineCompiler:
                 "input_selection": dict(selection),
                 "ego_speed_point_selection": dict(speed),
                 "severity_evaluation": dict(project_policy.get("severity_evaluation", {})),
+                "timing_analysis": {**timing_policy, "source_ref": asdict(self._source(source_hash,
+                    source_paths["project_analysis_policy"], "timing_analysis", timing_policy))} if timing_policy else {},
                 "representative_motion_rules": list(project_policy.get("representative_motion_rules", [])),
                 "template_semantic_aliases": dict(project_policy.get("template_semantic_aliases", {})),
                 "template_context_exclusions": dict(project_policy.get("template_context_exclusions", {})),
@@ -1490,10 +1498,11 @@ class YamlBaselineCompiler:
                 severity=CompilerDiagnosticSeverity.WARNING,
                 code=CompilerDiagnosticCode.FTTI_METHOD_UNCOMPILED,
                 message=(
-                    "FTTI YAML assets are hash-bound, but FTTI formula compilation/execution "
-                    "is not implemented; runtime currently exposes trajectory timing evidence only. "
-                    "Before activation, resolve each formula's fault-to-hazard meaning and response "
-                    "dependencies; this is not a request for users to supply per-scenario numbers."
+                    "Conditional loss-of-braking-avoidability timing is executable for supported static-target "
+                    "models with explicit fault origin and net response assumptions. Legacy contact-plus-stop "
+                    "formulas remain inactive; other hazard/response paths are not covered by this criterion."
+                    if compiled_project_policy.get("timing_analysis") else
+                    "This method has no compiled response-timing policy; trajectory contact evidence is not an FTTI assessment."
                 ),
                 source_refs=(self._source(
                     source_hash, source_paths["ftti_formulas"], "formulas",

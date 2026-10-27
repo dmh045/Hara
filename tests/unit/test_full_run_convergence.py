@@ -130,16 +130,13 @@ def test_original_real_proposal_replays_through_production_physics_and_sec(metho
         non_where = set(frozen['candidate']['facts']['scenario_atom_ids']) - where
         parent = next(c for c in generated if c.facts.get('driver_in_vehicle') is True
             and set(c.facts['scenario_atom_ids']) - where == non_where)
-    class Client:
-        calls = 0
-        def complete_json(self, request):
-            self.calls += 1
-            return LLMResponse(deepcopy(frozen['response']['data']), 'OFFLINE_SAVED_REAL_RESPONSE')
-    client = Client(); state = HARAState('real-proposal-offline', functions=fixture['state']['functions'])
-    out = construct_physical_scenarios(state, {fault.malfunction_id: [parent]}, [fault], method=method,
-        agent=PhysicalScenarioAgent(client), project_facts=ItemDefinitionFacts.from_dict(frozen['project']))
-    sc = out[fault.malfunction_id][0]
-    assert client.calls == 1
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    plan = PhysicalScenarioPlan.from_dict(deepcopy(frozen['response']['data']), evidence_ids=set(frozen['response']['data']['hypotheses'][0]['basis_refs']))
+    children, errors = PhysicalHypothesisInstantiationService(method).instantiate(parent, fault, plan,
+        plan_key='archived-real-plan', response_model='OFFLINE_SAVED_REAL_RESPONSE', project_context=frozen['project'])
+    assert not errors
+    sc = children[0]
     old = fixture['state']['scenarios'][0]['facts']
     for key in ('ego_impact_speed_kph', 'relative_speed_kph', 'ttc_s'):
         assert sc.facts[key] == old[key]

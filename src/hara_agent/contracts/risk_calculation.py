@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -26,6 +26,7 @@ def _to_dict(value: Any) -> Any:
 
 
 class CalculationStatus(str, Enum):
+    CONDITIONAL = "CONDITIONAL"
     FINALIZED = "FINALIZED"
     PENDING_INPUT = "PENDING_INPUT"
     PENDING_METHOD_SEMANTICS = "PENDING_METHOD_SEMANTICS"
@@ -757,6 +758,9 @@ class FTTIAssessmentInput:
     object_id: str = ""
     time_origin: str = ""
     branch_timings: tuple[dict[str, Any], ...] = ()
+    calculation_nature: str = ""
+    hazard_criterion: str = ""
+    timing_trace: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.malfunction_id or not self.scenario_id or not self.reason.strip():

@@ -645,17 +645,26 @@ class HARAReportProjectionService:
         return text
 
     @staticmethod
-    def _safe_state_display(goal: Any, catalog: Mapping) -> str:
-        candidates = catalog.get("safe_state_candidates", [])
+    def _safe_state_display(goal: Any, catalog: Mapping, scenario_ids=None) -> str:
+        scope = set(goal.associated_scenario_ids if scenario_ids is None else scenario_ids)
+        candidates = [c for c in catalog.get("safe_state_candidates", []) if c["scenario_id"] in scope]
+        gaps = [g for g in catalog.get("safe_state_gaps", []) if g["scenario_id"] in scope]
+        covered = {c["scenario_id"] for c in candidates}
+        missing = len(scope - covered)
+        gap_text = "；".join(dict.fromkeys(g["reason"] for g in gaps))
         if candidates:
             variants = defaultdict(list)
             for candidate in candidates:
-                key = candidate["description"] + "；适用条件：" + "、".join(candidate["conditions"])
+                key = candidate["description"]
                 variants[key].append(candidate["scenario_id"])
-            return "\n".join(f"候选：{text}（覆盖{len(set(ids))}个成员）" for text, ids in variants.items())
-        if goal.safe_state not in {"", "待确定", "待评定", "Pending"}:
+            return "\n".join(f"候选：{text}（适用{len(set(ids))}个成员）" for text, ids in variants.items()) + (
+                f"\n另有{missing}个成员尚无适用方案：{gap_text or '见成员控制条件'}。" if missing else "")
+        prior_scope = set(catalog.get("prior_safe_state", {}).get("scenario_ids", goal.associated_scenario_ids))
+        contradicted = any(g.get("reason_code") not in {"NO_ANALYSIS", "NO_PROPOSAL"} for g in gaps)
+        if (not catalog.get("safe_state_candidates") and not contradicted and scope <= prior_scope
+                and goal.safe_state not in {"", "待确定", "待评定", "Pending"}):
             return goal.safe_state if goal.status.value == "FINALIZED" else "候选：" + goal.safe_state
-        return "未生成安全状态候选；当前保存结果没有可用方案"
+        return "安全状态待确定：" + (gap_text or "当前成员未形成可用的控制方案")
 
     @staticmethod
     def _selected_atom_ids(scenario: Any) -> str:
@@ -966,6 +975,7 @@ class HARAReportProjectionService:
                  "_fact_provenance": scenarios[risk.scenario_id].fact_provenance}
                 if risk.scenario_id in scenarios else {},
                 risk.branch_evaluations,
+                method=method,
             ).to_dict()
             for risk in state.risk_results
         }
@@ -1048,7 +1058,8 @@ class HARAReportProjectionService:
                     trace.get("asil", {}) if isinstance(trace.get("asil"), Mapping) else {},
                     score_states["asil"],
                 ),
-                ftti="待确定",
+                ftti=self.text.ftti_value([timing_inputs[(e["risk"].malfunction_id, e["risk"].scenario_id)]
+                                          for e in siblings]),
                 ftti_rationale=self.text.ftti_rationale([
                     timing_inputs[(e["risk"].malfunction_id, e["risk"].scenario_id)]
                     for e in siblings]),
@@ -1057,8 +1068,13 @@ class HARAReportProjectionService:
                     (f"{sg_id}：" if len(group_goal_ids) > 1 else "") + goal_texts.get(sg_id, "")
                     for sg_id in group_goal_ids),
                 safe_state="\n".join(
-                    (f"{sg_id}：" if len(group_goal_ids) > 1 else "") + goal_safe_states.get(sg_id, "待确定")
-                    for sg_id in group_goal_ids) or "待确定",
+                    (f"{sg_id}：" if len(group_goal_ids) > 1 else "") + self._safe_state_display(
+                        next(goal for goal in state.safety_goals if goal.sg_id == sg_id),
+                        state.item_definition.get("safety_goal_catalog", {}).get(sg_id, {}),
+                        [e["risk"].scenario_id for e in siblings if e["risk"].safety_goal_id == sg_id])
+                    for sg_id in group_goal_ids) or (
+                        "不适用（本行QM，无需分配SG）" if all(e["risk"].asil.value == "QM" for e in siblings)
+                        else "待确定"),
                 assessment_status=assessment_status,
                 clarification_ids=self._clarifications(risk),
                 remark=(f"审核展示分组，不代表风险等价；{len(siblings)} 个成员。" if is_review_group and len(siblings) > 1 else "")
@@ -1137,6 +1153,10 @@ class HARAReportProjectionService:
                 variant_counts[variant] += 1
                 child_values = dict(zip(("severity", "exposure", "controllability", "asil"),
                                         entry["display_tuple"]))
+                timing = timing_inputs[(child_risk.malfunction_id, child.scenario_id)]
+                timing_note = ("\n条件性时间边界：" + self.text.ftti_value([timing])
+                    + "（故障发生至失去停车避碰能力；假设及处置轨迹见时间追溯）"
+                    if timing.get("hazard_time_limit_s") is not None else "")
                 details.append(ScenarioDetailView(
                     hara_id=hara_id,
                     variant=variant,
@@ -1151,7 +1171,7 @@ class HARAReportProjectionService:
                     physical_inputs=self.text.physical_inputs(child, child_trace),
                     driver_branch=self.text.driver_branch(child, child_trace),
                     controllability_branch=self.text.controllability_branch(child_trace),
-                    analysis_basis=self.text.analysis_basis(child) + "\n" + boundary_notes(child.facts, method),
+                    analysis_basis=self.text.analysis_basis(child) + "\n" + boundary_notes(child.facts, method) + timing_note,
                     review_group_id=review_group_id,
                     **child_values,
                     pending_reasons=self._missing_asil_explanation(child_risk, child_trace, method) or "；".join(self._score_rationale(field, getattr(child_risk, field),
@@ -1270,7 +1290,9 @@ class HARAReportProjectionService:
             exposure=("基于活动项目方法；E 聚合政策与未定源值参与性见风险轨迹，不等同通用标准规定"),
             controllability="基于 MethodContract 的可控性模型；TTC 证据保持可追溯",
             asil="当前 MethodContract 矩阵",
-            ftti="已接入轨迹接触时间证据；正式 FTTI 的故障起点、危险判据及处置预算尚未形成活动方法",
+            ftti=("支持静止障碍物的条件性停车避碰时间边界；需明确故障起点和剩余净减速响应。移动目标等未覆盖路径仅列接触时间证据，不冒充已批准FTTI。"
+                  if getattr(method, "metadata", {}).get("project_analysis_policy", {}).get("timing_analysis") else
+                  "本次方法未配置响应时间规则；轨迹接触时间仅作证据，不作为FTTI。"),
         )
         offline_goals = any(event.get("event") == "offline_source_context_replay" for event in state.audit_trail)
         conditional_goal_ids = {risk.safety_goal_id for risk in state.risk_results
@@ -1307,6 +1329,7 @@ class HARAReportProjectionService:
             "safe_state_evidence": {goal.sg_id: {
                 "recorded_text": goal.safe_state, "goal_status": goal.status.value,
                 "candidates": state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_candidates", []),
+                "gaps": state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_gaps", []),
                 "prior": state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("prior_safe_state"),
             } for goal in state.safety_goals},
             "ftti_timing_inputs": list(timing_inputs.values()),

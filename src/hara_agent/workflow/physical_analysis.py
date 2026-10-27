@@ -242,6 +242,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     "with physical_effect linked to your geometry, motion, visibility or intervention assumptions. "
                     "One source axis per hypothesis; no Cartesian expansion. A label alone does not prove coverage.")
             if task_scope == "MOTION_AND_CONTROLS":
+                inputs["operating_atom_options"] = producer.operating_atom_options(
+                    first, mf, project, functions.get(mf.function_id))
                 inputs["interaction_coverage_policy"] = (
                     "Compare physically compatible object motions before choosing representatives. "
                     "Existing specific objects/constraints remain binding. For a justified new target, "
@@ -314,6 +316,26 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     for _, children, errors in rows:
                         for child in children:
                             outcome = child.facts.get("motion_model_outcome", {})
+                            analysis = child.facts.get("physical_analysis", {})
+                            response_hypothesis = (child.facts.get("control_analysis") or analysis).get("hypothesis", {})
+                            proposal = response_hypothesis.get("safe_state_proposal", {})
+                            if (child.facts.get("object_speed_kph") == 0
+                                    and child.facts.get("fault_motion_model") in method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {}).get("supported_models", [])
+                                    and set(proposal.get("required_controls", [])) & {"braking", "driver_braking"}
+                                    and not proposal.get("transition") and not response_hypothesis.get("timing_unresolved_reason")):
+                                errors.append({"reason": "SAFE_STOP_RESPONSE_NOT_MODELED",
+                                    "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "resolution": "Preserve this motion. Complete the proposed braking safe-state response with an explained conditional net-deceleration transition, or timing_unresolved_reason for a concrete incompatibility. A missing measured value alone does not prohibit a conditional assumption. One existing correction only."})
+                            avoidance = analysis.get("avoidance_validation", {})
+                            if avoidance and avoidance.get("status") != "CONDITIONAL_ESCAPE_VALIDATED":
+                                errors.append({"reason": avoidance["status"], "evidence": avoidance,
+                                    "hypothesis_id": analysis.get("hypothesis_id"),
+                                    "resolution": "Reconcile the proposed escape with this trajectory and corridor. Do not retain an unsupported positive avoidance claim or tune geometry just to obtain C1."})
+                            counterfactual = analysis.get("stationary_ego_counterfactual", {})
+                            if counterfactual.get("status") == "CONTACT":
+                                errors.append({"reason": "CONTACT_WITH_STATIONARY_EGO", "evidence": counterfactual,
+                                    "hypothesis_id": analysis.get("hypothesis_id"),
+                                    "resolution": "This target also contacts the stationary ego. Establish the fault's incremental hazard (not merely contact), or propose a physically consistent distinct target path. Preserve the counterfactual; do not claim fault-induced contact without evidence."})
                             if outcome.get("reason") == "TARGET_OFFSET_POSITION_CONFLICT":
                                 errors.append({"reason": outcome["reason"],
                                     "hypothesis_id": child.facts.get("physical_analysis", {}).get("hypothesis", {}).get("hypothesis_id"),

@@ -484,7 +484,43 @@ class PhysicalHypothesisInstantiationService:
             semantic_fingerprint=signature({"parent": parent.semantic_fingerprint, "controls": assessment}),
             analysis_instance={**deepcopy(parent.analysis_instance), "control_analysis": facts["control_analysis"]})
 
-    def _object_binding(self, parent, malfunction, geometry, project_context, function, *, initial=None, dimensions=("OBJECT",)):
+    def operating_atom_options(self, parent, malfunction, project_context, function):
+        """Reuse the production shortlist; no extra semantic request or selector."""
+        from .scenario_synthesis_service import ConstrainedScenarioSynthesisService
+        bindings = deepcopy(parent.facts.get("method_scenario_dimensions", {}))
+        if not bindings:
+            return {}
+        for dimension in ("EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"):
+            bindings[dimension] = {"binding_authority": "ANALYTICAL_SELECTION", "refinable": True,
+                                   "resolution_status": "PENDING"}
+        query = replace(parent, facts={**parent.facts, "method_scenario_dimensions": bindings})
+        inputs = ConstrainedScenarioSynthesisService(self.method).build_input(
+            malfunction=asdict(malfunction), parent=query, assessment={},
+            project_context=project_context or {}, function=function)
+        options = {p.dimension: [{"atom_id": c.atom_id, "label": c.label,
+                              "fills": list(c.dimensions), "semantics": c.method_semantics,
+                              "speed_range_kph": c.speed_range_kph}
+                             for c in p.candidates]
+                for p in inputs.dimension_candidate_sets
+                if p.dimension in {"EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"}}
+        # A shared motion request must not lose the opposite explicit driver
+        # qualifier merely because the shortlist kept one family representative.
+        from .scenario_selection_quality import explicit_driver_presence
+        synthesis = ConstrainedScenarioSynthesisService(self.method)
+        labels = [x["label"] for x in options.get("EGO_ACTION", [])]
+        if any(explicit_driver_presence(label) is not None for label in labels):
+            for atom in synthesis.catalog:
+                label = atom.get("label", "")
+                if ("EGO_ACTION" in atom.get("filled_dimensions", []) and explicit_driver_presence(label) is not None
+                        and "passenger" not in label.casefold()
+                        and atom["atom_id"] not in {x["atom_id"] for x in options["EGO_ACTION"]}):
+                    options["EGO_ACTION"].append({"atom_id": atom["atom_id"], "label": label,
+                        "fills": atom["filled_dimensions"], "semantics": atom.get("physical_semantics", {}),
+                        "speed_range_kph": synthesis._speed_range(atom)})
+        return options
+
+    def _object_binding(self, parent, malfunction, geometry, project_context, function, *, initial=None,
+                        dimensions=("OBJECT",), explicit=None, current_facts=None):
         """Refine changed initial conditions through the existing validator.
 
         Post-fault speed/direction never enter initial-operation Atom selection.
@@ -500,6 +536,8 @@ class PhysicalHypothesisInstantiationService:
             bindings[dimension] = {"binding_authority": "ANALYTICAL_SELECTION", "refinable": True,
                 "resolution_status": "PENDING", "project_value": geometry["road_user_type"] if dimension == "OBJECT" else str(initial)}
         query_parent = replace(parent, facts={**parent.facts, "method_scenario_dimensions": bindings,
+            **{k: current_facts[k] for k in ("object_speed_kph", "object_position", "object_longitudinal_direction")
+               if current_facts and k in current_facts},
             "road_user_type": geometry["road_user_type"], "object_type": geometry["road_user_type"].lower(),
             **({"ego_speed_kph": initial, "ego_speed_constraint": {"min_kph": initial, "max_kph": initial}}
                if "EGO_DYNAMICS" in dimensions else {})})
@@ -529,11 +567,41 @@ class PhysicalHypothesisInstantiationService:
                            if binding.get("resolution_status") == "RESOLVED" and binding.get("atom_id")})
         choices = []
         for dimension in dimensions:
-            pool = next((p.candidates for p in inputs.dimension_candidate_sets if p.dimension == dimension), ())
-            if dimension == "EGO_DYNAMICS":
-                pool = [c for c in pool if c.speed_range_kph is not None and
+            candidate_set = next((p for p in inputs.dimension_candidate_sets if p.dimension == dimension), None)
+            pool = candidate_set.candidates if candidate_set else ()
+            if candidate_set and candidate_set.applicability.status is ScenarioDimensionApplicability.NOT_APPLICABLE:
+                if explicit and explicit.get(dimension) is not None:
+                    return {}, "ATOM_SELECTED_FOR_NONAPPLICABLE_DIMENSION:" + dimension
+                choices.append((dimension, (None,)))
+                continue
+            if explicit and dimension in explicit:
+                selected_id = explicit[dimension]
+                if selected_id is None and dimension == "TRAFFIC_PATTERN":
+                    # Empty selection is still checked by the shared applicability validator.
+                    choices.append((dimension, (None,)))
+                    continue
+                if dimension == "EGO_ACTION":
+                    from .scenario_selection_quality import explicit_driver_presence
+                    atom = synthesis.by_id.get(selected_id, {})
+                    presence = explicit_driver_presence(atom.get("label", ""))
+                    if presence is not None:
+                        if parent.facts.get("driver_in_vehicle") is not presence:
+                            return {}, "ATOM_DRIVER_CONDITION_CONFLICT:" + selected_id
+                        # This is the explicitly qualified counterpart offered
+                        # by operating_atom_options. The normal materializer still
+                        # checks domains, compound occupancy and all other inputs.
+                        if not any(c.atom_id == selected_id for c in pool):
+                            selected_candidate = synthesis._candidate(atom, origin=CandidateOrigin.BINDING_REFINEMENT,
+                                refs=("PARENT.driver_in_vehicle",), reason="Explicit driver-qualified operation", validated=True)
+                            pool = (*pool, selected_candidate)
+                            inputs = replace(inputs, dimension_candidate_sets=tuple(
+                                replace(p, candidates=tuple(pool)) if p.dimension == dimension else p
+                                for p in inputs.dimension_candidate_sets))
+                pool = [c for c in pool if c.atom_id == selected_id]
+            if dimension == "EGO_DYNAMICS" and initial is not None:
+                pool = [c for c in pool if (explicit and dimension in explicit and c.speed_range_kph is None) or (c.speed_range_kph is not None and
                     (c.speed_range_kph[0] is None or c.speed_range_kph[0] <= initial) and
-                    (c.speed_range_kph[1] is None or initial <= c.speed_range_kph[1])]
+                    (c.speed_range_kph[1] is None or initial <= c.speed_range_kph[1]))]
             if not pool:
                 return {}, "NO_APPLICABLE_CONDITION_ATOM:" + dimension
             choices.append((dimension, pool))
@@ -542,7 +610,8 @@ class PhysicalHypothesisInstantiationService:
         # combination; this does not create an additional scenario population.
         from itertools import product
         for combination in product(*(pool for _, pool in choices)):
-            selected = {dimension: (candidate.atom_id,) for (dimension, _), candidate in zip(choices, combination)}
+            selected = {dimension: ((candidate.atom_id,) if candidate else ())
+                        for (dimension, _), candidate in zip(choices, combination)}
             selection = ScenarioSynthesisAssessment(inputs.semantic_group_id, CoverageLabel.TYPICAL,
                 {**selections, **selected}, "Explicit independent child condition; unrelated Atom identities retained",
                 ("SCN.road_user_type",), SynthesisValidationStatus.VALIDATED)
@@ -771,9 +840,16 @@ class PhysicalHypothesisInstantiationService:
             dimensions.append("OBJECT")
         if new_initial and initial is not None and parent.facts.get("ego_speed_kph") != initial:
             dimensions.append("EGO_DYNAMICS")
+        driver_position = "in_driver_seat" if parent.facts.get("driver_in_vehicle") is True else "outside_driver_seat"
+        explicit_atoms = {**h.get("operating_atoms", {}), **h.get("driver_operating_atoms", {}).get(driver_position, {})}
+        dimensions = list(dict.fromkeys([*dimensions, *explicit_atoms]))
         if dimensions:
             refinement, reason = self._object_binding(parent, malfunction, g, project_context, function,
-                initial=initial, dimensions=dimensions)
+                initial=initial, dimensions=dimensions, explicit=explicit_atoms, current_facts=facts)
+            if explicit_atoms and not refinement:
+                raise PhysicalInputConflict("OPERATING_ATOM_BINDING_CONFLICT", "operating_atoms",
+                    {d: b.get("atom_id") for d, b in parent.facts.get("method_scenario_dimensions", {}).items()},
+                    explicit_atoms, relation=reason)
             if "EGO_DYNAMICS" in dimensions and not refinement:
                 raise PhysicalInputConflict("NEW_INITIAL_CONDITION_BINDING_UNRESOLVED", "EGO_DYNAMICS", speed_binding, initial, relation=reason)
             facts.update(refinement)
@@ -786,7 +862,10 @@ class PhysicalHypothesisInstantiationService:
                     method_hash=self.method.metadata.get("method_source_hash", ""),
                     scope={"malfunction_id": malfunction.malfunction_id, "scenario_id": sid})
                 for dimension in dimensions:
-                    field = {"OBJECT": "scenario_object_atom", "EGO_DYNAMICS": "ego_dynamics"}[dimension]
+                    field = {"OBJECT": "scenario_object_atom", "EGO_DYNAMICS": "ego_dynamics",
+                             "EGO_ACTION": "ego_action", "TRAFFIC_PATTERN": "traffic_pattern"}[dimension]
+                    facts.pop(field, None)
+                    provenance.pop(field, None)
                     if field in projected_facts:
                         facts[field] = projected_facts[field]
                         provenance[field] = {**deepcopy(meta), "source_refs": meta["source_refs"] + projected_provenance[field]["source_refs"]}
@@ -827,6 +906,18 @@ class PhysicalHypothesisInstantiationService:
             facts[field] = record.value
             provenance[field] = {**record.metadata, "provenance": record.provenance.value,
                 "approval": record.approval_status.value, "source_refs": [vars(s) for s in record.source_refs]}
+        if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT":
+            from .scenario_physics import moving_target_avoidance, rectilinear_moving_contact
+            proposal = h.get("intervention_assumptions", {}).get("other_road_user_avoidance_possible", {})
+            if proposal.get("value") is True:
+                check = moving_target_avoidance(facts, proposal)
+                info["avoidance_validation"] = check
+                if check["status"] != "CONDITIONAL_ESCAPE_VALIDATED":
+                    facts.pop("other_road_user_avoidance_possible", None)
+                    provenance.pop("other_road_user_avoidance_possible", None)
+            if facts.get("ego_speed_kph") == 0:
+                info["stationary_ego_counterfactual"] = rectilinear_moving_contact({**facts,
+                    "longitudinal_acceleration_mps2": 0})
         if facts.get("motion_model_outcome", {}).get("status") == "CONTACT" and facts.get("relative_speed_kph") is not None:
             mechanism = f"{malfunction.malfunction_id}:CONTACT"
             facts["harm_mechanism_id"] = mechanism

@@ -139,8 +139,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    PROMPT_VERSION = "post-fault-physical-scenario-v22-task-context"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v8-task-context"
+    PROMPT_VERSION = "post-fault-physical-scenario-v25-response-completeness"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v10-response-completeness"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -240,7 +240,7 @@ class PhysicalScenarioAgent:
             "额外对象必须声明新条件。同一方案中优先补充不同且物理相容的机制，而不是只改变距离。"
             "三个实例预算由不同交互和范围采样共同使用，默认每种交互一个代表点。"
             "不得把假设声称为原文事实、车辆真实能力或可信上界。不得输出 S/E/C/ASIL、批准状态、"
-            "碰撞速度、TTC、collision_branches 或 Atom ID。程序会计算这些量。"
+            "碰撞速度、TTC或collision_branches。程序会计算这些量；Atom只能在operating_atoms中选所给候选ID。"
             "优先保留已给定的对象类别和运行条件；新对象需说明适用性，不得扩大 ODD。"
             "对象维度NOT_APPLICABLE/未选择并不表示来源证明周围没有对象；可提出ODD内明确的条件性对象，"
             "声明condition_changes.target=true并重新绑定。只有来源明确禁止时才不能这样做。"
@@ -378,6 +378,38 @@ class PhysicalScenarioAgent:
             content["model_catalog"] = {}
             content["parameter_units"] = {}
         system += self.CONTROL_ANALYSIS_POLICY
+        system += (
+            "安全状态和时间分析在同一次请求内完成，不另造运动世界：每个假设/control_assessment给出"
+            "safe_state_proposal或safe_state_unresolved_reason。proposal包含description、required_controls、"
+            "basis_refs、conditions，可选driver_positions限定人员位置。必须使用remaining_controls，"
+            "只依赖人工踏板的方案不能覆盖车外驾驶员；车外无可用路径要明确说明。"
+            "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
+            "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
+            "的净减速度假设，不是车辆实测能力，不得沿用方法示例的默认减速度。停止是否安全仍须考虑目标轨迹。"
+            "不能只声明可以停车却省略响应建模；若连条件性响应也不适用，在同一hypothesis/control_assessment的"
+            "timing_unresolved_reason中写具体障碍，单纯缺少实测减速度不能作为拒绝分析假设的理由。"
+            "可附hazard_timing={time_origin:FAULT_ONSET,fault_to_model_start_s:非负数,"
+            "hazard_criterion:LOSS_OF_BRAKING_AVOIDABILITY或FIRST_CONTACT_BOUND,rationale:理由,basis_refs:引用数组}。"
+            "前者用于有制动路径且静止障碍物的失去停车避碰能力边界；后者只是接触时间证据。"
+            "不能把模型初态自动当故障时刻，需说明二者关系；不输出计算结果或最终FTTI。"
+            "移动目标的other_road_user_avoidance_possible=true必须给出同一项中的avoidance={"
+            "recognition_delay_s:非负秒,escape_direction:FORWARD|REVERSE|LEFT|RIGHT,escape_speed_mps:正数,"
+            "available_clearance_m:正数}，并论证可见性和逃生空间；程序检验同一几何，不是只检查理由非空。"
+            "初始静止的本车被横穿者接触时，要检查即使本车不动是否仍会接触；不能把原本就发生的接触归因于溜车。"
+        )
+        if not controls_only and context.get("operating_atom_options"):
+            system += (
+                "operating_atom_options是当前方法的有界候选，不是评级规则。每个假设必须输出operating_atoms="
+                "{EGO_ACTION:候选ID,EGO_DYNAMICS:候选ID,TRAFFIC_PATTERN:候选ID或null}，"
+                "与本假设真实运行状态、动作和交互一致。只从所给相应候选选择，不能沿用矛盾的父动作。"
+                "故障后加速不改变正常使用暴露；EGO_DYNAMICS表示故障前初态。没有交通交互时traffic为null。"
+                "fills列明复合Atom占用的全部维度；选中复合Atom时，它占用的维度都填写同一个ID，不能与另一Atom重复占用。"
+                "WHERE/ROAD沿用来源，不为提高评级改动。不能把停车入位写成路口横穿或对向超车。"
+                "驻车保持必须选驻留动作，不能为了初速为0选红灯/人行横道交通停车。候选动作中的驾驶员位置限定也必须满足。"
+                "同一运动方案适用两种驾驶员位置而动作条目不同，用driver_operating_atoms="
+                "{in_driver_seat:{EGO_ACTION:对应ID},outside_driver_seat:{EGO_ACTION:对应ID}}覆盖各自动作，"
+                "不因此复制物理假设；没有驾驶员限定的共同动作无需此字段。"
+            )
         system += ("每个hypotheses成员都必须单独填写非空basis_refs，引用所给evidence ID；"
                    "parameters、intervention_assumptions或safe_state_proposal里的引用不能替代该字段。")
         attempts = []
@@ -422,7 +454,7 @@ class PhysicalScenarioAgent:
                 # or failed control. Reject that proposal locally, retaining the raw reply;
                 # do not discard otherwise valid motion or approve the control.
                 if isinstance(candidate, dict) and isinstance(candidate.get("hypotheses"), list):
-                    for hypothesis in candidate["hypotheses"]:
+                    for hypothesis in [*candidate["hypotheses"], candidate.get("control_assessment")]:
                         if not isinstance(hypothesis, dict):
                             continue
                         proposal = hypothesis.get("safe_state_proposal")
@@ -440,10 +472,23 @@ class PhysicalScenarioAgent:
                             deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),
                                 "reason": "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
                                 "proposal": hypothesis.pop("safe_state_proposal")})
-                            hypothesis["uncovered_conditions"].append(
+                            hypothesis["safe_state_unresolved_reason"] = (
                                 "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
                                 "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
+                            hypothesis["uncovered_conditions"].append(hypothesis["safe_state_unresolved_reason"])
                 plan = PhysicalScenarioPlan.from_dict(candidate, evidence_ids=set(context["evidence"]))
+                if context.get("operating_atom_options") and not controls_only:
+                    for hypothesis in plan.hypotheses:
+                        if "operating_atoms" not in hypothesis:
+                            raise ValueError("Each motion hypothesis must bind operating_atoms to its actual initial operation")
+                        for dimension, selected in hypothesis["operating_atoms"].items():
+                            if selected is None and dimension == "TRAFFIC_PATTERN":
+                                continue
+                            if selected not in {row["atom_id"] for row in context["operating_atom_options"].get(dimension, [])}:
+                                raise ValueError("operating_atoms selection outside supplied shortlist: " + dimension)
+                        for atoms in hypothesis.get("driver_operating_atoms", {}).values():
+                            if atoms["EGO_ACTION"] not in {row["atom_id"] for row in context["operating_atom_options"].get("EGO_ACTION", [])}:
+                                raise ValueError("driver_operating_atoms selection outside supplied shortlist: EGO_ACTION")
                 if controls_only != (plan.control_assessment is not None):
                     raise ValueError("Output must match task_scope; control-only tasks cannot replace existing motion")
                 return plan, {"responses": attempts, "validation_errors": errors,

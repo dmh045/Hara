@@ -242,3 +242,19 @@ engineering_decisions:
     release_status: PENDING
 candidate_defaults: []
 release_approval: PENDING
+timing_analysis:
+  rule_id: CONDITIONAL_LOSS_OF_BRAKING_AVOIDABILITY_V1
+  status: CONDITIONAL_REFERENCE
+  hazard_criterion: LOSS_OF_BRAKING_AVOIDABILITY
+  time_origin: FAULT_ONSET
+  response_model: CONSTANT_NET_DECELERATION
+  supported_models:
+    - CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE
+    - GRADE_ROLLAWAY_TO_IMPACT_DISTANCE
+    - CONSTANT_SPEED_CURVATURE_TO_CONTACT
+  equation: "v0*t + a*t^2/2 + (v0+a*t)^2/(2*b_net) = available_path_distance"
+  meaning: "故障发生后，在当前静止障碍物轨迹及剩余独立制动假设下，失去停车避碰能力的时刻。达到该边界前须开始有效制动；从故障起点累计的检测、决策和执行延迟合计须小于该时刻；从模型初态起的剩余窗口则扣除模型起点偏移。不是接触后再停止所需时间。"
+  limitations: "仅为所列假设和危险判据的条件性时间界限，不代表完整车辆已批准FTTI；不覆盖移动目标、追尾逃逸或未知安全状态。有限样本最小值不是全ODD连续最小值。"
+  source_document: "https://www.ti.com/lit/fs/sffs889/sffs889.pdf"
+  source_location: "4.2.2: fault tolerant time interval and fault reaction time"
+  legacy_formula_disposition: "保留原始ftti_formulas.yaml用于追溯，不执行t1接触时间+t2接触后制动时间；不引入-12m/s²默认能力。"

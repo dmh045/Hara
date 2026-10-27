@@ -85,7 +85,7 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v22-task-context')
+            assert request.prompt_version.endswith('v25-response-completeness')
             return LLMResponse(raw_plan(), 'OFFLINE', usage={})
     PhysicalScenarioAgent(Client()).propose(context)
     assert context == before

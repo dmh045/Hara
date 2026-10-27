@@ -103,10 +103,20 @@ def _operating_action_categories(text: str) -> set[str]:
     folded = text.casefold()
     if "ACTION_PARK" in categories and not any(marker in folded for marker in (
         "parking maneuver", "parking-in", "parking-out", "park-in", "park-out",
-        "泊车", "泊入", "泊出",
+        "泊车", "泊入", "泊出", "parking_vehicle_control",
     )):
         categories.remove("ACTION_PARK")
     return categories
+
+
+def explicit_driver_presence(text: str) -> bool | None:
+    """Read an explicit actor qualifier, without assigning a method rating."""
+    folded = text.casefold()
+    if "driver not in vehicle" in folded or "driver out" in folded:
+        return False
+    if "driver in vehicle" in folded:
+        return True
+    return None
 
 
 def explicit_environment(text: str) -> set[str]:
@@ -306,6 +316,7 @@ class ScenarioSemanticQueryBuilder:
             )
         })) & {"ACTION_ABORT"}
         operating_action_fields = {
+            "PARENT.operating_mode": parent.operating_mode,
             "PARENT.situational_description": parent.situational_description,
             "PARENT.operating_scenario": parent.operating_scenario,
             "PARENT.facts.operating_scenario": facts.get("operating_scenario", ""),

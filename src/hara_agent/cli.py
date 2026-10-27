@@ -1961,7 +1961,9 @@ def main(argv: list[str] | None = None) -> int:
                 "style_template": resolution.report_template_hash if "resolution" in locals() else "",
                 "he_harm_separated": "yes",
                 "ftti_report_field": "present=yes",
-                "ftti_runtime_capability": "SOURCE_PRESENT_RUNTIME_INACTIVE",
+                "ftti_runtime_capability": ("CONDITIONAL_STATIC_TARGET_RESPONSE_TIMING"
+                    if "method" in locals() and method.metadata.get("project_analysis_policy", {}).get("timing_analysis")
+                    else "SOURCE_PRESENT_RUNTIME_INACTIVE"),
                 "raw_json_in_main_hara": 0,
                 "critical_blank_cells": 0,
                 "legacy_active_method_leakage": 0,
