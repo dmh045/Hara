@@ -375,6 +375,40 @@ def test_safe_state_field_location_is_explicit_without_moving_raw_values():
     assert raw == before
 
 
+@pytest.mark.parametrize('local_time', ['inherit', 'explicit', 'unresolved', 'different_model'])
+def test_driver_specific_response_preserves_same_world_fault_clock(method, local_time):
+    from hara_agent.contracts.physical_scenario_plan import controls_for_driver
+    from test_autonomous_physics import make_candidate
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    h['safe_state_proposal'].pop('driver_positions')
+    h['hazard_timing']['fault_to_model_start_s'] = .25
+    local = {k: deepcopy(h[k]) for k in ('rationale', 'basis_refs', 'conditions',
+        'uncovered_conditions', 'failed_controls', 'remaining_controls', 'safe_state_proposal')}
+    local['remaining_controls'] = ['automatic_braking_command', 'braking']
+    local['safe_state_proposal']['required_controls'] = ['automatic_braking_command', 'braking']
+    if local_time == 'explicit':
+        local['hazard_timing'] = {**h['hazard_timing'], 'fault_to_model_start_s': .5}
+    elif local_time == 'unresolved':
+        local['timing_unresolved_reason'] = 'The local response uses a different unbound assessment phase.'
+    elif local_time == 'different_model':
+        local['safe_state_proposal']['transition']['model'] = 'RELEASE_FAULT_DECELERATION'
+    h['driver_control_assessments'] = {'outside_driver_seat': local}
+    original = deepcopy(raw)
+    effective = controls_for_driver(h, 'outside_driver_seat')
+    assert 'driver_braking' not in effective['remaining_controls']
+    assert raw == original
+    if local_time in {'unresolved', 'different_model'}:
+        assert 'hazard_timing' not in effective
+        return
+    parent = make_candidate(3.6)
+    parent.facts['driver_in_vehicle'] = False
+    child = instantiate(method, raw, parent)[0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance':child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s == pytest.approx(15 ** .5 / 2 - 1 + (.5 if local_time == 'explicit' else .25))
+    assert timing.timing_trace['required_controls'] == ['automatic_braking_command', 'braking']
+
+
 @pytest.mark.parametrize('mutation,hint', [
     ('nested', 'not in a nested control_assessment'),
     ('missing', 'do not invent an available control'),
@@ -398,7 +432,8 @@ def test_correction_feedback_names_the_actual_control_contract_issue(mutation, h
 
 
 @pytest.mark.parametrize('explicit_model_gap', [False, True])
-def test_safe_stop_response_is_completed_once_in_production_workflow(method, tmp_path, explicit_model_gap):
+@pytest.mark.parametrize('missing', ['response', 'fault_clock'])
+def test_safe_stop_response_is_completed_once_in_production_workflow(method, tmp_path, explicit_model_gap, missing):
     import json
     from test_autonomous_physics import make_candidate, mf
     from hara_agent.infrastructure.llm import LLMResponse
@@ -411,11 +446,18 @@ def test_safe_stop_response_is_completed_once_in_production_workflow(method, tmp
             self.calls += 1
             raw = timed_plan()
             if self.calls == 1:
-                raw['hypotheses'][0]['safe_state_proposal'].pop('transition')
+                if missing == 'response':
+                    raw['hypotheses'][0]['safe_state_proposal'].pop('transition')
+                else:
+                    raw['hypotheses'][0].pop('hazard_timing')
                 if explicit_model_gap:
-                    raw['hypotheses'][0]['timing_unresolved_reason'] = 'This representative requires a time-varying brake response outside the constant-net-response model.'
+                    raw['hypotheses'][0]['timing_unresolved_reason'] = (
+                        'This representative requires a time-varying brake response outside the constant-net-response model.'
+                        if missing == 'response' else
+                        'The initial model phase is known, but its offset from the intermittent fault onset is not related.')
             else:
-                assert 'SAFE_STOP_RESPONSE_NOT_MODELED' in request.user_prompt
+                assert ('SAFE_STOP_RESPONSE_NOT_MODELED' if missing == 'response'
+                        else 'SAFE_STOP_FAULT_CLOCK_NOT_BOUND') in request.user_prompt
             return LLMResponse(raw, 'OFFLINE')
     client = Client()
     state = HARAState('response-completion')
@@ -431,6 +473,13 @@ def test_safe_stop_response_is_completed_once_in_production_workflow(method, tmp
     assert facts['ttc_s'] == pytest.approx(1.236068)
     if not explicit_model_gap:
         assert facts['physical_analysis']['hypothesis']['safe_state_proposal']['transition']['net_deceleration_mps2'] == 3
+    timing = RiskCalculationInputService().ftti('MF', results['MF'][0].scenario_id, '',
+        {**facts, '_fact_provenance': results['MF'][0].fact_provenance}, method=method)
+    if explicit_model_gap:
+        assert timing.hazard_time_limit_s is None
+    else:
+        # 1*t + t²/2 + (1+t)²/(2*3) = 2 m, independent of the executor.
+        assert timing.hazard_time_limit_s == pytest.approx(15 ** .5 / 2 - 1)
 
 
 def test_current_safe_state_gap_does_not_reactivate_historical_proposal():

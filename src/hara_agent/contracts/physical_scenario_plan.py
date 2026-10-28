@@ -84,9 +84,16 @@ def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
         selected["safe_state_proposal"] = shared_response
         selected["remaining_controls"] = list(dict.fromkeys([
             *assessment["remaining_controls"], *shared_response["required_controls"]]))
-        if ("hazard_timing" in hypothesis and "hazard_timing" not in assessment
-                and "timing_unresolved_reason" not in assessment):
-            selected["hazard_timing"] = hypothesis["hazard_timing"]
+    response_model = shared_response.get("transition", {}).get("model")
+    local_response = selected.get("safe_state_proposal", {})
+    if ("hazard_timing" in hypothesis and "hazard_timing" not in assessment
+            and "timing_unresolved_reason" not in assessment
+            and shared_response and (local_response == shared_response or response_model
+                and local_response.get("transition", {}).get("model") == response_model)):
+        # Driver-specific controls do not change this hypothesis's fault clock.
+        # An explicit local time/gap or a different response model takes priority.
+        # Only the clock is shared; no pedal or control availability is copied.
+        selected["hazard_timing"] = hypothesis["hazard_timing"]
     for field in ("basis_refs", "conditions", "uncovered_conditions"):
         selected[field] = list(dict.fromkeys([*hypothesis.get(field, []), *assessment[field]]))
     selected["rationale"] = hypothesis["rationale"] + "\n" + assessment["rationale"]

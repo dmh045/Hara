@@ -414,6 +414,14 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                         "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
                                         "evidence": timing.timing_trace,
                                         "resolution": "Preserve the unmitigated world. This proposed response does not avoid its target. Reconcile the safe-state claim with the available controls/model, or explicitly retain the unsupported strategy in safe_state_unresolved_reason. Do not move the target or increase braking just to force a safe result. No extra correction loop."})
+                                elif (timing.timing_trace.get("status") == "CONDITIONAL_BOUNDARY"
+                                        and timing.hazard_time_limit_s is None
+                                        and not response_hypothesis.get("timing_unresolved_reason")):
+                                    errors.append({"reason": "SAFE_STOP_FAULT_CLOCK_NOT_BOUND",
+                                        "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
+                                        "driver_position": driver,
+                                        "evidence": timing.timing_trace,
+                                        "resolution": "The existing calculator found a response boundary, but its fault origin and hazard criterion are not bound. Preserve motion, target, response and driver scope. Complete hazard_timing from the same conditional world's initial phase and active timing policy, with its basis; do not default the offset to zero or equate contact time with FTTI. If the clock cannot be related, give a concrete timing_unresolved_reason. Use this same one correction only."})
                             avoidance = analysis.get("avoidance_validation", {})
                             if avoidance and avoidance.get("status") not in {"CONDITIONAL_ESCAPE_VALIDATED", "NO_CONTACT_TO_AVOID"}:
                                 errors.append({"reason": avoidance["status"], "evidence": avoidance,
