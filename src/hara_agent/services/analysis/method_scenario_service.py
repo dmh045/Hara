@@ -549,6 +549,11 @@ class MethodScenarioCandidateService:
                 include_source_boundaries=(
                     option.scenario_id == boundary_parent_id or option.source_scenario_id == boundary_parent_id
                 ),
+                covered_environment={(dimension, binding.get("atom_id"))
+                    for child, _ in coverage_pools.get(coverage_key, [])
+                    if child.facts.get("source_operating_conditions") != synthesis.source_operating_conditions(option)
+                    for dimension, binding in child.facts.get("method_scenario_dimensions", {}).items()
+                    if dimension in {"WHERE", "ROAD"} and binding.get("atom_id")},
             )
             result["coverage_family_id"] = coverage_key
             # Keep an unresolved case visible for causal/review diagnostics;

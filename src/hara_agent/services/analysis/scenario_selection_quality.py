@@ -1189,7 +1189,9 @@ class ScenarioCandidateRanker:
         objects = set(map(str, query.get("object_categories", [])))
         traffic = set(map(str, query.get("traffic_relations", [])))
         road = set(map(str, query.get("road_relations", [])))
-        road.update(map(str, query.get("odd_road_categories", [])))
+        # An allowed ODD condition is not the current operating condition.
+        # Legality filtering already retains allowed roads. Promoting every
+        # allowed slope here repeatedly prefers it in otherwise unbound worlds.
         locations = set(map(str, query.get("location_categories", [])))
         filled_dimensions = set(map(str, atom.get("filled_dimensions", [])))
         action_score = float(bool(

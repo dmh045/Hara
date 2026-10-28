@@ -159,7 +159,7 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v38-shared-response')
+            assert request.prompt_version.endswith('v39-bounded-world')
             assert '不得仅凭标线认定车辆/行人无法跨越' in request.system_prompt
             assert 'driver_control_assessments' in request.system_prompt
             assert payload['output_contract']['driver_control_assessments']['entry_shape']['failed_controls']==[]
@@ -394,6 +394,89 @@ def test_failed_control_safe_state_is_rejected_locally_without_losing_motion():
     raw['hypotheses'][0]['remaining_controls'].append('drive')
     with pytest.raises(ValueError, match='failed control cannot be a remaining'):
         PhysicalScenarioAgent(client).propose({'plan_key': 'contradiction', 'evidence': {'MF.description': 'Drive failure'}})
+
+
+def test_failed_command_explanation_preserves_failure_and_valid_response(method):
+    raw = raw_plan()
+    h = raw['hypotheses'][0]
+    h['failed_controls'] = ['automatic_drive_command']
+    h['remaining_controls'] = ['braking', 'driver_braking']
+    h['unresolved_controls'] = {'automatic_drive_command': 'The failed command has no proven independent fallback.'}
+    h['safe_state_proposal'] = {'description': 'Stop using the independent pedal path',
+        'required_controls': ['driver_braking'], 'basis_refs': ['MF.description'],
+        'conditions': ['Driver seated; independent brake path assumed'],
+        'post_stop_motion': 'HOLD_POSITION',
+        'transition': {'model': 'CONSTANT_NET_DECELERATION', 'net_deceleration_mps2': 3,
+                       'rationale': 'Conditional net braking', 'basis_refs': ['MF.description']}}
+    h['hazard_timing'] = {'time_origin': 'FAULT_ONSET', 'fault_to_model_start_s': 0,
+        'hazard_criterion': 'LOSS_OF_BRAKING_AVOIDABILITY',
+        'rationale': 'Initial state is fault onset', 'basis_refs': ['MF.description']}
+    before = deepcopy(raw)
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw, 'OFFLINE')
+    client = Frozen()
+    plan, audit = PhysicalScenarioAgent(client).propose({'plan_key': 'failed-explanation',
+        'evidence': {'MF.description': 'Drive output exceeds demand'}})
+    assert client.calls == 1 and raw == before and len(audit['control_scope_normalizations']) == 2
+    normalized = plan.hypotheses[0]
+    assert normalized['failed_controls'] == h['failed_controls']
+    assert normalized['remaining_controls'] == h['remaining_controls']
+    assert h['unresolved_controls']['automatic_drive_command'] in normalized['uncovered_conditions'][-1]
+    child = instantiate(method, plan.to_dict())[0]
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s > 0 and timing.calculation_nature == 'CONDITIONAL'
+    # A declaration of availability still conflicts; normalization cannot
+    # revive the failed command or reconcile two different hold behaviors.
+    h['remaining_controls'].append('automatic_drive_command')
+    with pytest.raises(ValueError, match='failed control cannot be a remaining'):
+        PhysicalScenarioAgent(client).propose({'plan_key': 'conflicting', 'evidence': {'MF.description': 'fault'}})
+
+
+def test_member_limits_can_supply_missing_plan_envelope_without_new_claims():
+    raw = raw_plan()
+    del raw['uncovered_conditions']
+    original = deepcopy(raw)
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw, 'OFFLINE')
+    client = Frozen()
+    plan, audit = PhysicalScenarioAgent(client).propose({'plan_key': 'member-limits',
+        'evidence': {'MF.description': 'fault'}})
+    assert client.calls == 1 and raw == original
+    assert plan.to_dict()['uncovered_conditions'] == raw['hypotheses'][0]['uncovered_conditions']
+    assert audit['control_envelope_normalization'] == 'PROJECTED_HYPOTHESIS_LIMITS'
+
+
+def test_scoped_optional_response_gap_does_not_discard_shared_motion():
+    raw = raw_plan()
+    h = raw['hypotheses'][0]
+    h['driver_control_assessments'] = {'outside_driver_seat': {
+        'rationale': 'No pedal outside; hardware braking remains conditionally usable',
+        'basis_refs': ['MF.description'], 'conditions': ['Same drive-output fault'],
+        'uncovered_conditions': ['No holding-command assessment'],
+        'failed_controls': [], 'remaining_controls': ['braking'],
+        'unresolved_controls': {'drive': 'Failed drive output cannot supply holding torque'},
+        'safe_state_proposal': {'description': 'Hold with the parking brake',
+            'required_controls': ['parking_hold'], 'basis_refs': ['MF.description'],
+            'conditions': ['Unassessed parking path']}}}
+    before = deepcopy(raw)
+    class Frozen:
+        def complete_json(self, request): return LLMResponse(raw, 'OFFLINE')
+    plan, audit = PhysicalScenarioAgent(Frozen()).propose({'plan_key': 'scoped-gap', 'evidence': {'MF.description': 'fault'}})
+    from hara_agent.contracts.physical_scenario_plan import controls_for_driver
+    outside = controls_for_driver(plan.hypotheses[0], 'outside_driver_seat')
+    assert raw == before and outside['failed_controls'] == ['drive']
+    assert outside['remaining_controls'] == ['braking'] and 'safe_state_proposal' not in outside
+    assert outside['parameters'] == h['parameters'] and outside['geometry'] == h['geometry']
+    assert audit['deferred_safe_states'][0]['driver_position'] == 'outside_driver_seat'
+    assert audit['deferred_safe_states'][0]['proposal'] == before['hypotheses'][0]['driver_control_assessments']['outside_driver_seat']['safe_state_proposal']
 
 
 @pytest.mark.parametrize('shape', ['object', 'pair'])

@@ -505,6 +505,17 @@ def test_odd_slope_capability_does_not_prove_active_road_mechanism():
     )
     assert query["road_relations"] == []
     assert query["odd_road_categories"] == ["ROAD_SLOPE"]
+    ranker = ScenarioCandidateRanker()
+    atom = {"atom_id": "slope", "label": "Slope", "filled_dimensions": ["ROAD"],
+            "physical_semantics": {"slope": {"min_percent": 8}}}
+    def score(q):
+        return ranker.score(dimension="ROAD", atom=atom, query=q,
+                            fm_template={}, corpus_labels=["Slope"], odd_passed=True)[0]
+    allowed = score(query)
+    absent = score({**query, "odd_road_categories": []})
+    explicit = score({**query, "road_relations": ["ROAD_SLOPE"]})
+    assert allowed == absent
+    assert explicit["source_evidence_tier"] > allowed["source_evidence_tier"]
 
 
 def test_ego_vehicle_mention_alone_does_not_prove_object_vehicle():

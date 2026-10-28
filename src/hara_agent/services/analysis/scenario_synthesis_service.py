@@ -1520,6 +1520,7 @@ class ConstrainedScenarioSynthesisService:
         self, *, malfunction: dict[str, Any], parent: ScenarioCandidate,
         project_context: dict[str, Any], function: dict[str, Any] | None = None,
         include_source_boundaries: bool = True,
+        covered_environment: set[tuple[str, str]] | None = None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         """Use the existing shortlist, coverage plan and validator before causality.
 
@@ -1571,7 +1572,7 @@ class ConstrainedScenarioSynthesisService:
         # can then represent other valid environments instead of repeating the
         # same strong-slope condition already covered by both source boundaries.
         resolved = {}
-        covered_environment = set()
+        covered_environment = set(covered_environment or ())
         order = sorted(range(len(contexts)), key=lambda i: contexts[i].facts.get("source_slope_pct") is None)
         for index in order:
             context = contexts[index]

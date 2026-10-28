@@ -367,7 +367,11 @@ class PhysicalScenarioPlan:
                 raise ValueError("Duplicate physical hypothesis")
             identities.add(identity)
             if h["model"] not in MODEL_CATALOG:
-                raise ValueError("Unknown physical model")
+                raise ValueError("Unknown physical model: " + str(h["model"]) + ". Use a supplied model_catalog key. "
+                    "For a straight constant-speed hypothesis use CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE "
+                    "with explicit longitudinal_acceleration_mps2 POINT 0 (the constant-speed definition), "
+                    "retaining the same initial speed, target and distance. If no supplied model describes "
+                    "the mechanism, retain its specific limitation rather than inventing a model name.")
             _text(h["rationale"])
             refs = _texts(h["basis_refs"])
             if not refs or not set(refs) <= evidence_ids:

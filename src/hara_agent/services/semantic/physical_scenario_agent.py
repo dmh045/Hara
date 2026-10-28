@@ -2,7 +2,6 @@
 from dataclasses import asdict
 from collections import Counter
 from copy import deepcopy
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -43,11 +42,12 @@ def physical_prompt_view(context: dict) -> tuple[dict, dict]:
                 count(item)
 
     count(view)
-    texts = {hashlib.sha256(text.encode()).hexdigest(): text for text, n in counts.items() if n > 1}
+    text_ids = {text: f"S{index}" for index, text in enumerate(sorted(text for text, n in counts.items() if n > 1))}
+    texts = {identity: text for text, identity in text_ids.items()}
 
     def intern(value):
         if isinstance(value, dict):
-            return {key: {"$source_text": hashlib.sha256(item.encode()).hexdigest()}
+            return {key: {"$source_text": text_ids[item]}
                     if key == "excerpt" and isinstance(item, str) and counts[item] > 1
                     else intern(item) for key, item in value.items()}
         if isinstance(value, list):
@@ -70,12 +70,13 @@ def physical_prompt_view(context: dict) -> tuple[dict, dict]:
 
     count_structures(view)
     shared = {}
+    structure_ids = {key: f"V{index}" for index, key in enumerate(sorted(key for key, count in structures.items() if count > 1))}
 
     def share(value):
         if not isinstance(value, (dict, list)):
             return value
         key = structured_key(value)
-        identity = hashlib.sha256(key.encode()).hexdigest() if structures[key] > 1 else None
+        identity = structure_ids.get(key)
         if identity in shared:
             return {"$context_value": identity}
         projected = ({k: share(v) for k, v in value.items()} if isinstance(value, dict)
@@ -139,9 +140,9 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v6-shared-automatic-response"
-    PROMPT_VERSION = "post-fault-physical-scenario-v38-shared-response"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v21-shared-response"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v7-scoped-control-explanations"
+    PROMPT_VERSION = "post-fault-physical-scenario-v39-bounded-world"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v22-compact-context"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -170,6 +171,10 @@ class PhysicalScenarioAgent:
     )
     ANALYSIS_STRATEGY = (
         "本任务完成当前失效的有限条件性代表工况：先比较与故障有关的对象运动交互，再选择模型和取点。"
+        "当前输入是生成器已经按来源、道路和主要机制分开的一个代表工况，不是整个失效的唯一场景。"
+        "默认只输出一个完整假设，将指定来源焦点和对象类别落实在这个假设中。比较其他交互后可列为未覆盖条件，"
+        "不要每次又把静止、跟车、横穿全部复制一遍。只有当前输入明确包含无法由一个世界表达的不同交互时才增加假设，"
+        "总上限仍为三个；驾驶员位置、数学近似和单纯参数变化不构成新增交互。"
         "对象、方向、净距、初始运动及故障运动必须共同成立。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
         "缺少实测距离、加速度或残余阻力时，可以自行选取有场景依据的POINT并解释选值、参考点、"
@@ -502,7 +507,11 @@ class PhysicalScenarioAgent:
                 "不因此复制物理假设；没有驾驶员限定的共同动作无需此字段。"
             )
         system += ("每个hypotheses成员都必须单独填写非空basis_refs，引用所给evidence ID；"
-                   "parameters、intervention_assumptions或safe_state_proposal里的引用不能替代该字段。")
+                   "parameters、intervention_assumptions或safe_state_proposal里的引用不能替代该字段。"
+                   "每个rationale用一两句具体说明，basis_refs只列直接支持该项的引用，不复制来源全文或反复重复同一免责声明。"
+                   "共同假设在外层说明一次；只有人员条件确实改变控制路径时才给driver_control_assessments。"
+                   "已有的整车失效在人员分支继续有效；关于失效通道无法恢复的解释写在uncovered_conditions，"
+                   "不再把同一失效通道同时列入unresolved_controls。")
         attempts = []
         errors = []
         previous_response = None
@@ -548,9 +557,18 @@ class PhysicalScenarioAgent:
                             and "uncovered_conditions" in candidate["control_assessment"]):
                         candidate["uncovered_conditions"] = deepcopy(candidate["control_assessment"]["uncovered_conditions"])
                         envelope_normalization = "PROJECTED_CONTROL_LIMITS"
+                if (isinstance(candidate, dict) and "uncovered_conditions" not in candidate
+                        and isinstance(candidate.get("hypotheses"), list) and candidate["hypotheses"]
+                        and all(isinstance(h, dict) and isinstance(h.get("uncovered_conditions"), list)
+                                and all(isinstance(v, str) for v in h["uncovered_conditions"])
+                                for h in candidate["hypotheses"])):
+                    candidate["uncovered_conditions"] = list(dict.fromkeys(
+                        v for h in candidate["hypotheses"] for v in h["uncovered_conditions"]))
+                    envelope_normalization = "PROJECTED_HYPOTHESIS_LIMITS"
                 normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
                 deferred_states = []
                 control_array_normalizations = []
+                control_scope_normalizations = []
                 # An optional safe-state proposal cannot establish an unassessed
                 # or failed control. Reject that proposal locally, retaining the raw reply;
                 # do not discard otherwise valid motion or approve the control.
@@ -558,33 +576,64 @@ class PhysicalScenarioAgent:
                     for hypothesis in [*candidate["hypotheses"], candidate.get("control_assessment")]:
                         if not isinstance(hypothesis, dict):
                             continue
-                        for field in ("failed_controls", "remaining_controls"):
-                            values = hypothesis.get(field)
-                            if (isinstance(values, list) and len(values) == 1
-                                    and isinstance(values[0], list) and values[0]
-                                    and all(isinstance(v, str) and v in CONTROL_IDENTITIES for v in values[0])):
-                                hypothesis[field] = list(values[0])
-                                control_array_normalizations.append({"hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
-                                    "field": field, "normalization": "UNWRAPPED_SINGLE_CONTROL_ARRAY"})
-                        proposal = hypothesis.get("safe_state_proposal")
-                        controls = proposal.get("required_controls") if isinstance(proposal, dict) else None
-                        remaining = hypothesis.get("remaining_controls")
-                        failed = hypothesis.get("failed_controls")
-                        if (isinstance(controls, list) and controls
-                                and all(isinstance(c, str) for c in controls)
-                                and isinstance(remaining, list) and isinstance(failed, list)
-                                and all(isinstance(c, str) for c in remaining + failed)
-                                and set(controls) - set(remaining)
-                                and set(controls) <= CONTROL_IDENTITIES
-                                and isinstance(hypothesis.get("uncovered_conditions"), list)):
-                            failed_dependency = bool(set(controls) & set(failed))
-                            deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),
-                                "reason": "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
-                                "proposal": hypothesis.pop("safe_state_proposal")})
-                            hypothesis["safe_state_unresolved_reason"] = (
-                                "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
-                                "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
-                            hypothesis["uncovered_conditions"].append(hypothesis["safe_state_unresolved_reason"])
+                        scoped = [(hypothesis, [])]
+                        if isinstance(hypothesis.get("driver_control_assessments"), dict):
+                            scoped.extend((h, hypothesis.get("failed_controls", []))
+                                for h in hypothesis["driver_control_assessments"].values() if isinstance(h, dict))
+                        for controls_view, shared_failed in scoped:
+                            failed = controls_view.get("failed_controls", [])
+                            unresolved = controls_view.get("unresolved_controls", {})
+                            limits = controls_view.get("uncovered_conditions")
+                            if (isinstance(failed, list) and isinstance(shared_failed, list)
+                                    and all(isinstance(c, str) for c in failed + shared_failed)
+                                    and isinstance(unresolved, dict) and isinstance(limits, list)):
+                                # A reason why an already failed command cannot
+                                # provide a fallback is a limitation, not another
+                                # capability state. Keep the failure and its exact
+                                # explanation; never promote it to available.
+                                for control in sorted(set(failed + shared_failed) & unresolved.keys()):
+                                    reason = unresolved[control]
+                                    if isinstance(reason, str) and reason.strip() and control in CONTROL_IDENTITIES:
+                                        limits.append(f"{control}（已声明失效）：{reason}")
+                                        del unresolved[control]
+                                        control_scope_normalizations.append({"hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
+                                            "control": control, "reason": reason, "normalization": "FAILED_CONTROL_REASON_TO_LIMITATIONS"})
+                            proposal = controls_view.get("safe_state_proposal")
+                            if (isinstance(proposal, dict) and "post_stop_motion" in proposal
+                                    and isinstance(proposal.get("transition"), dict)
+                                    and "post_stop_motion" not in proposal["transition"]):
+                                proposal["transition"]["post_stop_motion"] = proposal.pop("post_stop_motion")
+                                control_scope_normalizations.append({"hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "normalization": "POST_STOP_MOTION_TO_RESPONSE_TRANSITION"})
+                        for controls_view, shared_failed in scoped:
+                            for field in ("failed_controls", "remaining_controls"):
+                                values = controls_view.get(field)
+                                if (isinstance(values, list) and len(values) == 1
+                                        and isinstance(values[0], list) and values[0]
+                                        and all(isinstance(v, str) and v in CONTROL_IDENTITIES for v in values[0])):
+                                    controls_view[field] = list(values[0])
+                                    control_array_normalizations.append({"hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
+                                        "field": field, "normalization": "UNWRAPPED_SINGLE_CONTROL_ARRAY"})
+                            proposal = controls_view.get("safe_state_proposal")
+                            controls = proposal.get("required_controls") if isinstance(proposal, dict) else None
+                            remaining = controls_view.get("remaining_controls")
+                            failed = controls_view.get("failed_controls")
+                            if (isinstance(controls, list) and controls
+                                    and all(isinstance(c, str) for c in controls)
+                                    and isinstance(remaining, list) and isinstance(failed, list)
+                                    and all(isinstance(c, str) for c in remaining + failed)
+                                    and set(controls) - set(remaining)
+                                    and set(controls) <= CONTROL_IDENTITIES
+                                    and isinstance(controls_view.get("uncovered_conditions"), list)):
+                                failed_dependency = bool(set(controls) & set(failed))
+                                deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),
+                                    **({"driver_position": next(k for k, v in hypothesis["driver_control_assessments"].items() if v is controls_view)} if controls_view is not hypothesis else {}),
+                                    "reason": "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
+                                    "proposal": controls_view.pop("safe_state_proposal")})
+                                controls_view["safe_state_unresolved_reason"] = (
+                                    "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
+                                    "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
+                                controls_view["uncovered_conditions"].append(controls_view["safe_state_unresolved_reason"])
                 plan = PhysicalScenarioPlan.from_dict(candidate, evidence_ids=set(context["evidence"]))
                 if context.get("operating_atom_options") and not controls_only:
                     for hypothesis in plan.hypotheses:
@@ -623,6 +672,7 @@ class PhysicalScenarioAgent:
                     "schema_repairs": int(repair), "model": response.model,
                     "control_envelope_normalization": envelope_normalization,
                     "control_array_normalizations": control_array_normalizations,
+                    "control_scope_normalizations": control_scope_normalizations,
                     "deferred_safe_states": deferred_states, "normalized_basis_refs": normalized_refs}
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))
