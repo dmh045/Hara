@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any
 
@@ -59,7 +60,7 @@ class HARAState:
         self.audit_trail.append({"event": event, **details})
 
     def to_dict(self) -> dict[str, Any]:
-        result = self._serialize(asdict(self))
+        result = self._serialize(self)
         result["can_publish"] = self.can_publish
         return result
 
@@ -238,10 +239,12 @@ class HARAState:
     def _serialize(cls, value: Any) -> Any:
         if isinstance(value, Enum):
             return value.value
+        if is_dataclass(value) and not isinstance(value, type):
+            return {item.name: cls._serialize(getattr(value, item.name)) for item in fields(value)}
         if isinstance(value, dict):
-            return {key: cls._serialize(item) for key, item in value.items()}
+            return {deepcopy(key): cls._serialize(item) for key, item in value.items()}
         if isinstance(value, list):
             return [cls._serialize(item) for item in value]
         if isinstance(value, tuple):
             return [cls._serialize(item) for item in value]
-        return value
+        return deepcopy(value)

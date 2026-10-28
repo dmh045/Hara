@@ -55,3 +55,46 @@ def test_old_causal_assessment_checkpoint_is_invalidated_without_losing_malfunct
         item.get("event") == "scenario_checkpoint_invalidated"
         for item in state.audit_trail
     )
+
+
+def test_single_pass_checkpoint_matches_previous_encoding_and_keeps_snapshot_isolated(tmp_path):
+    from copy import deepcopy
+    from dataclasses import asdict, dataclass
+    from enum import Enum
+    import json
+    from hara_agent.workflow import CheckpointRepository
+    from hara_agent.models import ReviewStatus, SourceRef
+    from test_autonomous_physics import make_candidate
+    @dataclass
+    class SavedAudit:
+        value: float
+        status: ReviewStatus
+        source: SourceRef
+    state = HARAState('serialization-equivalence', stage=WorkflowStage.MALFUNCTIONS,
+        scenarios=[make_candidate()], functions=[{'function_id': 'F'}],
+        item_definition={'audit': SavedAudit(-.0000001, ReviewStatus.PENDING,
+            SourceRef('item_definition', 'source', 'paragraph', '原文与否定条件')),
+            'interval': (0., 2.0000001), 'responses': [{'usage': {'prompt_tokens': 12}, 'data': [True, None]}]},
+        errors=[{'reason': 'same exception'}])
+    def legacy(value):
+        if isinstance(value, Enum): return value.value
+        if isinstance(value, dict): return {k: legacy(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)): return [legacy(v) for v in value]
+        return value
+    expected = legacy(asdict(state)); expected['can_publish'] = state.can_publish
+    snapshot = state.to_dict()
+    assert snapshot == expected
+    assert json.dumps(snapshot, ensure_ascii=False, separators=(',', ':')) == json.dumps(expected, ensure_ascii=False, separators=(',', ':'))
+    snapshot['item_definition']['responses'][0]['usage']['prompt_tokens'] = 999
+    snapshot['scenarios'][0]['facts']['ego_speed_kph'] = 99
+    assert state.to_dict() == expected
+    repo = CheckpointRepository(tmp_path)
+    before = deepcopy(expected)
+    repo.save(state)
+    assert json.loads(repo.path_for(state.run_id).read_text()) == before
+    assert repo.load(state.run_id).to_dict() == before
+    import pytest
+    state.item_definition['not_json'] = {1, 2}
+    with pytest.raises(TypeError):
+        repo.save(state)
+    assert json.loads(repo.path_for(state.run_id).read_text()) == before
