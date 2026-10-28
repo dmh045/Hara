@@ -318,7 +318,7 @@ def test_budget_stop_preserves_completed_physical_instances_before_next_plan(met
     assert child['fact_provenance']['fault_motion_model']['approval'] == 'PENDING'
 
 
-def test_existing_direct_path_never_requests_a_physical_plan(method):
+def test_existing_direct_path_without_response_policy_never_requests_a_physical_plan(method):
     from hara_agent.workflow import HARAState
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios
     class Client:
@@ -329,6 +329,10 @@ def test_existing_direct_path_never_requests_a_physical_plan(method):
     sc.fact_provenance["emergency_braking_available"] = source()
     sc.facts["collision_branches"] = [{"branch_id": "existing"}]
     sc.fact_provenance["collision_branches"] = source()
+    # With an active timing policy, C alone no longer completes the response
+    # task (covered by test_ready_c_still_gets_source_motion_response_once).
+    method = deepcopy(method)
+    method.metadata["project_analysis_policy"].pop("timing_analysis")
     state = HARAState("offline")
     result = construct_physical_scenarios(state, {"MF": [sc]}, [mf()], method=method,
         agent=PhysicalScenarioAgent(Client()), project_facts=None)

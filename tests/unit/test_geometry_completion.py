@@ -345,6 +345,21 @@ def test_actual_item_control_and_road_user_passages_are_bounded_not_summarized()
     assert any('Active/Override' in p and '驾驶员踩制动踏板' in p for p in passages)
     assert any('IPB' in p and '执行' in p for p in passages)
     assert any('行人' in p and '两轮车' in p for p in passages)
+    assert any('未及时接管' in p and '自动把车停' in p for p in passages)
+
+
+@pytest.mark.parametrize('text', [
+    '未及时接管时自动停车；本功能不覆盖执行器失效，不能据此认定故障后的通道独立性。',
+    'Automatic stop is available in normal operation, not during actuator failure.',
+])
+def test_automatic_response_retrieval_preserves_qualifiers(text):
+    from hara_agent.workflow.physical_analysis import _source_evidence
+    state = HARAState('other-item', item_definition={'source_id': 'other-document', 'blocks': [
+        {'block_id': 'B-automatic', 'text': text, 'location': 'response paragraph', 'kind': 'paragraph'}]})
+    evidence, routing = _source_evidence(state, {'name': 'unrelated function'})
+    assert evidence['ITEM.B-automatic']['value'] == text
+    assert evidence['ITEM.B-automatic']['sources'][0]['excerpt'] == text
+    assert routing['selected_characters'] <= 4000
 
 
 def test_symbolic_geometry_and_no_contact_are_valid_without_correction(method):

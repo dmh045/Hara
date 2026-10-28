@@ -40,6 +40,7 @@ def test_shared_motion_has_distinct_driver_responses_without_more_worlds(method,
     raw = timed_plan(); h = raw['hypotheses'][0]
     fields = CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL
     outside = {k: deepcopy(v) for k,v in h.items() if k in fields}
+    outside['failed_controls'] = []  # The common failure is inherited, not restored.
     outside['remaining_controls'] = ['automatic_braking_command','braking']
     outside['safe_state_proposal'].update(required_controls=outside['remaining_controls'],
         driver_positions=['outside_driver_seat'], description='Independent automatic braking stops this same vehicle')
@@ -62,6 +63,7 @@ def test_shared_motion_has_distinct_driver_responses_without_more_worlds(method,
     assert len(state.item_definition['physical_analysis_plans'])==1
     assert children[0].facts['motion_model_outcome']==children[1].facts['motion_model_outcome']
     for c in children:
+        assert c.facts['physical_analysis']['hypothesis']['failed_controls']==h['failed_controls']
         controls=c.facts['physical_analysis']['hypothesis']['safe_state_proposal']['required_controls']
         assert ('driver_braking' in controls)==c.facts['driver_in_vehicle']
         timing=RiskCalculationInputService().ftti('MF',c.scenario_id,'',
@@ -73,6 +75,16 @@ def test_shared_motion_has_distinct_driver_responses_without_more_worlds(method,
     bad['hypotheses'][0]['driver_control_assessments']['outside_driver_seat']['safe_state_proposal']['required_controls']=['driver_braking']
     with pytest.raises(ValueError):
         PhysicalScenarioPlan.from_dict(bad,evidence_ids={'MF.description'})
+    restored=deepcopy(raw)
+    restored['hypotheses'][0]['driver_control_assessments']['outside_driver_seat']['remaining_controls']+=h['failed_controls']
+    with pytest.raises(ValueError, match='failed control cannot be a remaining control'):
+        PhysicalScenarioPlan.from_dict(restored,evidence_ids={'MF.description'})
+    failed_actuator=deepcopy(raw)
+    failed_actuator['hypotheses'][0]['failed_controls']=['braking']
+    failed_actuator['hypotheses'][0]['driver_control_assessments']['outside_driver_seat']['remaining_controls']=['driver_braking']
+    failed_actuator['hypotheses'][0]['driver_control_assessments']['outside_driver_seat'].pop('safe_state_proposal')
+    with pytest.raises(ValueError, match='failed braking capability'):
+        PhysicalScenarioPlan.from_dict(failed_actuator,evidence_ids={'MF.description'})
     from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
     unknown=deepcopy(parents[0])
     unknown.facts.pop('driver_position');unknown.facts.pop('driver_in_vehicle')
@@ -100,6 +112,55 @@ def test_unassessed_outside_response_uses_one_shared_correction_and_keeps_motion
     assert client.calls==2 and len(children)==1
     assert children[0].facts['physical_analysis']['hypothesis']['parameters']==raw['hypotheses'][0]['parameters']
     assert 'No compatible outside' in children[0].facts['physical_analysis']['hypothesis']['safe_state_unresolved_reason']
+
+
+def test_shared_automatic_response_survives_driver_only_deltas(method, tmp_path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import controls_for_driver
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    raw=timed_plan();h=raw['hypotheses'][0]
+    h['remaining_controls']=['automatic_braking_command','braking']
+    h['safe_state_proposal'].update(required_controls=h['remaining_controls'],
+        driver_positions=['in_driver_seat','outside_driver_seat'])
+    h['driver_control_assessments']={position:{
+        'rationale':'Personnel-specific addition to the common automatic response',
+        'basis_refs':['MF.description'], 'conditions':['Common automatic path remains usable'],
+        'uncovered_conditions':['Common-cause failure excluded'], 'failed_controls':[],
+        'remaining_controls':['driver_braking'] if position=='in_driver_seat' else []}
+        for position in ['in_driver_seat','outside_driver_seat']}
+    original=deepcopy(raw)
+    class Client:
+        calls=0
+        def complete_json(self,request):
+            self.calls+=1
+            return LLMResponse(raw,'OFFLINE')
+    client=Client();parents=[make_candidate(3.6),make_candidate(3.6)]
+    for i,p in enumerate(parents):
+        p.scenario_id=f'automatic-{i}';p.facts.update(driver_in_vehicle=i==0,
+            driver_position='in_driver_seat' if i==0 else 'outside_driver_seat')
+    state=HARAState('shared-automatic',malfunctions=[asdict(mf())])
+    agent=PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path)
+    def run(st):return construct_physical_scenarios(st,{'MF':parents},[mf()],method=method,agent=agent,project_facts=None)['MF']
+    children=run(state)
+    assert len(children)==2 and client.calls==1 and raw==original
+    times=[]
+    for c in children:
+        effective=c.facts['physical_analysis']['hypothesis']
+        assert effective['safe_state_proposal']==h['safe_state_proposal']
+        assert ('driver_braking' in effective['remaining_controls'])==c.facts['driver_in_vehicle']
+        timing=RiskCalculationInputService().ftti('MF',c.scenario_id,'',
+            {**c.facts,'_fact_provenance':c.fact_provenance},method=method)
+        times.append(timing.hazard_time_limit_s)
+    assert times[0]==times[1] and times[0]>0
+    assert run(HARAState.read_committed(json.loads(json.dumps(state.to_dict()))))==children and client.calls==1
+    for change in ['local_gap','manual','scope','failed','unresolved']:
+        variant=deepcopy(h);local=variant['driver_control_assessments']['outside_driver_seat']
+        if change=='local_gap':local['safe_state_unresolved_reason']='This configuration disables the automatic response'
+        if change=='manual':variant['safe_state_proposal']['required_controls']=['driver_braking']
+        if change=='scope':variant['safe_state_proposal']['driver_positions']=['in_driver_seat']
+        if change=='failed':local['failed_controls']=['braking']
+        if change=='unresolved':local['unresolved_controls']={'braking':'not established for this configuration'}
+        assert 'safe_state_proposal' not in controls_for_driver(variant,'outside_driver_seat'),change
 
 
 def existing_motion(inside=True):
@@ -220,6 +281,62 @@ def test_existing_physical_proposal_does_not_fan_out_unresolved_controls(method)
     child = instantiate(method)[0]  # Valid motion, no declared remaining braking capability.
     assert not score(method, child)['controllability']['controllability_score']
     assert PhysicalHypothesisInstantiationService(method).task_scope(child, 'MF') == ''
+
+
+@pytest.mark.parametrize('failed_command', ['automatic_drive_command', 'automatic_steering_command', 'automatic_parking_command'])
+def test_ready_c_still_gets_source_motion_response_once(method, tmp_path, failed_command):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from test_p7_closure import source
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    fields = CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL
+    h = timed_plan()['hypotheses'][0]
+    assessment = {k: deepcopy(v) for k, v in h.items() if k in fields}
+    assessment['failed_controls'] = [failed_command]
+    assessment['remaining_controls'] = ['automatic_braking_command', 'braking']
+    assessment['safe_state_proposal'].update(required_controls=assessment['remaining_controls'],
+        driver_positions=['outside_driver_seat'], description='自动制动至停止；制动命令和执行器未受本输出故障影响')
+    raw = {'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': assessment}
+    parent = existing_motion(False)
+    for field, value in {'fault_motion_model': 'CONSTANT_SPEED_REPRESENTATIVE',
+                         'object_speed_kph': 0, 'ego_longitudinal_direction': 'FORWARD'}.items():
+        parent.facts[field] = value
+        parent.fact_provenance[field] = source()
+    original = deepcopy(parent)
+    assert score(method, parent)['controllability']['controllability_score'] == 'C3'
+    assert PhysicalHypothesisInstantiationService(method).task_scope(parent, 'MF') == 'CONTROL_INPUTS_ONLY'
+    without_timing = deepcopy(method)
+    without_timing.metadata['project_analysis_policy'].pop('timing_analysis')
+    assert PhysicalHypothesisInstantiationService(without_timing).task_scope(parent, 'MF') == ''
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            assert 'CONTROL_INPUTS_ONLY' in request.user_prompt
+            assert failed_command in request.user_prompt
+            return LLMResponse(raw, 'OFFLINE_SYNTHETIC')
+    client = Client()
+    state = HARAState('ready-c-response', malfunctions=[asdict(mf())])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    def run(st, p):
+        return construct_physical_scenarios(st, {'MF': [p]}, [mf()], method=method,
+            agent=agent, project_facts=None)['MF'][0]
+    child = run(state, parent)
+    assert client.calls == 1 and parent == original
+    assert child.facts['collision_branches'] == parent.facts['collision_branches']
+    assert score(method, child)['controllability']['controllability_score'] == 'C3'
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.status.value == 'CONDITIONAL' and timing.hazard_time_limit_s > 0, timing.reason
+    assert child.fact_provenance['control_analysis']['approval'] == 'PENDING'
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    assert run(restored, parent) == child
+    assert run(restored, child) == child and client.calls == 1
+    bad = deepcopy(raw)
+    bad['control_assessment']['failed_controls'].append('braking')
+    with pytest.raises(ValueError, match='failed control cannot be a remaining'):
+        PhysicalScenarioPlan.from_dict(bad, evidence_ids={'MF.description'})
 
 
 def proposal_plan():

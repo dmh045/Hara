@@ -29,6 +29,24 @@ def test_bound_child_object_replaces_parent_search_categories(target,expected,st
     assert child==before
 
 
+@pytest.mark.parametrize('direction,speed,expected', [
+    ('STATIONARY', 0, '静止其他车辆'),
+    ('RIGHT', 3.6, '向车体右侧横穿'),
+    ('REVERSE', 5, '沿车体后向运动'),
+])
+def test_physical_child_traffic_uses_trajectory_not_parent_search(direction,speed,expected):
+    child=SimpleNamespace(facts={'road_user_type':'VEHICLE', 'object_position':'LEFT',
+        'object_speed_kph':speed, 'object_longitudinal_direction':direction,
+        'physical_analysis':{'hypothesis':{'model':'source-dependent'}}},
+        analysis_instance={'structured_semantic_query':{'traffic_relations':['TRAFFIC_ONCOMING']}})
+    before=deepcopy(child)
+    mapper=EngineeringReportTextMapper()
+    rendered=' '.join((*mapper.scenario(child),mapper.object_interaction_summary(child)))
+    assert expected in rendered and '对向交通' not in rendered and child==before
+    parent=deepcopy(child);parent.facts.pop('physical_analysis')
+    assert '对向交通' in mapper.scenario(parent)[0]
+
+
 @pytest.fixture
 def real_sample():
     fixture = json.loads((Path(__file__).parents[1] / 'fixtures/report_numeric_physics_e2e_20261019.json').read_text())

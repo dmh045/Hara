@@ -247,6 +247,7 @@ class OpenAICompatibleClient:
                 request.task in {"assess_scenario_feasibility", "construct_post_fault_physical_scenario"}
                 and format_retry_attempt == 0
                 and not bool(request.metadata.get("strict_no_format_retry"))
+                and not diagnostics.get("duplicate_keys")
             ):
                 retry_metadata = dict(request.metadata)
                 retry_metadata["_format_retry_attempt"] = 1
@@ -813,8 +814,20 @@ class OpenAICompatibleClient:
         if fenced:
             candidate = fenced.group(1).strip()
             fence_removed = True
+        duplicate_keys = set()
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    duplicate_keys.add(key)
+                result[key] = value
+            return result
         try:
-            parsed = json.loads(candidate)
+            parsed = json.loads(candidate, object_pairs_hook=unique_object)
+            if duplicate_keys:
+                # Choosing first/last here can silently erase hypotheses or
+                # change a parameter. This is not a punctuation-only repair.
+                raise json.JSONDecodeError("Duplicate JSON object keys: " + ", ".join(sorted(duplicate_keys)), candidate, 0)
         except json.JSONDecodeError as exc:
             diagnostics = {
                 "task": request.task,
@@ -828,6 +841,7 @@ class OpenAICompatibleClient:
                 "scenario_count": request.metadata.get("scenario_count", ""),
                 "json_error_type": type(exc).__name__,
                 "json_error_message": exc.msg,
+                "duplicate_keys": sorted(duplicate_keys),
                 "json_error_excerpt": candidate[max(0, exc.pos-120):exc.pos] + " <-- parse error --> " + candidate[exc.pos:exc.pos+120],
                 "json_error_line": exc.lineno,
                 "json_error_column": exc.colno,

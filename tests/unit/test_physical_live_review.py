@@ -159,10 +159,11 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v35-scoped-response')
+            assert request.prompt_version.endswith('v38-shared-response')
             assert '不得仅凭标线认定车辆/行人无法跨越' in request.system_prompt
             assert 'driver_control_assessments' in request.system_prompt
             assert payload['output_contract']['driver_control_assessments']['entry_shape']['failed_controls']==[]
+            assert 'driver_control_assessments' not in payload['output_shape']['hypotheses'][0]
             assert '人员缺席' in request.system_prompt
             assert payload['output_contract']['response_timing'] == policy['timing_analysis']
             assert payload['output_contract']['control_arrays']['shape_example'] == ['driver_braking', 'braking']

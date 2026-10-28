@@ -184,6 +184,10 @@ class EngineeringReportTextMapper:
             for item in query.get(field, [])
         }
         facts = getattr(scenario, "facts", {}) or {}
+        if facts.get("physical_analysis"):
+            # The parent query is a search space, not the instantiated target's
+            # traffic relation. Its actual position/direction is rendered below.
+            categories = {category for category in categories if not category.startswith("TRAFFIC_")}
         scoped_object = {
             "VEHICLE": "OBJECT_VEHICLE", "PASSENGER_CAR": "OBJECT_VEHICLE",
             "PEDESTRIAN": "OBJECT_PEDESTRIAN", "CYCLIST": "OBJECT_CYCLIST",
@@ -1066,6 +1070,8 @@ class EngineeringReportTextMapper:
             return None
         labels = {"driver_braking": "驾驶员制动踏板", "braking": "制动执行器",
                   "automatic_braking_command": "自动制动命令链", "remote_control": "远程控制链",
+                  "automatic_drive_command": "自动驱动命令链", "automatic_steering_command": "自动转向命令链",
+                  "automatic_parking_command": "自动驻车命令链",
                   "parking_hold": "驻车保持", "steering": "转向", "drive": "驱动",
                   "speed_limiter": "限速控制"}
         controls = tuple(sorted(candidate.get("required_controls", [])))

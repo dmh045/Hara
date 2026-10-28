@@ -72,7 +72,7 @@ class PhysicalHypothesisInstantiationService:
         return old == proposed
 
     def task_scope(self, candidate, malfunction_id):
-        """Retain solved motion; ask only for unresolved control inputs."""
+        """Retain solved motion; assess its controls and response once."""
         scope = dict(malfunction_id=malfunction_id, scenario_id=candidate.scenario_id)
         if not (candidate.facts.get("collision_branches") and
                 source_is_accepted_for(candidate.fact_provenance.get("collision_branches", {}), **scope)):
@@ -85,6 +85,11 @@ class PhysicalHypothesisInstantiationService:
             # The motion task already requested control capabilities. Do not
             # fan a saved plan's unresolved assumptions into another paid pass.
             return ""
+        if self.method.metadata.get("project_analysis_policy", {}).get("timing_analysis"):
+            # C readiness does not establish a reachable safe state or a timed
+            # response. Existing source/method motion needs the same assessment
+            # already requested by the autonomous motion path.
+            return "CONTROL_INPUTS_ONLY"
         from .hazardous_event_risk_context_service import HazardousEventRiskContextService
         from hara_agent.contracts import RiskContextFactStatus
         contexts = HazardousEventRiskContextService(self.method)

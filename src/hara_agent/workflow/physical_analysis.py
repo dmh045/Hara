@@ -19,6 +19,7 @@ def _source_evidence(state, function):
     """Route bounded original passages, never infer a control or interaction."""
     specs = [
         FactRetrievalSpec("intervention", ("制动踏板", "接管", "驾驶员干预", "remote", "brake pedal", "override")),
+        FactRetrievalSpec("automatic_stop", ("自动停", "自动把车停", "automatic stop", "safe stop")),
         FactRetrievalSpec("interfaces", ("IPB", "EPS", "VDC", "EPB", "interface", "接口")),
         FactRetrievalSpec("participants", ("行人", "两轮车", "车辆", "pedestrian", "traffic")),
     ]

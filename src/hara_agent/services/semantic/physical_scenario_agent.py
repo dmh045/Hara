@@ -139,19 +139,26 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v3-complete-json"
-    PROMPT_VERSION = "post-fault-physical-scenario-v35-scoped-response"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v18-scoped-response"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v6-shared-automatic-response"
+    PROMPT_VERSION = "post-fault-physical-scenario-v38-shared-response"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v21-shared-response"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
-        "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
-        "也不能仅凭正常退出动作就把故障后独立性当成事实。允许在相容的代表工况中明确假设某独立通道仍可用，"
+        "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
+        "驱动/转向/制动/驻车命令异常分别用automatic_drive_command/automatic_steering_command/automatic_braking_command/automatic_parking_command；"
+        "drive/steering/braking/parking_hold表示执行能力本身，只有该能力受本次故障影响时才列为failed。"
+        "同一控制器发出多种命令不等于本次一个输出故障使所有命令和执行器同时失效。也不能仅凭正常退出动作就把故障后独立性当成事实。"
+        "优先评估已有自动处置链，人工踏板和远程处置分别限于适用人员配置。允许在相容的代表工况中明确假设未受本故障影响的命令链及执行器仍可用，"
+        "例如本次定义为单一驱动输出信号超量，可在已有制动接口和自动停车功能的基础上，提出故障限于驱动输出、自动制动链仍工作的代表假设；"
+        "不把它称为已验证冗余，控制器共同故障另列未覆盖条件。驻车输出异常也不自动排除常规制动持续保持。"
         "用remaining_controls和conditions说明该假设成立所需条件及不覆盖的共同失效；"
         "这些是待审核的分析假设，不要求原文逐字证明故障后可靠性。原文未证明不是拒绝所有条件性假设的理由。"
         "对远程干预和目标规避，同样需要在本代表的几何、可见性、突发性和行为条件下判断；"
         "有合理依据时提出明确true或false及条件，不能把未提及、静止、车外直接当作false。"
         "不要为得到完整评级机械填值，也不要额外假定独立故障。若连条件性工况也无法合理成立，具体说明矛盾或方法缺口。"
         "driver_configurations已列明将要实例化的驾驶员配置；能力是否保留与人员是否在驾驶位分开，不重写这些配置。"
+        "人员不在驾驶位只取消直接踏板/方向盘操作；若同一代表已假设自动制动链可用，不得仅因换驾驶员位置就把它改成未知。"
+        "若自动响应确有驾驶员在位使能条件，引用该条件并限定作用域；不得把未验证独立性这一共有假设只在一个人员分支当作拒绝理由。"
         "当intervention_inputs包含emergency_braking_available且存在车内驾驶员时，必须分析制动能力："
         "用failed_controls或remaining_controls声明结论；若检查来源与故障后仍无法合理提出条件性结论，"
         "在同一假设或control_assessment的unresolved_controls.braking中说明具体原因。"
@@ -373,11 +380,10 @@ class PhysicalScenarioAgent:
             # out of scope. Avoid contradictory motion-generation instructions.
             system = (
                 "你是故障后物理场景分析员。当前轨迹和碰撞条件已经由现有生产路径确定。"
-                "本次只分析 intervention_inputs 中缺少的干预能力，不重新生成运动、参数、对象或碰撞分支。"
+                "本次分析缺少的干预能力、安全状态和响应时间输入；即使C输入已完整，也须检查尚未分析的安全状态和时间响应。不重新生成运动、参数、对象或碰撞分支。"
                 "读取 context 的原文、限定与来源；$context_ref和$source_text是完整来源引用；"
                 "$context_value指向context.$context_values中的完整结构，可递归引用，来源、对象与阶段未省略。"
-                "根据功能、失效作用范围及现有条件，区分自动指令故障 automatic_braking_command、"
-                "制动能力本身 braking 和独立驾驶员制动路径 driver_braking。已有明确控制条件必须保留。"
+                "根据功能、失效作用范围及现有条件区分各自动命令、执行能力和独立驾驶员制动路径。已有明确控制条件必须保留。"
                 "正常时踩制动能退出功能，不等于故障后独立制动一定有效；允许有依据的条件性能力假设，"
                 "明确写出适用条件，不能声称工程批准。驾驶员位置由各分支提供，本任务不改变它。"
                 "远程干预和目标规避通过 intervention_assumptions 表达，每项包含 value 布尔值、"
@@ -407,15 +413,9 @@ class PhysicalScenarioAgent:
             "需要实体阻挡时，必须另行说明实际对象及其来源或明确条件性假设、位置和净距；"
             "未提出实体障碍时，不把遵循标线的正常规划约束变成故障后硬物理边界。"
         )
-        # Show the nested structure once. The common assessment serves the
-        # default driver; only a genuinely different configuration overrides it.
-        shape_owner = (content["output_shape"]["control_assessment"] if controls_only
-                       else example["hypotheses"][0])
-        shape_owner["driver_control_assessments"] = {"outside_driver_seat": {
-            "rationale": "assess the different control path for this position",
-            "basis_refs": ["MF.description"], "conditions": ["conditional applicability"],
-            "uncovered_conditions": [], "failed_controls": [], "remaining_controls": [],
-            "safe_state_unresolved_reason": "replace with a supported proposal or a concrete incompatibility"}}
+        # Optional per-driver responses are described once in output_contract.
+        # Pre-filling one in output_shape encouraged two full copies even when
+        # the same automatic response applies to both configurations.
         system += (
             "安全状态和时间分析在同一次请求内完成，不另造运动世界：每个假设/control_assessment给出"
             "safe_state_proposal或safe_state_unresolved_reason。proposal包含description、required_controls、"
@@ -428,7 +428,9 @@ class PhysicalScenarioAgent:
             "safe_state_proposal或safe_state_unresolved_reason、hazard_timing或timing_unresolved_reason。"
             "该对象可放在hypothesis或control_assessment内；不要复制运动假设，不新增参数取点。"
             "共同控制分析写在外层；仅把不同配置写入driver_control_assessments，避免外层与两个配置重复三份。"
+            "若同一自动响应同时适用于所给驾驶员配置，直接在外层写一次，不输出driver_control_assessments。"
             "输出格式化JSON，数组用方括号闭合，对象用花括号闭合；不要在未闭合的conditions数组内开始下一个字段。"
+            "每个对象的键只能出现一次；末尾不得再次输出hypotheses空数组来覆盖前面的方案。"
             "不在驾驶位表示人员不能直接踩踏板，不表示driver_braking通道发生故障，不能因此把它加入failed_controls。"
             "共同故障保留在各配置；不可操作的响应在该配置省略并说明，不能把人员缺席写成硬件失效。"
             "明确说明每个所请求驾驶员位置的处置或具体缺口；不能只写车内方案就默认完成车外分析。"

@@ -197,3 +197,25 @@ def test_scenario_adapter_does_not_attempt_third_json_recovery_call():
         ))
 
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize('content,key', [
+    ('{"hypotheses":[{"hypothesis_id":"h1"}],"hypotheses":[],"uncovered_conditions":[]}', 'hypotheses'),
+    ('{"hypotheses":[{"parameters":[{"value":2,"value":0}]}]}', 'value'),
+    ('{"assessments":[{"causally_relevant":true,"causally_relevant":false}]}', 'causally_relevant'),
+])
+def test_duplicate_keys_cannot_discard_a_plan_or_select_a_different_value(content, key):
+    calls = []
+    client = _sequenced_scenario_client([content], calls)
+    with pytest.raises(LLMJSONContractError) as error:
+        client.complete_json(_schema_request('construct_post_fault_physical_scenario', 'PhysicalScenarioPlan'))
+    assert error.value.diagnostics['duplicate_keys'] == [key]
+    assert len(calls) == 1  # Ambiguous content is not a syntax-only repair.
+
+
+def test_same_key_in_distinct_objects_is_not_a_duplicate():
+    calls = []
+    content = '{"hypotheses":[{"parameters":[{"value":2},{"value":0}]}]}'
+    response = _sequenced_scenario_client([content], calls).complete_json(
+        _schema_request('construct_post_fault_physical_scenario', 'PhysicalScenarioPlan'))
+    assert response.data == json.loads(content) and len(calls) == 1

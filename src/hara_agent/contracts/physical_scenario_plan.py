@@ -49,9 +49,10 @@ MODEL_CATALOG = {
         "scope": "Body frame x forward, y left; initial target-center offsets signed. Ego straight constant acceleration along its travel direction, target constant velocity FORWARD/REVERSE/LEFT/RIGHT. Axis-aligned contact envelope half-length/width is the SUM of ego and target projected half-extents, justified as assumptions, not measured dimensions. First simultaneous x/y overlap within explicit horizon. By default evaluation ends at ego stop. Optional hypothesis.post_stop_motion=HOLD_POSITION explicitly assumes ego remains at its stopping position for the remaining horizon; explain its compatibility with grade and failed/remaining controls in conditions and rationale. This allows a moving target to contact the stopped ego without reversing it. Supports following, oncoming, rear approach and crossing; no turns, reversal or independent speed cap. Crossing contact time is not longitudinal TTC.",
     },
 }
-# Legacy "braking" means the braking capability itself. Command-path failure
-# and an independently available driver path need separate identities.
+# Existing drive/steering/braking/parking_hold identities retain their capability
+# meaning in saved plans. A failed output command does not itself fail an actuator.
 CONTROL_IDENTITIES = {"drive", "steering", "braking", "automatic_braking_command", "driver_braking",
+                      "automatic_drive_command", "automatic_steering_command", "automatic_parking_command",
                       "parking_hold", "speed_limiter", "remote_control"}
 CONTROL_ASSESSMENT_REQUIRED = {"rationale", "basis_refs", "conditions", "uncovered_conditions",
                                "failed_controls", "remaining_controls"}
@@ -60,12 +61,32 @@ CONTROL_ASSESSMENT_OPTIONAL = {"intervention_assumptions", "unresolved_controls"
 
 
 def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
-    """Select a complete scoped assessment; never inherit the other driver's path."""
+    """Retain shared faults/automatic response and scope personnel-specific paths."""
     assessment = hypothesis.get("driver_control_assessments", {}).get(driver_position)
     if assessment is None:
         return hypothesis
     fields = {"failed_controls", "remaining_controls"} | CONTROL_ASSESSMENT_OPTIONAL
     selected = {**{k: v for k, v in hypothesis.items() if k not in fields}, **assessment}
+    # Changing the responding driver does not remove the shared physical fault.
+    # Only additional failures may be scoped; personnel paths stay branch-local.
+    selected["failed_controls"] = list(dict.fromkeys([
+        *hypothesis["failed_controls"], *assessment["failed_controls"]]))
+    shared_response = hypothesis.get("safe_state_proposal", {})
+    required = set(shared_response.get("required_controls", []))
+    if ("automatic_braking_command" in required
+            and not required & {"driver_braking", "remote_control"}
+            and not required & (set(selected["failed_controls"]) | set(assessment.get("unresolved_controls", {})))
+            and (not shared_response.get("driver_positions") or driver_position in shared_response["driver_positions"])
+            and "safe_state_proposal" not in assessment and "safe_state_unresolved_reason" not in assessment):
+        # A driver-only delta does not cancel a shared automatic response.
+        # Explicit local proposals/gaps take precedence; manual/remote paths
+        # never acquire an extra personnel scope through inheritance.
+        selected["safe_state_proposal"] = shared_response
+        selected["remaining_controls"] = list(dict.fromkeys([
+            *assessment["remaining_controls"], *shared_response["required_controls"]]))
+        if ("hazard_timing" in hypothesis and "hazard_timing" not in assessment
+                and "timing_unresolved_reason" not in assessment):
+            selected["hazard_timing"] = hypothesis["hazard_timing"]
     for field in ("basis_refs", "conditions", "uncovered_conditions"):
         selected[field] = list(dict.fromkeys([*hypothesis.get(field, []), *assessment[field]]))
     selected["rationale"] = hypothesis["rationale"] + "\n" + assessment["rationale"]
@@ -143,8 +164,9 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         assessments = _object(h["driver_control_assessments"], set(), {"in_driver_seat", "outside_driver_seat"})
         for driver, assessment in assessments.items():
             _validate_control_assessment(assessment, evidence_ids)
-            if not set(h["failed_controls"]) <= set(assessment["failed_controls"]):
-                raise ValueError("Driver response cannot restore a control failed in the shared world")
+            effective = controls_for_driver(h, driver)
+            effective.pop("driver_control_assessments", None)
+            _validate_controls(effective, evidence_ids)
             proposal = assessment.get("safe_state_proposal", {})
             if (driver == "outside_driver_seat" and "driver_braking" in proposal.get("required_controls", [])
                     or proposal.get("driver_positions") and driver not in proposal["driver_positions"]):
