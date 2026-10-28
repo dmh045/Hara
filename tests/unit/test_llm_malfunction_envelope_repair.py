@@ -219,3 +219,25 @@ def test_same_key_in_distinct_objects_is_not_a_duplicate():
     response = _sequenced_scenario_client([content], calls).complete_json(
         _schema_request('construct_post_fault_physical_scenario', 'PhysicalScenarioPlan'))
     assert response.data == json.loads(content) and len(calls) == 1
+
+
+@pytest.mark.parametrize('provider,task,expected', [
+    ('volcengine-agent-plan', 'construct_post_fault_physical_scenario', ['disabled', 'enabled']),
+    ('volcengine-agent-plan', 'assess_scenario_feasibility', ['disabled', 'disabled']),
+    ('openai-compatible', 'construct_post_fault_physical_scenario', [None, None]),
+])
+def test_only_existing_physical_format_retry_uses_supported_reasoning(provider, task, expected, tmp_path):
+    from dataclasses import replace
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+    calls = []
+    content = '{"hypotheses":[],"uncovered_conditions":[]}' if task.startswith('construct') else '{"assessments":[]}'
+    client = _sequenced_scenario_client([content[:-1], content], calls)
+    client.config = replace(client.config, provider=provider, scenario_thinking='disabled')
+    client.attempt_budget = ProviderAttemptBudget(tmp_path/'attempts.jsonl', run_id='format-reasoning', limit=2)
+    response = client.complete_json(_schema_request(task,
+        'PhysicalScenarioPlan' if task.startswith('construct') else 'ScenarioFeasibilityAssessmentList'))
+    assert [json.loads(body).get('thinking', {}).get('type') for body in calls] == expected
+    assert len(calls) == client.attempt_budget.attempts == response.usage['transport_attempts'] == 2
+    assert response.usage['format_retry_calls'] == 1
+    assert response.data == json.loads(content)
+    assert client.config.scenario_thinking == 'disabled'  # No shared config mutation between workers.

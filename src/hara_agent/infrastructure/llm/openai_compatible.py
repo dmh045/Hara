@@ -116,6 +116,11 @@ class OpenAICompatibleClient:
         if request.response_format is not None:
             body["response_format"] = request.response_format
         thinking_mode = self._resolve_thinking_mode(request.task)
+        if (request.task == "construct_post_fault_physical_scenario"
+                and request.metadata.get("_format_retry_attempt") == 1
+                and request.metadata.get("_format_retry_thinking") == "enabled"
+                and self.config.provider in self.THINKING_CAPABLE_PROVIDERS):
+            thinking_mode = "enabled"
         if thinking_mode in {"disabled", "enabled", "auto"}:
             body["thinking"] = {"type": thinking_mode}
         headers = {
@@ -251,6 +256,13 @@ class OpenAICompatibleClient:
             ):
                 retry_metadata = dict(request.metadata)
                 retry_metadata["_format_retry_attempt"] = 1
+                if (request.task == "construct_post_fault_physical_scenario"
+                        and thinking_mode == "disabled"
+                        and self.config.provider in self.THINKING_CAPABLE_PROVIDERS):
+                    # Real nested control replies failed a second non-reasoning
+                    # syntax pass. Use reasoning for this existing compact
+                    # punctuation-only retry, not for all physical/causal tasks.
+                    retry_metadata["_format_retry_thinking"] = "enabled"
                 retry = self.complete_json(LLMRequest(
                     task=request.task,
                     system_prompt=(

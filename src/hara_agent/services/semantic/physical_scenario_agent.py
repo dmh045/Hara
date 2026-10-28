@@ -140,7 +140,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v7-scoped-control-explanations"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v8-bounded-format-reasoning"
     PROMPT_VERSION = "post-fault-physical-scenario-v39-bounded-world"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v22-compact-context"
     CONTROL_ANALYSIS_POLICY = (
