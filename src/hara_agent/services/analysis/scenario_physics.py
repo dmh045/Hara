@@ -412,14 +412,16 @@ def braking_avoidability_boundary(speed_mps: float, acceleration_mps2: float,
             "distance_residual_m": v*delay+a*delay*delay/2+onset_speed*onset_speed/(2*b)-d}
 
 
-def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: float) -> dict:
+def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: float,
+                                        *, release_deceleration: bool = False) -> dict:
     """First loss of the immediate-braking-connected safe window.
 
     Target motion and the contact envelope are unchanged. For each response
     delay, minimize longitudinal separation analytically over the lateral
-    overlap interval, through fault motion, braking and a held stop. If braking
-    is at least as strong as the fault deceleration, ego progress is monotone
-    in response delay. Bisection then brackets the FIRST loss of separation;
+    overlap interval, through fault motion, braking and a held stop. Ego
+    progress is monotone in response delay with the sign of a+b, including a
+    weaker braking response that releases excessive fault deceleration. Follow
+    the initial safe side of the envelope, then bracket its FIRST loss;
     it does not assume arbitrary crossing-contact outcomes are monotone.
     """
     original = rectilinear_moving_contact(facts)
@@ -427,8 +429,10 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
         return {"status": "NO_UNMITIGATED_CONTACT_BOUNDARY", "original": original}
     b = _nonnegative_number(net_deceleration_mps2)
     v, a = facts["ego_speed_kph"]/3.6, facts["longitudinal_acceleration_mps2"]
-    if not b or a < -b:
-        return {"status": "RESPONSE_NOT_STRONGER_THAN_FAULT_DECELERATION"}
+    if release_deceleration and (a >= 0 or v <= 0 or b != 0):
+        return {"status": "FAULT_RELEASE_NOT_APPLICABLE"}
+    if b is None or not b and not release_deceleration:
+        return {"status": "RESPONSE_INPUTS_UNRESOLVED"}
     horizon = facts["model_valid_until_s"]
     sign = 1 if facts["ego_longitudinal_direction"] == "FORWARD" else -1
     vectors = {"FORWARD": (1, 0), "REVERSE": (-1, 0), "LEFT": (0, 1), "RIGHT": (0, -1)}
@@ -442,12 +446,12 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
 
     def separation(delay):
         onset_speed = max(0.0, v+a*delay)
-        stop = delay+onset_speed/b
+        stop = delay+onset_speed/b if b else horizon
         onset_position = v*delay+a*delay*delay/2
         def position(t):
             if t <= delay:
                 return v*t+a*t*t/2
-            elapsed = min(t-delay, onset_speed/b)
+            elapsed = min(t-delay, onset_speed/b) if b else t-delay
             return onset_position+onset_speed*elapsed-b*elapsed*elapsed/2
         # Global linear/quadratic coefficients locate extrema; positions below
         # are evaluated in local phase time for numerical stability.
@@ -468,17 +472,35 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
             extrema.extend((math.fsum((dx, sign*ux*t, -position(t))), t) for t in points)
         minimum, at = min(extrema)
         return {"clearance_m": minimum-hx, "minimum_at_s": at,
+                "minimum_separation_m": minimum,
                 "maximum_separation_m": max(x for x, _ in extrema),
-                "brake_onset_speed_mps": onset_speed, "stopping_time_s": onset_speed/b,
-                "stopping_distance_m": onset_speed*onset_speed/(2*b), "stop_time_s": stop}
+                "brake_onset_speed_mps": onset_speed, "stopping_time_s": onset_speed/b if b else None,
+                "stopping_distance_m": onset_speed*onset_speed/(2*b) if b else None,
+                "stop_time_s": stop if b else None}
 
     immediate = separation(0.0)
-    common = {"response_model_family": "MOVING_TARGET_BRAKING",
+    common = {"response_model_family": "MOVING_TARGET_FAULT_RELEASE" if release_deceleration else "MOVING_TARGET_BRAKING",
               "original_contact_time_s": original["time_s"], "evaluated_until_s": horizon,
-              "lateral_overlap_interval_s": [start_y, end_y], "post_stop_motion": "HOLD_POSITION",
+              "lateral_overlap_interval_s": [start_y, end_y],
+              "response_motion": "CONTINUE_AT_ONSET_SPEED" if release_deceleration else "BRAKE_AND_HOLD",
+              **({} if release_deceleration else {"post_stop_motion": "HOLD_POSITION"}),
               "immediate_response": immediate}
-    if immediate["clearance_m"] <= 0:
+    # Longitudinal separation is continuous over one lateral-overlap interval.
+    # No contact means the target stays wholly ahead OR wholly behind. Using
+    # only the minimum would falsely reject every initially safe rear relation.
+    safe_side = (1 if immediate["minimum_separation_m"] > hx else
+                 -1 if immediate["maximum_separation_m"] < -hx else 0)
+    if not safe_side:
         return {**common, "status": "NO_IMMEDIATE_SAFE_BRAKING_WINDOW"}
+    def margin(result):
+        return (result["minimum_separation_m"]-hx if safe_side == 1 else
+                -result["maximum_separation_m"]-hx)
+    immediate["clearance_m"] = margin(immediate)
+    common["response_clearance_side"] = "TARGET_AHEAD" if safe_side == 1 else "TARGET_BEHIND"
+    # d(progress)/d(delay) has the sign of a+b before and after the stop.
+    # The selected side must lose margin as delay grows towards original contact.
+    if safe_side*(a+b) <= 0:
+        return {**common, "status": "RESPONSE_BOUNDARY_UNRESOLVED"}
     # If the fault trajectory already decelerates to a held stop, delaying
     # braking beyond that stop cannot restart it. The original later contact
     # may be the target arriving at the held vehicle; use the natural stop as
@@ -489,14 +511,15 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
         middle = (lo+hi)/2
         if middle in (lo, hi):
             break
-        if separation(middle)["clearance_m"] > 0:
+        if margin(separation(middle)) > 0:
             lo = middle
         else:
             hi = middle
     boundary = separation(lo)
+    boundary["clearance_m"] = margin(boundary)
     return {**common, **boundary, "status": "CONDITIONAL_BOUNDARY", "time_s": lo,
             "boundary_bracket_s": [lo, hi], "response_delay_interval_proven": True,
-            "proof_scope": "Fixed hypothesis and finite interaction horizon; target stays ahead during lateral overlap for every earlier brake onset."}
+            "proof_scope": "Fixed hypothesis and finite interaction horizon; target stays on the initial safe side during lateral overlap for every earlier response onset."}
 
 
 def closing_relative_speed_kph(

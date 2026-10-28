@@ -56,9 +56,31 @@ def test_stopping_does_not_make_rear_approach_or_oncoming_target_disappear(chang
     assert result['immediate_response']['maximum_separation_m'] >= -1
 
 
-def test_response_cannot_be_weaker_than_fault_deceleration_for_monotone_proof():
+def test_weaker_response_still_rejects_an_immediate_contact():
     facts={**following(),'ego_speed_kph':36,'longitudinal_acceleration_mps2':-3}
-    assert moving_braking_avoidability_boundary(facts,2)['status']=='RESPONSE_NOT_STRONGER_THAN_FAULT_DECELERATION'
+    assert moving_braking_avoidability_boundary(facts,2)['status']=='NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
+
+
+def test_release_excessive_deceleration_has_a_bounded_rear_contact_window():
+    facts={**following(),'ego_speed_kph':36,'longitudinal_acceleration_mps2':-3,
+        'object_offset_x_m':-5,'object_position':'REAR','object_speed_kph':18,
+        'model_valid_until_s':5.5,'post_stop_motion':'HOLD_POSITION'}
+    original=deepcopy(facts)
+    result=moving_braking_avoidability_boundary(facts,2)
+    # Stop position = 25-5*delay+.75*delay²; rear envelope reaches x=23.5
+    # at horizon 5.5. Solve the smaller root; no sampled fit or default grade.
+    expected=(5-(25-4*.75*1.5)**.5)/(2*.75)
+    assert result['status']=='CONDITIONAL_BOUNDARY'
+    assert result['time_s']==pytest.approx(expected)
+    assert result['response_clearance_side']=='TARGET_BEHIND'
+    assert result['stop_time_s']<5.5 and result['immediate_response']['clearance_m']>0
+    assert facts==original
+    reverse={**facts,'ego_longitudinal_direction':'REVERSE','object_longitudinal_direction':'REVERSE',
+        'object_offset_x_m':5,'object_position':'FRONT'}
+    assert moving_braking_avoidability_boundary(reverse,2)['time_s']==pytest.approx(expected)
+    # Longer target continuation eventually strikes the stopped ego: no claim
+    # outside the declared horizon, and no safe-state by dropping the target.
+    assert moving_braking_avoidability_boundary({**facts,'model_valid_until_s':8},2)['status']=='NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
 
 
 def test_late_crossing_after_natural_stop_does_not_make_ego_reverse():
@@ -72,6 +94,56 @@ def test_late_crossing_after_natural_stop_does_not_make_ego_reverse():
     assert result['original_contact_time_s']==3
     assert result['time_s']==pytest.approx(2,abs=1e-6)
     assert result['stop_time_s']<=2
+
+
+def release_plan():
+    raw = moving_plan(initial=7.2, target_speed=7.2, target_direction='FORWARD',
+        x=-5, acceleration=-1, position='REAR', collision='REAR_END', horizon=5)
+    h = raw['hypotheses'][0]
+    h.update(post_stop_motion='HOLD_POSITION', failed_controls=['automatic_braking_command'],
+        remaining_controls=['driver_braking', 'braking', 'drive'])
+    h['safe_state_proposal'] = dict(description='解除异常制动并保持响应开始时的受控速度',
+        required_controls=['driver_braking', 'braking', 'drive'], basis_refs=['MF.description'],
+        conditions=['Independent driver override releases erroneous command; healthy actuator and drive balance remain.'],
+        transition=dict(model='RELEASE_DECELERATION_TO_CONSTANT_SPEED',
+            rationale='Finite conditional override; no jump to pre-fault speed.', basis_refs=['MF.description']))
+    h['hazard_timing'] = {**deepcopy(timed_plan()['hypotheses'][0]['hazard_timing']),
+        'hazard_criterion':'LOSS_OF_RESPONSE_AVOIDABILITY'}
+    return raw
+
+
+def test_fault_release_uses_onset_speed_and_checks_the_finite_horizon(method):
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    from test_geometry_completion import Client, run
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    raw = release_plan(); original = deepcopy(raw)
+    client = Client([raw])
+    state, generated = run(method, PhysicalScenarioAgent(client), candidates={'MF':[make_candidate(7.2)]})
+    child = generated['MF'][0]
+    assert len(client.requests) == 1  # release must not request a fictitious held stop
+    view = {**child.facts, '_fact_provenance':child.fact_provenance}
+    risk_before = score(method, child)
+    timing = RiskCalculationInputService().ftti('MF',child.scenario_id,'',view,method=method)
+    # At horizon 5: rear separation = -5 + 5*d - d²/2. Contact at -1 m.
+    expected = 5-17**.5
+    assert timing.hazard_time_limit_s == pytest.approx(expected)
+    assert timing.safe_state_transition_time_s is None  # no fabricated stopping time
+    assert timing.timing_trace['brake_onset_speed_mps'] == pytest.approx(2-expected)
+    assert timing.timing_trace['response_motion'] == 'CONTINUE_AT_ONSET_SPEED'
+    assert timing.timing_trace['engineering_approval'] == 'NOT_GRANTED'
+    assert timing.status.value == 'CONDITIONAL'
+    text = EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+    assert '保持响应开始时的速度' in text and '停车保持三段' not in text
+    assert risk_before == score(method, child) and raw == original
+    outside = {**view, 'driver_in_vehicle':False}
+    assert RiskCalculationInputService().ftti('MF',child.scenario_id,'',outside,method=method).hazard_time_limit_s is None
+    assert moving_braking_avoidability_boundary(view,0)['status']=='RESPONSE_INPUTS_UNRESOLVED'
+    assert moving_braking_avoidability_boundary({**view,'longitudinal_acceleration_mps2':1},0,
+        release_deceleration=True)['status'] in {'FAULT_RELEASE_NOT_APPLICABLE','NO_UNMITIGATED_CONTACT_BOUNDARY'}
+    failed = deepcopy(raw); failed['hypotheses'][0]['failed_controls'].append('drive')
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    with pytest.raises(ValueError, match='failed control'):
+        PhysicalScenarioPlan.from_dict(failed, evidence_ids={'MF.description'})
 
 
 def proposal():

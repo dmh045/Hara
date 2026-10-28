@@ -196,6 +196,28 @@ def test_road_user_coverage_focus_cannot_replace_a_specific_target(method):
     assert context['conditions']['facts']['road_user_type'] == 'VEHICLE'
 
 
+def test_timing_policy_identity_does_not_reshuffle_physical_coverage_focus(method):
+    from hara_agent.models import ItemDefinitionFacts
+    parent = make_candidate()
+    parent.facts.pop('road_user_type')
+    parent.facts['source_operating_conditions'] = {'operating_scenario':'an outdoor site'}
+    parent.facts['method_scenario_dimensions'] = {'OBJECT':{'atom_id':'CN_other_road_users'}}
+    parent.fact_provenance['ego_speed_kph']['method_source_hash'] = 'before-timing-change'
+    raw = {'hypotheses':[], 'uncovered_conditions':['Context selection only.']}
+    client = Client([raw, raw]); agent = PhysicalScenarioAgent(client)
+    project = ItemDefinitionFacts('parking','AVP',odd_road_types=['parallel','perpendicular'],sources=mf().sources)
+    contexts = []
+    for identity in ('before-timing-change','after-timing-change'):
+        parent.fact_provenance['ego_speed_kph']['method_source_hash'] = identity
+        state = HARAState('focus-test')
+        construct_physical_scenarios(state, {'MF':[parent]}, [mf()], method=method,
+            agent=agent, project_facts=project)
+        contexts.append(next(iter(state.item_definition['physical_analysis_plans'].values()))['context'])
+    assert contexts[0]['plan_key'] != contexts[1]['plan_key']  # keep provenance invalidation
+    assert contexts[0]['source_condition_focus'] == contexts[1]['source_condition_focus']
+    assert contexts[0]['road_user_focus'] == contexts[1]['road_user_focus']
+
+
 @pytest.mark.parametrize('label', ['Other road users (cyclists, pedestrians)', '其他道路使用者（骑行者、行人）'])
 def test_coverage_focus_uses_shared_semantics_not_project_ids_or_label_language(method, label):
     catalog = deepcopy(method.metadata['scenario_atom_catalog'])

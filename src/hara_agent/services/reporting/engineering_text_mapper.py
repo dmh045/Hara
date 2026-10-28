@@ -587,6 +587,7 @@ class EngineeringReportTextMapper:
             parts.append("完整来源位置及规则见本行审计关联")
         diagnostics = (getattr(scenario, "analysis_instance", {}) or {}).get("physical_plan_diagnostics", [])
         gap_labels = {
+            "PHYSICAL_PLAN_INVALID": "物理方案生成或有限纠正未通过，尚未形成有效工况；不能视为危险已排除",
             "PHYSICAL_MODEL_NOT_APPLICABLE": "当前可用物理模型不覆盖所提出的交互条件，该方案未生成碰撞数值",
             "TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH": "所提目标不在故障后的运动路径上，该方案未生成碰撞数值",
             "FIXED_MOVING_TARGET_OUTSIDE_MODEL_CATALOG": "当前目标已确定处于运动中，现有自主模型仅支持静止目标；保留该危险场景，尚未计算故障轨迹",
@@ -1092,8 +1093,6 @@ class EngineeringReportTextMapper:
         if not values:
             return "初始已无制动避碰余量" + ("；部分成员待确定" if len(lost) != len(timing_inputs) else "") if lost else "待确定"
         label = quantity(min(values), "s") + " s"
-        if min(values) != max(values):
-            label += "～" + quantity(max(values), "s") + " s（样本统计）"
         return label + ("；含初始无制动避碰余量成员" if lost else "") + (
             "；部分成员待确定" if len(values) + len(lost) != len(timing_inputs) else "")
 
@@ -1124,10 +1123,13 @@ class EngineeringReportTextMapper:
         if calculated:
             missing = len(timing_inputs or []) - len(calculated) - len(lost)
             moving = any(item.get("timing_trace", {}).get("response_model_family") == "MOVING_TARGET_BRAKING" for item in calculated)
-            return ("条件性时间边界：从故障发生到失去制动避碰能力；"
-                    + ("移动目标按原轨迹继续运动，检查故障行驶、制动及停车保持三段，在模型有效时段内确定首次失去避碰余量的边界。" if moving else
-                       "依据同一轨迹、静止目标及剩余净减速假设计算。") +
-                    "检测、决策和制动建立必须在该边界前完成；制动完成耗时不与此边界相加。"
+            release = any(item.get("timing_trace", {}).get("response_model_family") == "MOVING_TARGET_FAULT_RELEASE" for item in calculated)
+            return ("条件性时间边界：从故障发生到失去所选响应的避碰能力；"
+                    + ("主表取已计算有效成员的最小值，逐成员数值见时间追溯。" if len(calculated) > 1 else "")
+                    + ("解除异常减速的成员保持响应开始时的速度，在声明时域内检查与移动目标的间隔，不表示停车或瞬间恢复故障前速度。" if release else "")
+                    + ("移动目标制动成员按原轨迹继续运动，检查故障行驶、制动及停车保持三段，在模型有效时段内确定首次失去避碰余量的边界。" if moving else
+                       "依据同一轨迹、静止目标及剩余净减速假设计算。" if not release else "") +
+                    "检测、决策和处置建立必须在该边界前完成；后续完成耗时不与此边界相加。"
                     "尚未经工程批准，不是完整ODD的FTTI；假设与逐成员计算见时间追溯。"
                     + lost_note + (f"仍有{missing}个成员尚无数值时间边界，具体控制、轨迹或输入缺口见逐成员追溯；已知最小值不代表全组结论。" if missing else ""))
         timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]

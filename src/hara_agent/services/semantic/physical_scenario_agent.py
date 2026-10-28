@@ -140,8 +140,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v3-complete-json"
-    PROMPT_VERSION = "post-fault-physical-scenario-v31-driver-responses"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v14-driver-responses"
+    PROMPT_VERSION = "post-fault-physical-scenario-v35-scoped-response"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v18-scoped-response"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -316,6 +316,16 @@ class PhysicalScenarioAgent:
             },
             "driver_positions": {"optional": True, "allowed": context.get("driver_configurations", []),
                 "meaning": "hypothesis applicability; omitted means all supplied configurations"},
+            "driver_control_assessments": {
+                "optional": True, "placement": "inside a hypothesis or control_assessment, never at root",
+                "keys": ["in_driver_seat", "outside_driver_seat"],
+                "entry_shape": {"rationale": "source-linked conditional response reasoning",
+                    "basis_refs": ["supplied evidence ID"], "conditions": ["applicability"],
+                    "uncovered_conditions": ["limits"], "failed_controls": [], "remaining_controls": []},
+                "optional_entry_fields": ["intervention_assumptions", "unresolved_controls", "safe_state_proposal",
+                    "safe_state_unresolved_reason", "hazard_timing", "timing_unresolved_reason"],
+                "meaning": "Shape only; the empty arrays are not conclusions. Give only differing driver responses. Keep shared motion and shared failed controls unchanged; driver absence is not a failed control. Close this object inside its hypothesis before closing the hypotheses array.",
+            },
             "unresolved_controls": {"optional_keys": sorted(CONTROL_IDENTITIES | INTERVENTION_ASSUMPTION_FIELDS),
                 "values": "nonempty reasons after assessment, never a default for omitted analysis"},
             "intervention_assumptions": {
@@ -392,6 +402,21 @@ class PhysicalScenarioAgent:
             content["parameter_units"] = {}
         system += self.CONTROL_ANALYSIS_POLICY
         system += (
+            "车位标线、全框/T字框和车位边界仅提供几何或规划参照，不是墙体、路缘或障碍物。"
+            "不得仅凭标线认定车辆/行人无法跨越、没有逃生空间或受到遮挡。"
+            "需要实体阻挡时，必须另行说明实际对象及其来源或明确条件性假设、位置和净距；"
+            "未提出实体障碍时，不把遵循标线的正常规划约束变成故障后硬物理边界。"
+        )
+        # Show the nested structure once. The common assessment serves the
+        # default driver; only a genuinely different configuration overrides it.
+        shape_owner = (content["output_shape"]["control_assessment"] if controls_only
+                       else example["hypotheses"][0])
+        shape_owner["driver_control_assessments"] = {"outside_driver_seat": {
+            "rationale": "assess the different control path for this position",
+            "basis_refs": ["MF.description"], "conditions": ["conditional applicability"],
+            "uncovered_conditions": [], "failed_controls": [], "remaining_controls": [],
+            "safe_state_unresolved_reason": "replace with a supported proposal or a concrete incompatibility"}}
+        system += (
             "安全状态和时间分析在同一次请求内完成，不另造运动世界：每个假设/control_assessment给出"
             "safe_state_proposal或safe_state_unresolved_reason。proposal包含description、required_controls、"
             "basis_refs、conditions，可选driver_positions限定人员位置。必须使用remaining_controls，"
@@ -402,6 +427,10 @@ class PhysicalScenarioAgent:
             "uncovered_conditions、failed_controls、remaining_controls，以及适用的intervention_assumptions、"
             "safe_state_proposal或safe_state_unresolved_reason、hazard_timing或timing_unresolved_reason。"
             "该对象可放在hypothesis或control_assessment内；不要复制运动假设，不新增参数取点。"
+            "共同控制分析写在外层；仅把不同配置写入driver_control_assessments，避免外层与两个配置重复三份。"
+            "输出格式化JSON，数组用方括号闭合，对象用花括号闭合；不要在未闭合的conditions数组内开始下一个字段。"
+            "不在驾驶位表示人员不能直接踩踏板，不表示driver_braking通道发生故障，不能因此把它加入failed_controls。"
+            "共同故障保留在各配置；不可操作的响应在该配置省略并说明，不能把人员缺席写成硬件失效。"
             "明确说明每个所请求驾驶员位置的处置或具体缺口；不能只写车内方案就默认完成车外分析。"
             "自动路径须同时说明remaining_controls中的automatic_braking_command与braking，远程路径须说明remote_control与braking；"
             "命令链、执行能力、故障独立性和响应条件分别交代，有App或完整执行器并不自动证明这条链可用。"
@@ -422,6 +451,12 @@ class PhysicalScenarioAgent:
             "output_contract.response_timing若存在，是当前方法已接通的响应计算能力。"
             "model_catalog描述无干预故障运动，不能仅因其中没有制动阶段就拒绝已列入supported_models的响应分析；"
             "沿用同一几何、对象及模型适用假设，由程序检查响应是否真的避开接触。"
+            "若response_timing.fault_release_response存在，且异常急减速后停车仍遭后车接触，"
+            "可评估其RELEASE_DECELERATION_TO_CONSTANT_SPEED模型：明确独立通道解除异常减速，"
+            "剩余drive和braking使本车保持响应开始瞬间的速度，不瞬间恢复故障前速度。"
+            "proposal.transition只写model、rationale、basis_refs，不写净减速度或停车保持；"
+            "hazard_timing使用LOSS_OF_RESPONSE_AVOIDABILITY。说明解除异常命令及驱动平衡的条件和未覆盖共同失效，"
+            "只有制动踏板、机械锁死或驱动也已失效时不能假定能恢复运动；保持速度不叫停车。"
             "移动目标的other_road_user_avoidance_possible=true必须给出同一项中的avoidance={"
             "recognition_delay_s:非负秒,escape_direction:FORWARD|REVERSE|LEFT|RIGHT,escape_speed_mps:正数,"
             "available_clearance_m:正数}，并论证可见性和逃生空间；程序检验同一几何，不是只检查理由非空。"

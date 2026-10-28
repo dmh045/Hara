@@ -71,7 +71,7 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
     for entry in cache.values():
         _update_response_totals(totals, entry.get("responses", []))
     budget = getattr(agent.client, "attempt_budget", None)
-    starting = getattr(budget, "attempts", None)
+    starting = getattr(budget, "session_attempts", None)
     timing = {"merge_lock_wait_s": 0.0, "changed_entry_copy_s": 0.0,
               "checkpoint_s": 0.0, "checkpoint_count": 0, "copied_plan_entries": 0, "workers": {}}
     state.item_definition["physical_analysis_timing"] = timing
@@ -112,7 +112,7 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
                         metrics.setdefault(name, []).extend(value)
             metrics.update(deepcopy(totals))
             metrics.update(
-                provider_transport_attempts_this_stage=budget.attempts - starting if starting is not None else None,
+                provider_transport_attempts_this_stage=budget.session_attempts - starting if starting is not None else None,
                 metrics_scope="PHYSICAL_PROPOSALS_AND_SOLVES; causal reuse is accounted in scenario audits",
             )
             state.item_definition["physical_analysis_metrics"] = metrics
@@ -171,7 +171,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                "response_cache_hits": 0, "semantic_corrections": 0, "plan_reuse_records": [], "diagnostics": []}
     state.item_definition["physical_analysis_metrics"] = metrics
     budget = getattr(agent.client, "attempt_budget", None)
-    starting_attempts = getattr(budget, "attempts", None)
+    starting_attempts = getattr(budget, "session_attempts", None)
 
     # Rebuild once on recovery; new responses update only their contribution.
     _update_response_totals(metrics, [])
@@ -179,7 +179,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         _update_response_totals(metrics, entry.get("responses", []))
 
     def reconcile_metrics():
-        metrics["provider_transport_attempts_this_stage"] = (budget.attempts - starting_attempts) if starting_attempts is not None else None
+        metrics["provider_transport_attempts_this_stage"] = (budget.session_attempts - starting_attempts) if starting_attempts is not None else None
         metrics["physical_solve_points"] = producer.physics_solve_count
         metrics["exact_plan_input_reuse"] = sum(
             len(row["scenario_ids"]) - len(set(row["exact_input_keys"]))
@@ -209,6 +209,11 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         coverage_offset = int(signature(asdict(mf))[:8], 16)
         for (task_scope, condition_key), family in sorted(groups.items()):
             first = family[0]
+            focus_identity = signature({
+                "source": first.facts.get("source_operating_conditions", {}),
+                "operating_scenario": first.facts.get("operating_scenario"),
+                "atoms": {k: v.get("atom_id") for k, v in first.facts.get("method_scenario_dimensions", {}).items()},
+            })
             # The same motion plan can be instantiated for multiple driver
             # configurations. Causality and risk are still evaluated per world.
             inputs = {"conditions": scenario_conditions(first, without_driver=True),
@@ -235,7 +240,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 # Scope selection must not change the task for the same world.
                 # A sample's ordinal is different from its full-run ordinal;
                 # use the canonical condition identity, not enumeration order.
-                focus_index = (coverage_offset + int(condition_key[:8], 16)) % len(source_conditions)
+                focus_index = (coverage_offset + int(focus_identity[:8], 16)) % len(source_conditions)
                 inputs["source_condition_focus"] = source_conditions[focus_index]
                 inputs["source_condition_policy"] = (
                     "Use this allowed source condition only if relevant and compatible; otherwise select a relevant "
@@ -257,7 +262,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     object_types = sorted(name for name in inputs["risk_vocabulary"]["road_user_type"]
                         if "OBJECT_" + name in categories)
                     if len(object_types) > 1 and not first.facts.get("road_user_type"):
-                        inputs["road_user_focus"] = object_types[(coverage_offset + int(condition_key[:8], 16)) % len(object_types)]
+                        inputs["road_user_focus"] = object_types[(coverage_offset + int(focus_identity[:8], 16)) % len(object_types)]
                 inputs["interaction_coverage_policy"] = (
                     "Compare physically compatible object motions before choosing representatives. "
                     "Existing specific objects/constraints remain binding. For a justified new target, "
@@ -331,7 +336,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["plan_cache_hits"] += 1
                 elif entry.get("status") == "INVALID":
                     for candidate in family:
-                        candidate.analysis_instance["physical_plan_diagnostics"] = [entry["error"]]
+                        candidate.analysis_instance["physical_plan_diagnostics"] = [{
+                            "reason": "PHYSICAL_PLAN_INVALID", "task_scope": task_scope, "detail": entry["error"]}]
                     kept.extend(family)
                     metrics["diagnostics"].append({"plan_key": key, "reason": entry["error"]})
                     continue
@@ -377,6 +383,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     "resolution": "Preserve the shared motion. In driver_control_assessments.outside_driver_seat assess a complete compatible command/execution path from source and fault scope, or give a concrete safe_state_unresolved_reason. Keep the in-seat path. Do not use a pedal outside, assume remote availability from an App, duplicate the trajectory, or alter parameters. Use the same one bounded correction."})
                             response_missing = (not proposal.get("transition") or
                                 child.facts.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
+                                and proposal.get("transition", {}).get("model") == "CONSTANT_NET_DECELERATION"
                                 and proposal.get("transition", {}).get("post_stop_motion") != "HOLD_POSITION")
                             if (child.facts.get("fault_motion_model") in method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {}).get("supported_models", [])
                                     and set(proposal.get("required_controls", [])) & {"braking", "driver_braking"}
@@ -523,7 +530,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             except (ValueError, KeyError, TypeError) as error:
                 entry.update(status="INVALID", error=str(error))
                 for candidate in family:
-                    candidate.analysis_instance["physical_plan_diagnostics"] = [str(error)]
+                    candidate.analysis_instance["physical_plan_diagnostics"] = [{
+                        "reason": "PHYSICAL_PLAN_INVALID", "task_scope": task_scope, "detail": str(error)}]
                 metrics["diagnostics"].append({"plan_key": key, "reason": str(error)})
                 kept.extend(family)
             finally:

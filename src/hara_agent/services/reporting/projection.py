@@ -654,7 +654,7 @@ class HARAReportProjectionService:
         def narrative(record, field):
             scenario = (scenarios or {}).get(record["scenario_id"])
             return EngineeringReportTextMapper.hazardous_event(record[field], scenario) if scenario is not None else record[field]
-        gap_text = "；".join(dict.fromkeys(narrative(g, "reason") for g in gaps))
+        gap_text = "；".join(dict.fromkeys(narrative(g, "reason").rstrip("。；") for g in gaps))
         if candidates:
             variants = defaultdict(list)
             for candidate in candidates:
@@ -1168,7 +1168,7 @@ class HARAReportProjectionService:
                                         entry["display_tuple"]))
                 timing = timing_inputs[(child_risk.malfunction_id, child.scenario_id)]
                 timing_note = ("\n条件性时间边界：" + self.text.ftti_value([timing])
-                    + "（故障发生至失去停车避碰能力；假设及处置轨迹见时间追溯）"
+                    + "（故障发生至失去所选响应的避碰能力；假设及处置轨迹见时间追溯）"
                     if timing.get("hazard_time_limit_s") is not None else "")
                 if timing.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST":
                     timing_note = "\n" + self.text.ftti_rationale([timing])

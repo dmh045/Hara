@@ -129,6 +129,21 @@ def test_unusable_geometry_is_preserved_without_paying_for_another_causal_judgme
     assert not agent.seen and audit["llm_calls"] == 0 and len(again) == 2
 
 
+def test_failed_motion_production_is_pending_not_a_negative_causal_judgment():
+    diagnostic={"reason":"PHYSICAL_PLAN_INVALID","task_scope":"MOTION_AND_CONTROLS",
+        "detail":"complete reply failed bounded JSON/schema correction"}
+    invalid=replace(parent('failed-motion'),analysis_instance={'physical_plan_diagnostics':[diagnostic]})
+    controls=replace(parent('failed-controls'),analysis_instance={'physical_plan_diagnostics':[
+        {**diagnostic,'task_scope':'CONTROL_INPUTS_ONLY'}]})
+    agent=MockCausalAgent()
+    rows,audit=_assess_instantiated_scenarios(agent,malfunction(),[invalid,controls],{},None)
+    assert [c.scenario_id for c in agent.seen]==[controls.scenario_id]
+    assert rows[0].to_dict()['risk_eligibility_status']=='PENDING_FEASIBILITY'
+    assert '不表示该危险已被排除' in rows[0].rationale
+    assert audit['physical_deferrals'][0]['scenario_id']==invalid.scenario_id
+    assert invalid.analysis_instance['physical_plan_diagnostics']==[diagnostic]
+
+
 def test_a_b_c_parking_candidates_are_bounded_and_have_method_atoms(method):
     service = ConstrainedScenarioSynthesisService(method)
     children, audit = service.generate_candidates(
@@ -315,6 +330,16 @@ def test_source_axis_sampling_preserves_primary_variants_without_claiming_equiva
     deferred = [row for a in audits for row in a["deferred_context_variants"]]
     assert len(deferred) == len(full) - len(bounded)
     assert all(row["status"] == "COMBINATION_NOT_EVALUATED" and not row["risk_equivalence_proven"] for row in deferred)
+    # Trace/contract hashes can rename generated identities without changing
+    # environmental semantics. The chosen engineering combinations stay put.
+    renamed=deepcopy(pool)
+    for i,(child,audit) in enumerate(renamed):
+        renamed[i]=(replace(child,scenario_id=f'renamed-{len(pool)-i:04d}'),audit)
+    after=MethodScenarioCandidateService._select_context_representatives(renamed)
+    def combinations(items):
+        return sorted((str(c.facts['source_operating_conditions']),
+            tuple(sorted((d,b.get('atom_id')) for d,b in c.facts['method_scenario_dimensions'].items()))) for c in items)
+    assert combinations(after)==combinations(bounded)
 
 
 def test_equal_coverage_choices_do_not_repeat_the_first_road_for_every_mechanism():

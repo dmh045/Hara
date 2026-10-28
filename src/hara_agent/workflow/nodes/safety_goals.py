@@ -39,15 +39,16 @@ def aggregate_safety_goals(
             "本次方案未给出可达的安全状态及其控制路径" if analysis else "当前成员尚无安全状态分析方案")
         gap_code = "NO_PROPOSAL" if analysis else "NO_ANALYSIS"
         if proposal:
+            location = scenario.facts.get("driver_in_vehicle")
+            driver_position = "in_driver_seat" if location is True else "outside_driver_seat" if location is False else ""
             # A driver-only proposal does not apply to an outside-driver child.
             # The proposal remains in the saved plan for audit, not a new fact.
             if ("driver_braking" in proposal["required_controls"]
                     and scenario.facts.get("driver_in_vehicle") is not True):
                 proposal = None
-                gap = "已有方案依赖驾驶员操作制动踏板，但本成员驾驶员在车外"
+                gap = "已有方案依赖驾驶员操作制动踏板，但本成员没有在驾驶位操作踏板的适用条件"
                 gap_code = "DRIVER_CONTROL_UNAVAILABLE"
-            elif proposal.get("driver_positions") and (
-                    "in_driver_seat" if scenario.facts.get("driver_in_vehicle") else "outside_driver_seat") not in proposal["driver_positions"]:
+            elif proposal.get("driver_positions") and driver_position not in proposal["driver_positions"]:
                 proposal = None
                 gap = "已有安全状态方案不适用于本成员驾驶员位置"
                 gap_code = "DRIVER_POSITION_OUT_OF_SCOPE"

@@ -252,17 +252,19 @@ class OpenAICompatibleClient:
                 retry_metadata["_format_retry_attempt"] = 1
                 retry = self.complete_json(LLMRequest(
                     task=request.task,
-                    system_prompt=request.system_prompt + (
-                        "\nFORMAT RETRY: The previous response was not valid machine JSON. "
-                        "Correct the JSON syntax in previous_invalid_response and return exactly one raw JSON object. "
-                        "Preserve its scenario identities and semantic judgments; use the original inputs to check the schema. "
-                        "Do not use Markdown or code fences. Do not add text before or after JSON. "
-                        "Do not change the requested schema."
+                    system_prompt=(
+                        "You are repairing JSON syntax, not repeating the analysis. "
+                        "Use parse_error to locate mismatched delimiters in previous_invalid_response. "
+                        "Return one complete, indented JSON object. Preserve every key, string, number, "
+                        "boolean, array order, scenario identity, condition and judgment exactly. "
+                        "Only fix structural punctuation/escaping; do not add or remove analytical content. "
+                        "Check nesting before returning, especially the end of each hypothesis and driver assessment. "
+                        "No Markdown, code fences or commentary."
                     ),
-                    user_prompt=request.user_prompt + "\nFORMAT_CORRECTION_INPUT=" + json.dumps({
+                    user_prompt="FORMAT_CORRECTION_INPUT=" + json.dumps({
                         "previous_invalid_response": content,
                         "parse_error": {key: diagnostics.get(key) for key in
-                            ("json_error_type", "json_error_line", "json_error_column", "json_error_position")},
+                            ("json_error_type", "json_error_message", "json_error_line", "json_error_column", "json_error_position", "json_error_excerpt")},
                     }, ensure_ascii=False),
                     schema_name=request.schema_name,
                     prompt_version=request.prompt_version,
@@ -825,6 +827,8 @@ class OpenAICompatibleClient:
                 "split_depth": request.metadata.get("split_depth", ""),
                 "scenario_count": request.metadata.get("scenario_count", ""),
                 "json_error_type": type(exc).__name__,
+                "json_error_message": exc.msg,
+                "json_error_excerpt": candidate[max(0, exc.pos-120):exc.pos] + " <-- parse error --> " + candidate[exc.pos:exc.pos+120],
                 "json_error_line": exc.lineno,
                 "json_error_column": exc.colno,
                 "json_error_position": exc.pos,

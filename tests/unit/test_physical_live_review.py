@@ -37,6 +37,10 @@ def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_rec
     correction = json.loads(repair.split('FORMAT_CORRECTION_INPUT=', 1)[1])
     assert correction['previous_invalid_response'] == broken
     assert 'hypotheses' in correction['previous_invalid_response']
+    assert correction['parse_error']['json_error_message'] == "Expecting ',' delimiter"
+    assert ' <-- parse error --> ' in correction['parse_error']['json_error_excerpt']
+    assert repair.startswith('FORMAT_CORRECTION_INPUT=')
+    assert 'not repeating the analysis' in json.loads(calls[1])['messages'][0]['content']
     entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
     assert entry['status'] == 'VALIDATED' and entry['plan'] == raw
     assert entry['audit']['request_count'] == 2
@@ -155,8 +159,11 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v31-driver-responses')
+            assert request.prompt_version.endswith('v35-scoped-response')
+            assert '不得仅凭标线认定车辆/行人无法跨越' in request.system_prompt
             assert 'driver_control_assessments' in request.system_prompt
+            assert payload['output_contract']['driver_control_assessments']['entry_shape']['failed_controls']==[]
+            assert '人员缺席' in request.system_prompt
             assert payload['output_contract']['response_timing'] == policy['timing_analysis']
             assert payload['output_contract']['control_arrays']['shape_example'] == ['driver_braking', 'braking']
             return LLMResponse(raw_plan(), 'OFFLINE', usage={})

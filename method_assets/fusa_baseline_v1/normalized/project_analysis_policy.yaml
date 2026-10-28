@@ -248,6 +248,11 @@ timing_analysis:
   hazard_criterion: LOSS_OF_BRAKING_AVOIDABILITY
   time_origin: FAULT_ONSET
   response_model: CONSTANT_NET_DECELERATION
+  fault_release_response:
+    model: RELEASE_DECELERATION_TO_CONSTANT_SPEED
+    hazard_criterion: LOSS_OF_RESPONSE_AVOIDABILITY
+    scope: "故障原轨迹为减速、目标保持同一有限包络内恒速直线运动；明确假设独立剩余路径能解除异常制动并恢复驱动平衡，使本车保持响应开始时的速度，计算首次失去间隔的响应延迟边界。不得依赖已经失效的命令通道；必须给出制动解除、驱动保持及独立接管依据，不把继续踩制动等同解除故障，不假设瞬间恢复故障前速度。"
+    limitations: "条件性代表响应，不证明接口故障隔离或实际建立延迟；不适用于驱动失效、仍被机械制动锁止、正加速故障或响应后再加速；只在声明有效时域内验证，保持速度不等于停车。"
   supported_models:
     - CONSTANT_SPEED_REPRESENTATIVE
     - CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE
@@ -257,7 +262,7 @@ timing_analysis:
   moving_target_response:
     post_stop_motion: HOLD_POSITION
     criterion: FIRST_LOSS_OF_IMMEDIATE_BRAKING_CONNECTED_SAFE_WINDOW
-    scope: "目标恒速直线；同一有限接触包络及有效时域；故障行驶、净减速制动、停止保持三段。净制动不弱于故障前响应阶段减速时，以纵向间距对响应延迟的单调性求首次失去安全间隔的界限，不对一般横穿接触结果盲目二分。"
+    scope: "目标恒速直线；同一有限接触包络及有效时域；故障行驶、净减速响应、停止保持三段。分别检查目标始终位于接触包络前方或后方的安全间隔，按故障加速度与响应净减速度之和的符号证明间隔随响应延迟的单调性，求与即时响应相连的首次失去安全间隔边界。包括有明确剩余控制依据、可解除异常急刹而减弱减速的条件性响应；不因数值可计算而推断该控制可用，不对一般横穿接触结果盲目二分。"
     limitations: "即时制动也不能安全避开目标时，不宣称所有处置均失败；保留具体接触关系，其他转向/加速逃逸策略需要相应模型。时域以外不外推。"
   equation: "v0*t + a*t^2/2 + (v0+a*t)^2/(2*b_net) = available_path_distance"
   meaning: "故障发生后，在所声明静止或恒速移动目标轨迹及剩余独立制动假设下，失去制动避碰能力的时刻。上述行程方程适用于静止目标，移动目标按三段相对轨迹求安全间隔边界。达到该边界前须开始有效制动；从故障起点累计的检测、决策和执行延迟合计须小于该时刻；从模型初态起的剩余窗口则扣除模型起点偏移。不是接触后再停止所需时间。"

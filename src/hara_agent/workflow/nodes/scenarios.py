@@ -30,7 +30,7 @@ from hara_agent.services.analysis.scenario_equivalence import (
 )
 
 
-SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v11-physical-deferrals"
+SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v12-invalid-motion-deferrals"
 
 
 def _scenario_batch_cache_key(
@@ -107,15 +107,18 @@ def _assess_instantiated_scenarios(
     deferred, physical_deferrals = {}, []
     for candidate in candidates:
         outcome = candidate.facts.get("motion_model_outcome", {})
-        if outcome.get("status") not in {"MODEL_GEOMETRY_NOT_APPLICABLE", "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}:
+        failed_motion = next((d for d in candidate.analysis_instance.get("physical_plan_diagnostics", [])
+            if isinstance(d, dict) and d.get("reason") == "PHYSICAL_PLAN_INVALID"
+            and d.get("task_scope") == "MOTION_AND_CONTROLS"), None)
+        if not failed_motion and outcome.get("status") not in {"MODEL_GEOMETRY_NOT_APPLICABLE", "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}:
             continue
         # The bounded physical correction has already run. A causal request
         # cannot repair contradictory coordinates or create the missing phase.
         # Preserve the identity as unknown; this is not a safe exclusion.
-        reason = str(outcome.get("reason") or outcome["status"])
+        reason = "PHYSICAL_PLAN_INVALID: " + str(failed_motion["detail"]) if failed_motion else str(outcome.get("reason") or outcome["status"])
         deferred[candidate.scenario_id] = ScenarioFeasibilityAssessment(
             malfunction.malfunction_id, candidate.scenario_id, False, False, False, [],
-            "当前物理候选仍需修正几何或补充独立阶段；因果判断暂缓，原身份及输入保留，不表示该危险已被排除：" + reason,
+            "物理方案生成失败或当前候选仍需修正几何／补充阶段；因果判断暂缓，原身份及输入保留，不表示该危险已被排除：" + reason,
             evidence_contract_version=agent.assessment_contract_version)
         physical_deferrals.append({"scenario_id": candidate.scenario_id, "reason": reason,
                                    "status": "PENDING_FEASIBILITY", "provider_called": False})

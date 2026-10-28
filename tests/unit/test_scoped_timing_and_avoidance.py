@@ -47,6 +47,17 @@ def test_zero_margin_is_not_presented_as_a_usable_zero_second_ftti():
     assert '0 s～' not in text and lost==before
 
 
+def test_group_ftti_displays_minimum_valid_member_without_changing_member_values():
+    timings = [{'hazard_time_limit_s':3.1}, {'hazard_time_limit_s':.154286},
+               {'hazard_time_limit_s':.158}, {'hazard_time_limit_s':None}]
+    original = deepcopy(timings)
+    assert EngineeringReportTextMapper.ftti_value(timings) == '0.15 s；部分成员待确定'
+    assert EngineeringReportTextMapper.ftti_value(list(reversed(timings))) == '0.15 s；部分成员待确定'
+    assert '最小值' in EngineeringReportTextMapper.ftti_rationale(timings)
+    assert EngineeringReportTextMapper.ftti_value(timings[:3]) == '0.15 s'
+    assert timings == original
+
+
 def test_constant_representative_reaches_existing_timing_calculator_without_defaulting_unknown_model(method):
     from test_autonomous_physics import make_candidate
     child=instantiate(method,timed_plan(),make_candidate(3.6))[0]
@@ -135,6 +146,8 @@ def test_existing_non_driver_response_path_is_usable_without_a_new_scorer(method
         {**child.facts,'_fact_provenance':child.fact_provenance},method=method)
     assert timing.hazard_time_limit_s == pytest.approx(.9364916731)
     assert timing.status.value == 'CONDITIONAL'
+    unknown = {**child.facts, 'driver_in_vehicle':None, '_fact_provenance':child.fact_provenance}
+    assert RiskCalculationInputService().ftti('MF',child.scenario_id,'',unknown,method=method).hazard_time_limit_s is None
     h['failed_controls'] = ['drive','braking']
     from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
     with pytest.raises(ValueError, match='failed control'):
@@ -264,7 +277,7 @@ def test_control_only_safe_state_reaches_sg_and_reports_uncovered_driver_members
     view = HARAReportProjectionService(load_report_schema()).project(state, method)
     assert '适用1个成员' in view.safety_goals[0].safe_state
     assert '13个成员' in view.safety_goals[0].safe_state
-    assert '车外' in view.safety_goals[0].safe_state
+    assert '没有在驾驶位操作踏板的适用条件' in view.safety_goals[0].safe_state
     assert all(getattr(a,k)==getattr(b,k) for a,b in zip(raw_risks,state.risk_results)
         for k in ('severity','exposure','controllability','asil'))
 

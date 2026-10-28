@@ -153,7 +153,7 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         timing = _object(h["hazard_timing"], {"time_origin", "fault_to_model_start_s", "hazard_criterion", "rationale", "basis_refs"})
         if timing["time_origin"] != "FAULT_ONSET" or _number(timing["fault_to_model_start_s"]) < 0:
             raise ValueError("Hazard timing needs an explicit fault onset and nonnegative elapsed interval")
-        if timing["hazard_criterion"] not in {"LOSS_OF_BRAKING_AVOIDABILITY", "FIRST_CONTACT_BOUND"}:
+        if timing["hazard_criterion"] not in {"LOSS_OF_BRAKING_AVOIDABILITY", "LOSS_OF_RESPONSE_AVOIDABILITY", "FIRST_CONTACT_BOUND"}:
             raise ValueError("Unsupported hazard timing criterion")
         _text(timing["rationale"])
         if not _texts(timing["basis_refs"]) or not set(timing["basis_refs"]) <= evidence_ids:
@@ -195,13 +195,21 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
                 raise ValueError("Safe state driver_positions must select supported configurations")
         if "transition" in proposal:
             transition = _object(proposal["transition"],
-                {"model", "net_deceleration_mps2", "rationale", "basis_refs"}, {"post_stop_motion"})
+                {"model", "rationale", "basis_refs"}, {"net_deceleration_mps2", "post_stop_motion"})
             if "post_stop_motion" in transition and transition["post_stop_motion"] != "HOLD_POSITION":
                 raise ValueError("Safe stop response only supports explicit HOLD_POSITION after braking")
-            if transition["model"] != "CONSTANT_NET_DECELERATION" or _number(transition["net_deceleration_mps2"]) <= 0:
-                raise ValueError("Safe state transition requires positive net braking deceleration")
-            if not set(controls) & {"driver_braking", "braking"}:
-                raise ValueError("Braking transition requires a remaining braking path")
+            if transition["model"] == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
+                if ("net_deceleration_mps2" in transition or "post_stop_motion" in transition
+                        or not {"drive", "braking"} <= set(controls)
+                        or not set(controls) & {"driver_braking", "remote_control", "automatic_braking_command"}):
+                    raise ValueError("Fault release requires an explicit independent override, braking release and drive path; no stop or new acceleration parameter")
+            elif transition["model"] == "CONSTANT_NET_DECELERATION":
+                if _number(transition.get("net_deceleration_mps2")) <= 0:
+                    raise ValueError("Safe state transition requires positive net braking deceleration")
+                if not set(controls) & {"driver_braking", "braking"}:
+                    raise ValueError("Braking transition requires a remaining braking path")
+            else:
+                raise ValueError("Unsupported safe state response model")
             _text(transition["rationale"])
             if not _texts(transition["basis_refs"]) or not set(transition["basis_refs"]) <= evidence_ids:
                 raise ValueError("Safe state transition requires supplied evidence IDs")

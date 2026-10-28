@@ -627,7 +627,14 @@ class MethodScenarioCandidateService:
             # should not acquire a narrower enclosure simply by lexical rank.
             specificity = (bool(parent_environment), not bool(selected_environment - parent_environment))
             rows.append((child, audit, features, source_key, specificity))
-        remaining = sorted(rows, key=lambda r: r[0].scenario_id)
+        # Generated IDs also contain method/trace identity. A change to FTTI
+        # provenance must not reshuffle otherwise identical ROAD/WHERE choices.
+        # Within this physical-option pool, tie-break on actual source conditions
+        # and atom selections; IDs only distinguish identical remaining aliases.
+        remaining = sorted(rows, key=lambda r: (signature({
+            "source": r[0].facts.get("source_operating_conditions", {}),
+            "atoms": {d: b.get("atom_id") for d, b in r[0].facts.get("method_scenario_dimensions", {}).items()},
+        }), r[0].scenario_id))
         selected, covered, source_counts, environment_counts = [], set(), {}, {}
         while remaining:
             index = max(range(len(remaining)), key=lambda i: (

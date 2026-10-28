@@ -143,8 +143,11 @@ def test_uncapped_accounting_continues_spent_ledger_and_remains_shared(tmp_path)
     assert extended.attempts == 1
     assert extended.begin(_request(), model="test") == 2
     assert child.begin(_request(), model="test") == 3
+    assert original.session_attempts == extended.session_attempts == child.session_attempts == 1
+    assert child.attempts == 3  # shared budget remains cumulative
     assert path.read_bytes().startswith(prior)
     assert ProviderAttemptBudget(path, run_id="sample", limit=None).attempts == 3
+    assert ProviderAttemptBudget(path, run_id="sample", limit=None).session_attempts == 0
     with pytest.raises(ValueError, match="exceed"):
         ProviderAttemptBudget(path, run_id="sample", limit=1)
     (tmp_path / "sample.checkpoint.json").write_text(json.dumps({"audit_trail": [{

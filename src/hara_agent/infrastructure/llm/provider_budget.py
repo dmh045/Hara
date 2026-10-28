@@ -46,6 +46,7 @@ class ProviderAttemptBudget:
         self.limit = limit
         self._lock = threading.Lock()
         self._attempts = 0
+        self._session_attempts = 0
         if self.path.is_file():
             for raw in self.path.read_text(encoding="utf-8").splitlines():
                 event = json.loads(raw)
@@ -60,6 +61,12 @@ class ProviderAttemptBudget:
     def attempts(self) -> int:
         with self._lock:
             return self._attempts
+
+    @property
+    def session_attempts(self) -> int:
+        """Reservations made by this client, excluding other ledger writers."""
+        with self._lock:
+            return self._session_attempts
 
     @staticmethod
     def _write_locked(descriptor: int, event: dict[str, Any]) -> None:
@@ -116,6 +123,7 @@ class ProviderAttemptBudget:
                     "model": model,
                 })
                 self._attempts = attempt_id
+                self._session_attempts += 1
                 return attempt_id
             finally:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)

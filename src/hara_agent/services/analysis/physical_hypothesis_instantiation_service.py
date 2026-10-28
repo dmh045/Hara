@@ -866,7 +866,8 @@ class PhysicalHypothesisInstantiationService:
             dimensions.append("OBJECT")
         if new_initial and initial is not None and parent.facts.get("ego_speed_kph") != initial:
             dimensions.append("EGO_DYNAMICS")
-        driver_position = "in_driver_seat" if parent.facts.get("driver_in_vehicle") is True else "outside_driver_seat"
+        location = parent.facts.get("driver_in_vehicle")
+        driver_position = "in_driver_seat" if location is True else "outside_driver_seat" if location is False else ""
         explicit_atoms = {**h.get("operating_atoms", {}), **h.get("driver_operating_atoms", {}).get(driver_position, {})}
         dimensions = list(dict.fromkeys([*dimensions, *explicit_atoms]))
         if dimensions:
