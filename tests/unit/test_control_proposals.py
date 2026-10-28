@@ -732,3 +732,65 @@ def test_optional_safe_state_does_not_mask_control_array_diagnostic():
     assert requests[1]['previous_invalid_response'] == bad
     assert plan.to_dict()['hypotheses'][0]['remaining_controls'] == ['driver_braking']
     assert audit['schema_repairs'] == 1 and not audit['deferred_safe_states']
+
+
+@pytest.mark.parametrize('common_available', [True, False])
+def test_shared_capability_contradiction_gets_one_scoped_correction(method, tmp_path, common_available):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    h['remaining_controls'] = ['automatic_braking_command', 'braking']
+    h['safe_state_proposal'].update(required_controls=list(h['remaining_controls']),
+        driver_positions=['in_driver_seat', 'outside_driver_seat'])
+    local = {'rationale': 'Outside branch contradicts the shared conditional capability',
+        'basis_refs': ['MF.description'], 'conditions': ['Same fault and actuator'],
+        'uncovered_conditions': ['Independence unverified'], 'failed_controls': [], 'remaining_controls': [],
+        'unresolved_controls': {'automatic_braking_command': 'Independence unverified', 'braking': 'Independence unverified'},
+        'safe_state_unresolved_reason': 'No established outside response'}
+    h['driver_control_assessments'] = {'outside_driver_seat': local}
+    corrected = deepcopy(raw); fixed = corrected['hypotheses'][0]
+    if common_available:
+        branch = fixed['driver_control_assessments']['outside_driver_seat']
+        branch.pop('unresolved_controls'); branch.pop('safe_state_unresolved_reason')
+        branch['conditions'] = ['Same conditional independent automatic path in both configurations']
+    else:
+        # A genuine personnel enable condition is allowed. Do not force the
+        # common capability or a numerical outside FTTI to make the test pass.
+        inside = {k: deepcopy(v) for k, v in fixed.items()
+            if k in CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL}
+        inside['conditions'] = ['Automatic response enabled only with an occupied driver seat']
+        inside['safe_state_proposal']['driver_positions'] = ['in_driver_seat']
+        fixed['driver_control_assessments']['in_driver_seat'] = inside
+        fixed['remaining_controls'] = []
+        fixed.pop('safe_state_proposal'); fixed.pop('hazard_timing')
+        fixed['driver_control_assessments']['outside_driver_seat']['safe_state_unresolved_reason'] = 'No enabled command path outside this explicitly in-seat-only response'
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            if self.calls == 2:
+                assert 'SAFE_STATE_SHARED_CONTROL_SCOPE_CONFLICT' in request.user_prompt
+            return LLMResponse(deepcopy(raw if self.calls == 1 else corrected), 'OFFLINE')
+    parents = [make_candidate(3.6), make_candidate(3.6)]
+    for i, parent in enumerate(parents):
+        parent.scenario_id = f'control-scope-{i}'
+        parent.facts.update(driver_in_vehicle=i == 0,
+            driver_position='in_driver_seat' if i == 0 else 'outside_driver_seat')
+    before = deepcopy(parents); state = HARAState('control-scope', malfunctions=[asdict(mf())])
+    client = Client(); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    def run(st):
+        return construct_physical_scenarios(st, {'MF': parents}, [mf()], method=method,
+            agent=agent, project_facts=None)['MF']
+    children = run(state)
+    assert client.calls == 2 and len(children) == 2 and parents == before
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['initial_plan'] == raw and entry['semantic_correction_completed']
+    assert entry['plan'] == corrected
+    assert children[0].facts['motion_model_outcome'] == children[1].facts['motion_model_outcome']
+    timings = [RiskCalculationInputService().ftti('MF', c.scenario_id, '',
+        {**c.facts, '_fact_provenance': c.fact_provenance}, method=method) for c in children]
+    assert timings[0].hazard_time_limit_s > 0
+    assert (timings[1].hazard_time_limit_s is not None) == common_available
+    assert run(HARAState.read_committed(json.loads(json.dumps(state.to_dict())))) == children
+    assert client.calls == 2

@@ -370,7 +370,20 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     # A declared target side conflicting with numeric coordinates
                     # is a proposal error, not a new no-contact mechanism. Feed
                     # the existing bounded correction; retain the original child.
-                    for _, children, errors in rows:
+                    for parent, children, errors in rows:
+                        driver = ("in_driver_seat" if parent.facts.get("driver_in_vehicle") is True else
+                                  "outside_driver_seat" if parent.facts.get("driver_in_vehicle") is False else None)
+                        for hypothesis in current_plan.hypotheses or ([current_plan.control_assessment] if current_plan.control_assessment else []):
+                            if driver is None or driver not in hypothesis.get("driver_positions", [driver]):
+                                continue
+                            local = hypothesis.get("driver_control_assessments", {}).get(driver, {})
+                            conflicts = (set(hypothesis.get("remaining_controls", []))
+                                         & set(local.get("unresolved_controls", {}))) - {"driver_braking", "remote_control"}
+                            if conflicts:
+                                errors.append({"reason": "SAFE_STATE_SHARED_CONTROL_SCOPE_CONFLICT",
+                                    "hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "driver_position": driver, "controls": sorted(conflicts),
+                                    "resolution": "The common world declares these controls remaining, but this personnel branch calls them unresolved. Reconcile the scope in this same correction: retain an applicable common conditional path, or move the capability into only the branch where its explicit enable conditions hold and retain the concrete gap elsewhere. Driver absence alone does not invalidate an automatic command or actuator. Unverified independence must be treated consistently across the common world; do not invent proven capability, borrow a pedal outside, or change the trajectory."})
                         for child in children:
                             outcome = child.facts.get("motion_model_outcome", {})
                             analysis = child.facts.get("physical_analysis", {})
