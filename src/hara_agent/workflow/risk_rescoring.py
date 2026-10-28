@@ -64,6 +64,9 @@ def clean_risk_stage(state: HARAState) -> None:
             if harm_ids:
                 causal["provenance"] = list(dict.fromkeys(
                     ref for binding in causal["evidence_bindings"] for ref in binding["evidence_refs"]))
+                # Restore the preserved upstream review after removing only
+                # the scoring-owned tail; the new harm keeps its own review.
+                causal["review_status"] = item["status"]
     state.audit_trail = [item for item in state.audit_trail if item.get("event") not in {
         "structured_risk_scoring_completed", "safety_goals_generated", "quality_gate_evaluated", "report_rendered",
         "safety_goals_aggregated", "quality_gate_blocked", "draft_excel_report_rendered",
@@ -250,11 +253,21 @@ class OfflineRiskRescorer:
                 old_assets["exposure_policy"]["mixed_high"].get("match", "CONTAINS") == "CONTAINS",
                 new_assets["exposure_policy"] == exposure_policy,
             ))
-            if not (routing_only or applicability_only or reference_only or exposure_match_only):
-                raise ValueError("Method transition is not limited to supported C changes or exact-set E matching")
-            changed_path = exposure_path if exposure_match_only else policy_path if routing_only or reference_only else profile_path
+            timing_policy = deepcopy(old_policy)
+            timing_policy["timing_analysis"] = new_policy.get("timing_analysis")
+            timing_only = all((
+                old_resolution.method.metadata["method_source_hash"] == source.method_contract["method_source_hash"],
+                old_resolution.method.contract_version == method.contract_version,
+                old_resolution.method.compiler_version == method.compiler_version,
+                new_manifest == expected_manifest, set(old_hashes) == set(new_hashes),
+                all(old_hashes[key] == new_hashes[key] for key in old_hashes if key != policy_path),
+                new_policy == timing_policy, bool(new_policy.get("timing_analysis")),
+            ))
+            if not (routing_only or applicability_only or reference_only or exposure_match_only or timing_only):
+                raise ValueError("Method transition is not limited to supported C changes, exact-set E matching or isolated FTTI policy")
+            changed_path = exposure_path if exposure_match_only else policy_path if routing_only or reference_only or timing_only else profile_path
             method_transition = {
-                "type": "E_MIXED_HIGH_EXACT_SET_ONLY" if exposure_match_only else "C_CONDITIONAL_REFERENCE_RULES_ONLY" if reference_only else "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY" if routing_only else "C_PROFILE_APPLICABILITY_ONLY",
+                "type": "FTTI_POLICY_ONLY" if timing_only else "E_MIXED_HIGH_EXACT_SET_ONLY" if exposure_match_only else "C_CONDITIONAL_REFERENCE_RULES_ONLY" if reference_only else "CURRENT_PROJECT_C_UNKNOWN_OVERRIDE_ROUTING_ONLY" if routing_only else "C_PROFILE_APPLICABILITY_ONLY",
                 "source_method_hash": old_resolution.method.metadata["method_source_hash"],
                 "target_method_hash": method.metadata["method_source_hash"],
                 "source_baseline": str(source_baseline.resolve()),

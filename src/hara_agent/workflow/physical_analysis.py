@@ -369,6 +369,12 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                             analysis = child.facts.get("physical_analysis", {})
                             response_hypothesis = (child.facts.get("control_analysis") or analysis).get("hypothesis", {})
                             proposal = response_hypothesis.get("safe_state_proposal", {})
+                            if (child.facts.get("driver_in_vehicle") is False
+                                    and "driver_braking" in proposal.get("required_controls", [])
+                                    and not response_hypothesis.get("safe_state_unresolved_reason")):
+                                errors.append({"reason": "SAFE_STATE_DRIVER_SCOPE_UNASSESSED",
+                                    "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "resolution": "Preserve the shared motion. In driver_control_assessments.outside_driver_seat assess a complete compatible command/execution path from source and fault scope, or give a concrete safe_state_unresolved_reason. Keep the in-seat path. Do not use a pedal outside, assume remote availability from an App, duplicate the trajectory, or alter parameters. Use the same one bounded correction."})
                             response_missing = (not proposal.get("transition") or
                                 child.facts.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
                                 and proposal.get("transition", {}).get("post_stop_motion") != "HOLD_POSITION")

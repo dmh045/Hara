@@ -140,8 +140,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v3-complete-json"
-    PROMPT_VERSION = "post-fault-physical-scenario-v30-response-contract"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v13-response-contract"
+    PROMPT_VERSION = "post-fault-physical-scenario-v31-driver-responses"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v14-driver-responses"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "读取ITEM原文后，按本故障作用范围检查控制通道：自动指令异常不自动代表所有执行器或人工通道同时失效；"
@@ -397,6 +397,12 @@ class PhysicalScenarioAgent:
             "basis_refs、conditions，可选driver_positions限定人员位置。必须使用remaining_controls，"
             "只依赖人工踏板的方案不能覆盖车外驾驶员；车外无可用路径要明确说明。"
             "先检查故障之外的自动/远程制动链是否仍可作为相容的条件性处置，不要默认所有停车都只能靠人工踏板。"
+            "同一运动覆盖两个驾驶员位置而处置不同，使用可选driver_control_assessments对象，键为"
+            "in_driver_seat/outside_driver_seat。每项为完整控制分析：rationale、basis_refs、conditions、"
+            "uncovered_conditions、failed_controls、remaining_controls，以及适用的intervention_assumptions、"
+            "safe_state_proposal或safe_state_unresolved_reason、hazard_timing或timing_unresolved_reason。"
+            "该对象可放在hypothesis或control_assessment内；不要复制运动假设，不新增参数取点。"
+            "明确说明每个所请求驾驶员位置的处置或具体缺口；不能只写车内方案就默认完成车外分析。"
             "自动路径须同时说明remaining_controls中的automatic_braking_command与braking，远程路径须说明remote_control与braking；"
             "命令链、执行能力、故障独立性和响应条件分别交代，有App或完整执行器并不自动证明这条链可用。"
             "优先采用适用于本工况的剩余路径；无法成立时保留明确局部缺口，不能转移目标来让停车看起来安全。"

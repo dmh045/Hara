@@ -68,6 +68,63 @@ def method():
         baseline_manifest_path=BASELINE, report_template_path=TEMPLATE).method
 
 
+@pytest.mark.parametrize('unrelated_change', [False, True])
+def test_timing_policy_transition_preserves_scoring_and_rejects_other_input_policy_change(tmp_path, source_state, unrelated_change):
+    old=tmp_path/'old_method';shutil.copytree(BASELINE.parent,old)
+    path=old/'normalized/project_analysis_policy.yaml';policy=yaml.safe_load(path.read_text())
+    policy['timing_analysis']['supported_models'].remove('CONSTANT_SPEED_REPRESENTATIVE')
+    if unrelated_change:
+        policy['version']='unrelated-version'
+    path.write_text(yaml.safe_dump(policy))
+    manifest=yaml.safe_load((old/'manifest.yaml').read_text())
+    manifest['asset_hashes']['normalized/project_analysis_policy.yaml']=hashlib.sha256(path.read_bytes()).hexdigest()
+    (old/'manifest.yaml').write_text(yaml.safe_dump(manifest))
+    old_method=MethodSourceResolver().resolve(template_path=None,baseline_manifest_path=old/'manifest.yaml',report_template_path=TEMPLATE).method
+    source_state.method_contract.update(method_source_hash=old_method.metadata['method_source_hash'],template_hash=old_method.metadata['template_hash'])
+    repo=CheckpointRepository(tmp_path/'runs');repo.save(source_state)
+    args=dict(source_run_id='source',target_run_id='new',baseline=BASELINE,source_baseline=old/'manifest.yaml',
+        report_template=TEMPLATE,output=tmp_path/'new.xlsx',run_dir=repo.run_dir,review_root=tmp_path/'review')
+    with patch('hara_agent.application.create_llm_client',side_effect=AssertionError('no Provider')):
+        if unrelated_change:
+            with pytest.raises(ValueError,match='transition'):
+                OfflineRiskRescorer().run(**args)
+        else:
+            baseline_result=OfflineRiskRescorer().run(**{**args,'target_run_id':'old-scored',
+                'baseline':old/'manifest.yaml','source_baseline':None,'output':tmp_path/'old-scored.xlsx'})
+            result=OfflineRiskRescorer().run(**args)
+            assert result['causal_reuse_basis']['method_transition']['type']=='FTTI_POLICY_ONLY'
+            assert baseline_result['values_after']==result['values_after']
+            prior=repo.load('old-scored');current=repo.load('new')
+            assert [(r.scenario_id,*(getattr(r,k).value for k in ('severity','exposure','controllability','asil')))
+                    for r in prior.risk_results]==[(r.scenario_id,*(getattr(r,k).value for k in ('severity','exposure','controllability','asil')))
+                    for r in current.risk_results]
+
+
+def test_pending_scored_harm_preserves_hazard_handoff_and_does_not_approve_release(source_state):
+    from hara_agent.models import evaluate_risk_eligibility_payload
+    from hara_agent.services.validation.release_gate import ReleaseGateValidator
+    item=source_state.item_definition['scenario_assessments'][0]
+    causal=_validated_causal_assessment(item)
+    binding=causal.evidence_bindings[0]
+    attached=causal.with_harm(potential_harm='conditional injury',evidence_refs=binding.evidence_refs,
+        source_refs=binding.source_refs,review_status=ReviewStatus.PENDING)
+    item['causal_assessment']=attached.to_dict();item['potential_harm']='conditional injury'
+    source_state.risk_results[0].potential_harm='conditional injury'
+    before=deepcopy(item)
+    assert evaluate_risk_eligibility_payload(item).eligible
+    assert item==before
+    assert ReleaseGateValidator().evaluate(source_state).checks['risk_causal_assessments']['unapproved_count']>0
+    for edge in ('M_TO_B','B_TO_I','I_TO_H'):
+        broken=deepcopy(item)
+        next(b for b in broken['causal_assessment']['evidence_bindings'] if b['edge_id']==edge)['status']='PENDING'
+        assert not evaluate_risk_eligibility_payload(broken).eligible
+    rejected=deepcopy(item);rejected['status']='PENDING'
+    assert not evaluate_risk_eligibility_payload(rejected).eligible
+    clean_risk_stage(source_state)
+    assert evaluate_risk_eligibility_payload(item).eligible
+    assert not any(n['node_type']=='HARM' for n in item['causal_assessment']['causal_graph']['nodes'])
+
+
 @pytest.fixture
 def source_state(tmp_path, method):
     # Deliberate synthetic engineering fixture, never a claimed r2 project fact.

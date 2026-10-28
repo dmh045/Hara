@@ -1058,14 +1058,44 @@ class EngineeringReportTextMapper:
         return "S/E/C 未全部确定，ASIL 暂不评定。"
 
     @staticmethod
+    def safe_state_path(candidate: Mapping[str, Any]) -> tuple[tuple, str] | None:
+        """A display group for a response path, never risk/parameter equivalence."""
+        response = candidate.get("transition", {})
+        if response.get("model") != "CONSTANT_NET_DECELERATION":
+            return None
+        labels = {"driver_braking": "驾驶员制动踏板", "braking": "制动执行器",
+                  "automatic_braking_command": "自动制动命令链", "remote_control": "远程控制链",
+                  "parking_hold": "驻车保持", "steering": "转向", "drive": "驱动",
+                  "speed_limiter": "限速控制"}
+        controls = tuple(sorted(candidate.get("required_controls", [])))
+        if not controls or any(c not in labels for c in controls):
+            return None
+        held = response.get("post_stop_motion") == "HOLD_POSITION"
+        positions = tuple(sorted(candidate.get("driver_positions", [])))
+        scope = {("in_driver_seat",): "驾驶员在驾驶位", ("outside_driver_seat",): "驾驶员不在驾驶位"}.get(positions, "按成员适用条件")
+        label = f"{scope}，通过{'、'.join(labels[c] for c in controls)}减速至停止" + ("并保持静止" if held else "")
+        return (controls, positions, held), label
+
+    @classmethod
+    def safe_state_member(cls, candidate: Mapping[str, Any], scenario: Any) -> str:
+        text = "安全状态候选：" + cls.hazardous_event(candidate["description"], scenario)
+        response = candidate.get("transition", {})
+        if response.get("net_deceleration_mps2") is not None:
+            text += "；处置净减速度 " + quantity(response["net_deceleration_mps2"], "m/s2") + " m/s²"
+        return text
+
+    @staticmethod
     def ftti_value(timing_inputs: list[Mapping[str, Any]]) -> str:
-        values = [x["hazard_time_limit_s"] for x in timing_inputs if x.get("hazard_time_limit_s") is not None]
+        lost = [x for x in timing_inputs if x.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST"]
+        values = [x["hazard_time_limit_s"] for x in timing_inputs
+                  if x.get("hazard_time_limit_s") is not None and x not in lost]
         if not values:
-            return "待确定"
+            return "初始已无制动避碰余量" + ("；部分成员待确定" if len(lost) != len(timing_inputs) else "") if lost else "待确定"
         label = quantity(min(values), "s") + " s"
         if min(values) != max(values):
             label += "～" + quantity(max(values), "s") + " s（样本统计）"
-        return label + ("；部分成员待确定" if len(values) != len(timing_inputs) else "")
+        return label + ("；含初始无制动避碰余量成员" if lost else "") + (
+            "；部分成员待确定" if len(values) + len(lost) != len(timing_inputs) else "")
 
     @staticmethod
     def ftti_rationale(timing_inputs: list[Mapping[str, Any]] | None = None) -> str:
@@ -1085,16 +1115,21 @@ class EngineeringReportTextMapper:
             if any("\u4e00" <= ch <= "\u9fff" for ch in reason):
                 explanations.append(reason)
         reasons = "；".join(dict.fromkeys(explanations))
-        calculated = [item for item in timing_inputs or [] if item.get("hazard_time_limit_s") is not None]
+        lost = [item for item in timing_inputs or [] if item.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST"]
+        lost_note = (f"{len(lost)}个成员在模型初始状态已无制动避碰余量：即使立即按假设净减速度制动，也不能在目标前停下。"
+                     "原始0秒表示没有可用的响应延迟窗口，不是可供设计采用的正常FTTI，也不证明所有其他处置均无效。" if lost else "")
+        calculated = [item for item in timing_inputs or [] if item.get("hazard_time_limit_s") is not None and item not in lost]
+        if lost and not calculated:
+            return lost_note + ("其余成员的具体时间缺口见逐成员追溯。" if len(lost) != len(timing_inputs or []) else "")
         if calculated:
-            missing = len(timing_inputs or []) - len(calculated)
+            missing = len(timing_inputs or []) - len(calculated) - len(lost)
             moving = any(item.get("timing_trace", {}).get("response_model_family") == "MOVING_TARGET_BRAKING" for item in calculated)
             return ("条件性时间边界：从故障发生到失去制动避碰能力；"
                     + ("移动目标按原轨迹继续运动，检查故障行驶、制动及停车保持三段，在模型有效时段内确定首次失去避碰余量的边界。" if moving else
                        "依据同一轨迹、静止目标及剩余净减速假设计算。") +
                     "检测、决策和制动建立必须在该边界前完成；制动完成耗时不与此边界相加。"
                     "尚未经工程批准，不是完整ODD的FTTI；假设与逐成员计算见时间追溯。"
-                    + (f"仍有{missing}个成员尚无数值时间边界，具体控制、轨迹或输入缺口见逐成员追溯；已知最小值不代表全组结论。" if missing else ""))
+                    + lost_note + (f"仍有{missing}个成员尚无数值时间边界，具体控制、轨迹或输入缺口见逐成员追溯；已知最小值不代表全组结论。" if missing else ""))
         timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]
         available = [item for item in timings if item.get("contact_time_s") is not None]
         if not available:

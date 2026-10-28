@@ -33,6 +33,75 @@ def control_only_plan(*, braking=True):
             for field in ("remote_intervention_available", "other_road_user_avoidance_possible")}}}
 
 
+def test_shared_motion_has_distinct_driver_responses_without_more_worlds(method, tmp_path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    fields = CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL
+    outside = {k: deepcopy(v) for k,v in h.items() if k in fields}
+    outside['remaining_controls'] = ['automatic_braking_command','braking']
+    outside['safe_state_proposal'].update(required_controls=outside['remaining_controls'],
+        driver_positions=['outside_driver_seat'], description='Independent automatic braking stops this same vehicle')
+    h['driver_control_assessments'] = {'outside_driver_seat': outside}
+    class Client:
+        calls=0
+        def complete_json(self, request):
+            self.calls+=1
+            assert 'driver_control_assessments' in request.system_prompt
+            return LLMResponse(raw,'OFFLINE')
+    parents=[make_candidate(3.6),make_candidate(3.6)]
+    for i,p in enumerate(parents):
+        p.scenario_id=f'driver-{i}';p.facts['driver_in_vehicle']=i==0
+        p.facts['driver_position']='in_driver_seat' if i==0 else 'outside_driver_seat'
+    before=deepcopy(parents);client=Client();agent=PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path)
+    state=HARAState('scoped-control-response',malfunctions=[asdict(mf())])
+    def run(st): return construct_physical_scenarios(st,{'MF':parents},[mf()],method=method,agent=agent,project_facts=None)['MF']
+    children=run(state)
+    assert len(children)==2 and client.calls==1 and parents==before
+    assert len(state.item_definition['physical_analysis_plans'])==1
+    assert children[0].facts['motion_model_outcome']==children[1].facts['motion_model_outcome']
+    for c in children:
+        controls=c.facts['physical_analysis']['hypothesis']['safe_state_proposal']['required_controls']
+        assert ('driver_braking' in controls)==c.facts['driver_in_vehicle']
+        timing=RiskCalculationInputService().ftti('MF',c.scenario_id,'',
+            {**c.facts,'_fact_provenance':c.fact_provenance},method=method)
+        assert timing.status.value=='CONDITIONAL' and timing.hazard_time_limit_s>0
+    assert run(HARAState.read_committed(json.loads(json.dumps(state.to_dict()))))==children
+    assert client.calls==1
+    bad=deepcopy(raw)
+    bad['hypotheses'][0]['driver_control_assessments']['outside_driver_seat']['safe_state_proposal']['required_controls']=['driver_braking']
+    with pytest.raises(ValueError):
+        PhysicalScenarioPlan.from_dict(bad,evidence_ids={'MF.description'})
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    unknown=deepcopy(parents[0])
+    unknown.facts.pop('driver_position');unknown.facts.pop('driver_in_vehicle')
+    child,errors=PhysicalHypothesisInstantiationService(method).instantiate(unknown,mf(),
+        PhysicalScenarioPlan.from_dict(raw,evidence_ids={'MF.description'}),plan_key='unknown-position',response_model='OFFLINE')
+    assert not errors and len(child)==1
+    assert child[0].facts['physical_analysis']['hypothesis']['safe_state_proposal']['required_controls']==['driver_braking']
+
+
+def test_unassessed_outside_response_uses_one_shared_correction_and_keeps_motion(method):
+    from test_scoped_timing_and_avoidance import timed_plan
+    raw=timed_plan()
+    class Client:
+        calls=0
+        def complete_json(self,request):
+            self.calls+=1;answer=deepcopy(raw)
+            if self.calls==2:
+                assert 'SAFE_STATE_DRIVER_SCOPE_UNASSESSED' in request.user_prompt
+                answer['hypotheses'][0]['safe_state_unresolved_reason']='No compatible outside command path for this fault; manual path remains inside only.'
+            return LLMResponse(answer,'OFFLINE')
+    parent=make_candidate(3.6);parent.facts['driver_in_vehicle']=False
+    client=Client();state=HARAState('outside-gap',malfunctions=[asdict(mf())])
+    children=construct_physical_scenarios(state,{'MF':[parent]},[mf()],method=method,
+        agent=PhysicalScenarioAgent(client),project_facts=None)['MF']
+    assert client.calls==2 and len(children)==1
+    assert children[0].facts['physical_analysis']['hypothesis']['parameters']==raw['hypotheses'][0]['parameters']
+    assert 'No compatible outside' in children[0].facts['physical_analysis']['hypothesis']['safe_state_unresolved_reason']
+
+
 def existing_motion(inside=True):
     from test_p7_closure import source
     parent = make_candidate(7)

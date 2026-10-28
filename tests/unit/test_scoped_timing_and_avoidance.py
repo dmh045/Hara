@@ -33,6 +33,36 @@ def test_timing_report_does_not_label_every_missing_value_as_a_missing_model():
     assert timings == original
 
 
+def test_zero_margin_is_not_presented_as_a_usable_zero_second_ftti():
+    result=braking_avoidability_boundary(7/3.6,1,.3,2)
+    assert result['time_s']==0 and result['stopping_distance_m']==pytest.approx(.94521604938)
+    lost={'hazard_time_limit_s':0,'timing_trace':result}
+    before=deepcopy(lost)
+    assert EngineeringReportTextMapper.ftti_value([lost])=='初始已无制动避碰余量'
+    assert '必须在该边界前完成' not in EngineeringReportTextMapper.ftti_rationale([lost])
+    assert '不是可供设计采用' in EngineeringReportTextMapper.ftti_rationale([lost])
+    mixed=[lost,{'hazard_time_limit_s':2}, {'hazard_time_limit_s':None}]
+    text=EngineeringReportTextMapper.ftti_value(mixed)
+    assert text.startswith('2 s；含初始无制动避碰余量') and '部分成员待确定' in text
+    assert '0 s～' not in text and lost==before
+
+
+def test_constant_representative_reaches_existing_timing_calculator_without_defaulting_unknown_model(method):
+    from test_autonomous_physics import make_candidate
+    child=instantiate(method,timed_plan(),make_candidate(3.6))[0]
+    facts={**deepcopy(child.facts),'_fact_provenance':deepcopy(child.fact_provenance)}
+    facts['fault_motion_model']='CONSTANT_SPEED_REPRESENTATIVE'
+    facts.pop('longitudinal_acceleration_mps2');facts.pop('travel_to_impact_m')
+    before=deepcopy(facts)
+    timing=RiskCalculationInputService().ftti('MF',child.scenario_id,'',facts,method=method)
+    assert timing.hazard_time_limit_s==pytest.approx(2-1/6)
+    assert timing.timing_trace['fault_acceleration_mps2']==0
+    assert facts==before
+    for change in ({'fault_motion_model':'CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE'},
+                   {'longitudinal_acceleration_mps2':1},{'object_position':'REAR'}, {'object_speed_kph':1}):
+        assert RiskCalculationInputService().ftti('MF',child.scenario_id,'',{**facts,**change},method=method).hazard_time_limit_s is None
+
+
 @pytest.mark.parametrize('code,explanation', [
     ('RESPONSE_NOT_STRONGER_THAN_FAULT_DECELERATION', '弱于故障轨迹'),
     ('NO_UNMITIGATED_CONTACT_BOUNDARY', '未干预轨迹未形成接触'),

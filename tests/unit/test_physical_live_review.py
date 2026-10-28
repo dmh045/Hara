@@ -155,7 +155,8 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v30-response-contract')
+            assert request.prompt_version.endswith('v31-driver-responses')
+            assert 'driver_control_assessments' in request.system_prompt
             assert payload['output_contract']['response_timing'] == policy['timing_analysis']
             assert payload['output_contract']['control_arrays']['shape_example'] == ['driver_braking', 'braking']
             return LLMResponse(raw_plan(), 'OFFLINE', usage={})

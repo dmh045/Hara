@@ -65,6 +65,18 @@ class FTTIMethodExecutor:
         a = scenario.get("longitudinal_acceleration_mps2")
         d = scenario.get("travel_to_impact_m")
         outcome = scenario.get("motion_model_outcome", {})
+        if scenario.get("fault_motion_model") == "CONSTANT_SPEED_REPRESENTATIVE":
+            # The already selected constant-speed model defines a=0. This is
+            # not a default for an unknown fault acceleration or another model.
+            scope = dict(malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id)
+            metadata = scenario.get("_fact_provenance", {})
+            direction = str(scenario.get("ego_longitudinal_direction", "")).upper()
+            position = str(scenario.get("object_position", "")).upper()
+            if (a not in (None, 0) or (direction, position) not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}
+                    or not all(source_is_accepted_for(metadata.get(k, {}), **scope)
+                               for k in ("fault_motion_model", "ego_speed_kph", "relative_distance_m"))):
+                return pending("既有恒速代表的模型、行程或方向不相容，不能用零加速度代替其他故障运动。")
+            a, d = 0.0, scenario.get("relative_distance_m")
         if scenario.get("fault_motion_model") == "CONSTANT_SPEED_CURVATURE_TO_CONTACT":
             a = 0.0
             d = v / 3.6 * outcome["time_s"] if isinstance(v, (int, float)) and outcome.get("time_s") is not None else None
@@ -103,6 +115,8 @@ class FTTIMethodExecutor:
                 "条件性危险时限：在所建模交互时段内失去制动避碰能力。检测、决策和制动建立延迟必须小于可用制动起始窗口；制动完成时间不再加到该时限。"),
             timing_trace={**result, "fault_to_model_start_s": offset, "net_deceleration_mps2": b,
                 "available_path_distance_m": d, "required_controls": sorted(controls),
+                "unmitigated_motion_model": scenario.get("fault_motion_model"),
+                "initial_speed_kph": v, "fault_acceleration_mps2": a,
                 "safe_state": proposal["description"], "conditions": proposal["conditions"],
                 "source_ref": policy["source_ref"], "hypothesis": hypothesis,
                 "engineering_approval": "NOT_GRANTED", "continuous_range_proven": False})

@@ -388,6 +388,24 @@ def test_safe_state_uses_member_object_semantics_without_rewriting_original_prop
     assert catalog == original
 
 
+def test_safe_state_groups_response_paths_but_preserves_member_conditions_and_parameters():
+    from types import SimpleNamespace
+    first={'scenario_id':'s1','description':'在前方行人前停车','required_controls':['driver_braking','braking'],
+        'driver_positions':['in_driver_seat'],'transition':{'model':'CONSTANT_NET_DECELERATION','net_deceleration_mps2':2}}
+    second={**deepcopy(first),'scenario_id':'s2','description':'倒车在后方车辆前停止'}
+    second['transition']['net_deceleration_mps2']=3
+    third={**deepcopy(first),'scenario_id':'s3','required_controls':['automatic_braking_command','braking'],
+        'driver_positions':['outside_driver_seat']}
+    goal=SimpleNamespace(associated_scenario_ids=['s1','s2','s3'])
+    catalog={'safe_state_candidates':[first,second,third]};before=deepcopy(catalog)
+    text=HARAReportProjectionService._safe_state_display(goal,catalog)
+    assert text.count('候选：')==2 and '适用2个成员' in text and '目标、停止位置' in text
+    for c in catalog['safe_state_candidates']:
+        detail=EngineeringReportTextMapper.safe_state_member(c,SimpleNamespace(facts={},analysis_instance={}))
+        assert c['description'] in detail and str(c['transition']['net_deceleration_mps2']) in detail
+    assert catalog==before
+
+
 def test_exposure_rank_labels_the_used_atom_not_the_search_phrase():
     mapper = EngineeringReportTextMapper(load_report_schema().presentation['language'])
     trace = {'result': 'E3', 'aggregation_rule': 'e3_e4_mix',

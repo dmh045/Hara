@@ -53,6 +53,23 @@ MODEL_CATALOG = {
 # and an independently available driver path need separate identities.
 CONTROL_IDENTITIES = {"drive", "steering", "braking", "automatic_braking_command", "driver_braking",
                       "parking_hold", "speed_limiter", "remote_control"}
+CONTROL_ASSESSMENT_REQUIRED = {"rationale", "basis_refs", "conditions", "uncovered_conditions",
+                               "failed_controls", "remaining_controls"}
+CONTROL_ASSESSMENT_OPTIONAL = {"intervention_assumptions", "unresolved_controls", "safe_state_proposal",
+                               "safe_state_unresolved_reason", "hazard_timing", "timing_unresolved_reason"}
+
+
+def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
+    """Select a complete scoped assessment; never inherit the other driver's path."""
+    assessment = hypothesis.get("driver_control_assessments", {}).get(driver_position)
+    if assessment is None:
+        return hypothesis
+    fields = {"failed_controls", "remaining_controls"} | CONTROL_ASSESSMENT_OPTIONAL
+    selected = {**{k: v for k, v in hypothesis.items() if k not in fields}, **assessment}
+    for field in ("basis_refs", "conditions", "uncovered_conditions"):
+        selected[field] = list(dict.fromkeys([*hypothesis.get(field, []), *assessment[field]]))
+    selected["rationale"] = hypothesis["rationale"] + "\n" + assessment["rationale"]
+    return selected
 
 
 def braking_capability(hypothesis: dict) -> bool | None:
@@ -122,6 +139,16 @@ INTERVENTION_ASSUMPTION_FIELDS = frozenset({
 
 
 def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
+    if "driver_control_assessments" in h:
+        assessments = _object(h["driver_control_assessments"], set(), {"in_driver_seat", "outside_driver_seat"})
+        for driver, assessment in assessments.items():
+            _validate_control_assessment(assessment, evidence_ids)
+            if not set(h["failed_controls"]) <= set(assessment["failed_controls"]):
+                raise ValueError("Driver response cannot restore a control failed in the shared world")
+            proposal = assessment.get("safe_state_proposal", {})
+            if (driver == "outside_driver_seat" and "driver_braking" in proposal.get("required_controls", [])
+                    or proposal.get("driver_positions") and driver not in proposal["driver_positions"]):
+                raise ValueError("Scoped safe state must apply to its driver position: " + driver)
     if "hazard_timing" in h:
         timing = _object(h["hazard_timing"], {"time_origin", "fault_to_model_start_s", "hazard_criterion", "rationale", "basis_refs"})
         if timing["time_origin"] != "FAULT_ONSET" or _number(timing["fault_to_model_start_s"]) < 0:
@@ -209,6 +236,17 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         raise ValueError("Remote intervention requires an explicitly remaining remote control path")
 
 
+def _validate_control_assessment(control: dict, evidence_ids: set[str], *, scoped=False) -> None:
+    _object(control, CONTROL_ASSESSMENT_REQUIRED,
+            CONTROL_ASSESSMENT_OPTIONAL | ({"driver_control_assessments"} if scoped else set()))
+    _text(control["rationale"])
+    if not _texts(control["basis_refs"]) or not set(control["basis_refs"]) <= evidence_ids:
+        raise ValueError("Control assessment requires supplied evidence IDs")
+    if not _texts(control["conditions"]):
+        raise ValueError("Control assessment requires explicit applicability conditions")
+    _validate_controls(control, evidence_ids)
+
+
 @dataclass(frozen=True)
 class PhysicalScenarioPlan:
     hypotheses: tuple[dict, ...]
@@ -226,15 +264,7 @@ class PhysicalScenarioPlan:
                 path="PhysicalScenarioPlan root (return the complete output_shape, not a geometry subobject)")
         control = raw.get("control_assessment")
         if control is not None:
-            _object(control, {"rationale", "basis_refs", "conditions", "uncovered_conditions",
-                              "failed_controls", "remaining_controls"}, {"intervention_assumptions", "unresolved_controls",
-                              "safe_state_proposal", "safe_state_unresolved_reason", "hazard_timing", "timing_unresolved_reason"})
-            _text(control["rationale"])
-            if not _texts(control["basis_refs"]) or not set(control["basis_refs"]) <= evidence_ids:
-                raise ValueError("Control assessment requires supplied evidence IDs")
-            if not _texts(control["conditions"]):
-                raise ValueError("Control assessment requires explicit applicability conditions")
-            _validate_controls(control, evidence_ids)
+            _validate_control_assessment(control, evidence_ids, scoped=True)
             if raw["hypotheses"]:
                 raise ValueError("Control-only assessment must preserve existing motion")
         hypotheses = raw["hypotheses"]
@@ -250,7 +280,7 @@ class PhysicalScenarioPlan:
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
                     {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions", "post_stop_motion", "driver_operating_atoms",
-                     "operating_atoms", "operating_atom_exclusions", "hazard_timing", "safe_state_unresolved_reason", "timing_unresolved_reason"},
+                     "operating_atoms", "operating_atom_exclusions", "hazard_timing", "safe_state_unresolved_reason", "timing_unresolved_reason", "driver_control_assessments"},
                     path=f"hypotheses[{index}]")
             if "operating_atoms" in h:
                 atoms = _object(h["operating_atoms"], {"EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"})

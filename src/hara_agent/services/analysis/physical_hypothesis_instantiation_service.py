@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import replace, asdict
 import math
 
-from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability
+from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability, controls_for_driver
 from .scenario_equivalence import signature
 from .scenario_physics import CONDITIONAL_ORIGIN, derive_scenario_physics, source_is_accepted_for, physical_semantics
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
@@ -379,15 +379,22 @@ class PhysicalHypothesisInstantiationService:
     def instantiate(self, candidate, malfunction, plan, *, plan_key: str, response_model: str,
                     project_context=None, function=None):
         results, diagnostics = [], []
+        driver_position = candidate.facts.get("driver_position", "")
+        if not driver_position:
+            location = candidate.facts.get("driver_in_vehicle")
+            driver_position = ("in_driver_seat" if location is True else
+                               "outside_driver_seat" if location is False else "")
         if plan.control_assessment is not None:
             try:
-                return [self._instantiate_controls(candidate, malfunction, plan.control_assessment,
+                return [self._instantiate_controls(candidate, malfunction, controls_for_driver(plan.control_assessment,
+                    driver_position),
                     plan_key, response_model)], []
             except PhysicalInputConflict as error:
                 return [], [{"reason": str(error), **error.details}]
         for h in plan.hypotheses:
             if "driver_positions" in h and candidate.facts.get("driver_position") not in h["driver_positions"]:
                 continue  # Explicit applicability, not a risk-equivalence judgement.
+            h = controls_for_driver(h, driver_position)
             try:
                 inputs, inheritance = self._model_inputs(candidate, h, malfunction.malfunction_id)
             except PhysicalInputConflict as error:
