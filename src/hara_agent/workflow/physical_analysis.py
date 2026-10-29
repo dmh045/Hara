@@ -302,7 +302,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             entry = saved or {"context": context, "responses": [], "status": "REQUESTED"}
             cache[key] = entry
             prior_status = entry.get("status")
-            if prior_status == "VALIDATED" and entry.get("initial_plan"):
+            if (prior_status == "VALIDATED" and entry.get("initial_plan")
+                    and not (entry.get("semantic_correction_error") and entry["plan"] == entry["initial_plan"])):
                 try:
                     PhysicalScenarioPlan.validate_correction_scope(entry["initial_plan"], entry["plan"],
                         entry.get("correction_diagnostics", []), context.get("driver_configurations", []))
@@ -422,6 +423,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     and response_missing and not response_hypothesis.get("timing_unresolved_reason")):
                                 errors.append({"reason": "SAFE_STOP_RESPONSE_NOT_MODELED",
                                     "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "driver_position": driver, "motion_model": child.facts.get("fault_motion_model"),
                                     "resolution": "Preserve this motion. Complete the proposed braking safe-state response with an explained conditional net-deceleration transition and, for a moving target, explicit post_stop_motion:HOLD_POSITION with a remaining-control basis; alternatively give timing_unresolved_reason for a concrete incompatibility. A missing measured value alone does not prohibit a conditional assumption. One existing correction only."})
                             if proposal and not response_missing:
                                 from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService

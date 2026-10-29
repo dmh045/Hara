@@ -124,6 +124,54 @@ def test_saved_world_changing_correction_is_repaired_through_original_response_c
     assert len(next(iter(state.item_definition['physical_analysis_plans'].values()))['correction_scope_history']) == 1
 
 
+@pytest.mark.parametrize('missing', ['post_stop', 'fault_clock'])
+@pytest.mark.parametrize('succeeds', [True, False])
+def test_response_correction_must_complete_requested_input_and_resume_stays_bounded(method, tmp_path, missing, succeeds):
+    from test_moving_response_timing import proposal
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    complete = proposal()
+    incomplete = deepcopy(complete)
+    h = incomplete['hypotheses'][0]
+    if missing == 'post_stop':
+        h['safe_state_proposal']['transition'].pop('post_stop_motion')
+    else:
+        h.pop('hazard_timing')
+    client = Client([incomplete, incomplete, complete if succeeds else incomplete])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    candidate = make_candidate(7.2)
+    state, result = run(method, agent, candidates={'MF': [candidate]})
+    assert len(client.requests) == 3
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['responses'][1]['response']['data'] == incomplete
+    child = result['MF'][0]
+    view = {**child.facts, '_fact_provenance': child.fact_provenance}
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '', view, method=method)
+    if succeeds:
+        assert timing.hazard_time_limit_s == pytest.approx(3.75)
+        assert timing.status.value == 'CONDITIONAL'
+    else:
+        assert timing.hazard_time_limit_s is None
+        assert 'STILL_' in entry['semantic_correction_error']
+    # Missing response metadata never permits changing the original target or
+    # fault trajectory, and an exhausted correction cannot start a new loop.
+    assert child.facts['ego_speed_kph'] == 7.2
+    assert child.facts['object_offset_x_m'] == 5
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    _, recovered = run(method, agent, state=restored, candidates={'MF': [candidate]})
+    assert recovered == result and len(client.requests) == 3
+
+
+def test_response_completeness_accepts_explicit_gap_without_inventing_holding():
+    from test_moving_response_timing import proposal
+    previous = proposal(); corrected = deepcopy(previous)
+    h = corrected['hypotheses'][0]
+    h['safe_state_proposal']['transition'].pop('post_stop_motion')
+    h['timing_unresolved_reason'] = 'Holding cannot be established with the remaining controls in this world.'
+    PhysicalScenarioPlan.validate_correction_scope(previous, corrected,
+        [{'hypothesis_id': 'h1', 'reason': 'SAFE_STOP_RESPONSE_NOT_MODELED'}])
+    assert 'post_stop_motion' not in h['safe_state_proposal']['transition']
+
+
 class Client:
     def __init__(self, responses):
         self.responses = responses

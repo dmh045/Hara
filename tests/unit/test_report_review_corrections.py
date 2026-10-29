@@ -406,6 +406,31 @@ def test_safe_state_groups_response_paths_but_preserves_member_conditions_and_pa
     assert catalog==before
 
 
+def test_safe_state_many_gaps_show_complete_examples_without_changing_member_evidence():
+    from types import SimpleNamespace
+    reasons = [
+        '驾驶员不在驾驶位，不能使用踏板',
+        '即时停车后仍被后车接触，停车不是安全状态',
+        '独立自动命令链尚未成立，不能借用另一个成员的执行能力',
+        '剩余转向控制尚无适用于该轨迹的处置模型，不能给出安全时间',
+    ]
+    catalog = {'safe_state_candidates': [], 'safe_state_gaps': [
+        {'scenario_id': f's{i}', 'reason': reason, 'reason_code': 'NO_PROPOSAL'}
+        for i, reason in enumerate(reasons)]}
+    before = deepcopy(catalog)
+    goal = SimpleNamespace(associated_scenario_ids=[f's{i}' for i in range(4)],
+                           safe_state='', status=ReviewStatus.PENDING)
+    text = HARAReportProjectionService._safe_state_display(goal, catalog)
+    assert '缺口示例' in text and '完整逐成员原因见报告追溯' in text
+    assert all(reason in text for reason in reasons[:2])
+    assert all(reason not in text for reason in reasons[2:])
+    # A single-member view still shows its whole specific explanation; the
+    # shorter examples from other members cannot replace its actual gap.
+    member = HARAReportProjectionService._safe_state_display(goal, catalog, ['s3'])
+    assert reasons[3] in member and '示例' not in member and reasons[0] not in member
+    assert catalog == before
+
+
 def test_exposure_rank_labels_the_used_atom_not_the_search_phrase():
     mapper = EngineeringReportTextMapper(load_report_schema().presentation['language'])
     trace = {'result': 'E3', 'aggregation_rule': 'e3_e4_mix',

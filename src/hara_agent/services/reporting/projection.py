@@ -654,7 +654,14 @@ class HARAReportProjectionService:
         def narrative(record, field):
             scenario = (scenarios or {}).get(record["scenario_id"])
             return EngineeringReportTextMapper.hazardous_event(record[field], scenario) if scenario is not None else record[field]
-        gap_text = "；".join(dict.fromkeys(narrative(g, "reason").rstrip("。；") for g in gaps))
+        reasons = list(dict.fromkeys(narrative(g, "reason").rstrip("。；") for g in gaps))
+        # SG/group cells are a review summary. Keep complete examples, rather
+        # than truncating a qualifier or repeating every member's narrative.
+        # All original member explanations remain in safe_state_evidence.
+        gap_text = "；".join(reasons)
+        if len(reasons) > 2:
+            examples = sorted(reasons, key=lambda reason: (len(reason), reason))[:2]
+            gap_text = "缺口示例：" + "；".join(examples) + "。完整逐成员原因见报告追溯"
         if candidates:
             variants = defaultdict(list)
             for candidate in candidates:

@@ -512,4 +512,37 @@ class PhysicalScenarioPlan:
         if conflicts:
             raise ValueError("CORRECTION_CHANGED_UNREPORTED_WORLD: " + "; ".join(conflicts)
                 + ". Restore the previous target, parameters, operating bindings and driver scope for these hypotheses. "
-                "Correct only the requested controls, avoidance or safe-state response. An unreachable response must remain a specific gap; do not replace the hazard to make it safe.")
+                "Correct only the requested controls, avoidance or safe-state response. An unreachable response must remain a specific gap; do not replace the hazard to make it safe. "
+                "Response holding belongs in safe_state_proposal.transition.post_stop_motion (inside the relevant driver assessment when scoped), not hypothesis.post_stop_motion, which changes the unmitigated trajectory.")
+        # A reply that leaves the requested response input absent has not
+        # completed this correction. Feed the existing bounded contract repair;
+        # never infer holding or a fault clock from free-text explanations.
+        responses = list(new.items())
+        if corrected.get("control_assessment"):
+            responses.append(("control_assessment", corrected["control_assessment"]))
+        for identity, hypothesis in responses:
+            for driver in positions(hypothesis):
+                requested = [d for d in diagnostics
+                    if d.get("hypothesis_id") in (None, identity)
+                    and d.get("driver_position") in (None, driver)]
+                applicable = {d.get("reason") for d in requested}
+                moving = (hypothesis.get("model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
+                          or any(d.get("motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT" for d in requested))
+                effective = controls_for_driver(hypothesis, driver)
+                proposal = effective.get("safe_state_proposal", {})
+                response = proposal.get("transition", {})
+                if not proposal or effective.get("timing_unresolved_reason"):
+                    continue  # An explicit local model gap is a valid outcome.
+                if ("SAFE_STOP_RESPONSE_NOT_MODELED" in applicable
+                        and (not response or moving
+                            and response.get("model") == "CONSTANT_NET_DECELERATION"
+                            and response.get("post_stop_motion") != "HOLD_POSITION")):
+                    raise ValueError(f"CORRECTION_RESPONSE_STILL_INCOMPLETE: {identity}/{driver}. "
+                        "Complete safe_state_proposal.transition; moving-target braking requires explicit "
+                        "transition.post_stop_motion=HOLD_POSITION and its remaining-control basis. "
+                        "Do not change hypothesis.post_stop_motion or any unmitigated motion input. "
+                        "If this response cannot apply, give a concrete timing_unresolved_reason instead.")
+                if "SAFE_STOP_FAULT_CLOCK_NOT_BOUND" in applicable and not effective.get("hazard_timing"):
+                    raise ValueError(f"CORRECTION_FAULT_CLOCK_STILL_UNBOUND: {identity}/{driver}. "
+                        "Bind hazard_timing to this response and fault origin with its basis, or provide "
+                        "a concrete timing_unresolved_reason; do not supply a default offset.")
