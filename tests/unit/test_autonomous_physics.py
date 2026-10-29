@@ -155,6 +155,30 @@ def test_conditional_causal_proof_uses_generated_world_and_preserves_input_pendi
     assert sc.fact_provenance["fault_motion_model"]["approval"] == "PENDING"
 
 
+@pytest.mark.parametrize('model', ['CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE', 'GRADE_ROLLAWAY_TO_IMPACT_DISTANCE'])
+def test_causal_evidence_budget_keeps_fault_motion_basis_and_conditional_nature(method, model):
+    from hara_agent.services.semantic.scenario_evidence import build_fact_registry, CausalEvidenceSelector
+    from hara_agent.services.semantic.scenario_batching import _scenario_json
+    child = instantiate(method, raw_plan(model))[0]
+    before = deepcopy(child)
+    registry = build_fact_registry(mf(), child)
+    selected = CausalEvidenceSelector().select(registry)
+    assert selected.selected_evidence_count <= 10
+    assert 'SCN.fault_motion_model' in selected.selected_refs
+    assert any(r.endswith('.motion_model_outcome') for r in selected.selected_refs)
+    assert 'SCN.longitudinal_acceleration_mps2' in selected.selected_refs
+    if 'ROLLAWAY' in model:
+        assert 'SCN.slope_percent' in selected.selected_refs
+        assert 'SCN.residual_resistance_mps2' in selected.selected_refs
+    assert 'calculation_nature=CONDITIONAL; engineering_approval=NOT_GRANTED' in selected.compact_view
+    assert json.loads(_scenario_json(mf(), child))['causal_evidence_view'] == selected.compact_view
+    assert child == before
+    # Unvalidated or foreign-world assumptions must still stay out of the view.
+    child.fact_provenance['longitudinal_acceleration_mps2']['analysis_assumption_scope']['scenario_id'] = 'foreign-world'
+    invalid = CausalEvidenceSelector().select(build_fact_registry(mf(), child))
+    assert 'SCN.longitudinal_acceleration_mps2' not in invalid.selected_refs
+
+
 def test_raw_response_is_saved_and_reparsed_without_new_call(tmp_path):
     class Client:
         calls = 0

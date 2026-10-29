@@ -33,6 +33,23 @@ def test_timing_report_does_not_label_every_missing_value_as_a_missing_model():
     assert timings == original
 
 
+@pytest.mark.parametrize('reason_field', ['timing_unresolved_reason', 'safe_state_unresolved_reason'])
+def test_scoped_timing_gap_reaches_report_without_inventing_a_deadline(method, reason_field):
+    from test_autonomous_physics import make_candidate
+    raw = timed_plan()
+    h = raw['hypotheses'][0]
+    h.pop('safe_state_proposal')
+    h[reason_field] = '同一后车轨迹下停车仍被接触，尚未建立可解除异常减速的独立路径。'
+    child = instantiate(method, raw, make_candidate(3.6))[0]
+    before = deepcopy(child)
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s is None
+    assert h[reason_field] in timing.reason
+    assert h[reason_field] in EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+    assert child == before
+
+
 def test_zero_margin_is_not_presented_as_a_usable_zero_second_ftti():
     result=braking_avoidability_boundary(7/3.6,1,.3,2)
     assert result['time_s']==0 and result['stopping_distance_m']==pytest.approx(.94521604938)

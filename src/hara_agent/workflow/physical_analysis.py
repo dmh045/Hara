@@ -251,25 +251,43 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             if task_scope == "MOTION_AND_CONTROLS":
                 inputs["operating_atom_options"] = producer.operating_atom_options(
                     first, mf, project, functions.get(mf.function_id))
+                object_options = inputs["operating_atom_options"].pop("OBJECT", [])
+                if object_options:
+                    inputs["object_focus_options"] = object_options
                 object_id = first.facts.get("method_scenario_dimensions", {}).get("OBJECT", {}).get("atom_id")
                 selected_object = next((a for a in method.metadata.get("scenario_atom_catalog", []) if a.get("atom_id") == object_id), None)
                 if selected_object:
                     inputs["selected_object_scope"] = {k: selected_object[k] for k in ("atom_id", "label", "physical_semantics") if k in selected_object}
-                    # Distribute explicitly named road-user classes over existing
-                    # worlds, like the source-condition focus above. This is a
-                    # task focus, not a fact binding or another expansion axis.
+                if (not first.facts.get("road_user_type") and not first.facts.get("object_type")
+                        and (selected_object or not object_id)):
+                    # Unbound targets are analytical choices too. Use the same
+                    # source/method-filtered shortlist as later object binding,
+                    # rather than leaving every such world biased to vehicles.
                     from hara_agent.services.analysis.scenario_selection_quality import ScenarioCandidateRanker
-                    categories = ScenarioCandidateRanker.atom_categories(selected_object)
+                    option_ids = {a["atom_id"] for a in object_options}
+                    object_scope = [selected_object] if selected_object else [a
+                        for a in method.metadata.get("scenario_atom_catalog", []) if a["atom_id"] in option_ids]
+                    categories = set().union(*(ScenarioCandidateRanker.atom_categories(a)
+                        for a in object_scope))
                     object_types = sorted(name for name in inputs["risk_vocabulary"]["road_user_type"]
                         if "OBJECT_" + name in categories)
-                    if len(object_types) > 1 and not first.facts.get("road_user_type"):
+                    if len(object_types) > 1:
                         inputs["road_user_focus"] = object_types[(coverage_offset + int(focus_identity[:8], 16)) % len(object_types)]
+                    if "road_user_focus" in inputs and not selected_object:
+                        inputs["road_user_focus_basis"] = (
+                            "Compatible active-method OBJECT shortlist, not an extracted project object. "
+                            "Instantiate this class only as a justified conditional interaction within this existing world; "
+                            "preserve explicit source constraints and state a specific incompatibility if it cannot apply. "
+                            "Replace a redundant representative; do not add a coverage axis or multiply instances.")
                 inputs["interaction_coverage_policy"] = (
                     "Compare physically compatible object motions before choosing representatives. "
                     "Existing specific objects/constraints remain binding. For a justified new target, "
                     "prefer distinct relevant interactions within this plan; do not repeat the same "
                     "stationary-target mechanism only with another distance. When road_user_focus is supplied, use at least one existing hypothesis slot for that explicitly source-named class, with its actual motion/interaction; if incompatible, give the specific uncovered condition instead. Other explicit classes remain alternatives, not mandatory extra instances. When the selected method object explicitly includes multiple road-user types, compare their distinct movement/escape mechanisms; do not silently narrow that scope to only the most familiar type. Replace redundant hypotheses rather than multiplying them. Keep at most 3 total instances. "
                     "If no distinct supported interaction is appropriate, explain why; never add an unrelated fault.")
+                if inputs.get("road_user_focus_basis"):
+                    inputs["interaction_coverage_policy"] = inputs["interaction_coverage_policy"].replace(
+                        "explicitly source-named class", "method-supported analytical class")
             if task_scope == "CONTROL_INPUTS_ONLY":
                 inputs.update(task_scope=task_scope, prompt_version=agent.CONTROL_PROMPT_VERSION)
             evidence = {"MF.description": {"value": mf.description, "sources": [vars(ref) for ref in mf.sources]},
@@ -435,7 +453,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                             if outcome.get("reason") == "TARGET_OFFSET_POSITION_CONFLICT":
                                 errors.append({"reason": outcome["reason"],
                                     "hypothesis_id": child.facts.get("physical_analysis", {}).get("hypothesis", {}).get("hypothesis_id"),
-                                    "resolution": "Reconcile target position with its signed body-frame offsets. Preserve valid hypotheses; if the existing model cannot represent this trajectory, state that limitation rather than changing the fault mechanism."})
+                                    "evidence": {k: child.facts.get(k) for k in (
+                                        "object_position", "object_offset_x_m", "object_offset_y_m", "object_longitudinal_direction")},
+                                    "resolution": "Reconcile this target's position with the supplied signed offsets in body x-forward/y-left coordinates (LEFT is positive y; RIGHT negative y). Correct the conflicting geometry/parameter and its explanation together; repeating these same fields leaves the conflict unresolved. Preserve valid hypotheses and the fault mechanism; do not tune parameters to force contact. If this model cannot represent the trajectory, state that limitation."})
                     # A syntactically valid motion plan may have omitted the
                     # capability analysis. Use the existing ONE family-level
                     # correction, retaining useful motion even if still unknown.

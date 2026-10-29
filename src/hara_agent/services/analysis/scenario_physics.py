@@ -26,6 +26,11 @@ _FINAL_APPROVALS = {ReviewStatus.FINALIZED.value, "APPROVED"}
 TTC_CLOSING_FORMULA_IDENTITY = "relative_distance_m / (closing_speed_kph / 3.6)"
 
 
+def grade_rollaway_acceleration(grade_percent: float, resistance_mps2: float) -> float:
+    """Net downhill acceleration from rest; resistance cannot initiate reversal."""
+    return max(0.0, 9.80665 * math.sin(math.atan(grade_percent / 100)) - resistance_mps2)
+
+
 def physical_semantics(metadata: dict[str, Any]) -> dict[str, Any]:
     """Resolve legacy normalization wrappers without changing a value's phase."""
     result = {key: metadata[key] for key in PHYSICAL_SEMANTIC_FIELDS if key in metadata}
@@ -1136,33 +1141,8 @@ def derive_scenario_physics(
                 "source_refs": [_source_dict(ref) for ref in record.source_refs]}})
 
     model = scenario.facts.get("fault_motion_model")
-    if model == "RECTILINEAR_MOVING_TARGET_CONTACT":
-        from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG
-        keys = tuple(MODEL_CATALOG[model]["required"]) + (
-            "fault_motion_model", "object_position", "object_extent", "ego_longitudinal_direction",
-            "object_longitudinal_direction", "impact_time_id")
-        if "post_stop_motion" in scenario.facts:
-            keys += ("post_stop_motion",)
-        outcome = rectilinear_moving_contact(scenario.facts)
-        formula = "first simultaneous |dx+(ux-vx)t-ax*t^2/2|<=hx and |dy+uy*t|<=hy before ego stop/horizon"
-        if scenario.facts.get("post_stop_motion") == "HOLD_POSITION":
-            formula += "; after stop ts, xe=sign*(v0*ts+a*ts^2/2), ve=0; solve |dx+ux*t-xe|<=hx and |dy+uy*t|<=hy until horizon"
-        records.append(derived_record("motion_model_outcome", outcome, keys,
-            DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula))
-        if outcome["status"] == "CONTACT":
-            results = {k: outcome[k] for k in ("ego_impact_speed_kph", "object_impact_speed_kph",
-                       "relative_speed_kph", "trajectory_max_speed_kph")}
-            results["first_contact_time_s"] = outcome["time_s"]
-            if outcome["longitudinal_contact"]:
-                results["ttc_s"] = outcome["time_s"]
-            for key, value in results.items():
-                record = derived_record(key, value, keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula)
-                record.metadata.update(impact_time_id=scenario.facts.get("impact_time_id"),
-                    analysis_value_semantic="FIRST_CONTACT_TIME" if key in {"ttc_s", "first_contact_time_s"} else "IMPACT_SPEED",
-                    assessment_reference="MODEL_INITIAL_STATE")
-                records.append(record)
-        return tuple({record.evidence_ref: record for record in records}.values())
-    if model == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE":
+    if model == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" or (
+            model == "RECTILINEAR_MOVING_TARGET_CONTACT" and scenario.facts.get("grade_coordinate_frame")):
         grade = _nonnegative_number(scenario.facts.get("slope_percent"))
         resistance = _nonnegative_number(scenario.facts.get("residual_resistance_mps2"))
         downhill = scenario.facts.get("downhill_body_direction")
@@ -1197,7 +1177,7 @@ def derive_scenario_physics(
         if grade is not None and resistance is not None and scenario.facts.get("ego_speed_kph") == 0:
             # Grade percent is rise/run, not degrees. Static residual holding
             # can prevent motion, but cannot accelerate the car uphill here.
-            acceleration = max(0.0, 9.80665 * math.sin(math.atan(grade / 100)) - resistance)
+            acceleration = grade_rollaway_acceleration(grade, resistance)
             record = derived_record("longitudinal_acceleration_mps2", acceleration,
                 ("slope_percent", "residual_resistance_mps2", "fault_motion_model", "ego_speed_kph", *grade_inputs),
                 DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
@@ -1209,6 +1189,32 @@ def derive_scenario_physics(
                 ("fault_motion_model", "ego_speed_kph", "slope_percent", "residual_resistance_mps2"),
                 DerivedPhysicsType.KINEMATIC_IMPACT_SPEED))
             return tuple(records)
+    if model == "RECTILINEAR_MOVING_TARGET_CONTACT":
+        from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG
+        keys = tuple(MODEL_CATALOG[model]["required"]) + (
+            "fault_motion_model", "object_position", "object_extent", "ego_longitudinal_direction",
+            "object_longitudinal_direction", "impact_time_id")
+        if "post_stop_motion" in scenario.facts:
+            keys += ("post_stop_motion",)
+        outcome = rectilinear_moving_contact(scenario.facts)
+        formula = "first simultaneous |dx+(ux-vx)t-ax*t^2/2|<=hx and |dy+uy*t|<=hy before ego stop/horizon"
+        if scenario.facts.get("post_stop_motion") == "HOLD_POSITION":
+            formula += "; after stop ts, xe=sign*(v0*ts+a*ts^2/2), ve=0; solve |dx+ux*t-xe|<=hx and |dy+uy*t|<=hy until horizon"
+        records.append(derived_record("motion_model_outcome", outcome, keys,
+            DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula))
+        if outcome["status"] == "CONTACT":
+            results = {k: outcome[k] for k in ("ego_impact_speed_kph", "object_impact_speed_kph",
+                       "relative_speed_kph", "trajectory_max_speed_kph")}
+            results["first_contact_time_s"] = outcome["time_s"]
+            if outcome["longitudinal_contact"]:
+                results["ttc_s"] = outcome["time_s"]
+            for key, value in results.items():
+                record = derived_record(key, value, keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula)
+                record.metadata.update(impact_time_id=scenario.facts.get("impact_time_id"),
+                    analysis_value_semantic="FIRST_CONTACT_TIME" if key in {"ttc_s", "first_contact_time_s"} else "IMPACT_SPEED",
+                    assessment_reference="MODEL_INITIAL_STATE")
+                records.append(record)
+        return tuple({record.evidence_ref: record for record in records}.values())
     if model == "CONSTANT_SPEED_CURVATURE_TO_CONTACT":
         outcome = constant_speed_curved_contact(scenario.facts)
         keys = ("ego_speed_kph", "turn_radius_m", "lateral_clearance_m", "model_valid_until_s",

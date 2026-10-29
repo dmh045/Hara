@@ -385,3 +385,67 @@ def test_source_focus_and_plan_cache_are_independent_of_input_order(method):
     assert len(client.requests) == 2
     assert len(state.item_definition['physical_analysis_plans']) == 2
     assert len(state.item_definition['physical_analysis_metrics']['source_condition_uncovered_ids']) == 2
+
+
+@pytest.mark.parametrize('heading,direction,x,target_direction', [
+    ('DOWNHILL', 'FORWARD', 8, 'REVERSE'), ('UPHILL', 'REVERSE', -8, 'FORWARD')])
+def test_moving_rollaway_uses_same_gravity_derivation_and_scoped_contact(method, heading, direction, x, target_direction):
+    import math
+    raw = moving_plan(initial=0, x=x, position='FRONT' if x > 0 else 'REAR',
+        target_direction=target_direction, collision='FRONTAL' if x > 0 else 'REAR_END')
+    h = raw['hypotheses'][0]
+    h['geometry']['ego_longitudinal_direction'] = direction
+    h['grade_frame'] = dict(coordinate_frame='BODY_FORWARD_POSITIVE', slope_reference='UNSPECIFIED',
+        heading_relative_to_downhill=heading, downhill_body_direction='FRONT' if x > 0 else 'REAR',
+        orientation_basis='ANALYSIS_ASSUMPTION', rationale='Explicit conditional body orientation')
+    h['parameters'] = [p for p in h['parameters'] if p['field'] != 'longitudinal_acceleration_mps2']
+    h['parameters'] += [dict(field='slope_percent', unit='%', kind='POINT', value=15, rationale='conditional grade'),
+        dict(field='residual_resistance_mps2', unit='m/s2', kind='POINT', value=.15, rationale='conditional resistance')]
+    parent = make_candidate(0); before = deepcopy(parent)
+    child = instantiate(method, raw, parent)[0]
+    a = 9.80665 * math.sin(math.atan(.15)) - .15
+    assert child.facts['longitudinal_acceleration_mps2'] == pytest.approx(a)
+    assert child.facts['gravity_body_acceleration_mps2'] * x > 0
+    assert child.facts['motion_model_outcome']['status'] == 'CONTACT'
+    assert child.facts['object_speed_kph'] == 3.6
+    assert child.facts['first_contact_time_s'] == pytest.approx((-1 + math.sqrt(1+14*a))/a)
+    assert child.fact_provenance['longitudinal_acceleration_mps2']['provenance'] == 'DERIVED'
+    assert child.fact_provenance['relative_speed_kph']['approval'] == 'PENDING'
+    assert score(method, child)['severity']['severity_score']
+    view = {**child.facts, 'scenario_id':child.scenario_id, 'malfunction_id':'MF',
+        '_fact_provenance':child.fact_provenance}
+    stopped = branch_physics_view(view, {'residual_resistance_mps2':2})
+    assert stopped['longitudinal_acceleration_mps2'] == 0  # No uphill launch.
+    assert stopped['first_contact_time_s'] == 7  # Moving target can still hit stationary ego.
+    assert parent == before
+    # Unknown grade stays symbolic; a parent acceleration cannot fill the gap.
+    slope = next(p for p in h['parameters'] if p['field'] == 'slope_percent')
+    slope.pop('value'); slope.update(kind='SYMBOLIC', symbol='grade')
+    symbolic = instantiate(method, raw, parent)[0]
+    assert 'longitudinal_acceleration_mps2' not in symbolic.facts
+    assert 'first_contact_time_s' not in symbolic.facts
+    assert symbolic.facts['motion_model_outcome']['status'] == 'ROLLAWAY_INITIAL_STATE_OR_GRADE_UNRESOLVED'
+
+
+def test_moving_grade_rejects_unrelated_acceleration_and_selected_slope_conflict(method):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    raw = moving_plan(initial=0)
+    h=raw['hypotheses'][0]
+    h['grade_frame']=dict(coordinate_frame='BODY_FORWARD_POSITIVE', slope_reference='UNSPECIFIED',
+        heading_relative_to_downhill='DOWNHILL', downhill_body_direction='FRONT',
+        orientation_basis='ANALYSIS_ASSUMPTION', rationale='explicit conditional downhill orientation')
+    service=PhysicalHypothesisInstantiationService(method)
+    def result(parent):
+        return service.instantiate(parent, mf(), PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'}),
+            plan_key='offline', response_model='offline')
+    children, diagnostics=result(make_candidate(0))
+    assert not children and diagnostics[0]['reason_code']=='MOVING_GRADE_ACCELERATION_IS_DERIVED'
+    h['parameters']=[p for p in h['parameters'] if p['field']!='longitudinal_acceleration_mps2']
+    h['parameters'] += [dict(field='slope_percent',unit='%',kind='POINT',value=5,rationale='conditional road'),
+        dict(field='residual_resistance_mps2',unit='m/s2',kind='POINT',value=.15,rationale='conditional resistance')]
+    parent=make_candidate(0)
+    parent.facts['method_scenario_dimensions']={'EGO_X_ROAD':{'atom_id':'test-bound',
+        'method_semantics':{'slope':{'range_pct':[8,None], 'min_inclusive':False}}}}
+    children, diagnostics=result(parent)
+    assert not children and diagnostics[0]['reason_code']=='SLOPE_CONFLICTS_WITH_SELECTED_CONDITIONS'

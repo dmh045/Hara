@@ -50,7 +50,9 @@ class FTTIMethodExecutor:
         if (not controls or not controls <= remaining or controls & set(hypothesis.get("failed_controls", []))
                 or "driver_braking" in controls and driver != "in_driver_seat"
                 or proposal.get("driver_positions") and driver not in proposal["driver_positions"]):
-            return pending("本成员没有适用的剩余控制响应路径；不能借用其他驾驶员分支。")
+            detail = hypothesis.get("timing_unresolved_reason") or hypothesis.get("safe_state_unresolved_reason")
+            return pending("本成员没有适用的剩余控制响应路径；不能借用其他驾驶员分支。"
+                           + ("具体原因：" + detail if detail else ""))
         release_policy = policy.get("fault_release_response", {})
         release = bool(release_policy and response.get("model") == release_policy.get("model"))
         if (release and (not moving or not {"drive", "braking"} <= controls

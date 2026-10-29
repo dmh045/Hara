@@ -46,7 +46,7 @@ MODEL_CATALOG = {
         "required": ["ego_speed_kph", "longitudinal_acceleration_mps2", "object_speed_kph",
                      "object_offset_x_m", "object_offset_y_m", "contact_half_length_m",
                      "contact_half_width_m", "model_valid_until_s"],
-        "scope": "Body frame x forward, y left; initial target-center offsets signed. Ego straight constant acceleration along its travel direction, target constant velocity FORWARD/REVERSE/LEFT/RIGHT. Axis-aligned contact envelope half-length/width is the SUM of ego and target projected half-extents, justified as assumptions, not measured dimensions. First simultaneous x/y overlap within explicit horizon. By default evaluation ends at ego stop. Optional hypothesis.post_stop_motion=HOLD_POSITION explicitly assumes ego remains at its stopping position for the remaining horizon; explain its compatibility with grade and failed/remaining controls in conditions and rationale. This allows a moving target to contact the stopped ego without reversing it. Supports following, oncoming, rear approach and crossing; no turns, reversal or independent speed cap. Crossing contact time is not longitudinal TTC.",
+        "scope": "Body frame x forward, y left; initial target-center offsets signed. Ego straight constant acceleration along its travel direction, target constant velocity FORWARD/REVERSE/LEFT/RIGHT. Axis-aligned contact envelope half-length/width is the SUM of ego and target projected half-extents, justified as assumptions, not measured dimensions. First simultaneous x/y overlap within explicit horizon. By default evaluation ends at ego stop. Optional hypothesis.post_stop_motion=HOLD_POSITION explicitly assumes ego remains at its stopping position for the remaining horizon; explain its compatibility with grade and failed/remaining controls in conditions and rationale. This allows a moving target to contact the stopped ego without reversing it. With hypothesis.grade_frame, ego starts at rest: supply slope_percent and residual_resistance_mps2 instead of independent longitudinal_acceleration_mps2; the existing gravity model derives net acceleration and direction before the same contact calculation. Supports following, oncoming, rear approach and crossing; no turns, reversal or independent speed cap. Crossing contact time is not longitudinal TTC.",
     },
 }
 # Existing drive/steering/braking/parking_hold identities retain their capability
@@ -356,6 +356,8 @@ class PhysicalScenarioPlan:
                     raise ValueError("Condition changes require explicit boolean flags")
                 _text(changes["rationale"])
             if "grade_frame" in h:
+                if h["model"] not in {"GRADE_ROLLAWAY_TO_IMPACT_DISTANCE", "RECTILINEAR_MOVING_TARGET_CONTACT"}:
+                    raise ValueError("grade_frame declares gravity-driven motion; use the existing grade or moving-target model")
                 frame = _object(h["grade_frame"], {"coordinate_frame", "slope_reference",
                     "heading_relative_to_downhill", "downhill_body_direction", "orientation_basis", "rationale"},
                     {"ego_forward_relative_to_reference"})

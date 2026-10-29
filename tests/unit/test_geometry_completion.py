@@ -184,16 +184,53 @@ def test_sample_scope_preserves_full_run_physical_request_and_response_reuse(met
     assert sample.item_definition['physical_analysis_metrics']['response_cache_hits'] == 1
 
 
-def test_road_user_coverage_focus_cannot_replace_a_specific_target(method):
+@pytest.mark.parametrize('target_field', ['road_user_type', 'object_type'])
+def test_road_user_coverage_focus_cannot_replace_a_specific_target(method, target_field):
     parent = make_candidate()
-    parent.facts['road_user_type'] = 'VEHICLE'
+    parent.facts.pop('road_user_type', None)
+    parent.facts[target_field] = 'VEHICLE'
     parent.facts['method_scenario_dimensions'] = {'OBJECT': {'atom_id': 'CN_other_road_users'}}
     raw = {'hypotheses': [], 'uncovered_conditions': ['Context-only regression; no motion proposed.']}
     client = Client([raw])
     state, _ = run(method, PhysicalScenarioAgent(client), candidates={'MF': [parent]})
     context = next(iter(state.item_definition['physical_analysis_plans'].values()))['context']
     assert 'road_user_focus' not in context
-    assert context['conditions']['facts']['road_user_type'] == 'VEHICLE'
+    assert context['conditions']['facts'][target_field] == 'VEHICLE'
+
+
+def test_unbound_objects_use_existing_compatible_shortlist_without_expanding_worlds(method, tmp_path):
+    from hara_agent.services.analysis.scenario_selection_quality import ScenarioCandidateRanker
+    parents = []
+    for index in range(12):
+        child = make_candidate()
+        child.scenario_id = f'unbound-{index}'
+        child.facts.pop('road_user_type')
+        child.fact_provenance.pop('road_user_type', None)
+        child.facts['operating_scenario'] = f'parking-location-{index}'
+        child.facts['method_scenario_dimensions'] = {'OBJECT': {'binding_status':'UNRESOLVED'}}
+        parents.append(child)
+    original = deepcopy(parents)
+    raw = {'hypotheses': [], 'uncovered_conditions': ['Frozen context-only response, not a claim of hazard coverage.']}
+    client = Client([raw] * len(parents))
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    state, results = run(method, agent, candidates={'MF':parents})
+    entries = list(state.item_definition['physical_analysis_plans'].values())
+    assert len(entries) == len(parents) == len(results['MF']) == len(client.requests)
+    contexts = [e['context'] for e in entries]
+    assert len({c['road_user_focus'] for c in contexts}) > 1
+    for context in contexts:
+        option_ids = {r['atom_id'] for r in context['object_focus_options']}
+        categories = set().union(*(ScenarioCandidateRanker.atom_categories(a)
+            for a in method.metadata['scenario_atom_catalog'] if a['atom_id'] in option_ids))
+        assert 'OBJECT_' + context['road_user_focus'] in categories
+        assert 'not an extracted project object' in context['road_user_focus_basis']
+        assert 'method-supported analytical class' in context['interaction_coverage_policy']
+        assert 'explicitly source-named class' not in context['interaction_coverage_policy']
+        assert 'road_user_type' not in context['conditions']['facts']
+    # A source sample uses the same focus and exact request as its full context.
+    sample, _ = run(method, agent, candidates={'MF':[deepcopy(original[-1])]})
+    assert set(sample.item_definition['physical_analysis_plans']) <= set(state.item_definition['physical_analysis_plans'])
+    assert len(client.requests) == len(parents)
 
 
 def test_timing_policy_identity_does_not_reshuffle_physical_coverage_focus(method):

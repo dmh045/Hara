@@ -159,7 +159,10 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v39-bounded-world')
+            assert request.prompt_version.endswith('v41-scoped-contact-geometry')
+            assert '程序由坡度与阻力推导' in request.system_prompt
+            assert '半尺寸求和后不得再除以2' in request.system_prompt
+            assert 'LEFT使y增加，RIGHT使y减小' in request.system_prompt
             assert '不得仅凭标线认定车辆/行人无法跨越' in request.system_prompt
             assert 'driver_control_assessments' in request.system_prompt
             assert payload['output_contract']['driver_control_assessments']['entry_shape']['failed_controls']==[]
@@ -331,6 +334,9 @@ def test_control_envelope_normalization_preserves_reply_and_reuses_response(tmp_
         calls = 0
         def complete_json(self, request):
             self.calls += 1
+            assert 'hypotheses必须保持空数组[]' in request.system_prompt
+            assert '每个hypotheses成员都必须' not in request.system_prompt
+            assert '末尾不得再次输出hypotheses空数组' not in request.system_prompt
             return LLMResponse(raw, 'OFFLINE')
     client = Client()
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
@@ -344,6 +350,46 @@ def test_control_envelope_normalization_preserves_reply_and_reuses_response(tmp_
     assert audit['schema_repairs'] == 0 and audit['control_envelope_normalization']
     restored, resumed = agent.propose(context)
     assert restored == plan and resumed['response_cache_hits'] == 1 and client.calls == 1
+
+
+@pytest.mark.parametrize('explicit_zero', [True, False])
+def test_constant_speed_notation_reuses_same_motion_solver_and_retains_raw_reply(method, tmp_path, explicit_zero):
+    from test_geometry_completion import Client
+    raw = raw_plan(initial=3.6, acceleration=0)
+    h = raw['hypotheses'][0]
+    h['model'] = 'CONSTANT_SPEED_REPRESENTATIVE'
+    if not explicit_zero:
+        h['parameters'] = [p for p in h['parameters'] if p['field'] != 'longitudinal_acceleration_mps2']
+    before = deepcopy(raw)
+    client = Client([raw])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key':'constant-notation', 'evidence':{'MF.description':'conditional constant motion'}}
+    plan, audit = agent.propose(context)
+    child = instantiate(method, plan.to_dict(), make_candidate(3.6))[0]
+    assert child.facts['ego_impact_speed_kph'] == pytest.approx(3.6)
+    assert child.facts['ttc_s'] == pytest.approx(2)
+    assert child.fact_provenance['longitudinal_acceleration_mps2']['approval'] == 'PENDING'
+    assert audit['motion_model_normalizations'][0]['zero_acceleration_from_model_definition'] is (not explicit_zero)
+    assert raw == before == json.loads(next(tmp_path.glob('*.json')).read_text())['response']['data']
+    restored, resumed = agent.propose(context)
+    assert restored == plan and resumed['response_cache_hits'] == 1 and len(client.requests) == 1
+
+
+@pytest.mark.parametrize('acceleration', [
+    {'kind':'POINT','value':1}, {'kind':'POINT','value':False},
+    {'kind':'SYMBOLIC','symbol':'a_fault'}, {'kind':'RANGE','lower':0,'value':0,'upper':1},
+])
+def test_constant_speed_notation_does_not_replace_an_explicit_acceleration(acceleration):
+    from test_geometry_completion import Client
+    raw = raw_plan(initial=3.6)
+    raw['hypotheses'][0]['model'] = 'CONSTANT_SPEED_REPRESENTATIVE'
+    p = raw['hypotheses'][0]['parameters'][-1]
+    p.pop('value'); p.update(acceleration)
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match='Unknown physical model'):
+        PhysicalScenarioAgent(Client([raw, raw])).propose({'plan_key':'contradictory-constant',
+            'evidence':{'MF.description':'conditional fault'}})
+    assert raw == before
 
 
 @pytest.mark.parametrize('defect', ['contradiction', 'missing_limits', 'foreign_score', 'wrong_task'])

@@ -8,7 +8,7 @@ import math
 
 from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability, controls_for_driver
 from .scenario_equivalence import signature
-from .scenario_physics import CONDITIONAL_ORIGIN, derive_scenario_physics, source_is_accepted_for, physical_semantics
+from .scenario_physics import CONDITIONAL_ORIGIN, derive_scenario_physics, source_is_accepted_for, physical_semantics, grade_rollaway_acceleration
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
 
 
@@ -119,7 +119,7 @@ class PhysicalHypothesisInstantiationService:
             grade = values.get("slope_percent")
             if grade is None:
                 return []
-            gravity = 9.80665 * math.sin(math.atan(grade / 100))
+            gravity = grade_rollaway_acceleration(grade, 0)
             rows = [{"parameter": "residual_resistance_mps2", "boundary": gravity,
                      "condition": "rollaway from rest requires 0 <= residual resistance < g*sin(atan(grade/100))"}]
             longitudinal = dict(values)
@@ -205,6 +205,8 @@ class PhysicalHypothesisInstantiationService:
             texts = ["车体坐标x前向、y左向；x(t)=dx+(u_x−v_x)t−a_x·t²/2，y(t)=dy+u_y·t。",
                      "接触要求同一时刻|x(t)|≤接触包络半长且|y(t)|≤接触包络半宽；取自车停止前和模型有效期内的首次重合。",
                      "路径相交不保证发生碰撞；交叉接触时间不作为纵向TTC。"]
+            if h.get("grade_frame"):
+                texts.insert(0, "静止起步纯重力：a=max(0,g·sin(arctan(坡度/100))−阻力)；方向由车头朝向映射，阻力足够时不启动。")
         elif model == "CONSTANT_SPEED_CURVATURE_TO_CONTACT":
             texts = ["等速圆弧代表工况：θ=v·t/R，y=R·(1−cosθ)，总速度保持v；不是纵向分量不变再叠加横向速度。",
                 "目标位于转弯一侧且0<w≤R时，首次接触时间t=2R·asin(sqrt(w/(2R)))/v；须在声明有效时段及首个四分之一圆内。",
@@ -317,11 +319,24 @@ class PhysicalHypothesisInstantiationService:
                 return False, "PARENT_TRAVEL_DIRECTION_CHANGED"
         return True, "SAME_FAULT_PHASE_ROLE_AND_MODEL"
 
+    @staticmethod
+    def _required_inputs(h):
+        required = set(MODEL_CATALOG[h["model"]]["required"])
+        if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT" and h.get("grade_frame"):
+            required.remove("longitudinal_acceleration_mps2")
+            required.update({"slope_percent", "residual_resistance_mps2"})
+        return required
+
     def _model_inputs(self, parent, h, malfunction_id):
         explicit = {p["field"]: p for p in h["parameters"]}
-        allowed = set(MODEL_CATALOG[h["model"]]["required"]) | {"model_valid_until_s"}
+        allowed = self._required_inputs(h) | {"model_valid_until_s"}
         if h["model"] in {"CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE"}:
             allowed.add("post_fault_speed_cap_kph")
+        if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT" and h.get("grade_frame"):
+            if "longitudinal_acceleration_mps2" in explicit:
+                raise PhysicalInputConflict("MOVING_GRADE_ACCELERATION_IS_DERIVED", "longitudinal_acceleration_mps2",
+                    explicit["longitudinal_acceleration_mps2"], None,
+                    resolution="For explicit gravity motion, retain slope_percent/residual_resistance_mps2 (including symbols or ranges) and omit the independent acceleration. The existing gravity model derives it; moving target geometry stays unchanged.")
         values, audit = {}, {}
         for field in PARAMETER_UNITS:
             if field in explicit:
@@ -406,7 +421,8 @@ class PhysicalHypothesisInstantiationService:
                 diagnostics.append({"hypothesis_id": h["hypothesis_id"], "reason": str(error), **error.details})
                 continue
             declared = {p["field"] for p in h["parameters"]}
-            missing = set(MODEL_CATALOG[h["model"]]["required"]) - inputs.keys() - declared
+            required = self._required_inputs(h)
+            missing = required - inputs.keys() - declared
             if missing:
                 diagnostics.append({"hypothesis_id": h["hypothesis_id"],
                     "reason": "REQUIRED_MODEL_INPUT_OMITTED", "fields": sorted(missing),
@@ -416,9 +432,9 @@ class PhysicalHypothesisInstantiationService:
             sensitivity["model_input_view"] = inheritance
             sensitivity["input_completeness"] = {
                 "classification": "EXPLAINED_SYMBOLIC_RELATION" if any(p["kind"] == "SYMBOLIC"
-                    for p in h["parameters"] if p["field"] in MODEL_CATALOG[h["model"]]["required"])
+                    for p in h["parameters"] if p["field"] in required)
                     else "COMPUTABLE_REPRESENTATIVE",
-                "required": list(MODEL_CATALOG[h["model"]]["required"]),
+                "required": sorted(required),
                 "symbolic_reasons": {p["field"]: p["rationale"] for p in h["parameters"] if p["kind"] == "SYMBOLIC"}}
             for index, values in enumerate(samples):
                 try:
@@ -506,19 +522,38 @@ class PhysicalHypothesisInstantiationService:
             bindings[dimension] = {"binding_authority": "ANALYTICAL_SELECTION", "refinable": True,
                                    "resolution_status": "PENDING"}
         query = replace(parent, facts={**parent.facts, "method_scenario_dimensions": bindings})
-        inputs = ConstrainedScenarioSynthesisService(self.method).build_input(
+        synthesis = ConstrainedScenarioSynthesisService(self.method)
+        inputs = synthesis.build_input(
             malfunction=asdict(malfunction), parent=query, assessment={},
             project_context=project_context or {}, function=function)
+        unbound_object = (not parent.facts.get("road_user_type") and not parent.facts.get("object_type")
+                          and not bindings.get("OBJECT", {}).get("atom_id"))
+        pools = inputs.dimension_candidate_sets
+        if (unbound_object and not inputs.structured_semantic_query.get("object_categories")
+                and not inputs.structured_semantic_query.get("unmapped_object_sources")):
+            from .scenario_selection_quality import ScenarioCandidateRanker
+            # This query asks which analytical objects the active method can
+            # represent; it does not assert their presence in the source world.
+            categories = set().union(*(ScenarioCandidateRanker.atom_categories(a)
+                for a in synthesis.catalog if "OBJECT" in a.get("filled_dimensions", [])))
+            choices = sorted("OBJECT_" + name for name, _ in self.method.structured_risk_method.severity.road_user_groups
+                             if "OBJECT_" + name in categories)
+            object_query = {**inputs.structured_semantic_query, "object_categories": choices}
+            object_pools = synthesis.candidate_sets(malfunction=asdict(malfunction), parent=query,
+                assessment={}, project_context=project_context or {}, query=object_query,
+                fm_template=inputs.fm_scenario_template)
+            pools = tuple(p for p in pools if p.dimension != "OBJECT") + tuple(
+                p for p in object_pools if p.dimension == "OBJECT")
         options = {p.dimension: [{"atom_id": c.atom_id, "label": c.label,
                               "fills": list(c.dimensions), "semantics": c.method_semantics,
                               "speed_range_kph": c.speed_range_kph}
                              for c in p.candidates]
-                for p in inputs.dimension_candidate_sets
-                if p.dimension in {"EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"}}
+                for p in pools
+                if p.dimension in {"EGO_ACTION", "EGO_DYNAMICS", "TRAFFIC_PATTERN"}
+                   or p.dimension == "OBJECT" and unbound_object}
         # A shared motion request must not lose the opposite explicit driver
         # qualifier merely because the shortlist kept one family representative.
         from .scenario_selection_quality import explicit_driver_presence
-        synthesis = ConstrainedScenarioSynthesisService(self.method)
         labels = [x["label"] for x in options.get("EGO_ACTION", [])]
         if any(explicit_driver_presence(label) is not None for label in labels):
             for atom in synthesis.catalog:
@@ -761,9 +796,20 @@ class PhysicalHypothesisInstantiationService:
             if (lower is not None and (slope < lower or slope == lower and not road_slope.get("min_inclusive", True))
                     or upper is not None and (slope > upper or slope == upper and not road_slope.get("max_inclusive", True))):
                 raise ValueError("SLOPE_CONFLICTS_WITH_SELECTED_ROAD_ATOM")
-        if h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" and initial != 0:
+        if slope is not None:
+            from .scenario_constraint_service import ScenarioConstraintExecutor
+            selected = [{"atom_id": binding.get("atom_id", dimension),
+                         "physical_semantics": binding.get("method_semantics", {})}
+                        for dimension, binding in parent.facts.get("method_scenario_dimensions", {}).items()]
+            selected.append({"atom_id": "CURRENT_SLOPE_PARAMETER",
+                             "physical_semantics": {"slope": {"range_pct": [slope, slope]}}})
+            conflicts = ScenarioConstraintExecutor.physical_semantic_conflicts(selected)
+            if conflicts:
+                raise PhysicalInputConflict("SLOPE_CONFLICTS_WITH_SELECTED_CONDITIONS", "slope_percent", conflicts, slope)
+        gravity_motion = h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" or bool(h.get("grade_frame"))
+        if gravity_motion and initial != 0:
             raise ValueError("ROLLAWAY_REQUIRES_STATIONARY_INITIAL_STATE")
-        grade_mapping = self._grade_mapping(parent, h) if h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" else {}
+        grade_mapping = self._grade_mapping(parent, h) if gravity_motion else {}
         if "post_fault_speed_cap_kph" in values and "speed_limiter" not in h["remaining_controls"]:
             raise ValueError("SPEED_CAP_REQUIRES_EXPLICIT_REMAINING_LIMITER")
         target = {} if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT" else {

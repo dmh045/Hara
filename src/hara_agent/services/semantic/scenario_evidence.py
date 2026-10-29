@@ -288,9 +288,9 @@ class CausalEvidenceSelector:
         if record.namespace == "MF":
             return None
         if ref == "DERIVED.parameter_relations" and _conditional_evidence(record):
-            return 0, "current conditional model relations"
+            return -1, "current conditional model relations"
         if ref == "DERIVED.stationary_ego_counterfactual" and _conditional_evidence(record):
-            return 0, "same-world contact counterfactual"
+            return -1, "same-world contact counterfactual"
         validated_atom = _is_validated_analytical_scenario_atom(record)
         if (
             record.provenance is FactProvenance.SCENARIO_DEFINED
@@ -307,6 +307,15 @@ class CausalEvidenceSelector:
             term in lower for term in cls._P4_TERMS
         ):
             return None
+        # The initial state alone cannot explain a post-fault trajectory. Keep
+        # the instantiated model, its dynamic causes and computed outcome ahead
+        # of incidental labels within the SAME evidence budget.
+        if record.namespace in {"SCN", "DERIVED"} and ref.partition(".")[2] in {
+            "fault_motion_model", "motion_model_outcome", "longitudinal_acceleration_mps2",
+            "slope_percent", "residual_resistance_mps2", "turn_radius_m",
+            "lateral_acceleration_mps2", "lateral_speed_mps",
+        }:
+            return 0, "current scoped motion model and derivation"
         for priority, terms, reason in (
             (1, cls._P1_TERMS, "P1 direct physical/interaction evidence"),
             (2, cls._P2_TERMS, "P2 intervention/control context"),
@@ -384,7 +393,10 @@ class CausalEvidenceSelector:
         if compact_view and selected:
             compact_view += "\n"
         compact_view += "\n".join(
-            f"{ref} [kind={record.kind.value}] = {self._compact_value(record.value)}"
+            f"{ref} [kind={record.kind.value}]"
+            + (" [calculation_nature=CONDITIONAL; engineering_approval=NOT_GRANTED]"
+               if _conditional_evidence(record) else "")
+            + f" = {self._compact_value(record.value)}"
             for _, ref, record, _ in selected
         )
         reason_counts: dict[str, int] = {}

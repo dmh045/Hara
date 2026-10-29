@@ -140,9 +140,9 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v8-bounded-format-reasoning"
-    PROMPT_VERSION = "post-fault-physical-scenario-v39-bounded-world"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v22-compact-context"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v10-scoped-gravity"
+    PROMPT_VERSION = "post-fault-physical-scenario-v41-scoped-contact-geometry"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v23-empty-motion-envelope"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -217,7 +217,7 @@ class PhysicalScenarioAgent:
                     "slope_reference": "EGO_FORWARD|ROAD_REFERENCE|UNSPECIFIED",
                     "ego_forward_relative_to_reference": "SAME|OPPOSITE (required with ROAD_REFERENCE)",
                     "heading_relative_to_downhill": "UPHILL|DOWNHILL", "downhill_body_direction": "FRONT|REAR",
-                    "orientation_basis": "SOURCE|ANALYSIS_ASSUMPTION", "rationale": "required for rollaway; omit grade_frame for other models"},
+                    "orientation_basis": "SOURCE|ANALYSIS_ASSUMPTION", "rationale": "required for gravity rollaway, including a moving target; omit for non-gravity mechanisms"},
             }], "uncovered_conditions": ["not an exhaustive vehicle capability envelope"],
         }
         system = (
@@ -289,9 +289,11 @@ class PhysicalScenarioAgent:
             "固定vx再增加vy会增大总速度，不能用它代替纯转向，也不能将运行暴露Atom的正常向心加速度直接当故障横向加速度。"
             "RECTILINEAR_MOVING_TARGET_CONTACT支持同向、对向、后方接近和横穿的匀速移动目标；"
             "使用车体坐标x前、y左的初始中心偏移，接触包络半长/半宽为双方投影半尺寸之和，"
+            "偏移从自车中心计量，不得把保险杠外净距直接当作中心偏移；半尺寸求和后不得再除以2，数值须与解释中的尺寸算术一致。"
             "须解释尺寸和有效时段假设。geometry用FINITE_CONTACT_ENVELOPE并给出"
             "object_longitudinal_direction=FORWARD|REVERSE|LEFT|RIGHT（均相对车体，非道路行驶方向）。"
-            "自车沿当前行驶方向匀加减速；不支持转弯、反向启动和多阶段限速。"
+            "LEFT使y增加，RIGHT使y减小；例如从自车左侧横穿到右侧应为初始y>0、目标方向RIGHT。"
+            "先核对带符号偏移与速度方向，再描述接近/远离/横穿，不能只改文字。自车沿当前行驶方向匀加减速；不支持转弯、反向启动和多阶段限速。"
             "后车接近等机制不能因本车先停车就宣布无接触。若有相容依据假设停车后保持原位置，"
             "在该假设顶层给post_stop_motion=HOLD_POSITION，并在conditions和rationale说明保持条件、坡度及控制相容性；"
             "程序会在同一model_valid_until_s内继续计算移动目标。缺少该假设时只计算至本车停车，不代表停车后无风险。"
@@ -307,7 +309,9 @@ class PhysicalScenarioAgent:
             "用 condition_changes 明确声明并说明依据；新对象给不同 object_id，程序重新绑定受影响 Atom。"
             "例如来源初速非零而坡道模型要求静止，必须明确 initial_state=true 及独立静止工况依据，"
             "不能一边写初速0一边声明初始条件未变；也可以保留原条件并说明当前模型不适用。"
-            "坡道模型必须提供output_shape中的grade_frame，其他模型省略它；"
+            "纯重力溜车必须提供output_shape中的grade_frame；静止目标用GRADE_ROLLAWAY_TO_IMPACT_DISTANCE，"
+            "移动目标仍用RECTILINEAR_MOVING_TARGET_CONTACT，并给slope_percent和residual_resistance_mps2，省略独立加速度，"
+            "程序由坡度与阻力推导，不把重力加速度只写在文字里。两种纯重力模型都从静止起步；非重力机制省略grade_frame。"
             "道路参考必须选用model_input_status.grade_reference_mapping中相容的朝向组合。车头朝上坡时重力向后，"
             "车头朝下坡时向前；模型运动方向必须沿重力，目标是否在该方向由程序判断。"
             "静止起步纯重力向后时，不能声称撞上车前静止目标；可保留为不接触对照，"
@@ -435,7 +439,7 @@ class PhysicalScenarioAgent:
             "共同控制分析写在外层；仅把不同配置写入driver_control_assessments，避免外层与两个配置重复三份。"
             "若同一自动响应同时适用于所给驾驶员配置，直接在外层写一次，不输出driver_control_assessments。"
             "输出格式化JSON，数组用方括号闭合，对象用花括号闭合；不要在未闭合的conditions数组内开始下一个字段。"
-            "每个对象的键只能出现一次；末尾不得再次输出hypotheses空数组来覆盖前面的方案。"
+            "每个对象的键只能出现一次；" + ("" if controls_only else "末尾不得再次输出hypotheses空数组来覆盖前面的方案。") +
             "不在驾驶位表示人员不能直接踩踏板，不表示driver_braking通道发生故障，不能因此把它加入failed_controls。"
             "共同故障保留在各配置；不可操作的响应在该配置省略并说明，不能把人员缺席写成硬件失效。"
             "明确说明每个所请求驾驶员位置的处置或具体缺口；不能只写车内方案就默认完成车外分析。"
@@ -506,8 +510,11 @@ class PhysicalScenarioAgent:
                 "{in_driver_seat:{EGO_ACTION:对应ID},outside_driver_seat:{EGO_ACTION:对应ID}}覆盖各自动作，"
                 "不因此复制物理假设；没有驾驶员限定的共同动作无需此字段。"
             )
-        system += ("每个hypotheses成员都必须单独填写非空basis_refs，引用所给evidence ID；"
-                   "parameters、intervention_assumptions或safe_state_proposal里的引用不能替代该字段。"
+        system += (("hypotheses必须保持空数组[]，不得在其中复制control_assessment或写控制说明对象；"
+                    "所有控制、人员分支、安全状态和时间响应只放在唯一的control_assessment中，且单独填写basis_refs。"
+                    if controls_only else
+                    "每个hypotheses成员都必须单独填写非空basis_refs，引用所给evidence ID；"
+                    "parameters、intervention_assumptions或safe_state_proposal里的引用不能替代该字段。") +
                    "每个rationale用一两句具体说明，basis_refs只列直接支持该项的引用，不复制来源全文或反复重复同一免责声明。"
                    "共同假设在外层说明一次；只有人员条件确实改变控制路径时才给driver_control_assessments。"
                    "已有的整车失效在人员分支继续有效；关于失效通道无法恢复的解释写在uncovered_conditions，"
@@ -566,6 +573,25 @@ class PhysicalScenarioAgent:
                         v for h in candidate["hypotheses"] for v in h["uncovered_conditions"]))
                     envelope_normalization = "PROJECTED_HYPOTHESIS_LIMITS"
                 normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
+                motion_model_normalizations = []
+                for h in candidate.get("hypotheses", []) if isinstance(candidate, dict) else []:
+                    if not isinstance(h, dict) or h.get("model") != "CONSTANT_SPEED_REPRESENTATIVE":
+                        continue
+                    parameters = h.get("parameters")
+                    if not isinstance(parameters, list) or not all(isinstance(p, dict) for p in parameters):
+                        continue
+                    accelerations = [p for p in parameters if p.get("field") == "longitudinal_acceleration_mps2"]
+                    if accelerations and (len(accelerations) != 1 or accelerations[0].get("kind") != "POINT"
+                            or type(accelerations[0].get("value")) not in (int, float) or accelerations[0]["value"] != 0):
+                        continue  # A symbolic/range/nonzero acceleration contradicts this notation.
+                    if not accelerations:
+                        parameters.append({"field": "longitudinal_acceleration_mps2", "unit": "m/s2",
+                            "kind": "POINT", "value": 0.0,
+                            "rationale": "Zero acceleration is defined by this proposed constant-speed trajectory, not a default for an unknown fault."})
+                    h["model"] = "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"
+                    motion_model_normalizations.append({"hypothesis_id": h.get("hypothesis_id"),
+                        "from": "CONSTANT_SPEED_REPRESENTATIVE", "to": h["model"],
+                        "zero_acceleration_from_model_definition": not accelerations})
                 deferred_states = []
                 control_array_normalizations = []
                 control_scope_normalizations = []
@@ -671,6 +697,7 @@ class PhysicalScenarioAgent:
                     "response_cache_hits": sum(bool(a["response"]["usage"].get("response_checkpoint_hit")) for a in attempts),
                     "schema_repairs": int(repair), "model": response.model,
                     "control_envelope_normalization": envelope_normalization,
+                    "motion_model_normalizations": motion_model_normalizations,
                     "control_array_normalizations": control_array_normalizations,
                     "control_scope_normalizations": control_scope_normalizations,
                     "deferred_safe_states": deferred_states, "normalized_basis_refs": normalized_refs}
