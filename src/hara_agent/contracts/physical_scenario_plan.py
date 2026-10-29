@@ -278,7 +278,8 @@ def _validate_control_assessment(control: dict, evidence_ids: set[str], *, scope
             CONTROL_ASSESSMENT_OPTIONAL | ({"driver_control_assessments"} if scoped else set()))
     _text(control["rationale"])
     if not _texts(control["basis_refs"]) or not set(control["basis_refs"]) <= evidence_ids:
-        raise ValueError("Control assessment requires supplied evidence IDs")
+        raise ValueError("Control assessment requires supplied evidence IDs; received="
+            + repr(control["basis_refs"]) + "; allowed=" + repr(sorted(evidence_ids)))
     if not _texts(control["conditions"]):
         raise ValueError("Control assessment requires explicit applicability conditions")
     _validate_controls(control, evidence_ids)

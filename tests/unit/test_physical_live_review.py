@@ -58,16 +58,16 @@ def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_rec
 
 
 @pytest.mark.parametrize('syntax_first', [True, False])
-def test_physical_syntax_and_schema_correction_share_one_correction(syntax_first):
+def test_physical_format_and_contract_corrections_have_separate_bounded_attempts(syntax_first):
     from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
     raw = raw_plan()
     broken = json.dumps(raw)[:-1]
     invalid = json.dumps({'geometry': raw['hypotheses'][0]['geometry']})
     calls = []
-    client = _sequenced_scenario_client([broken, invalid] if syntax_first else [invalid, broken], calls)
+    client = _sequenced_scenario_client([broken, invalid, invalid] if syntax_first else [invalid, broken], calls)
     with pytest.raises(ValueError):
         PhysicalScenarioAgent(client).propose({'plan_key':'bounded-syntax', 'evidence':{'MF.description':'fault'}})
-    assert len(calls) == 2
+    assert len(calls) == (3 if syntax_first else 2)
 
 
 def test_retry_transport_policy_does_not_invalidate_an_exact_successful_response(tmp_path):
@@ -598,3 +598,29 @@ def test_control_alternatives_and_details_are_not_flattened(values):
     with pytest.raises(ValueError, match='remaining_controls'):
         PhysicalScenarioAgent(client).propose({'plan_key':'ambiguous-controls','evidence':{'MF.description':'fault'}})
     assert len(client.requests) == 2 and raw == before
+
+
+def test_control_reference_is_repaired_after_syntax_with_same_budget_and_exact_resume(tmp_path):
+    from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+    raw=raw_plan(assessed=True)
+    raw['hypotheses'][0]['driver_control_assessments']={'outside_driver_seat':dict(
+        rationale='No conditional outside response established', basis_refs=['ITEM.P-0123'],
+        conditions=['outside'], uncovered_conditions=['No independent outside control'],
+        failed_controls=['drive'], remaining_controls=[], unresolved_controls={'braking':'No response established'})}
+    invalid=deepcopy(raw)
+    invalid['hypotheses'][0]['driver_control_assessments']['outside_driver_seat']['basis_refs']=['ITEM.T-0123']
+    calls=[]
+    client=_sequenced_scenario_client([json.dumps(invalid)[:-1],json.dumps(invalid),json.dumps(raw)],calls)
+    client.attempt_budget=ProviderAttemptBudget(tmp_path/'ledger.jsonl',run_id='separate-repairs',limit=3)
+    agent=PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path/'responses')
+    context={'plan_key':'bounded-source-repair','evidence':{'MF.description':'fault','ITEM.P-0123':'outside control context'}}
+    plan,audit=agent.propose(context)
+    assert plan.to_dict()==raw
+    assert len(calls)==client.attempt_budget.attempts==audit['request_count']==3
+    semantic=json.loads(json.loads(calls[2])['messages'][-1]['content'])
+    assert semantic['previous_invalid_response']==invalid
+    assert 'ITEM.T-0123' in semantic['repair_errors'][0] and 'ITEM.P-0123' in semantic['repair_errors'][0]
+    resumed,replay=agent.propose(context)
+    assert resumed==plan and replay['response_cache_hits']==2
+    assert len(calls)==client.attempt_budget.attempts==3

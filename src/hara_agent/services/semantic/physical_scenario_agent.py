@@ -140,7 +140,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v10-scoped-gravity"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v11-independent-contract-repair"
     PROMPT_VERSION = "post-fault-physical-scenario-v41-scoped-contact-geometry"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v23-empty-motion-envelope"
     CONTROL_ANALYSIS_POLICY = (
@@ -704,8 +704,7 @@ class PhysicalScenarioAgent:
             except (ValueError, KeyError, TypeError) as error:
                 errors.append(str(error))
                 previous_response = response.data
-                if response.usage.get("format_retry_calls"):
-                    # Syntax repair already used the single correction. Do not
-                    # stack another schema repair onto the same proposal task.
-                    break
+                # The transport's syntax-only repair cannot fix evidence IDs or
+                # semantic contract errors. Retain this existing one contract
+                # correction; both attempts remain charged to the same ledger.
         raise ValueError("Physical plan schema repair exhausted: " + "; ".join(errors))
