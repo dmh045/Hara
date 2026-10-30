@@ -99,6 +99,7 @@ class OpenAICompatibleClient:
         self.config = config
         self.transport = transport or self._http_transport
         self.attempt_budget = attempt_budget
+        self._quota_exhausted: LLMQuotaExceededError | None = None
 
     def complete_json(self, request: LLMRequest) -> LLMResponse:
         endpoint = self.config.base_url.rstrip("/")
@@ -675,6 +676,12 @@ class OpenAICompatibleClient:
         attempts = min(configured_attempts, 2) if task == "assess_scenario_feasibility" else configured_attempts
         error_counts: dict[str, int] = {}
         for attempt in range(1, attempts + 1):
+            # A confirmed account-wide exhaustion also applies to later tasks
+            # on this client. Do not charge/send the remaining queued work.
+            # A new client on resume can check a replenished subscription.
+            if self._quota_exhausted is not None:
+                raise LLMQuotaExceededError(provider_code=self._quota_exhausted.provider_code,
+                                            reset_at=self._quota_exhausted.reset_at)
             budget_attempt_id = (
                 self.attempt_budget.begin(request, model=self.config.model)
                 if self.attempt_budget is not None else None
@@ -735,6 +742,8 @@ class OpenAICompatibleClient:
                     time.sleep(delay)
                 continue
             except BaseException as exc:
+                if isinstance(exc, LLMQuotaExceededError):
+                    self._quota_exhausted = exc
                 if budget_attempt_id is not None:
                     self.attempt_budget.finish(budget_attempt_id, error=exc)
                 raise

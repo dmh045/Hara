@@ -159,7 +159,9 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v42-initial-phase-response-limit')
+            assert request.prompt_version.endswith('v43-response-field-ownership')
+            assert payload['output_contract']['safe_state_proposal']['transition']['post_stop_motion'].startswith('HOLD_POSITION')
+            assert 'Unmitigated fault trajectory ONLY' in payload['output_contract']['unmitigated_post_stop_motion']['meaning']
             assert '允许的最大响应延迟' in request.system_prompt
             assert '程序由坡度与阻力推导' in request.system_prompt
             assert '半尺寸求和后不得再除以2' in request.system_prompt

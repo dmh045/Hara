@@ -19,6 +19,118 @@ from hara_agent.workflow.physical_analysis import construct_physical_scenarios
 from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
 
 
+def test_response_updates_keep_every_motion_field_and_remove_superseded_controls():
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED
+    previous = raw_plan(assessed=True)
+    h = previous['hypotheses'][0]
+    h['timing_unresolved_reason'] = 'old response not yet assessed'
+    assessment = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    assessment['remaining_controls'] = ['driver_braking', 'braking']
+    update = {'response_updates': [{'hypothesis_id': h['hypothesis_id'], 'control_assessment': assessment}]}
+    before, raw = deepcopy(previous), deepcopy(update)
+    result = PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+    PhysicalScenarioPlan.validate_correction_scope(previous, result,
+        [{'reason': 'SAFE_STOP_FAULT_CLOCK_NOT_BOUND', 'hypothesis_id': h['hypothesis_id']}])
+    assert previous == before and update == raw
+    assert 'timing_unresolved_reason' not in result['hypotheses'][0]
+    for field in ('geometry', 'parameters', 'model'):
+        assert result['hypotheses'][0][field] == before['hypotheses'][0][field]
+    update['response_updates'][0]['control_assessment']['parameters'] = h['parameters']
+    with pytest.raises(ValueError, match='keys must'):
+        PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+
+
+def test_bounded_response_update_completes_timing_without_rewriting_world(method, tmp_path):
+    from test_moving_response_timing import proposal
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    full = proposal(); missing = deepcopy(full)
+    missing['hypotheses'][0]['safe_state_proposal']['transition'].pop('post_stop_motion')
+    h = full['hypotheses'][0]
+    assessment = {k: deepcopy(v) for k,v in h.items() if k in CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL}
+    update = {'response_updates':[{'hypothesis_id':h['hypothesis_id'],'control_assessment':assessment}]}
+    client = Client([missing, update])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state, result = run(method, agent, candidates={'MF':[make_candidate(7.2)]})
+    child = result['MF'][0]
+    timing = RiskCalculationInputService().ftti('MF',child.scenario_id,'',
+        {**child.facts,'_fact_provenance':child.fact_provenance},method=method)
+    assert timing.hazard_time_limit_s is not None and timing.hazard_time_limit_s > 0
+    assert client.requests[-1].prompt_version == agent.RESPONSE_CORRECTION_VERSION
+    assert 'response_updates' in json.loads(client.requests[-1].user_prompt)['output_shape']
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+    prompt = json.loads(client.requests[-1].user_prompt)
+    restored_context = expand_physical_prompt_view(prompt['context'], prompt['source_texts'])
+    assert restored_context['previous_plan'] == entry['initial_plan']
+    assert restored_context['conditions'] == entry['context']['conditions']
+    assert restored_context['evidence'] == entry['context']['evidence']
+    assert 'model_input_status' not in restored_context  # selection diagnostics are not response inputs
+    assert client.requests[-1].max_tokens == 8192
+    assert entry['initial_plan']['hypotheses'][0]['parameters'] == entry['plan']['hypotheses'][0]['parameters']
+    assert entry['initial_plan']['hypotheses'][0]['geometry'] == entry['plan']['hypotheses'][0]['geometry']
+    assert entry['responses'][-1]['response']['data'] == update
+    _, restored = run(method, agent, state=HARAState.read_committed(json.loads(json.dumps(state.to_dict()))),
+                      candidates={'MF':[make_candidate(7.2)]})
+    assert restored == result and len(client.requests) == 2
+
+
+def test_response_composition_preserves_motion_evidence_and_replaces_control_only_prose():
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED
+    previous = raw_plan(assessed=True)
+    h = previous['hypotheses'][0]
+    h['basis_refs'] = ['MF.description'] + [f'ITEM.motion.{i}' for i in range(8)]
+    assessment = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    assessment.update(basis_refs=[f'ITEM.control.{i}' for i in range(18)], rationale='New scoped response')
+    evidence = set(h['basis_refs'] + assessment['basis_refs'])
+    update = {'response_updates': [{'hypothesis_id': h['hypothesis_id'], 'control_assessment': assessment}]}
+    composed = PhysicalScenarioPlan.apply_response_updates(previous, update, evidence)
+    parsed = PhysicalScenarioPlan.from_dict(composed, evidence_ids=evidence)
+    assert set(parsed.hypotheses[0]['basis_refs']) == evidence
+    assert parsed.hypotheses[0]['parameters'] == h['parameters']
+    old_controls = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    old_controls['safe_state_unresolved_reason'] = 'Superseded response gap'
+    controls_only = {'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': old_controls}
+    update['response_updates'][0]['hypothesis_id'] = 'control_assessment'
+    composed = PhysicalScenarioPlan.apply_response_updates(controls_only, update, evidence)
+    assert composed['control_assessment'] == assessment
+    assert old_controls['safe_state_unresolved_reason'] == 'Superseded response gap'
+
+
+@pytest.mark.parametrize('controls_only', [True, False])
+def test_response_update_preserves_unmodified_driver_but_replaces_returned_branch(controls_only):
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, controls_for_driver
+    from test_moving_response_timing import proposal
+    previous = proposal()
+    h = previous['hypotheses'][0]
+    common = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    local = {k: deepcopy(v) for k,v in h.items() if k in CONTROL_ASSESSMENT_REQUIRED or k in {'safe_state_proposal','hazard_timing'}}
+    outside = deepcopy(local)
+    outside['remaining_controls'] = ['automatic_braking_command', 'braking']
+    outside['safe_state_proposal']['required_controls'] = list(outside['remaining_controls'])
+    outside['safe_state_proposal']['driver_positions'] = ['outside_driver_seat']
+    h['driver_control_assessments'] = {'in_driver_seat': deepcopy(local), 'outside_driver_seat': deepcopy(outside)}
+    h['driver_control_assessments']['outside_driver_seat']['timing_unresolved_reason'] = 'old gap'
+    if controls_only:
+        previous = {'hypotheses': [], 'uncovered_conditions': [],
+                    'control_assessment': {**common, 'driver_control_assessments': deepcopy(h['driver_control_assessments'])}}
+    before = deepcopy(previous)
+    update = {'response_updates': [{'hypothesis_id': 'control_assessment' if controls_only else h['hypothesis_id'],
+        'control_assessment': {**common, 'driver_control_assessments': {'outside_driver_seat': outside}}}]}
+    result = PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+    parsed = PhysicalScenarioPlan.from_dict(result,evidence_ids={'MF.description'})
+    actual = parsed.control_assessment if controls_only else parsed.hypotheses[0]
+    assert actual['driver_control_assessments']['in_driver_seat'] == local
+    assert 'timing_unresolved_reason' not in actual['driver_control_assessments']['outside_driver_seat']
+    assert controls_for_driver(actual,'in_driver_seat')['safe_state_proposal'] == local['safe_state_proposal']
+    assert previous == before
+    # Retaining a sibling never permits a newly contradictory shared failure.
+    result_view = result['control_assessment'] if controls_only else result['hypotheses'][0]
+    result_view['failed_controls'].append('braking')
+    with pytest.raises(ValueError):
+        PhysicalScenarioPlan.from_dict(result,evidence_ids={'MF.description'})
+
+
 def test_response_correction_preserves_world_but_allows_reported_geometry_completion():
     previous = raw_plan()
     good = deepcopy(previous)

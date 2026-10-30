@@ -141,8 +141,9 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v12-active-vocabulary"
-    PROMPT_VERSION = "post-fault-physical-scenario-v42-initial-phase-response-limit"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v24-response-limit"
+    PROMPT_VERSION = "post-fault-physical-scenario-v43-response-field-ownership"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v25-response-field-ownership"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v4-scoped-updates"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -197,6 +198,9 @@ class PhysicalScenarioAgent:
             if getattr(config, "scenario_response_format", "none") == "json_object" else None)
 
     def propose(self, context: dict, *, on_response=lambda record: None) -> tuple[PhysicalScenarioPlan, dict]:
+        response_only_correction = bool(context.get("previous_plan") and context.get("correction_diagnostics")
+            and all(PhysicalScenarioPlan.response_only_diagnostic(str(d.get("reason", "")))
+                    for d in context["correction_diagnostics"]))
         example = {
             "hypotheses": [{
                 "hypothesis_id": "h1", "model": "one model_catalog key", "rationale": "mechanism and applicability",
@@ -356,15 +360,43 @@ class PhysicalScenarioAgent:
                 "SYMBOLIC": {"symbol": "nonempty string; omit value/lower/upper"}},
             "moving_target_geometry": {"object_extent": "FINITE_CONTACT_ENVELOPE",
                 "object_longitudinal_direction": ["FORWARD", "REVERSE", "LEFT", "RIGHT"]},
-            "post_stop_motion": {"optional": True, "allowed": ["HOLD_POSITION"],
+            "unmitigated_post_stop_motion": {"field": "post_stop_motion", "optional": True, "allowed": ["HOLD_POSITION"],
                 "placement": "hypotheses[] sibling of geometry and parameters",
-                "meaning": "Explicit conditional stationary continuation after ego stop; omitted retains pre-stop scope. Explain grade/control compatibility in conditions and rationale."},
+                "meaning": "Unmitigated fault trajectory ONLY. This does not describe the safety response. Never add/change it to complete braking-response holding."},
+            "safe_state_proposal": {
+                "placement": "hypothesis, control_assessment or its driver_control_assessments entry",
+                "required": ["description", "required_controls", "basis_refs", "conditions"],
+                "transition": {"model": "CONSTANT_NET_DECELERATION", "net_deceleration_mps2": "positive conditional net value, not a default",
+                    "post_stop_motion": "HOLD_POSITION is required for a moving-target braking response",
+                    "rationale": "response plus holding capability basis", "basis_refs": ["supplied evidence ID"]},
+                "alternative": "Use the active timing policy's fault_release_response model when justified, without braking/holding parameters; otherwise give a concrete timing_unresolved_reason.",
+                "field_ownership": "hazard_timing and uncovered_conditions belong beside safe_state_proposal in the control assessment, never inside the proposal or transition.",
+            },
+            "hazard_timing": {"placement": "same hypothesis/control_assessment or driver entry as the response",
+                "time_origin": "FAULT_ONSET", "fault_to_model_start_s": "nonnegative elapsed time with explicit basis; no default",
+                "hazard_criterion": ["LOSS_OF_BRAKING_AVOIDABILITY", "LOSS_OF_RESPONSE_AVOIDABILITY", "FIRST_CONTACT_BOUND"],
+                "rationale": "relationship of the fault origin to the model initial state", "basis_refs": ["supplied evidence ID"],
+                "alternative": "Give timing_unresolved_reason when the clock/criterion cannot be related. FIRST_CONTACT_BOUND alone does not complete response timing."},
+            "fault_release_transition": {
+                "shape": {"model": "RELEASE_DECELERATION_TO_CONSTANT_SPEED", "rationale": "independent release and force-balance basis", "basis_refs": ["supplied evidence ID"]},
+                "applicability": "Only when supported by active response_timing.fault_release_response. Required controls include drive, braking, and an independently justified trigger from driver_braking, remote_control, automatic_braking_command; do not declare a failed trigger remaining.",
+                "forbidden_fields": ["net_deceleration_mps2", "post_stop_motion"],
+                "criterion": "LOSS_OF_RESPONSE_AVOIDABILITY",
+            },
         }
         # Grading tables belong to the deterministic scorer, not this proposal
         # task. Keep the complete contract in the cache identity/audit context;
         # send all physical/source/engineering constraints and the already
         # explicit intervention_inputs, without downstream S/C classifications.
         prompt_inputs = deepcopy(context)
+        if response_only_correction:
+            # The selected world is immutable. Selection alternatives and
+            # retrieval-ranking diagnostics are not response inputs; preserve
+            # actual conditions, source excerpts, method and previous plan.
+            for field in ("model_input_status", "operating_atom_options", "object_focus_options",
+                          "interaction_coverage_policy", "analysis_strategy", "source_condition_policy",
+                          "source_condition_focus", "road_user_focus", "road_user_focus_basis", "source_routing"):
+                prompt_inputs.pop(field, None)
         policy = prompt_inputs.get("method_identity", {}).get("project_analysis_policy", {})
         for downstream in ("controllability", "severity_evaluation"):
             policy.pop(downstream, None)
@@ -522,6 +554,43 @@ class PhysicalScenarioAgent:
                    "共同假设在外层说明一次；只有人员条件确实改变控制路径时才给driver_control_assessments。"
                    "已有的整车失效在人员分支继续有效；关于失效通道无法恢复的解释写在uncovered_conditions，"
                    "不再把同一失效通道同时列入unresolved_controls。")
+        if response_only_correction:
+            previous = context["previous_plan"]
+            identities = [h["hypothesis_id"] for h in previous.get("hypotheses", [])]
+            if previous.get("control_assessment") is not None:
+                identities.append("control_assessment")
+            content["output_shape"] = {"response_updates": [{"hypothesis_id": identities[0], "control_assessment": {
+                "rationale": "response and capability basis for this unchanged world", "basis_refs": ["MF.description"],
+                "conditions": ["explicit applicability"], "uncovered_conditions": [],
+                "failed_controls": [], "remaining_controls": [],
+                "safe_state_unresolved_reason": "replace with a complete supported safe_state_proposal when applicable"}}]}
+            content["response_update_identities"] = identities
+            content["model_catalog"] = {}
+            content["parameter_units"] = {}
+            system = (
+                "你是故障后控制响应分析员。当前任务只纠正已有方案的控制、安全状态和响应计时。"
+                "读取context中的原文依据及限定。$context_ref引用context字段，$source_text引用source_texts，"
+                "$context_value引用context.$context_values；这些无损引用均可递归展开，不代表来源缺失。"
+                "只返回output_shape的response_updates，不输出完整PhysicalScenarioPlan或hypotheses。"
+                "previous_plan中的运动、对象、参数、坡向、Atom和初始状态只读，由程序保留；不要复制或修改它们。"
+                "每项用已有hypothesis_id定位，control_assessment遵循现有控制分析契约，包含完整控制结论、"
+                "依据、条件和所需的人员分支。只更新需要纠正的假设；未返回的假设保持原样。"
+                "basis_refs只用output_contract.basis_ref_ids，控制ID只用control_identities。"
+                "control_assessment外层的rationale、basis_refs、conditions、uncovered_conditions、failed_controls、remaining_controls均必填；"
+                "不能只返回driver_control_assessments。人员键只放在driver_control_assessments内。"
+                "未返回的人员分支由程序保留；修改某个人员分支时返回该分支的完整控制结论。"
+                "人员分支写在control_assessment.driver_control_assessments，外层保留共同控制和依据，"
+                "分别给出每个请求人员配置的处置或具体缺口，车外不能使用踏板。"
+                "safe_state_proposal依赖remaining_controls；停车响应须给出有依据的条件性净减速度，"
+                "它不是车辆实测能力，也不是随意提高减速以避碰。移动目标继续原轨迹，停车后交互不能截断。"
+                "不能只在自然语言说明保持或故障起点：采用停车保持响应时填写"
+                "safe_state_proposal.transition.post_stop_motion；采用时间边界时填写hazard_timing。"
+                "最大允许响应延迟是待推导要求，不以缺少实测检测/反应时间为由拒绝计算。"
+                "若当前响应不能避碰，检查活动response_timing中已有的其他响应模型和剩余控制是否适用；"
+                "确有矛盾则保留具体safe_state_unresolved_reason/timing_unresolved_reason，不改变原轨迹来制造成功。"
+                "程序会重新检查同一轨迹，不能声称已经安全、工程批准或给出S/E/C/ASIL/FTTI结果。"
+                "每个rationale限一两句，条件和未覆盖范围用短句；共同依据不要在两个人员分支重复全文。"
+            ) + self.CONTROL_ANALYSIS_POLICY
         attempts = []
         errors = []
         previous_response = None
@@ -529,12 +598,14 @@ class PhysicalScenarioAgent:
             request = LLMRequest(task="construct_post_fault_physical_scenario",
                 system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
                     **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str, separators=(",", ":")),
-                schema_name="PhysicalScenarioPlan", prompt_version=self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION,
-                # Motion plans include up to three geometries and their parameter
-                # provenance; real complete plans can exceed 4096 output tokens.
+                schema_name="PhysicalScenarioPlan", prompt_version=(self.RESPONSE_CORRECTION_VERSION if response_only_correction else
+                    self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION),
+                # Both motion plans and complete driver-scoped control replies
+                # have exceeded 4096 tokens in real runs. The same bounded
+                # output allowance prevents a valid response being truncated.
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair,
                     **({"strict_no_format_retry": True} if repair else {})},
-                max_tokens=4096 if controls_only else 8192,
+                max_tokens=8192,
                 response_format=self.response_format)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
             record = {"request": asdict(request), "response": asdict(response), "schema_repair": repair}
@@ -601,8 +672,11 @@ class PhysicalScenarioAgent:
                 # An optional safe-state proposal cannot establish an unassessed
                 # or failed control. Reject that proposal locally, retaining the raw reply;
                 # do not discard otherwise valid motion or approve the control.
-                if isinstance(candidate, dict) and isinstance(candidate.get("hypotheses"), list):
-                    for hypothesis in [*candidate["hypotheses"], candidate.get("control_assessment")]:
+                if isinstance(candidate, dict):
+                    control_views = [*candidate.get("hypotheses", []), candidate.get("control_assessment")]
+                    if response_only_correction and isinstance(candidate.get("response_updates"), list):
+                        control_views.extend(row.get("control_assessment") for row in candidate["response_updates"] if isinstance(row, dict))
+                    for hypothesis in control_views:
                         if not isinstance(hypothesis, dict):
                             continue
                         scoped = [(hypothesis, [])]
@@ -663,6 +737,8 @@ class PhysicalScenarioAgent:
                                     "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
                                     "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
                                 controls_view["uncovered_conditions"].append(controls_view["safe_state_unresolved_reason"])
+                if response_only_correction and isinstance(candidate, dict) and "response_updates" in candidate:
+                    candidate = PhysicalScenarioPlan.apply_response_updates(context["previous_plan"], candidate, set(context["evidence"]))
                 plan = PhysicalScenarioPlan.from_dict(candidate, evidence_ids=set(context["evidence"]))
                 # These are the active contract's output enums, not new risk rules.
                 # Catch misspellings in the existing bounded contract repair before

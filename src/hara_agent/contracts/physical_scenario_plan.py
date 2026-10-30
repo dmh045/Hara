@@ -138,8 +138,8 @@ def _text(value: Any) -> str:
     return value
 
 
-def _texts(value: Any, *, path: str = "text_array") -> list[str]:
-    if not isinstance(value, list) or len(value) > 16:
+def _texts(value: Any, *, path: str = "text_array", limit: int = 16) -> list[str]:
+    if not isinstance(value, list) or len(value) > limit:
         raise ValueError(f"{path}: expected a bounded text array")
     for index, item in enumerate(value):
         if not isinstance(item, str) or not item.strip():
@@ -185,7 +185,7 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         if timing["hazard_criterion"] not in {"LOSS_OF_BRAKING_AVOIDABILITY", "LOSS_OF_RESPONSE_AVOIDABILITY", "FIRST_CONTACT_BOUND"}:
             raise ValueError("Unsupported hazard timing criterion")
         _text(timing["rationale"])
-        if not _texts(timing["basis_refs"]) or not set(timing["basis_refs"]) <= evidence_ids:
+        if not _texts(timing["basis_refs"], limit=max(16, len(evidence_ids))) or not set(timing["basis_refs"]) <= evidence_ids:
             raise ValueError("Hazard timing requires supplied evidence IDs")
     for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
         _texts(h[key], path=key)
@@ -240,7 +240,7 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
             else:
                 raise ValueError("Unsupported safe state response model")
             _text(transition["rationale"])
-            if not _texts(transition["basis_refs"]) or not set(transition["basis_refs"]) <= evidence_ids:
+            if not _texts(transition["basis_refs"], limit=max(16, len(evidence_ids))) or not set(transition["basis_refs"]) <= evidence_ids:
                 raise ValueError("Safe state transition requires supplied evidence IDs")
         proposals.append(proposal)
     for key in ("safe_state_unresolved_reason", "timing_unresolved_reason"):
@@ -265,7 +265,7 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
                     raise ValueError("Avoidance requires nonnegative delay and positive speed/clearance")
         elif proposal is not h.get("safe_state_proposal"):
             raise ValueError("Intervention assumption requires value and rationale")
-        refs = _texts(proposal["basis_refs"])
+        refs = _texts(proposal["basis_refs"], limit=max(16, len(evidence_ids)))
         if not refs or not set(refs) <= evidence_ids or not _texts(proposal["conditions"]):
             raise ValueError("Control proposals require supplied evidence IDs and explicit conditions")
     remote = interventions.get("remote_intervention_available", {})
@@ -277,7 +277,7 @@ def _validate_control_assessment(control: dict, evidence_ids: set[str], *, scope
     _object(control, CONTROL_ASSESSMENT_REQUIRED,
             CONTROL_ASSESSMENT_OPTIONAL | ({"driver_control_assessments"} if scoped else set()))
     _text(control["rationale"])
-    if not _texts(control["basis_refs"]) or not set(control["basis_refs"]) <= evidence_ids:
+    if not _texts(control["basis_refs"], limit=max(16, len(evidence_ids))) or not set(control["basis_refs"]) <= evidence_ids:
         raise ValueError("Control assessment requires supplied evidence IDs; received="
             + repr(control["basis_refs"]) + "; allowed=" + repr(sorted(evidence_ids)))
     if not _texts(control["conditions"]):
@@ -383,7 +383,9 @@ class PhysicalScenarioPlan:
                     "retaining the same initial speed, target and distance. If no supplied model describes "
                     "the mechanism, retain its specific limitation rather than inventing a model name.")
             _text(h["rationale"])
-            refs = _texts(h["basis_refs"])
+            # A composed response retains both motion and control references.
+            # Bound these by the supplied evidence, not by the prose-list cap.
+            refs = _texts(h["basis_refs"], limit=max(16, len(evidence_ids)))
             if not refs or not set(refs) <= evidence_ids:
                 raise ValueError(f"hypotheses[{identity}].basis_refs must use supplied IDs {sorted(evidence_ids)}; received {refs}")
             _validate_controls(h, evidence_ids)
@@ -458,13 +460,67 @@ class PhysicalScenarioPlan:
                 **({"control_assessment": self.control_assessment} if self.control_assessment is not None else {})}
 
     @staticmethod
+    def response_only_diagnostic(reason: str) -> bool:
+        return reason.startswith(("CONTROL_", "CONDITIONAL_CONTROL_", "SAFE_STATE_", "SAFE_STOP_",
+                                  "AVOIDANCE_", "ESCAPE_")) or reason in {
+            "CONTACT_BEFORE_ESCAPE", "UNSUPPORTED_AVOIDANCE_TRAJECTORY"}
+
+    @staticmethod
+    def apply_response_updates(previous: dict, updates: dict, evidence_ids: set[str]) -> dict:
+        """Apply bounded control objects; the accepted motion is read-only.
+
+        Old full-plan responses still use validate_correction_scope. New
+        response-only requests need not reproduce geometry or numeric inputs.
+        """
+        from copy import deepcopy
+        _object(updates, {"response_updates"}, set())
+        rows = updates["response_updates"]
+        targets = {h["hypothesis_id"]: h for h in previous.get("hypotheses", [])}
+        if previous.get("control_assessment") is not None:
+            targets["control_assessment"] = previous["control_assessment"]
+        if not isinstance(rows, list) or not rows or len(rows) > len(targets):
+            raise ValueError("response_updates must cover existing hypotheses only")
+        result = deepcopy(previous)
+        destination = {h["hypothesis_id"]: h for h in result.get("hypotheses", [])}
+        if result.get("control_assessment") is not None:
+            destination["control_assessment"] = result["control_assessment"]
+        seen = set()
+        for row in rows:
+            _object(row, {"hypothesis_id", "control_assessment"}, set())
+            identity = row["hypothesis_id"]
+            if identity not in targets or identity in seen:
+                raise ValueError("response_updates identity must be existing and unique")
+            seen.add(identity)
+            assessment = row["control_assessment"]
+            _validate_control_assessment(assessment, evidence_ids, scoped=True)
+            current = destination[identity]
+            assessment = deepcopy(assessment)
+            scoped = {**current.get("driver_control_assessments", {}),
+                      **assessment.get("driver_control_assessments", {})}
+            if scoped:
+                # Omitted personnel branches were not revised. Replace an
+                # explicitly returned branch completely, including removal of
+                # its old optional response, but retain every untouched sibling.
+                assessment["driver_control_assessments"] = scoped
+            if identity == "control_assessment":
+                # There is no motion inside this object to preserve. Keeping
+                # its superseded control prose would contradict the new result.
+                result["control_assessment"] = deepcopy(assessment)
+                continue
+            # A complete control assessment replaces its own optional fields;
+            # omitted old response/avoidance claims must not leak back in.
+            for field in CONTROL_ASSESSMENT_OPTIONAL | {"failed_controls", "remaining_controls", "driver_control_assessments"}:
+                current.pop(field, None)
+            for field in ("basis_refs", "conditions", "uncovered_conditions"):
+                current[field] = list(dict.fromkeys([*current.get(field, []), *assessment[field]]))
+            current["rationale"] = current["rationale"] + "\n" + assessment["rationale"]
+            current.update({k: deepcopy(v) for k, v in assessment.items()
+                            if k not in {"rationale", "basis_refs", "conditions", "uncovered_conditions"}})
+        return result
+
+    @staticmethod
     def validate_correction_scope(previous: dict, corrected: dict, diagnostics: list[dict], drivers=()) -> None:
         """A control/response correction cannot replace the unmitigated world."""
-        def response_only(reason):
-            return reason.startswith(("CONTROL_", "CONDITIONAL_CONTROL_", "SAFE_STATE_", "SAFE_STOP_",
-                                      "AVOIDANCE_", "ESCAPE_")) or reason in {
-                "CONTACT_BEFORE_ESCAPE", "UNSUPPORTED_AVOIDANCE_TRAJECTORY"}
-
         def positions(h):
             return h.get("driver_positions") or drivers or ("in_driver_seat", "outside_driver_seat")
 
@@ -487,7 +543,7 @@ class PhysicalScenarioPlan:
         conflicts = []
         for identity, hypothesis in old.items():
             applicable = [d for d in diagnostics if d.get("hypothesis_id") in (None, identity)]
-            if any(not response_only(str(d.get("reason", ""))) for d in applicable):
+            if any(not PhysicalScenarioPlan.response_only_diagnostic(str(d.get("reason", ""))) for d in applicable):
                 continue  # This hypothesis has a reported motion/input conflict to correct.
             protected.add(identity)
             if identity in new and set(positions(new[identity])) - set(positions(hypothesis)):
