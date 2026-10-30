@@ -19,6 +19,17 @@ class FTTIMethodExecutor:
     """Execute the compiled conditional timing policy; no defaults or approvals."""
 
     @staticmethod
+    def response_input_snapshot(scenario):
+        """Bind a rejected response to the exact trajectory it was checked on."""
+        from hara_agent.contracts.physical_scenario_plan import PARAMETER_UNITS
+        from copy import deepcopy
+        fields = set(PARAMETER_UNITS) | {"fault_motion_model", "ego_longitudinal_direction",
+            "object_longitudinal_direction", "ego_lateral_direction", "object_position", "object_id", "post_stop_motion",
+            "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill", "downhill_body_direction",
+            "travel_to_impact_m", "motion_model_outcome", "driver_position", "driver_in_vehicle"}
+        return {k: deepcopy(scenario[k]) for k in sorted(fields) if k in scenario}
+
+    @staticmethod
     def evaluate(inputs, scenario, method):
         import math
         from .scenario_physics import braking_avoidability_boundary, moving_braking_avoidability_boundary, source_is_accepted_for
@@ -39,6 +50,14 @@ class FTTIMethodExecutor:
         if not source_is_accepted_for(scenario.get("_fact_provenance", {}).get(analysis_field, {}),
                 malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id):
             return pending("时间假设未绑定当前失效与场景，不能继承其他成员的处置时间。")
+        rejected = analysis.get("rejected_response_evaluation", {})
+        if (not proposal and rejected.get("input_values") == FTTIMethodExecutor.response_input_snapshot(scenario)
+                and rejected.get("method_source_hash") == method.metadata.get("method_source_hash")
+                and rejected.get("timing_trace", {}).get("status") in {
+                    "NO_IMMEDIATE_SAFE_BRAKING_WINDOW", "AVOIDABILITY_ALREADY_LOST"}):
+            return replace(inputs, status=CalculationStatus.NOT_APPLICABLE,
+                reason="所选响应已计算但不能避开当前目标，原提案及轨迹结论保留；其他处置策略尚未完成，不能归为缺少控制能力输入。",
+                method_rule_ids=(policy["rule_id"],), timing_trace=rejected["timing_trace"])
         moving = scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
         if (scenario.get("fault_motion_model") not in policy["supported_models"]
                 or not moving and scenario.get("object_speed_kph") != 0):
@@ -106,7 +125,7 @@ class FTTIMethodExecutor:
             if result["status"] == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW":
                 reason = ("同一移动目标轨迹下，即刻解除异常减速并保持当时速度仍不能建立避碰窗口。" if release else
                     "同一移动目标轨迹下，即刻制动并停车保持仍不能建立避碰窗口；不能把停车直接当安全。其他处置策略需另行建模。")
-                return replace(pending(reason), timing_trace=result)
+                return replace(pending(reason), status=CalculationStatus.NOT_APPLICABLE, timing_trace=result)
             return pending("未形成该危险判据的数值边界：" + result["status"])
         horizon = scenario.get("model_valid_until_s")
         if horizon is not None and result["time_s"] > horizon:

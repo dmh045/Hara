@@ -140,9 +140,9 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v11-independent-contract-repair"
-    PROMPT_VERSION = "post-fault-physical-scenario-v41-scoped-contact-geometry"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v23-empty-motion-envelope"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v12-active-vocabulary"
+    PROMPT_VERSION = "post-fault-physical-scenario-v42-initial-phase-response-limit"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v24-response-limit"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -459,6 +459,9 @@ class PhysicalScenarioAgent:
             "hazard_criterion:LOSS_OF_BRAKING_AVOIDABILITY或FIRST_CONTACT_BOUND,rationale:理由,basis_refs:引用数组}。"
             "前者用于有制动响应路径的失去避碰能力边界，包括静止目标和同一有限包络的直线移动目标；后者只是接触时间证据。"
             "不能把模型初态自动当故障时刻，需说明二者关系；不输出计算结果或最终FTTI。"
+            "允许的最大响应延迟是本次要推导的要求，不需要先知道车辆实测检测或响应延迟；"
+            "实际延迟是否满足要求另行验证。已经条件性声明自动命令和执行能力可用时，"
+            "不能仅因人员在车外或未提供实测延迟拒绝建模；确有使能、共因或模型限制时具体说明。"
             "output_contract.response_timing若存在，是当前方法已接通的响应计算能力。"
             "model_catalog描述无干预故障运动，不能仅因其中没有制动阶段就拒绝已列入supported_models的响应分析；"
             "沿用同一几何、对象及模型适用假设，由程序检查响应是否真的避开接触。"
@@ -661,6 +664,16 @@ class PhysicalScenarioAgent:
                                     "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
                                 controls_view["uncovered_conditions"].append(controls_view["safe_state_unresolved_reason"])
                 plan = PhysicalScenarioPlan.from_dict(candidate, evidence_ids=set(context["evidence"]))
+                # These are the active contract's output enums, not new risk rules.
+                # Catch misspellings in the existing bounded contract repair before
+                # a corrected plan reaches deterministic instantiation.
+                for hypothesis in plan.hypotheses:
+                    for field, vocabulary in context.get("risk_vocabulary", {}).items():
+                        allowed = {str(value).strip().casefold() for value in vocabulary}
+                        if allowed and str(hypothesis["geometry"].get(field, "")).strip().casefold() not in allowed:
+                            raise ValueError(f"Geometry {field} is outside the active method vocabulary: "
+                                f"{hypothesis['geometry'].get(field)!r}; use one of {sorted(vocabulary)}. "
+                                "Correct the enum in your complete response; preserve the declared object and physical world.")
                 if context.get("operating_atom_options") and not controls_only:
                     for hypothesis in plan.hypotheses:
                         if "operating_atoms" not in hypothesis:

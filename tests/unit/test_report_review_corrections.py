@@ -431,6 +431,17 @@ def test_safe_state_many_gaps_show_complete_examples_without_changing_member_evi
     assert catalog == before
 
 
+def test_failed_rollaway_does_not_display_parent_speed_as_stopped_initial_state():
+    from types import SimpleNamespace
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    sc = SimpleNamespace(facts={'ego_speed_kph':7}, fact_provenance={'ego_speed_kph':{
+        'approval':'FINALIZED','analysis_value_semantic':'PRE_FAULT_OPERATING_SPEED'}},
+        analysis_instance={'physical_plan_diagnostics':[{'reason':'ROLLAWAY_REQUIRES_STATIONARY_INITIAL_STATE'}]})
+    assert '父场景' in EngineeringReportTextMapper.speed_text(sc)
+    assert '初始车速：7' not in EngineeringReportTextMapper.speed_text(sc)
+    assert sc.facts['ego_speed_kph'] == 7  # display never overwrites the historical input
+
+
 def test_exposure_rank_labels_the_used_atom_not_the_search_phrase():
     mapper = EngineeringReportTextMapper(load_report_schema().presentation['language'])
     trace = {'result': 'E3', 'aggregation_rule': 'e3_e4_mix',
@@ -694,3 +705,24 @@ def test_excluded_function_keeps_actual_causal_reason_without_missing_risk_claim
     assert '未进入风险评分' in inventory.risk_distribution
     assert '待评定' not in inventory.risk_distribution and 'Pending' not in inventory.risk_distribution
     assert (state, trace) == before
+
+
+def test_known_input_summary_does_not_assign_an_unbound_speed_to_the_initial_phase():
+    text = EngineeringReportTextMapper.known_inputs({"ego_speed_kph": 7})
+    assert text == "自车速度输入 7 km/h"
+    assert "初始" not in text
+
+
+def test_safe_state_response_token_is_readable_without_changing_ids_or_meaning():
+    raw = "即时BRAKE_AND_HOLD仍不能避碰；记录ID=BRAKE_AND_HOLD_01"
+    text = EngineeringReportTextMapper.hazardous_event(raw)
+    assert "即时制动并停车保持仍不能避碰" in text
+    assert "ID=BRAKE_AND_HOLD_01" in text
+
+
+def test_physical_basis_retains_stationary_counterfactual_review_condition():
+    from types import SimpleNamespace
+    scenario=SimpleNamespace(facts={'physical_analysis':{'stationary_ego_counterfactual':{'status':'CONTACT'}}},fact_provenance={})
+    text=EngineeringReportTextMapper.analysis_basis(scenario)
+    assert '保持本车静止时，同一目标也会接触' in text
+    assert '不能仅把接触本身归因于故障' in text

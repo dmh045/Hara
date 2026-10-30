@@ -705,3 +705,43 @@ def test_invalid_semantic_correction_preserves_valid_sibling_and_local_gap(metho
     assert all(c.facts['physical_analysis']['engineering_approval'] == 'NOT_GRANTED' for c in result['MF'])
     _, resumed = run(method, agent, state=state, candidates={'MF': [parent]})
     assert resumed == result and len(client.requests) == 3
+
+
+@pytest.mark.parametrize("reported_scope_error", [True, False])
+def test_reported_counterfactual_geometry_reaches_correction_and_legacy_resume(method, tmp_path, reported_scope_error):
+    from test_bounded_interaction_coverage import moving_plan
+    raw = moving_plan(initial=0, acceleration=.2, target_direction='RIGHT',
+        x=.5, y=1.5, position='LEFT', collision='SIDE', horizon=3)
+    corrected = deepcopy(raw)
+    next(p for p in corrected['hypotheses'][0]['parameters'] if p['field']=='object_offset_x_m')['value'] = 1.2
+    client = Client([raw, corrected, corrected])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    state, result = run(method, agent, candidates={'MF':[make_candidate(0)]})
+    key, entry = next(iter(state.item_definition['physical_analysis_plans'].items()))
+    diagnostics = entry['correction_diagnostics']
+    geometry = next(d for d in diagnostics if d['reason']=='CONTACT_WITH_STATIONARY_EGO')
+    assert geometry['hypothesis_id']=='h1' and geometry['instance_hypothesis_id'].startswith(key+':h1:')
+    assert len(client.requests)==2 and 'semantic_correction_error' not in entry
+    child = result['MF'][0]
+    assert child.facts['object_offset_x_m']==1.2
+    assert child.facts['motion_model_outcome']['status']=='CONTACT'
+    assert child.facts['physical_analysis']['stationary_ego_counterfactual']['status']!='CONTACT'
+    # The historical failed cache carries qualified IDs. Recovery reuses the
+    # original response, sends only the corrected diagnostic when necessary,
+    # and never retries an unchanged failure indefinitely.
+    entry['plan']=deepcopy(raw)
+    if reported_scope_error:
+        entry['semantic_correction_error']='CORRECTION_CHANGED_UNREPORTED_WORLD: h1'
+    else:
+        for row in entry['instantiations'].values():
+            row['failures']=[{'reason':'CONTACT_WITH_STATIONARY_EGO'}]
+    for diagnostic in diagnostics:
+        if 'instance_hypothesis_id' in diagnostic:
+            diagnostic['hypothesis_id']=diagnostic.pop('instance_hypothesis_id')
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    restored, recovered = run(method, agent, state=restored, candidates={'MF':[make_candidate(0)]})
+    assert recovered==result and len(client.requests)==3
+    assert "correction_diagnostics" in client.requests[-1].user_prompt
+    assert len(restored.item_definition['physical_analysis_plans'][key]['correction_scope_history'])==1
+    _, resumed = run(method, agent, state=restored, candidates={'MF':[make_candidate(0)]})
+    assert resumed==result and len(client.requests)==3

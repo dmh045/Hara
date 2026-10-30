@@ -160,6 +160,39 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
     return {mf.malfunction_id: result for mf, result in zip(malfunctions, results)}
 
 
+def _retain_rejected_response(candidate, generated, entry, *, producer, mf, method,
+                              key, project, function):
+    """Retain a withdrawn response only on its exact, unchanged physical world."""
+    if entry.get("initial_plan") and any(not (g.facts.get("control_analysis") or
+            g.facts.get("physical_analysis", {})).get("hypothesis", {}).get("safe_state_proposal") for g in generated):
+        from hara_agent.services.analysis.deterministic_risk_executor import FTTIMethodExecutor
+        from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+        original = PhysicalScenarioPlan.from_dict(entry["initial_plan"], evidence_ids=set(entry["context"]["evidence"]))
+        originals, _ = producer.instantiate(candidate, mf, original, plan_key=key,
+            response_model=entry["audit"]["model"], project_context=project,
+            function=function)
+        for child in generated:
+            analysis = child.facts.get("control_analysis") or child.facts.get("physical_analysis", {})
+            if analysis.get("hypothesis", {}).get("safe_state_proposal"):
+                continue
+            snapshot = FTTIMethodExecutor.response_input_snapshot(child.facts)
+            for previous in originals:
+                previous_analysis = previous.facts.get("control_analysis") or previous.facts.get("physical_analysis", {})
+                if (previous_analysis.get("hypothesis", {}).get("hypothesis_id")
+                        != analysis.get("hypothesis", {}).get("hypothesis_id")
+                        or FTTIMethodExecutor.response_input_snapshot(previous.facts) != snapshot):
+                    continue
+                evaluated = RiskCalculationInputService().ftti(mf.malfunction_id, previous.scenario_id, "",
+                    {**previous.facts, "_fact_provenance": previous.fact_provenance}, method=method)
+                if evaluated.timing_trace.get("status") in {"NO_IMMEDIATE_SAFE_BRAKING_WINDOW", "AVOIDABILITY_ALREADY_LOST"}:
+                    analysis["rejected_response_evaluation"] = {"input_values": snapshot,
+                        "method_source_hash": method.metadata.get("method_source_hash"),
+                        "original_scenario_id": previous.scenario_id,
+                        "proposal": previous_analysis["hypothesis"]["safe_state_proposal"],
+                        "timing_trace": evaluated.timing_trace}
+                    break
+
+
 def construct_physical_scenarios(state, candidates, malfunctions, *, method, agent, project_facts,
                                  checkpoint=None, progress=None, max_workers=1, _commit_plan=None):
     if max_workers > 1 and len(malfunctions) > 1:
@@ -301,6 +334,27 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             saved = cache.get(key, {})
             entry = saved or {"context": context, "responses": [], "status": "REQUESTED"}
             cache[key] = entry
+            # Old geometry diagnostics used an instantiated hypothesis identity,
+            # so the correction contract could not find the reported world.
+            # Migrate only that proven, failed correction; keep raw responses.
+            unresolved_geometry = any(f.get("reason") == "CONTACT_WITH_STATIONARY_EGO"
+                for row in entry.get("instantiations", {}).values() for f in row.get("failures", []))
+            if ("CORRECTION_CHANGED_UNREPORTED_WORLD" in entry.get("semantic_correction_error", "")
+                    or unresolved_geometry):
+                hypotheses = entry.get("initial_plan", {}).get("hypotheses", [])
+                corrected_diagnostics = []
+                for diagnostic in entry.get("correction_diagnostics", []):
+                    identity = diagnostic.get("hypothesis_id", "")
+                    raw_identity = next((h["hypothesis_id"] for h in hypotheses
+                        if identity.startswith(f"{key}:{h['hypothesis_id']}:")), None)
+                    corrected_diagnostics.append({**diagnostic, "instance_hypothesis_id": identity,
+                        "hypothesis_id": raw_identity} if raw_identity else diagnostic)
+                if corrected_diagnostics != entry.get("correction_diagnostics", []):
+                    entry.setdefault("correction_scope_history", []).append({
+                        "error": entry.pop("semantic_correction_error", "LEGACY_UNSCOPED_GEOMETRY_DIAGNOSTIC"),
+                        "diagnostics": entry["correction_diagnostics"]})
+                    entry["correction_diagnostics"] = corrected_diagnostics
+                    entry.pop("semantic_correction_completed", None)
             prior_status = entry.get("status")
             if (prior_status == "VALIDATED" and entry.get("initial_plan")
                     and not (entry.get("semantic_correction_error") and entry["plan"] == entry["initial_plan"])):
@@ -317,6 +371,14 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     entry.pop("semantic_correction_error", None)
             prior_validation = entry.get("response_validation_version")
             validation_version = getattr(agent, "RESPONSE_VALIDATION_VERSION", None)
+            if (prior_status == "VALIDATED" and prior_validation != validation_version
+                    and entry.get("initial_plan") and any(
+                        str(f.get("reason", "")).startswith("UNSUPPORTED_METHOD_VOCABULARY:")
+                        for row in entry.get("instantiations", {}).values() for f in row.get("failures", []))):
+                entry.setdefault("validation_history", []).append({"version": prior_validation,
+                    "error": "Generated vocabulary reached instantiation before contract validation"})
+                entry.update(status="CORRECTION_REQUESTED", response_validation_version=validation_version)
+                entry.pop("semantic_correction_completed", None)
             if prior_status == "INVALID" and prior_validation != validation_version:
                 # Revalidate the raw response through the existing checkpoint;
                 # successful plans do not need another model request. Same-version
@@ -414,6 +476,13 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                 errors.append({"reason": "SAFE_STATE_DRIVER_SCOPE_UNASSESSED",
                                     "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
                                     "resolution": "Preserve the shared motion. In driver_control_assessments.outside_driver_seat assess a complete compatible command/execution path from source and fault scope, or give a concrete safe_state_unresolved_reason. Keep the in-seat path. Do not use a pedal outside, assume remote availability from an App, duplicate the trajectory, or alter parameters. Use the same one bounded correction."})
+                            if (outcome.get("status") == "CONTACT" and not proposal
+                                    and {"automatic_braking_command", "braking"}
+                                    <= set(response_hypothesis.get("remaining_controls", []))):
+                                errors.append({"reason": "SAFE_STATE_DECLARED_AUTOMATIC_PATH_UNMODELED",
+                                    "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
+                                    "driver_position": driver,
+                                    "resolution": "This world already declares an automatic braking command and actuator available conditionally. Evaluate its compatible response, or identify a specific model/enable/fault contradiction. Computing the maximum allowed response delay does not require a measured detection/reaction delay; actual delay is checked against that limit later. Driver absence does not require a remote trigger for an automatic path. Preserve the fault world and all conditional qualifications; do not assert engineering approval or invent a working path."})
                             response_missing = (not proposal.get("transition") or
                                 child.facts.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
                                 and proposal.get("transition", {}).get("model") == "CONSTANT_NET_DECELERATION"
@@ -432,6 +501,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                 if timing.timing_trace.get("status") in {"AVOIDABILITY_ALREADY_LOST", "NO_IMMEDIATE_SAFE_BRAKING_WINDOW"}:
                                     errors.append({"reason": "SAFE_STOP_RESPONSE_UNREACHABLE",
                                         "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
+                                        "driver_position": driver,
                                         "evidence": timing.timing_trace,
                                         "resolution": "Preserve the unmitigated world. This proposed response does not avoid its target. Reconcile the safe-state claim with the available controls/model, or explicitly retain the unsupported strategy in safe_state_unresolved_reason. Do not move the target or increase braking just to force a safe result. No extra correction loop."})
                                 elif (timing.timing_trace.get("status") == "CONDITIONAL_BOUNDARY"
@@ -445,12 +515,16 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                             avoidance = analysis.get("avoidance_validation", {})
                             if avoidance and avoidance.get("status") not in {"CONDITIONAL_ESCAPE_VALIDATED", "NO_CONTACT_TO_AVOID"}:
                                 errors.append({"reason": avoidance["status"], "evidence": avoidance,
-                                    "hypothesis_id": analysis.get("hypothesis_id"),
+                                    "hypothesis_id": response_hypothesis.get("hypothesis_id"),
+                                    "instance_hypothesis_id": analysis.get("hypothesis_id"),
+                                    "driver_position": driver,
                                     "resolution": "Reconcile the proposed escape with this trajectory and corridor. Do not retain an unsupported positive avoidance claim or tune geometry just to obtain C1."})
                             counterfactual = analysis.get("stationary_ego_counterfactual", {})
                             if counterfactual.get("status") == "CONTACT":
                                 errors.append({"reason": "CONTACT_WITH_STATIONARY_EGO", "evidence": counterfactual,
-                                    "hypothesis_id": analysis.get("hypothesis_id"),
+                                    "hypothesis_id": response_hypothesis.get("hypothesis_id"),
+                                    "instance_hypothesis_id": analysis.get("hypothesis_id"),
+                                    "driver_position": driver,
                                     "resolution": "This target also contacts the stationary ego. Establish the fault's incremental hazard (not merely contact), or propose a physically consistent distinct target path. Preserve the counterfactual; do not claim fault-induced contact without evidence."})
                             if outcome.get("reason") == "TARGET_OFFSET_POSITION_CONFLICT":
                                 errors.append({"reason": outcome["reason"],
@@ -550,9 +624,15 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     "scenario_ids": [candidate.scenario_id for candidate in family],
                     "exact_input_keys": [signature(scenario_conditions(candidate)) for candidate in family]})
                 for candidate, generated, failures in instantiated:
+                    _retain_rejected_response(candidate, generated, entry, producer=producer,
+                        mf=mf, method=method, key=key, project=project,
+                        function=functions.get(mf.function_id))
                     if not plan.hypotheses and plan.control_assessment is None:
                         failures = [{"reason": "PHYSICAL_MODEL_NOT_APPLICABLE",
                                      "uncovered_conditions": list(plan.uncovered_conditions)}]
+                    elif task_scope == "MOTION_AND_CONTROLS" and plan.hypotheses and not generated:
+                        failures.append({"reason": "PHYSICAL_INSTANTIATION_FAILED", "task_scope": task_scope,
+                            "detail": "; ".join(dict.fromkeys(f["reason"] for f in failures))})
                     kept.extend(generated or [candidate])
                     if failures:
                         for item in generated or [candidate]:

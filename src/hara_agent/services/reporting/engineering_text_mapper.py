@@ -125,6 +125,10 @@ class EngineeringReportTextMapper:
                 return f"车速约束：来源存在冲突（{' / '.join(expressions)}），待确认"
 
         point = facts.get("ego_speed_kph")
+        diagnostics = (getattr(scenario, "analysis_instance", {}) or {}).get("physical_plan_diagnostics", [])
+        if not facts.get("physical_analysis") and any(str(d.get("reason", "")).startswith(
+                "ROLLAWAY_REQUIRES_STATIONARY_INITIAL_STATE") for d in diagnostics):
+            return "静止后溜车初态尚未建立；父场景运行速度代表值不作为本阶段初速"
         provenance = getattr(scenario, "fact_provenance", {}) or {}
         point_provenance = provenance.get("ego_speed_kph", {})
         if (
@@ -556,6 +560,8 @@ class EngineeringReportTextMapper:
             return ("；".join(f"{label}：{'、'.join(names)}" for label, names in groups.items())
                 + ("；符号参数关系及分档边界见物理输入；未生成唯一碰撞速度或接触时间。" if symbolic else
                    "；碰撞速度/首次接触时间由同一轨迹计算。")
+                + ("保持本车静止时，同一目标也会接触；需结合故障增量危险依据审核，不能仅把接触本身归因于故障。"
+                   if physical.get("stationary_ego_counterfactual", {}).get("status") == "CONTACT" else "")
                 + "条件性分析，非车辆实测能力；完整假设、未覆盖范围及来源见本行审计关联的风险追溯。")
         labels = {
             "ego_speed_kph": "自车速度", "object_speed_kph": "目标速度",
@@ -592,6 +598,7 @@ class EngineeringReportTextMapper:
         diagnostics = (getattr(scenario, "analysis_instance", {}) or {}).get("physical_plan_diagnostics", [])
         gap_labels = {
             "PHYSICAL_PLAN_INVALID": "物理方案生成或有限纠正未通过，尚未形成有效工况；不能视为危险已排除",
+            "PHYSICAL_INSTANTIATION_FAILED": "物理工况实例化未通过；保留来源候选，尚未形成可评定的具体危险事件",
             "PHYSICAL_MODEL_NOT_APPLICABLE": "当前可用物理模型不覆盖所提出的交互条件，该方案未生成碰撞数值",
             "TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH": "所提目标不在故障后的运动路径上，该方案未生成碰撞数值",
             "FIXED_MOVING_TARGET_OUTSIDE_MODEL_CATALOG": "当前目标已确定处于运动中，现有自主模型仅支持静止目标；保留该危险场景，尚未计算故障轨迹",
@@ -712,6 +719,7 @@ class EngineeringReportTextMapper:
             # Chinese label, without changing identifiers such as VEHICLE_01.
             text = re.sub(rf"(?<![A-Za-z0-9_-]){raw}(?![A-Za-z0-9_-])(?:\s*{re.escape(display)})?",
                           lambda _match, label=display: label, text)
+        text = re.sub(r"(?<![A-Za-z0-9_])BRAKE_AND_HOLD(?![A-Za-z0-9_])", "制动并停车保持", text)
         text = re.sub(r"(?<![A-Za-z])EPB(?![A-Za-z])", "电子驻车制动", text, flags=re.IGNORECASE)
         text = re.sub(r"(?<![A-Za-z])System\s+OK(?![A-Za-z])", "系统正常", text, flags=re.IGNORECASE)
         for raw, display in cls._MODE_TEXT.items():
@@ -726,7 +734,7 @@ class EngineeringReportTextMapper:
 
     @classmethod
     def known_inputs(cls, facts: Mapping[str, Any]) -> str:
-        labels = {"ego_speed_kph": "初始自车速度", "object_speed_kph": "目标速度",
+        labels = {"ego_speed_kph": "自车速度输入", "object_speed_kph": "目标速度",
                   "relative_speed_kph": "相对速度", "relative_distance_m": "相对距离",
                   "ttc_s": "TTC", "longitudinal_acceleration_mps2": "纵向加速度"}
         parts = [f"{label} {quantity(facts[field], FIELD_UNITS[field])} {FIELD_UNITS[field]}"
@@ -1094,13 +1102,18 @@ class EngineeringReportTextMapper:
     @staticmethod
     def ftti_value(timing_inputs: list[Mapping[str, Any]]) -> str:
         lost = [x for x in timing_inputs if x.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST"]
+        unsafe = [x for x in timing_inputs if x.get("timing_trace", {}).get("status") == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW"]
         values = [x["hazard_time_limit_s"] for x in timing_inputs
                   if x.get("hazard_time_limit_s") is not None and x not in lost]
         if not values:
-            return "初始已无制动避碰余量" + ("；部分成员待确定" if len(lost) != len(timing_inputs) else "") if lost else "待确定"
+            parts = (["初始已无制动避碰余量"] if lost else []) + (["所选响应不能避碰"] if unsafe else [])
+            if len(lost) + len(unsafe) < len(timing_inputs):
+                parts.append("部分成员待确定" if parts else "待确定")
+            return "；".join(parts) or "待确定"
         label = quantity(min(values), "s") + " s"
         return label + ("；含初始无制动避碰余量成员" if lost else "") + (
-            "；部分成员待确定" if len(values) + len(lost) != len(timing_inputs) else "")
+            "；含响应不能避碰成员" if unsafe else "") + (
+            "；部分成员待确定" if len(values) + len(lost) + len(unsafe) != len(timing_inputs) else "")
 
     @staticmethod
     def ftti_rationale(timing_inputs: list[Mapping[str, Any]] | None = None) -> str:

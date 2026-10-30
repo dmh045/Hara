@@ -295,6 +295,8 @@ class PhysicalHypothesisInstantiationService:
         if field == "ego_speed_kph":
             if meta.get("object_id") not in {None, "EGO", "ego", parent.facts.get("ego_id")}:
                 return False, "PARENT_INPUT_OTHER_OBJECT"
+            if (h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" or h.get("grade_frame")) and parent.facts[field] != 0:
+                return False, "MOVING_PARENT_IS_NOT_ROLLAWAY_INITIAL_STATE"
             return (False, "CONTACT_SPEED_IS_NOT_INITIAL_SPEED") if "IMPACT" in phase or "POST_FAULT" in phase else (True, "PRE_FAULT_SPEED_AS_INITIAL_CONDITION")
         if field == "slope_percent":
             return True, "ROAD_GEOMETRY_CONTEXT"
@@ -379,6 +381,12 @@ class PhysicalHypothesisInstantiationService:
                     if f in spec["required"] and a["action"] == "EXCLUDED_FROM_ACTIVE_MODEL"},
                 "scope": spec["scope"],
             }
+            if model == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE":
+                models[model]["initial_state_requirement"] = (
+                    "This model begins at rest. A parent's operating-speed representative is not that stopped phase. "
+                    "Explicitly propose ego_speed_kph=0 with condition_changes.initial_state=true when selecting "
+                    "a separate stopped condition within the Item range; bind the corresponding standing/holding "
+                    "operating Atoms. Do not overwrite a measured moving state or inherit its causal conclusion.")
         dimensions = candidate.facts.get("method_scenario_dimensions", {})
         source = candidate.facts.get("source_operating_conditions", {})
         slope_tag = candidate.facts.get("source_slope_direction", source.get("source_slope_direction"))
@@ -808,7 +816,9 @@ class PhysicalHypothesisInstantiationService:
                 raise PhysicalInputConflict("SLOPE_CONFLICTS_WITH_SELECTED_CONDITIONS", "slope_percent", conflicts, slope)
         gravity_motion = h["model"] == "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE" or bool(h.get("grade_frame"))
         if gravity_motion and initial != 0:
-            raise ValueError("ROLLAWAY_REQUIRES_STATIONARY_INITIAL_STATE")
+            raise PhysicalInputConflict("ROLLAWAY_REQUIRES_STATIONARY_INITIAL_STATE", "ego_speed_kph", initial, 0,
+                relation="ROLLAWAY_STARTS_AFTER_STOP",
+                resolution="Use a source-compatible stopped initial condition with an explicit zero-speed parameter, condition_changes.initial_state and matching operating Atoms. The parent's moving representative belongs to another phase; do not inherit it or silently replace an observed moving state. If this mechanism starts while moving, select an applicable moving model instead.")
         grade_mapping = self._grade_mapping(parent, h) if gravity_motion else {}
         if "post_fault_speed_cap_kph" in values and "speed_limiter" not in h["remaining_controls"]:
             raise ValueError("SPEED_CAP_REQUIRES_EXPLICIT_REMAINING_LIMITER")

@@ -108,14 +108,14 @@ def _assess_instantiated_scenarios(
     for candidate in candidates:
         outcome = candidate.facts.get("motion_model_outcome", {})
         failed_motion = next((d for d in candidate.analysis_instance.get("physical_plan_diagnostics", [])
-            if isinstance(d, dict) and d.get("reason") == "PHYSICAL_PLAN_INVALID"
+            if isinstance(d, dict) and d.get("reason") in {"PHYSICAL_PLAN_INVALID", "PHYSICAL_INSTANTIATION_FAILED"}
             and d.get("task_scope") == "MOTION_AND_CONTROLS"), None)
         if not failed_motion and outcome.get("status") not in {"MODEL_GEOMETRY_NOT_APPLICABLE", "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}:
             continue
         # The bounded physical correction has already run. A causal request
         # cannot repair contradictory coordinates or create the missing phase.
         # Preserve the identity as unknown; this is not a safe exclusion.
-        reason = "PHYSICAL_PLAN_INVALID: " + str(failed_motion["detail"]) if failed_motion else str(outcome.get("reason") or outcome["status"])
+        reason = failed_motion["reason"] + ": " + str(failed_motion["detail"]) if failed_motion else str(outcome.get("reason") or outcome["status"])
         deferred[candidate.scenario_id] = ScenarioFeasibilityAssessment(
             malfunction.malfunction_id, candidate.scenario_id, False, False, False, [],
             "物理方案生成失败或当前候选仍需修正几何／补充阶段；因果判断暂缓，原身份及输入保留，不表示该危险已被排除：" + reason,

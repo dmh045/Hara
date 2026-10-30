@@ -159,7 +159,8 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v41-scoped-contact-geometry')
+            assert request.prompt_version.endswith('v42-initial-phase-response-limit')
+            assert '允许的最大响应延迟' in request.system_prompt
             assert '程序由坡度与阻力推导' in request.system_prompt
             assert '半尺寸求和后不得再除以2' in request.system_prompt
             assert 'LEFT使y增加，RIGHT使y减小' in request.system_prompt
@@ -624,3 +625,20 @@ def test_control_reference_is_repaired_after_syntax_with_same_budget_and_exact_r
     resumed,replay=agent.propose(context)
     assert resumed==plan and replay['response_cache_hits']==2
     assert len(calls)==client.attempt_budget.attempts==3
+
+
+def test_active_method_vocabulary_uses_existing_bounded_repair_without_guessing(tmp_path):
+    from test_geometry_completion import Client
+    invalid = raw_plan(); invalid['hypotheses'][0]['geometry']['collision_type']='VEHICLE_TO_ROAD'
+    valid = raw_plan()
+    client = Client([invalid,valid])
+    agent = PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path/'responses')
+    context={'plan_key':'method-vocabulary','evidence':{'MF.description':'fault'},
+        'risk_vocabulary':{'road_user_type':{'VEHICLE':'vehicle'},'collision_type':{'FRONTAL':'front'}}}
+    plan,audit = agent.propose(context)
+    assert len(client.requests)==2 and audit['schema_repairs']==1
+    assert 'active method vocabulary' in client.requests[1].user_prompt
+    assert plan.hypotheses[0]['geometry']['collision_type']=='FRONTAL'
+    assert audit['responses'][0]['response']['data']==invalid
+    agent.propose(context)
+    assert len(client.requests)==2

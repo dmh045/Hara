@@ -129,8 +129,9 @@ def test_unusable_geometry_is_preserved_without_paying_for_another_causal_judgme
     assert not agent.seen and audit["llm_calls"] == 0 and len(again) == 2
 
 
-def test_failed_motion_production_is_pending_not_a_negative_causal_judgment():
-    diagnostic={"reason":"PHYSICAL_PLAN_INVALID","task_scope":"MOTION_AND_CONTROLS",
+@pytest.mark.parametrize('reason', ['PHYSICAL_PLAN_INVALID', 'PHYSICAL_INSTANTIATION_FAILED'])
+def test_failed_motion_production_is_pending_not_a_negative_causal_judgment(reason):
+    diagnostic={"reason":reason,"task_scope":"MOTION_AND_CONTROLS",
         "detail":"complete reply failed bounded JSON/schema correction"}
     invalid=replace(parent('failed-motion'),analysis_instance={'physical_plan_diagnostics':[diagnostic]})
     controls=replace(parent('failed-controls'),analysis_instance={'physical_plan_diagnostics':[

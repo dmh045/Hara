@@ -61,6 +61,24 @@ def test_method_standing_initial_cannot_silently_change(method):
     assert not children and errors[0]['reason_code'] == 'INITIAL_STATE_ATOM_CONFLICT'
 
 
+def test_rollaway_input_view_excludes_moving_parent_without_defaulting_zero(method):
+    parent = make_candidate(7)
+    before = deepcopy(parent)
+    service = PhysicalHypothesisInstantiationService(method)
+    status = service.input_status(parent, 'MF')['models']
+    grade = status['GRADE_ROLLAWAY_TO_IMPACT_DISTANCE']
+    assert 'ego_speed_kph' not in grade['available']
+    assert 'ego_speed_kph' in grade['needs_hypothesis']
+    assert 'separate stopped condition' in grade['initial_state_requirement']
+    assert status['CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE']['available']['ego_speed_kph']['value'] == 7
+    raw = grade_raw(); raw['hypotheses'][0]['parameters'].pop(0)
+    children, errors = produce(method, raw, parent)
+    assert not children and errors[0]['reason'] == 'REQUIRED_MODEL_INPUT_OMITTED'
+    assert parent == before
+    stationary = service.input_status(make_candidate(0), 'MF')['models']['GRADE_ROLLAWAY_TO_IMPACT_DISTANCE']
+    assert stationary['available']['ego_speed_kph']['value'] == 0
+
+
 def test_method_moving_target_cannot_become_stationary_same_world(method):
     parent = make_candidate(); parent.facts.update(object_id='object1',object_speed_kph=10)
     parent.fact_provenance['object_speed_kph'] = {**source(), 'provenance':'METHOD_CONTRACT'}

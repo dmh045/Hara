@@ -183,6 +183,60 @@ def test_unsafe_response_is_reported_even_without_an_ftti_clock(method):
     assert timing.hazard_time_limit_s is None
     assert timing.timing_trace['status'] == 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
     assert '不能把停车直接当安全' in timing.reason
+    assert timing.status.value == 'NOT_APPLICABLE'
+
+
+def test_withdrawn_unsafe_response_preserves_exact_trajectory_evidence_and_resumes(method, tmp_path):
+    from test_geometry_completion import Client, run
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    from hara_agent.workflow import HARAState
+    raw = proposal(); raw['hypotheses'][0]['geometry']['object_longitudinal_direction'] = 'REVERSE'
+    withdrawn = deepcopy(raw); h = withdrawn['hypotheses'][0]
+    h.pop('safe_state_proposal')
+    h['safe_state_unresolved_reason'] = 'Immediate braking still meets the oncoming target; this stopping proposal is withdrawn.'
+    h['timing_unresolved_reason'] = 'Another response model is needed for the same world.'
+    client = Client([raw, withdrawn])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    state, result = run(method, agent, candidates={'MF':[make_candidate(7.2)]})
+    child = result['MF'][0]
+    view = {**child.facts, '_fact_provenance':child.fact_provenance}
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '', view, method=method)
+    assert timing.hazard_time_limit_s is None and timing.status.value == 'NOT_APPLICABLE'
+    assert timing.timing_trace['status'] == 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
+    assert EngineeringReportTextMapper.ftti_value([timing.to_dict()]) == '所选响应不能避碰'
+    history = child.facts['physical_analysis']['rejected_response_evaluation']
+    assert history['proposal'] == raw['hypotheses'][0]['safe_state_proposal']
+    assert len(client.requests) == 2
+    for field, value in [('object_offset_x_m', 20), ('object_id', 'another-target'),
+                         ('driver_position', 'outside_driver_seat'), ('ego_speed_kph', 7.20000001)]:
+        changed = {**view, field: value}
+        assert RiskCalculationInputService().ftti('MF',child.scenario_id,'',changed,method=method).status.value == 'PENDING_INPUT'
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    _, resumed = run(method, agent, state=restored, candidates={'MF':[make_candidate(7.2)]})
+    assert resumed == result and len(client.requests) == 2
+
+
+def test_declared_automatic_path_requests_response_limit_without_actual_latency(method):
+    from test_geometry_completion import Client, run
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    complete = proposal(); h = complete['hypotheses'][0]
+    h['remaining_controls'] = ['automatic_braking_command','braking']
+    h['safe_state_proposal']['required_controls'] = ['automatic_braking_command','braking']
+    h['safe_state_proposal']['driver_positions'] = ['outside_driver_seat']
+    h['safe_state_proposal']['conditions'] = ['Conditional independent automatic command and braking actuator remain available.']
+    missing = deepcopy(complete); m = missing['hypotheses'][0]
+    m.pop('safe_state_proposal'); m['timing_unresolved_reason'] = 'No measured detector latency.'
+    client = Client([missing, complete]); parent = make_candidate(7.2)
+    parent.facts.update(driver_in_vehicle=False, driver_position='outside_driver_seat')
+    _, result = run(method, PhysicalScenarioAgent(client), candidates={'MF':[parent]})
+    assert 'maximum allowed response delay' in client.requests[1].user_prompt
+    child = result['MF'][0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts,'_fact_provenance':child.fact_provenance},method=method)
+    assert timing.hazard_time_limit_s == pytest.approx(3.75)
+    assert timing.detection_time_s is None and timing.reaction_time_s is None
+    assert timing.status.value == 'CONDITIONAL'
 
 
 def test_deferred_safe_state_dependency_gets_one_real_workflow_correction_and_resumes(method,tmp_path):
@@ -270,3 +324,32 @@ def test_no_contact_does_not_spend_a_correction_proving_an_unneeded_escape(metho
     assert child.facts['physical_analysis']['avoidance_validation']['status']=='NO_CONTACT_TO_AVOID'
     assert child.facts['motion_model_outcome']['status']=='NO_CONTACT_WITHIN_MODEL'
     assert not child.facts.get('collision_branches')
+
+
+def test_withdrawn_response_evidence_is_not_borrowed_from_another_hypothesis(method):
+    from test_geometry_completion import Client, run
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    raw = proposal(); raw['hypotheses'][0]['geometry']['object_longitudinal_direction']='REVERSE'
+    other = deepcopy(raw['hypotheses'][0]); other['hypothesis_id']='different-response-scope'
+    other.pop('safe_state_proposal')
+    other['safe_state_unresolved_reason']='No response proposed for this independent hypothesis.'
+    raw['hypotheses'].append(other)
+    corrected = deepcopy(raw); corrected['hypotheses'][0].pop('safe_state_proposal')
+    corrected['hypotheses'][0]['safe_state_unresolved_reason']='This braking proposal cannot avoid the oncoming object.'
+    _, result = run(method, PhysicalScenarioAgent(Client([raw,corrected])), candidates={'MF':[make_candidate(7.2)]})
+    by_hypothesis={c.facts['physical_analysis']['hypothesis']['hypothesis_id']:c.facts['physical_analysis'] for c in result['MF']}
+    assert 'rejected_response_evaluation' in by_hypothesis['h1']
+    assert 'rejected_response_evaluation' not in by_hypothesis['different-response-scope']
+
+
+def test_no_contact_does_not_request_an_unnecessary_automatic_response(method):
+    from test_geometry_completion import Client, run
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    raw = proposal(); h = raw['hypotheses'][0]
+    h.pop('safe_state_proposal'); h['remaining_controls']=['automatic_braking_command','braking']
+    next(p for p in h['parameters'] if p['field']=='object_offset_x_m')['value']=100
+    client = Client([raw])
+    state, result = run(method, PhysicalScenarioAgent(client), candidates={'MF':[make_candidate(7.2)]})
+    assert result['MF'][0].facts['motion_model_outcome']['status']!='CONTACT'
+    assert len(client.requests)==1
+    assert not next(iter(state.item_definition['physical_analysis_plans'].values())).get('correction_diagnostics')
