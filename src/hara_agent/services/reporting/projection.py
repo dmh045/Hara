@@ -659,30 +659,41 @@ class HARAReportProjectionService:
         # than truncating a qualifier or repeating every member's narrative.
         # All original member explanations remain in safe_state_evidence.
         gap_text = "；".join(reasons)
-        if len(reasons) > 2:
+        gap_labels = {
+            "RESPONSE_INSUFFICIENT": "即刻制动也无法在接触前停止",
+            "RESPONSE_INTERACTION_UNSAFE": "停车或解除减速后仍会与目标接触",
+            "DRIVER_CONTROL_UNAVAILABLE": "驾驶员不在驾驶位，踏板方案不适用",
+            "DRIVER_POSITION_OUT_OF_SCOPE": "处置方案不适用当前驾驶员位置",
+            "NO_ANALYSIS": "尚未建立处置模型",
+            "NO_PROPOSAL": "尚未形成适用处置方案",
+        }
+        classified = Counter(g.get("reason_code") for g in gaps)
+        if gaps and set(classified) <= gap_labels.keys():
+            gap_text = "；".join(gap_labels[code] + (f"（{count}个成员）" if len(scope) > 1 else "")
+                                for code, count in classified.items())
+        elif len(reasons) > 2:
             examples = sorted(reasons, key=lambda reason: (len(reason), reason))[:2]
             gap_text = "缺口示例：" + "；".join(examples) + "。完整逐成员原因见报告追溯"
         if candidates:
             variants = defaultdict(list)
             for candidate in candidates:
-                path = EngineeringReportTextMapper.safe_state_path(candidate)
-                key = ("path", path[0]) if path else ("text", narrative(candidate, "description"))
+                outcome = EngineeringReportTextMapper.safe_state_outcome(candidate)
+                key = ("outcome", outcome[0]) if outcome else ("text", narrative(candidate, "description"))
                 variants[key].append(candidate)
             lines = []
             for members in variants.values():
                 count = len({c["scenario_id"] for c in members})
-                path = EngineeringReportTextMapper.safe_state_path(members[0])
-                text = (path[1] + "；目标、停止位置、净减速及附加要求分别见场景明细"
-                        if path and count > 1 else narrative(members[0], "description"))
-                lines.append(f"候选：{text}（适用{count}个成员）")
+                outcome = EngineeringReportTextMapper.safe_state_outcome(members[0])
+                text = outcome[1] if outcome else narrative(members[0], "description")
+                lines.append(text + (f"（适用{count}个成员）" if len(scope) > 1 else ""))
             return "\n".join(lines) + (
-                f"\n另有{missing}个成员尚无适用方案：{gap_text or '见成员控制条件'}。" if missing else "")
+                f"\n其余{missing}个成员：{gap_text or '尚未形成适用处置方案'}。" if missing else "")
         prior_scope = set(catalog.get("prior_safe_state", {}).get("scenario_ids", goal.associated_scenario_ids))
         contradicted = any(g.get("reason_code") not in {"NO_ANALYSIS", "NO_PROPOSAL"} for g in gaps)
         if (not catalog.get("safe_state_candidates") and not contradicted and scope <= prior_scope
                 and goal.safe_state not in {"", "待确定", "待评定", "Pending"}):
-            return goal.safe_state if goal.status.value == "FINALIZED" else "候选：" + goal.safe_state
-        return "安全状态待确定：" + (gap_text or "当前成员未形成可用的控制方案")
+            return goal.safe_state
+        return "尚无可用安全处置：" + (gap_text or "当前成员未形成可用的控制方案")
 
     @staticmethod
     def _selected_atom_ids(scenario: Any) -> str:
@@ -986,6 +997,8 @@ class HARAReportProjectionService:
                             for goal in state.safety_goals}
         safe_state_members = {c["scenario_id"]: c for goal in state.safety_goals
             for c in state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_candidates", [])}
+        safe_state_gaps = {g["scenario_id"]: g for goal in state.safety_goals
+            for g in state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_gaps", [])}
         severity_descriptions = ({level.level: level.description for level in method.severity.scale.levels}
                                  if hasattr(method, "severity") else {})
         timing_inputs = {
@@ -1177,7 +1190,7 @@ class HARAReportProjectionService:
                 timing_note = ("\n条件性时间边界：" + self.text.ftti_value([timing])
                     + "（故障发生至失去所选响应的避碰能力；假设及处置轨迹见时间追溯）"
                     if timing.get("hazard_time_limit_s") is not None else "")
-                if timing.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST":
+                if timing.get("hazard_time_limit_s") is None or timing.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST":
                     timing_note = "\n" + self.text.ftti_rationale([timing])
                 details.append(ScenarioDetailView(
                     hara_id=hara_id,
@@ -1195,7 +1208,9 @@ class HARAReportProjectionService:
                     controllability_branch=self.text.controllability_branch(child_trace),
                     analysis_basis=self.text.analysis_basis(child) + "\n" + boundary_notes(child.facts, method) + timing_note
                         + ("\n" + self.text.safe_state_member(safe_state_members[child.scenario_id], child)
-                           if child.scenario_id in safe_state_members else ""),
+                           if child.scenario_id in safe_state_members else
+                           "\n安全处置缺口：" + self.text.hazardous_event(safe_state_gaps[child.scenario_id]["reason"], child)
+                           if child.scenario_id in safe_state_gaps else ""),
                     review_group_id=review_group_id,
                     **child_values,
                     pending_reasons=self._missing_asil_explanation(child_risk, child_trace, method) or "；".join(self._score_rationale(field, getattr(child_risk, field),
@@ -1307,6 +1322,11 @@ class HARAReportProjectionService:
             clarification_ids=clarification_ids,
             scope=scope,
         )
+        timing_counts = Counter(
+            "初始已无制动避碰余量" if value.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST" else
+            "所选响应不能避碰" if value.get("timing_trace", {}).get("status") == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW" else
+            "已计算条件性时间边界" if value.get("hazard_time_limit_s") is not None else self.text.ftti_gap(value)
+            for value in timing_inputs.values())
         basis = MethodBasisView(
             method_source=summary_view.method_source,
             guidewords=f"{len(method.guidewords.guidewords)} 个启用的引导词",
@@ -1314,7 +1334,8 @@ class HARAReportProjectionService:
             exposure=("基于活动项目方法；E 聚合政策与未定源值参与性见风险轨迹，不等同通用标准规定"),
             controllability="基于 MethodContract 的可控性模型；TTC 证据保持可追溯",
             asil="当前 MethodContract 矩阵",
-            ftti=("支持活动方法列明轨迹的条件性制动避碰时间边界；需明确故障起点和剩余净减速响应。直线移动目标还需检查停车保持后的交互；未覆盖路径仅列接触证据，不冒充已批准FTTI。"
+            ftti=("本报告" + "；".join(f"{label} {count}条" for label, count in timing_counts.items())
+                  + "。数值是所选响应的最迟启动边界，按完整轨迹检查；不等于实测响应时间或已批准的系统FTTI。"
                   if getattr(method, "metadata", {}).get("project_analysis_policy", {}).get("timing_analysis") else
                   "本次方法未配置响应时间规则；轨迹接触时间仅作证据，不作为FTTI。"),
         )
@@ -1338,7 +1359,7 @@ class HARAReportProjectionService:
         speed_values = [item.speed_constraint for item in details if item.speed_constraint]
         projection_metrics = {
             "safety_goal_scope_note": "最高 ASIL 仅覆盖本次已计算成员；未计算成员不包含在该最大值中。"
-                + " Safety State为期望达到的车辆安全状态；候选及适用条件另行审核，未生成不等于没有安全状态。"
+                + " Safe State栏列车辆期望达到的状态；不同控制路径、参数及适用条件见场景明细，不能相互替用。审核性质见状态列。"
                 + (" 本页使用离线模拟响应。" if offline_goals else "")
                 + (" 条件性数值仍待工程确认。" if conditional_goal_ids else ""),
             "safety_goal_stage_completed": any(event.get("event") == "safety_goals_aggregated"
@@ -1357,6 +1378,7 @@ class HARAReportProjectionService:
                 "prior": state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("prior_safe_state"),
             } for goal in state.safety_goals},
             "ftti_timing_inputs": list(timing_inputs.values()),
+            "ftti_population_summary": dict(timing_counts),
             "partial_group_grade_distributions": partial_group_distributions,
             "collision_branch_rows": sum(len(risk.branch_evaluations) for risk in state.risk_results),
             "child_scenario_rows": len(details),

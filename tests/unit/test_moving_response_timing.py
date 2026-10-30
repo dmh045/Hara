@@ -215,6 +215,22 @@ def test_withdrawn_unsafe_response_preserves_exact_trajectory_evidence_and_resum
     restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
     _, resumed = run(method, agent, state=restored, candidates={'MF':[make_candidate(7.2)]})
     assert resumed == result and len(client.requests) == 2
+    # The ordinary SG aggregation must preserve the negative result too. A
+    # withdrawn stopping response is not merely a missing proposal.
+    from test_report_review_corrections import mixed_pending_group
+    from hara_agent.services.analysis import MethodSafetyGoalService
+    from hara_agent.workflow.nodes.safety_goals import aggregate_safety_goals
+    report_state = mixed_pending_group()
+    risk = report_state.risk_results[-1]
+    risk.scenario_id, risk.malfunction_id = child.scenario_id, 'MF'
+    report_state.risk_results = [risk]; report_state.scenarios = [child]
+    report_state.malfunctions[0]['malfunction_id'] = 'MF'
+    aggregate_safety_goals(report_state, MethodSafetyGoalService(method))
+    goal = report_state.safety_goals[0]
+    catalog = report_state.item_definition['safety_goal_catalog'][goal.sg_id]
+    assert catalog['safe_state_candidates'] == []
+    assert catalog['safe_state_gaps'][0]['reason_code'] == 'RESPONSE_INTERACTION_UNSAFE'
+    assert child.facts['physical_analysis']['rejected_response_evaluation'] == history
 
 
 def test_declared_automatic_path_requests_response_limit_without_actual_latency(method):

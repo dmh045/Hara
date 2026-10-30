@@ -41,11 +41,12 @@ class FTTIMethodExecutor:
         timing = hypothesis.get("hazard_timing", {})
         proposal = hypothesis.get("safe_state_proposal", {})
         response = proposal.get("transition", {})
-        def pending(reason):
+        def pending(reason, code="RESPONSE_INPUTS_UNRESOLVED"):
             return replace(inputs, reason=reason, status=CalculationStatus.PENDING_INPUT,
-                           method_rule_ids=(policy["rule_id"],))
+                           method_rule_ids=(policy["rule_id"],),
+                           timing_trace={**inputs.timing_trace, "pending_reason": code})
         if not analysis:
-            return pending("当前场景尚未形成故障起点、危险判据及安全处置假设；已有接触时间单列。")
+            return pending("当前场景尚未形成故障起点、危险判据及安全处置假设；已有接触时间单列。", "NO_ANALYSIS")
         analysis_field = "control_analysis" if scenario.get("control_analysis") else "physical_analysis"
         if not source_is_accepted_for(scenario.get("_fact_provenance", {}).get(analysis_field, {}),
                 malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id):
@@ -71,7 +72,7 @@ class FTTIMethodExecutor:
                 or proposal.get("driver_positions") and driver not in proposal["driver_positions"]):
             detail = hypothesis.get("timing_unresolved_reason") or hypothesis.get("safe_state_unresolved_reason")
             return pending("本成员没有适用的剩余控制响应路径；不能借用其他驾驶员分支。"
-                           + ("具体原因：" + detail if detail else ""))
+                           + ("具体原因：" + detail if detail else ""), "CONTROL_PATH_UNRESOLVED")
         release_policy = policy.get("fault_release_response", {})
         release = bool(release_policy and response.get("model") == release_policy.get("model"))
         if (release and (not moving or not {"drive", "braking"} <= controls
@@ -115,7 +116,7 @@ class FTTIMethodExecutor:
                 return pending("移动目标响应仍有符号参数；需在同一包络内关联故障行驶、制动和停车保持三段轨迹。")
             return pending("当前条件仍有符号参数；时间边界关系为 v0·t+a·t²/2+(v0+a·t)²/(2·b净)=可用行程。")
         if moving and not release and response.get("post_stop_motion") != policy.get("moving_target_response", {}).get("post_stop_motion", "HOLD_POSITION"):
-            return pending("移动目标需明确制动后保持静止及其控制依据，不能在停车瞬间截断交互。")
+            return pending("移动目标需明确制动后保持静止及其控制依据，不能在停车瞬间截断交互。", "POST_STOP_MOTION_UNRESOLVED")
         result = (moving_braking_avoidability_boundary(scenario, b, release_deceleration=release) if moving else
                   braking_avoidability_boundary(v/3.6, a, d, b))
         cap = scenario.get("post_fault_speed_cap_kph")
@@ -136,7 +137,8 @@ class FTTIMethodExecutor:
         criterion = release_policy["hazard_criterion"] if release else policy["hazard_criterion"]
         if (timing.get("hazard_criterion") != criterion
                 or isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset)):
-            return replace(pending("响应轨迹已检查；尚未绑定故障起点及失去避碰能力判据，不能作为FTTI。"), timing_trace=result)
+            return replace(pending("响应轨迹已检查；尚未绑定故障起点及失去避碰能力判据，不能作为FTTI。"),
+                           timing_trace={**result, "pending_reason": "FAULT_CLOCK_UNRESOLVED"})
         return replace(inputs, hazard_time_limit_s=offset+result["time_s"],
             safe_state_transition_time_s=result["stopping_time_s"],
             method_rule_ids=(policy["rule_id"],), status=CalculationStatus.CONDITIONAL,

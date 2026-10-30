@@ -405,7 +405,9 @@ def test_workflow_proposals_reach_existing_c_and_sg_with_resume(method, tmp_path
     assert state.safety_goals[0].safe_state == '车辆停止并保持静止'
     assert state.safety_goals[0].status is ReviewStatus.PENDING
     view = HARAReportProjectionService(load_report_schema()).project(state, method)
-    assert '候选：车辆停止并保持静止' in view.safety_goals[0].safe_state
+    assert '车辆停止并保持静止' in view.safety_goals[0].safe_state
+    assert '候选' not in view.safety_goals[0].safe_state
+    assert view.safety_goals[0].status != '已审核'
     assert view.projection_metrics['safe_state_evidence'][state.safety_goals[0].sg_id]['candidates']
     restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
     assert restored.safety_goals == state.safety_goals

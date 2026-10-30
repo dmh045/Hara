@@ -294,7 +294,8 @@ def test_control_only_safe_state_reaches_sg_and_reports_uncovered_driver_members
     view = HARAReportProjectionService(load_report_schema()).project(state, method)
     assert '适用1个成员' in view.safety_goals[0].safe_state
     assert '13个成员' in view.safety_goals[0].safe_state
-    assert '没有在驾驶位操作踏板的适用条件' in view.safety_goals[0].safe_state
+    assert '驾驶员不在驾驶位，踏板方案不适用' in view.safety_goals[0].safe_state
+    assert any('没有在驾驶位操作踏板的适用条件' in d.analysis_basis for d in view.scenario_details)
     assert all(getattr(a,k)==getattr(b,k) for a,b in zip(raw_risks,state.risk_results)
         for k in ('severity','exposure','controllability','asil'))
 

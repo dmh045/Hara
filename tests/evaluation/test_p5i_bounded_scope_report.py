@@ -66,6 +66,9 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
         current_risks = list(current["04_HARA"].iter_rows(min_row=6, values_only=True))
         previous_risks = list(previous["04_HARA"].iter_rows(min_row=6, values_only=True))
         assert len(current_risks) == len(previous_risks) == 13
+        # This historical run never produced a response model. The new
+        # diagnostic label makes the existing absence explicit, not numeric.
+        assert all(row[18] == "尚未建立响应模型" for row in current_risks)
         # Display policy changes do not rewrite legacy committed values. Compare
         # unchanged identity/hazard/grade fields. Scenario prose, rationale, SG
         # presentation and status wording are explicitly allowed to improve.
@@ -75,6 +78,7 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
                 "Severe injuries, possibly life-threatening, survival probable": "严重伤害，可能危及生命，但生存可能性较高",
             }
             return tuple("待评定" if value == "Pending" and index in {10,12,14,16}
+                         else "待确定" if index == 18 and value == "尚未建立响应模型"
                          else "待确定" if index in {18,22} and value in {None,"", "Pending"}
                          else harm_translation.get(value, value) if index == 9
                          else "" if value is None else value for index,value in enumerate(row)

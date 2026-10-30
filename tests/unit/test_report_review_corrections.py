@@ -202,7 +202,8 @@ def test_existing_safe_state_draft_survives_projection_and_reaggregation(active_
     goal.safe_state = '车辆停止并保持静止'
     before = deepcopy(state)
     view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
-    assert view.safety_goals[0].safe_state == '候选：车辆停止并保持静止'
+    assert view.safety_goals[0].safe_state == '车辆停止并保持静止'
+    assert view.safety_goals[0].status != '已审核'
     assert goal.status is ReviewStatus.PENDING and state == before
     aggregate_safety_goals(state, MethodSafetyGoalService(active_method))
     assert state.safety_goals[0].safe_state == goal.safe_state
@@ -388,7 +389,7 @@ def test_safe_state_uses_member_object_semantics_without_rewriting_original_prop
     assert catalog == original
 
 
-def test_safe_state_groups_response_paths_but_preserves_member_conditions_and_parameters():
+def test_safe_state_groups_end_state_but_preserves_different_paths_and_parameters():
     from types import SimpleNamespace
     first={'scenario_id':'s1','description':'在前方行人前停车','required_controls':['driver_braking','braking'],
         'driver_positions':['in_driver_seat'],'transition':{'model':'CONSTANT_NET_DECELERATION','net_deceleration_mps2':2}}
@@ -399,10 +400,14 @@ def test_safe_state_groups_response_paths_but_preserves_member_conditions_and_pa
     goal=SimpleNamespace(associated_scenario_ids=['s1','s2','s3'])
     catalog={'safe_state_candidates':[first,second,third]};before=deepcopy(catalog)
     text=HARAReportProjectionService._safe_state_display(goal,catalog)
-    assert text.count('候选：')==2 and '适用2个成员' in text and '目标、停止位置' in text
+    assert '候选' not in text and '适用3个成员' in text
+    assert text.count('车辆在与目标接触前停止') == 1
+    assert '驾驶员制动踏板' not in text and '自动制动命令链' not in text
     for c in catalog['safe_state_candidates']:
         detail=EngineeringReportTextMapper.safe_state_member(c,SimpleNamespace(facts={},analysis_instance={}))
         assert c['description'] in detail and str(c['transition']['net_deceleration_mps2']) in detail
+        assert ('驾驶员制动踏板' if c is not third else '自动制动命令链') in detail
+        assert ('驾驶员在驾驶位' if c is not third else '驾驶员不在驾驶位') in detail
     assert catalog==before
 
 
@@ -421,14 +426,48 @@ def test_safe_state_many_gaps_show_complete_examples_without_changing_member_evi
     goal = SimpleNamespace(associated_scenario_ids=[f's{i}' for i in range(4)],
                            safe_state='', status=ReviewStatus.PENDING)
     text = HARAReportProjectionService._safe_state_display(goal, catalog)
-    assert '缺口示例' in text and '完整逐成员原因见报告追溯' in text
-    assert all(reason in text for reason in reasons[:2])
-    assert all(reason not in text for reason in reasons[2:])
-    # A single-member view still shows its whole specific explanation; the
-    # shorter examples from other members cannot replace its actual gap.
+    assert '尚未形成适用处置方案（4个成员）' in text
+    assert all(reason not in text for reason in reasons)
+    # Member scope remains independent. Full explanations stay in the catalog
+    # and are projected into each linked scenario detail, not this summary.
     member = HARAReportProjectionService._safe_state_display(goal, catalog, ['s3'])
-    assert reasons[3] in member and '示例' not in member and reasons[0] not in member
+    assert '尚未形成适用处置方案' in member and '4个成员' not in member
+    assert reasons[0] not in member and catalog['safe_state_gaps'][3]['reason'] == reasons[3]
     assert catalog == before
+
+
+def test_safe_state_different_end_states_remain_separate_and_scope_is_preserved():
+    from types import SimpleNamespace
+    candidates = [
+        {'scenario_id': 'stop', 'description': 'original stop', 'transition': {'model': 'CONSTANT_NET_DECELERATION'}},
+        {'scenario_id': 'hold', 'description': 'original hold', 'transition': {'model': 'CONSTANT_NET_DECELERATION', 'post_stop_motion': 'HOLD_POSITION'}},
+        {'scenario_id': 'release', 'description': 'original release', 'transition': {'model': 'RELEASE_DECELERATION_TO_CONSTANT_SPEED'}},
+        {'scenario_id': 'other', 'description': '保持当前安全转向范围', 'transition': {'model': 'unsupported'}},
+    ]
+    catalog = {'safe_state_candidates': candidates}
+    goal = SimpleNamespace(associated_scenario_ids=[c['scenario_id'] for c in candidates])
+    before = deepcopy(catalog)
+    text = HARAReportProjectionService._safe_state_display(goal, catalog)
+    assert text.count('适用1个成员') == 4
+    assert '保持响应开始时的速度行驶' in text and '停车后的保持条件' in text
+    assert '保持当前安全转向范围' in text and '车辆停止并保持静止' in text
+    one = HARAReportProjectionService._safe_state_display(goal, catalog, ['hold'])
+    assert '车辆停止并保持静止' in one and '响应开始时的速度' not in one
+    assert catalog == before
+
+
+def test_ftti_diagnostic_labels_do_not_turn_gaps_into_numbers_or_merge_negative_results():
+    items = [{'hazard_time_limit_s': None, 'timing_trace': {'pending_reason': code}}
+        for code in ['NO_ANALYSIS', 'CONTROL_PATH_UNRESOLVED', 'POST_STOP_MOTION_UNRESOLVED', 'FAULT_CLOCK_UNRESOLVED']]
+    before = deepcopy(items)
+    labels = EngineeringReportTextMapper.ftti_value(items)
+    assert all(label in labels for label in ['尚未建立响应模型', '缺少适用控制路径', '停车后保持待建模', '故障起点或危险判据待绑定'])
+    assert items == before
+    unsafe = {'hazard_time_limit_s': None, 'timing_trace': {'status': 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'}}
+    numeric = {'hazard_time_limit_s': .154286, 'timing_trace': {'status': 'CONDITIONAL_BOUNDARY'}}
+    combined = EngineeringReportTextMapper.ftti_value([*items, unsafe, numeric])
+    assert combined.startswith('0.15 s') and '含响应不能避碰成员' in combined and '部分成员待确定' in combined
+    assert numeric['hazard_time_limit_s'] == .154286
 
 
 def test_failed_rollaway_does_not_display_parent_speed_as_stopped_initial_state():

@@ -1071,6 +1071,22 @@ class EngineeringReportTextMapper:
         return "S/E/C 未全部确定，ASIL 暂不评定。"
 
     @staticmethod
+    def safe_state_outcome(candidate: Mapping[str, Any]) -> tuple[str, str] | None:
+        """Name the modelled end state, not the actuator used to reach it.
+
+        Display grouping only: member controls, parameters and qualifications
+        remain in the detail and do not become common engineering evidence.
+        """
+        response = candidate.get("transition", {})
+        if response.get("model") == "CONSTANT_NET_DECELERATION":
+            if response.get("post_stop_motion") == "HOLD_POSITION":
+                return "STOP_AND_HOLD", "车辆停止并保持静止，在已检查时域内避免与目标接触"
+            return "STOP", "车辆在与目标接触前停止；停车后的保持条件见成员明细"
+        if response.get("model") == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
+            return "CONTINUE", "解除异常减速，保持响应开始时的速度行驶，在已检查时域内避免与目标接触"
+        return None
+
+    @staticmethod
     def safe_state_path(candidate: Mapping[str, Any]) -> tuple[tuple, str] | None:
         """A display group for a response path, never risk/parameter equivalence."""
         response = candidate.get("transition", {})
@@ -1093,7 +1109,10 @@ class EngineeringReportTextMapper:
 
     @classmethod
     def safe_state_member(cls, candidate: Mapping[str, Any], scenario: Any) -> str:
-        text = "安全状态候选：" + cls.hazardous_event(candidate["description"], scenario)
+        text = "期望安全状态：" + cls.hazardous_event(candidate["description"], scenario)
+        path = cls.safe_state_path(candidate)
+        if path:
+            text += "；处置路径：" + path[1]
         response = candidate.get("transition", {})
         if response.get("net_deceleration_mps2") is not None:
             text += "；处置净减速度 " + quantity(response["net_deceleration_mps2"], "m/s2") + " m/s²"
@@ -1107,13 +1126,24 @@ class EngineeringReportTextMapper:
                   if x.get("hazard_time_limit_s") is not None and x not in lost]
         if not values:
             parts = (["初始已无制动避碰余量"] if lost else []) + (["所选响应不能避碰"] if unsafe else [])
-            if len(lost) + len(unsafe) < len(timing_inputs):
-                parts.append("部分成员待确定" if parts else "待确定")
+            pending = [x for x in timing_inputs if x not in lost and x not in unsafe]
+            if pending:
+                labels = dict.fromkeys(EngineeringReportTextMapper.ftti_gap(x) for x in pending)
+                parts.extend(labels)
             return "；".join(parts) or "待确定"
         label = quantity(min(values), "s") + " s"
         return label + ("；含初始无制动避碰余量成员" if lost else "") + (
             "；含响应不能避碰成员" if unsafe else "") + (
             "；部分成员待确定" if len(values) + len(lost) + len(unsafe) != len(timing_inputs) else "")
+
+    @staticmethod
+    def ftti_gap(item: Mapping[str, Any]) -> str:
+        return {
+            "NO_ANALYSIS": "尚未建立响应模型",
+            "CONTROL_PATH_UNRESOLVED": "缺少适用控制路径",
+            "POST_STOP_MOTION_UNRESOLVED": "停车后保持待建模",
+            "FAULT_CLOCK_UNRESOLVED": "故障起点或危险判据待绑定",
+        }.get(item.get("timing_trace", {}).get("pending_reason"), "待确定")
 
     @staticmethod
     def ftti_rationale(timing_inputs: list[Mapping[str, Any]] | None = None) -> str:

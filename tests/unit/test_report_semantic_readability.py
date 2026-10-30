@@ -295,7 +295,8 @@ def test_summary_timing_and_harm_projection_keeps_raw_conditional_state(active_m
     assert scope['complete_risk_chain_count'] == 0
     assert view.rows[0].potential_harm.startswith('按当前 S 分档：')
     assert view.safety_goals[0].status == '条件性草稿'
-    assert view.rows[0].ftti == '待确定'
+    assert view.rows[0].ftti == '缺少适用控制路径'
+    assert view.projection_metrics['ftti_population_summary'] == {'缺少适用控制路径': 1}
     assert '不能作为 FTTI' in view.rows[0].ftti_rationale
     assert '1.59' in view.rows[0].ftti_rationale
     assert state == before

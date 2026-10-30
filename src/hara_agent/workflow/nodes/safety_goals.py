@@ -54,8 +54,12 @@ def aggregate_safety_goals(
                 gap_code = "DRIVER_POSITION_OUT_OF_SCOPE"
             else:
                 proposal = {**proposal, "plan_key": analysis["plan_key"],
-                            "hypothesis_id": analysis.get("hypothesis_id", "control_assessment")}
-        if proposal and proposal.get("transition") and getattr(catalog, "method", None):
+                            "hypothesis_id": analysis.get("hypothesis_id", "control_assessment"),
+                            "driver_positions": proposal.get("driver_positions") or ([driver_position] if driver_position else [])}
+        # A withdrawn proposal may have an exact-world, computed negative
+        # response. Keep that result instead of labelling it missing input.
+        # The executor checks its trajectory snapshot and method identity.
+        if scenario and analysis and getattr(catalog, "method", None):
             from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
             timing = RiskCalculationInputService().ftti(risk.malfunction_id, risk.scenario_id, risk.asil.value,
                 {**scenario.facts, "_fact_provenance": scenario.fact_provenance}, risk.branch_evaluations,
