@@ -182,8 +182,9 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         timing = _object(h["hazard_timing"], {"time_origin", "fault_to_model_start_s", "hazard_criterion", "rationale", "basis_refs"})
         if timing["time_origin"] != "FAULT_ONSET" or _number(timing["fault_to_model_start_s"]) < 0:
             raise ValueError("Hazard timing needs an explicit fault onset and nonnegative elapsed interval")
-        if timing["hazard_criterion"] not in {"LOSS_OF_BRAKING_AVOIDABILITY", "LOSS_OF_RESPONSE_AVOIDABILITY", "FIRST_CONTACT_BOUND"}:
-            raise ValueError("Unsupported hazard timing criterion")
+        if (not isinstance(timing["hazard_criterion"], str)
+                or timing["hazard_criterion"] not in {"LOSS_OF_BRAKING_AVOIDABILITY", "LOSS_OF_RESPONSE_AVOIDABILITY", "FIRST_CONTACT_BOUND"}):
+            raise ValueError("hazard_timing.hazard_criterion must select one string: LOSS_OF_BRAKING_AVOIDABILITY, LOSS_OF_RESPONSE_AVOIDABILITY or FIRST_CONTACT_BOUND; do not return the list of options")
         _text(timing["rationale"])
         if not _texts(timing["basis_refs"], limit=max(16, len(evidence_ids))) or not set(timing["basis_refs"]) <= evidence_ids:
             raise ValueError("Hazard timing requires supplied evidence IDs")

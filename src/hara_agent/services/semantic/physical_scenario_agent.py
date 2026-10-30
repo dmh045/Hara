@@ -141,9 +141,9 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v12-active-vocabulary"
-    PROMPT_VERSION = "post-fault-physical-scenario-v43-response-field-ownership"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v25-response-field-ownership"
-    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v4-scoped-updates"
+    PROMPT_VERSION = "post-fault-physical-scenario-v44-scalar-timing-criterion"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v26-scalar-timing-criterion"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v5-scalar-timing-criterion"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -374,7 +374,8 @@ class PhysicalScenarioAgent:
             },
             "hazard_timing": {"placement": "same hypothesis/control_assessment or driver entry as the response",
                 "time_origin": "FAULT_ONSET", "fault_to_model_start_s": "nonnegative elapsed time with explicit basis; no default",
-                "hazard_criterion": ["LOSS_OF_BRAKING_AVOIDABILITY", "LOSS_OF_RESPONSE_AVOIDABILITY", "FIRST_CONTACT_BOUND"],
+                "hazard_criterion": {"type": "string", "enum": ["LOSS_OF_BRAKING_AVOIDABILITY", "LOSS_OF_RESPONSE_AVOIDABILITY", "FIRST_CONTACT_BOUND"],
+                    "instruction": "Select exactly one applicable string. The enum lists alternatives; never copy the list into the response."},
                 "rationale": "relationship of the fault origin to the model initial state", "basis_refs": ["supplied evidence ID"],
                 "alternative": "Give timing_unresolved_reason when the clock/criterion cannot be related. FIRST_CONTACT_BOUND alone does not complete response timing."},
             "fault_release_transition": {

@@ -61,6 +61,9 @@ def test_bounded_response_update_completes_timing_without_rewriting_world(method
     entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
     from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
     prompt = json.loads(client.requests[-1].user_prompt)
+    criterion = prompt['output_contract']['hazard_timing']['hazard_criterion']
+    assert criterion['type'] == 'string'
+    assert 'LOSS_OF_RESPONSE_AVOIDABILITY' in criterion['enum']
     restored_context = expand_physical_prompt_view(prompt['context'], prompt['source_texts'])
     assert restored_context['previous_plan'] == entry['initial_plan']
     assert restored_context['conditions'] == entry['context']['conditions']
@@ -73,6 +76,36 @@ def test_bounded_response_update_completes_timing_without_rewriting_world(method
     _, restored = run(method, agent, state=HARAState.read_committed(json.loads(json.dumps(state.to_dict()))),
                       candidates={'MF':[make_candidate(7.2)]})
     assert restored == result and len(client.requests) == 2
+
+
+def test_response_criterion_options_are_rejected_and_repaired_without_selecting_for_model(method, tmp_path):
+    from test_moving_response_timing import proposal
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    full = proposal(); missing = deepcopy(full)
+    missing['hypotheses'][0]['safe_state_proposal']['transition'].pop('post_stop_motion')
+    h = full['hypotheses'][0]
+    assessment = {k: deepcopy(v) for k, v in h.items() if k in CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL}
+    valid = {'response_updates': [{'hypothesis_id': h['hypothesis_id'], 'control_assessment': assessment}]}
+    invalid = deepcopy(valid)
+    invalid['response_updates'][0]['control_assessment']['hazard_timing']['hazard_criterion'] = [
+        'LOSS_OF_BRAKING_AVOIDABILITY', 'LOSS_OF_RESPONSE_AVOIDABILITY', 'FIRST_CONTACT_BOUND']
+    with pytest.raises(ValueError, match=r'hazard_timing.hazard_criterion must select one string'):
+        PhysicalScenarioPlan.apply_response_updates(missing, invalid, {'MF.description'})
+    client = Client([missing, invalid, valid])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state, result = run(method, agent, candidates={'MF': [make_candidate(7.2)]})
+    assert len(client.requests) == 3
+    feedback = json.loads(client.requests[-1].user_prompt)['repair_errors']
+    assert any('hazard_timing.hazard_criterion must select one string' in e for e in feedback)
+    child = result['MF'][0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s is not None and timing.hazard_time_limit_s > 0
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['responses'][-2]['response']['data'] == invalid
+    assert entry['plan']['hypotheses'][0]['parameters'] == h['parameters']
+    assert entry['plan']['hypotheses'][0]['hazard_timing']['hazard_criterion'] == assessment['hazard_timing']['hazard_criterion']
 
 
 def test_response_composition_preserves_motion_evidence_and_replaces_control_only_prose():
