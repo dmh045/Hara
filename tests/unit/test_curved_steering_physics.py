@@ -28,6 +28,37 @@ def curved_plan(speed=7, radius=5, clearance=1.75, side='LEFT'):
     return raw
 
 
+def test_curved_response_correction_reaches_timing_without_longitudinal_ttc(method, tmp_path):
+    from test_geometry_completion import Client, run
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    full = curved_plan()
+    h = full['hypotheses'][0]
+    reference = timed_plan()['hypotheses'][0]
+    h['safe_state_proposal'] = deepcopy(reference['safe_state_proposal'])
+    h['safe_state_proposal']['conditions'] = ['Braking follows the same fixed-curvature path; no sideslip or steering escape.']
+    h['hazard_timing'] = deepcopy(reference['hazard_timing'])
+    missing = deepcopy(full)
+    missing['hypotheses'][0]['safe_state_proposal'].pop('transition')
+    client = Client([missing, full])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state, generated = run(method, agent, candidates={'MF': [make_candidate(7)]})
+    child = generated['MF'][0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    arc = 5 * math.acos(1 - 1.75/5)
+    expected = arc/(7/3.6) - (7/3.6)/(2*3)
+    assert timing.hazard_time_limit_s == pytest.approx(expected)
+    assert timing.timing_trace['available_path_distance_m'] == pytest.approx(arc)
+    assert timing.status.value == 'CONDITIONAL' and 'ttc_s' not in child.facts
+    assert len(client.requests) == 2 and agent.RESPONSE_TIMING_POLICY in client.requests[-1].system_prompt
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    for field in ('geometry', 'parameters'):
+        assert entry['plan']['hypotheses'][0][field] == missing['hypotheses'][0][field]
+    _, resumed = run(method, agent, state=state, candidates={'MF': [make_candidate(7)]})
+    assert resumed == generated and len(client.requests) == 2
+
+
 @pytest.mark.parametrize('speed', [3.6, 7, 14.9999999, 15, 20])
 def test_pure_turn_preserves_speed_norm_and_scoped_c_limit(method, speed):
     child = instantiate(method, curved_plan(speed), make_candidate(speed))[0]

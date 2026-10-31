@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 import re
 from typing import Any
@@ -1132,9 +1133,12 @@ class EngineeringReportTextMapper:
                 parts.extend(labels)
             return "；".join(parts) or "待确定"
         label = quantity(min(values), "s") + " s"
+        gaps = Counter(
+            EngineeringReportTextMapper.ftti_gap(x) for x in timing_inputs
+            if x.get("hazard_time_limit_s") is None and x not in lost and x not in unsafe)
         return label + ("；含初始无制动避碰余量成员" if lost else "") + (
             "；含响应不能避碰成员" if unsafe else "") + (
-            "；部分成员待确定" if len(values) + len(lost) + len(unsafe) != len(timing_inputs) else "")
+            "；" + "、".join(f"{count}个成员{reason}" for reason, count in sorted(gaps.items())) if gaps else "")
 
     @staticmethod
     def ftti_gap(item: Mapping[str, Any]) -> str:

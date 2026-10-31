@@ -372,6 +372,17 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             prior_validation = entry.get("response_validation_version")
             validation_version = getattr(agent, "RESPONSE_VALIDATION_VERSION", None)
             if (prior_status == "VALIDATED" and prior_validation != validation_version
+                    and entry.get("initial_plan") and (entry.get("semantic_correction_error")
+                        or entry.get("audit", {}).get("deferred_safe_states"))):
+                # A failed optional correction kept valid motion. Reconsider
+                # its saved reply once after a validator repair, just as for an
+                # INVALID initial proposal; do not retry on every resume.
+                entry.setdefault("validation_history", []).append({
+                    "version": prior_validation, "error": entry.pop("semantic_correction_error",
+                        "OPTIONAL_SAFE_STATE_DEPENDENCY_REVALIDATION")})
+                entry.update(status="CORRECTION_REQUESTED", response_validation_version=validation_version)
+                entry.pop("semantic_correction_completed", None)
+            if (prior_status == "VALIDATED" and prior_validation != validation_version
                     and entry.get("initial_plan") and any(
                         str(f.get("reason", "")).startswith("UNSUPPORTED_METHOD_VOCABULARY:")
                         for row in entry.get("instantiations", {}).values() for f in row.get("failures", []))):

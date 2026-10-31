@@ -60,7 +60,7 @@ def test_zero_margin_is_not_presented_as_a_usable_zero_second_ftti():
     assert '不是可供设计采用' in EngineeringReportTextMapper.ftti_rationale([lost])
     mixed=[lost,{'hazard_time_limit_s':2}, {'hazard_time_limit_s':None}]
     text=EngineeringReportTextMapper.ftti_value(mixed)
-    assert text.startswith('2 s；含初始无制动避碰余量') and '部分成员待确定' in text
+    assert text.startswith('2 s；含初始无制动避碰余量') and '1个成员待确定' in text
     assert '0 s～' not in text and lost==before
 
 
@@ -68,8 +68,8 @@ def test_group_ftti_displays_minimum_valid_member_without_changing_member_values
     timings = [{'hazard_time_limit_s':3.1}, {'hazard_time_limit_s':.154286},
                {'hazard_time_limit_s':.158}, {'hazard_time_limit_s':None}]
     original = deepcopy(timings)
-    assert EngineeringReportTextMapper.ftti_value(timings) == '0.15 s；部分成员待确定'
-    assert EngineeringReportTextMapper.ftti_value(list(reversed(timings))) == '0.15 s；部分成员待确定'
+    assert EngineeringReportTextMapper.ftti_value(timings) == '0.15 s；1个成员待确定'
+    assert EngineeringReportTextMapper.ftti_value(list(reversed(timings))) == '0.15 s；1个成员待确定'
     assert '最小值' in EngineeringReportTextMapper.ftti_rationale(timings)
     assert EngineeringReportTextMapper.ftti_value(timings[:3]) == '0.15 s'
     assert timings == original

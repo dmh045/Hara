@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hara_agent.contracts.physical_scenario_plan import (
     MODEL_CATALOG, PARAMETER_UNITS, PHYSICAL_PLAN_VERSION, PhysicalScenarioPlan, CONTROL_IDENTITIES,
-    INTERVENTION_ASSUMPTION_FIELDS,
+    INTERVENTION_ASSUMPTION_FIELDS, braking_response_dependency_missing,
 )
 from hara_agent.infrastructure.llm import LLMRequest
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
@@ -140,10 +140,10 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v12-active-vocabulary"
-    PROMPT_VERSION = "post-fault-physical-scenario-v44-scalar-timing-criterion"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v26-scalar-timing-criterion"
-    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v5-scalar-timing-criterion"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v14-shared-response-dependencies"
+    PROMPT_VERSION = "post-fault-physical-scenario-v45-shared-response-model-scope"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v27-shared-response-model-scope"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v6-shared-response-model-scope"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -169,6 +169,36 @@ class PhysicalScenarioAgent:
         "若连条件性人工路径也不能成立，则保留unresolved_controls.braking并不把driver_braking列为remaining。"
         "driver_positions是可选字段，只能用in_driver_seat或outside_driver_seat；没有位置限定时省略，不写空字符串。"
         "空的控制数组不等于已完成分析；不要为通过检查强填可用或不可用。"
+    )
+    RESPONSE_TIMING_POLICY = (
+        "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
+        "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
+        "的净减速度假设，不是车辆实测能力，不得沿用方法示例的默认减速度。停止是否安全仍须考虑目标轨迹。"
+        "移动目标使用该响应时，transition还须包含post_stop_motion:HOLD_POSITION，说明停止后由哪个剩余控制"
+        "持续保持；目标仍按原轨迹运动，不能在本车停车时结束分析。停车后仍被横穿者/后车撞到就不是避碰安全状态。"
+        "停车保持不必机械依赖EPB：若本代表可由持续的人工/常规制动维持静止，应清楚声明这一路径及条件；"
+        "若确实需要parking_hold，则必须单独分析其可用性，不能把未声明能力藏进safe_state_proposal。"
+        "不能只声明可以停车却省略响应建模；若连条件性响应也不适用，在同一hypothesis/control_assessment的"
+        "timing_unresolved_reason中写具体障碍，单纯缺少实测减速度不能作为拒绝分析假设的理由。"
+        "可附hazard_timing={time_origin:FAULT_ONSET,fault_to_model_start_s:非负数,"
+        "hazard_criterion:LOSS_OF_BRAKING_AVOIDABILITY或FIRST_CONTACT_BOUND,rationale:理由,basis_refs:引用数组}。"
+        "前者用于有制动响应路径的失去避碰能力边界，包括静止目标和同一有限包络的直线移动目标；后者只是接触时间证据。"
+        "不能把模型初态自动当故障时刻，需说明二者关系；不输出计算结果或最终FTTI。"
+        "允许的最大响应延迟是本次要推导的要求，不需要先知道车辆实测检测或响应延迟；"
+        "实际延迟是否满足要求另行验证。已经条件性声明自动命令和执行能力可用时，"
+        "不能仅因人员在车外或未提供实测延迟拒绝建模；确有使能、共因或模型限制时具体说明。"
+        "output_contract.response_timing若存在，是当前方法已接通的响应计算能力。"
+        "model_catalog描述无干预故障运动，不能仅因其中没有制动阶段就拒绝已列入supported_models的响应分析；"
+        "沿用同一几何、对象及模型适用假设，由程序检查响应是否真的避开接触。"
+        "若supported_models包含CONSTANT_SPEED_CURVATURE_TO_CONTACT，已有执行器按同一圆弧至静止侧方目标的"
+        "首次接触弧长检查停车行程；明确制动期间仍沿原曲率行驶的条件，可使用CONSTANT_NET_DECELERATION，"
+        "不需要伪造纵向TTC。它不代表转向逃逸或轮胎侧滑模型。"
+        "若response_timing.fault_release_response存在，且异常急减速后停车仍遭后车接触，"
+        "可评估其RELEASE_DECELERATION_TO_CONSTANT_SPEED模型：明确独立通道解除异常减速，"
+        "剩余drive和braking使本车保持响应开始瞬间的速度，不瞬间恢复故障前速度。"
+        "proposal.transition只写model、rationale、basis_refs，不写净减速度或停车保持；"
+        "hazard_timing使用LOSS_OF_RESPONSE_AVOIDABILITY。说明解除异常命令及驱动平衡的条件和未覆盖共同失效，"
+        "只有制动踏板、机械锁死或驱动也已失效时不能假定能恢复运动；保持速度不叫停车。"
     )
     ANALYSIS_STRATEGY = (
         "本任务完成当前失效的有限条件性代表工况：先比较与故障有关的对象运动交互，再选择模型和取点。"
@@ -479,31 +509,7 @@ class PhysicalScenarioAgent:
             "自动路径须同时说明remaining_controls中的automatic_braking_command与braking，远程路径须说明remote_control与braking；"
             "命令链、执行能力、故障独立性和响应条件分别交代，有App或完整执行器并不自动证明这条链可用。"
             "优先采用适用于本工况的剩余路径；无法成立时保留明确局部缺口，不能转移目标来让停车看起来安全。"
-            "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
-            "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
-            "的净减速度假设，不是车辆实测能力，不得沿用方法示例的默认减速度。停止是否安全仍须考虑目标轨迹。"
-            "移动目标使用该响应时，transition还须包含post_stop_motion:HOLD_POSITION，说明停止后由哪个剩余控制"
-            "持续保持；目标仍按原轨迹运动，不能在本车停车时结束分析。停车后仍被横穿者/后车撞到就不是避碰安全状态。"
-            "停车保持不必机械依赖EPB：若本代表可由持续的人工/常规制动维持静止，应清楚声明这一路径及条件；"
-            "若确实需要parking_hold，则必须单独分析其可用性，不能把未声明能力藏进safe_state_proposal。"
-            "不能只声明可以停车却省略响应建模；若连条件性响应也不适用，在同一hypothesis/control_assessment的"
-            "timing_unresolved_reason中写具体障碍，单纯缺少实测减速度不能作为拒绝分析假设的理由。"
-            "可附hazard_timing={time_origin:FAULT_ONSET,fault_to_model_start_s:非负数,"
-            "hazard_criterion:LOSS_OF_BRAKING_AVOIDABILITY或FIRST_CONTACT_BOUND,rationale:理由,basis_refs:引用数组}。"
-            "前者用于有制动响应路径的失去避碰能力边界，包括静止目标和同一有限包络的直线移动目标；后者只是接触时间证据。"
-            "不能把模型初态自动当故障时刻，需说明二者关系；不输出计算结果或最终FTTI。"
-            "允许的最大响应延迟是本次要推导的要求，不需要先知道车辆实测检测或响应延迟；"
-            "实际延迟是否满足要求另行验证。已经条件性声明自动命令和执行能力可用时，"
-            "不能仅因人员在车外或未提供实测延迟拒绝建模；确有使能、共因或模型限制时具体说明。"
-            "output_contract.response_timing若存在，是当前方法已接通的响应计算能力。"
-            "model_catalog描述无干预故障运动，不能仅因其中没有制动阶段就拒绝已列入supported_models的响应分析；"
-            "沿用同一几何、对象及模型适用假设，由程序检查响应是否真的避开接触。"
-            "若response_timing.fault_release_response存在，且异常急减速后停车仍遭后车接触，"
-            "可评估其RELEASE_DECELERATION_TO_CONSTANT_SPEED模型：明确独立通道解除异常减速，"
-            "剩余drive和braking使本车保持响应开始瞬间的速度，不瞬间恢复故障前速度。"
-            "proposal.transition只写model、rationale、basis_refs，不写净减速度或停车保持；"
-            "hazard_timing使用LOSS_OF_RESPONSE_AVOIDABILITY。说明解除异常命令及驱动平衡的条件和未覆盖共同失效，"
-            "只有制动踏板、机械锁死或驱动也已失效时不能假定能恢复运动；保持速度不叫停车。"
+            + self.RESPONSE_TIMING_POLICY +
             "移动目标的other_road_user_avoidance_possible=true必须给出同一项中的avoidance={"
             "recognition_delay_s:非负秒,escape_direction:FORWARD|REVERSE|LEFT|RIGHT,escape_speed_mps:正数,"
             "available_clearance_m:正数}，并论证可见性和逃生空间；程序检验同一几何，不是只检查理由非空。"
@@ -582,16 +588,12 @@ class PhysicalScenarioAgent:
                 "未返回的人员分支由程序保留；修改某个人员分支时返回该分支的完整控制结论。"
                 "人员分支写在control_assessment.driver_control_assessments，外层保留共同控制和依据，"
                 "分别给出每个请求人员配置的处置或具体缺口，车外不能使用踏板。"
-                "safe_state_proposal依赖remaining_controls；停车响应须给出有依据的条件性净减速度，"
-                "它不是车辆实测能力，也不是随意提高减速以避碰。移动目标继续原轨迹，停车后交互不能截断。"
-                "不能只在自然语言说明保持或故障起点：采用停车保持响应时填写"
-                "safe_state_proposal.transition.post_stop_motion；采用时间边界时填写hazard_timing。"
-                "最大允许响应延迟是待推导要求，不以缺少实测检测/反应时间为由拒绝计算。"
+                "safe_state_proposal依赖remaining_controls；保持和故障起点要填入对应结构化字段，不能仅在文字中说明。"
                 "若当前响应不能避碰，检查活动response_timing中已有的其他响应模型和剩余控制是否适用；"
                 "确有矛盾则保留具体safe_state_unresolved_reason/timing_unresolved_reason，不改变原轨迹来制造成功。"
                 "程序会重新检查同一轨迹，不能声称已经安全、工程批准或给出S/E/C/ASIL/FTTI结果。"
                 "每个rationale限一两句，条件和未覆盖范围用短句；共同依据不要在两个人员分支重复全文。"
-            ) + self.CONTROL_ANALYSIS_POLICY
+            ) + self.CONTROL_ANALYSIS_POLICY + self.RESPONSE_TIMING_POLICY
         attempts = []
         errors = []
         previous_response = None
@@ -680,6 +682,9 @@ class PhysicalScenarioAgent:
                     for hypothesis in control_views:
                         if not isinstance(hypothesis, dict):
                             continue
+                        hypothesis_id = hypothesis.get("hypothesis_id") or next((
+                            row.get("hypothesis_id") for row in candidate.get("response_updates", [])
+                            if isinstance(row, dict) and row.get("control_assessment") is hypothesis), "control_assessment")
                         scoped = [(hypothesis, [])]
                         if isinstance(hypothesis.get("driver_control_assessments"), dict):
                             scoped.extend((h, hypothesis.get("failed_controls", []))
@@ -726,15 +731,39 @@ class PhysicalScenarioAgent:
                                     and all(isinstance(c, str) for c in controls)
                                     and isinstance(remaining, list) and isinstance(failed, list)
                                     and all(isinstance(c, str) for c in remaining + failed)
-                                    and set(controls) - set(remaining)
                                     and set(controls) <= CONTROL_IDENTITIES
                                     and isinstance(controls_view.get("uncovered_conditions"), list)):
+                                common_remaining = hypothesis.get("remaining_controls", [])
+                                local_unknown = controls_view.get("unresolved_controls", {})
+                                if (controls_view is not hypothesis and isinstance(common_remaining, list)
+                                        and all(isinstance(c, str) for c in common_remaining)
+                                        and isinstance(shared_failed, list)
+                                        and all(isinstance(c, str) for c in shared_failed)
+                                        and isinstance(local_unknown, dict)):
+                                    # Bind only a dependency explicitly requested by
+                                    # this local proposal AND already declared in the
+                                    # same shared world. Personnel paths are not shared.
+                                    blocked = set(failed + shared_failed) | set(local_unknown) | {"driver_braking", "remote_control"}
+                                    inherited = [c for c in controls if c not in remaining
+                                                 and c in common_remaining and c not in blocked]
+                                    if inherited:
+                                        remaining = controls_view["remaining_controls"] = [*remaining, *inherited]
+                                        control_scope_normalizations.append({"hypothesis_id": hypothesis_id,
+                                            "driver_position": next(k for k, v in hypothesis["driver_control_assessments"].items() if v is controls_view),
+                                            "controls": inherited, "normalization": "BOUND_EXPLICIT_SHARED_RESPONSE_DEPENDENCY"})
+                                transition = proposal.get("transition", {})
+                                missing_braking = (isinstance(transition, dict)
+                                    and braking_response_dependency_missing(proposal))
+                                if not set(controls) - set(remaining) and not missing_braking:
+                                    continue
                                 failed_dependency = bool(set(controls) & set(failed))
-                                deferred_states.append({"hypothesis_id": hypothesis.get("hypothesis_id"),
+                                deferred_states.append({"hypothesis_id": hypothesis_id,
                                     **({"driver_position": next(k for k, v in hypothesis["driver_control_assessments"].items() if v is controls_view)} if controls_view is not hypothesis else {}),
-                                    "reason": "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
+                                    "reason": "SAFE_STATE_MODEL_REQUIRES_BRAKING" if missing_braking else
+                                        "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
                                     "proposal": controls_view.pop("safe_state_proposal")})
                                 controls_view["safe_state_unresolved_reason"] = (
+                                    "所选减速响应未声明所依赖的制动通道；驻车保持能力不能代替动态减速能力。原提案保留在响应审计中。" if missing_braking else
                                     "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
                                     "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
                                 controls_view["uncovered_conditions"].append(controls_view["safe_state_unresolved_reason"])

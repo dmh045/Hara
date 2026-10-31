@@ -159,7 +159,8 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
             assert projected == expected
-            assert request.prompt_version.endswith('v44-scalar-timing-criterion')
+            assert request.prompt_version == PhysicalScenarioAgent.PROMPT_VERSION
+            assert PhysicalScenarioAgent.RESPONSE_TIMING_POLICY in request.system_prompt
             assert payload['output_contract']['safe_state_proposal']['transition']['post_stop_motion'].startswith('HOLD_POSITION')
             assert 'Unmitigated fault trajectory ONLY' in payload['output_contract']['unmitigated_post_stop_motion']['meaning']
             assert '允许的最大响应延迟' in request.system_prompt
@@ -526,6 +527,123 @@ def test_scoped_optional_response_gap_does_not_discard_shared_motion():
     assert outside['parameters'] == h['parameters'] and outside['geometry'] == h['geometry']
     assert audit['deferred_safe_states'][0]['driver_position'] == 'outside_driver_seat'
     assert audit['deferred_safe_states'][0]['proposal'] == before['hypotheses'][0]['driver_control_assessments']['outside_driver_seat']['safe_state_proposal']
+
+
+@pytest.mark.parametrize('response_update', [False, True])
+@pytest.mark.parametrize('braking_available', [False, True])
+def test_parking_hold_cannot_supply_dynamic_braking_or_discard_valid_driver_branch(tmp_path, response_update, braking_available):
+    from test_geometry_completion import Client
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, controls_for_driver
+    raw = timed_plan()
+    h = raw['hypotheses'][0]
+    inside = {k: deepcopy(v) for k, v in h.items()
+              if k in CONTROL_ASSESSMENT_REQUIRED or k in {'safe_state_proposal', 'hazard_timing'}}
+    outside = deepcopy(inside)
+    outside['remaining_controls'] = ['automatic_parking_command', 'parking_hold']
+    outside['safe_state_proposal']['required_controls'] = list(outside['remaining_controls'])
+    if braking_available:
+        outside['remaining_controls'].append('braking')  # Available is not a declared dependency of this proposal.
+    outside['safe_state_proposal']['driver_positions'] = ['outside_driver_seat']
+    h['driver_control_assessments'] = {'in_driver_seat': inside, 'outside_driver_seat': outside}
+    before = deepcopy(raw)
+    context = {'plan_key': 'parking-hold-is-not-braking', 'evidence': {'MF.description': 'drive failure'}}
+    if response_update:
+        context.update(previous_plan=timed_plan(), correction_diagnostics=[{
+            'hypothesis_id': h['hypothesis_id'], 'reason': 'SAFE_STATE_RESPONSE_PATH_REVIEW'}])
+        raw = {'response_updates': [{'hypothesis_id': h['hypothesis_id'], 'control_assessment': {
+            **{k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED},
+            'driver_control_assessments': deepcopy(h['driver_control_assessments'])}}]}
+        before = deepcopy(raw)
+    client = Client([raw])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    plan, audit = agent.propose(context)
+    actual = controls_for_driver(plan.hypotheses[0], 'outside_driver_seat')
+    assert 'safe_state_proposal' not in actual
+    assert actual['remaining_controls'] == outside['remaining_controls']
+    assert controls_for_driver(plan.hypotheses[0], 'in_driver_seat')['safe_state_proposal'] == inside['safe_state_proposal']
+    assert plan.hypotheses[0]['geometry'] == h['geometry'] and plan.hypotheses[0]['parameters'] == h['parameters']
+    assert audit['deferred_safe_states'][0]['reason'] == 'SAFE_STATE_MODEL_REQUIRES_BRAKING'
+    assert audit['deferred_safe_states'][0]['hypothesis_id'] == h['hypothesis_id']
+    assert audit['deferred_safe_states'][0]['driver_position'] == 'outside_driver_seat'
+    assert audit['deferred_safe_states'][0]['proposal'] == outside['safe_state_proposal']
+    assert raw == before and audit['responses'][0]['response']['data'] == before
+    restored, _ = agent.propose(context)
+    assert restored == plan and len(client.requests) == 1
+
+
+def test_explicit_local_response_binds_shared_controls_and_reaches_both_driver_timings(method, tmp_path):
+    from test_geometry_completion import Client, run
+    from test_scoped_timing_and_avoidance import timed_plan
+    from test_autonomous_physics import make_candidate
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    local = {k: deepcopy(v) for k, v in h.items()
+             if k in CONTROL_ASSESSMENT_REQUIRED or k in {'safe_state_proposal', 'hazard_timing'}}
+    local['safe_state_proposal']['required_controls'] = ['driver_braking', 'braking']
+    outside = deepcopy(local)
+    outside['remaining_controls'] = []
+    outside['safe_state_proposal']['required_controls'] = ['automatic_braking_command', 'braking']
+    outside['safe_state_proposal']['driver_positions'] = ['outside_driver_seat']
+    h['remaining_controls'] = ['automatic_braking_command', 'braking']
+    h.pop('safe_state_proposal')
+    h['driver_control_assessments'] = {'in_driver_seat': local, 'outside_driver_seat': outside}
+    original = deepcopy(raw)
+    inside_parent = make_candidate(3.6)
+    outside_parent = deepcopy(inside_parent)
+    outside_parent.scenario_id += '-outside'
+    outside_parent.facts['driver_in_vehicle'] = False
+    client = Client([raw]); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state, generated = run(method, agent, candidates={'MF': [inside_parent, outside_parent]})
+    assert len(generated['MF']) == 2 and len(client.requests) == 1
+    for child in generated['MF']:
+        timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+            {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+        assert timing.hazard_time_limit_s == pytest.approx(.9364916731)
+        assert timing.status.value == 'CONDITIONAL'
+        h = child.facts['physical_analysis']['hypothesis']
+        assert 'braking' in h['remaining_controls']
+        if not child.facts['driver_in_vehicle']:
+            assert 'driver_braking' not in h['remaining_controls']
+        assert set(original['hypotheses'][0]['conditions']) <= set(h['conditions'])
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    records = [r for r in entry['audit']['control_scope_normalizations']
+               if r['normalization'] == 'BOUND_EXPLICIT_SHARED_RESPONSE_DEPENDENCY']
+    assert len(records) == 2 and not entry['audit']['deferred_safe_states']
+    assert raw == original and entry['responses'][0]['response']['data'] == original
+    _, resumed = run(method, agent, state=state, candidates={'MF': [inside_parent, outside_parent]})
+    assert resumed == generated and len(client.requests) == 1
+
+
+@pytest.mark.parametrize('block', ['failed', 'unresolved', 'personnel', 'not_declared'])
+def test_shared_dependency_binding_never_overrules_a_local_gap_or_creates_a_control(block):
+    from test_geometry_completion import Client
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, controls_for_driver
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    local = {k: deepcopy(v) for k, v in h.items()
+             if k in CONTROL_ASSESSMENT_REQUIRED or k in {'safe_state_proposal', 'hazard_timing'}}
+    h['remaining_controls'] = ['automatic_braking_command', 'braking']
+    h.pop('safe_state_proposal')
+    local['remaining_controls'] = []
+    local['safe_state_proposal']['required_controls'] = ['braking']
+    local['safe_state_proposal']['driver_positions'] = ['outside_driver_seat']
+    if block == 'failed':
+        local['failed_controls'] = ['braking']
+    elif block == 'unresolved':
+        local['unresolved_controls'] = {'braking': 'This configuration lacks an established actuator path'}
+    elif block == 'personnel':
+        h['remaining_controls'] = ['driver_braking']
+        local['safe_state_proposal']['required_controls'] = ['driver_braking']
+    else:
+        h['remaining_controls'] = []
+    h['driver_control_assessments'] = {'outside_driver_seat': local}
+    original = deepcopy(raw)
+    plan, audit = PhysicalScenarioAgent(Client([raw])).propose({'plan_key':block, 'evidence':{'MF.description':'fault'}})
+    effective = controls_for_driver(plan.hypotheses[0], 'outside_driver_seat')
+    assert not effective['remaining_controls'] and 'safe_state_proposal' not in effective
+    assert audit['deferred_safe_states'] and raw == original
 
 
 @pytest.mark.parametrize('shape', ['object', 'pair'])

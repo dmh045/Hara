@@ -466,7 +466,9 @@ def test_ftti_diagnostic_labels_do_not_turn_gaps_into_numbers_or_merge_negative_
     unsafe = {'hazard_time_limit_s': None, 'timing_trace': {'status': 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'}}
     numeric = {'hazard_time_limit_s': .154286, 'timing_trace': {'status': 'CONDITIONAL_BOUNDARY'}}
     combined = EngineeringReportTextMapper.ftti_value([*items, unsafe, numeric])
-    assert combined.startswith('0.15 s') and '含响应不能避碰成员' in combined and '部分成员待确定' in combined
+    assert combined.startswith('0.15 s') and '含响应不能避碰成员' in combined
+    assert all('1个成员' + label in combined for label in ['尚未建立响应模型', '缺少适用控制路径', '停车后保持待建模', '故障起点或危险判据待绑定'])
+    assert items == before
     assert numeric['hazard_time_limit_s'] == .154286
 
 

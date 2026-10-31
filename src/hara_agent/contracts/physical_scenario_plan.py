@@ -60,6 +60,12 @@ CONTROL_ASSESSMENT_OPTIONAL = {"intervention_assumptions", "unresolved_controls"
                                "safe_state_unresolved_reason", "hazard_timing", "timing_unresolved_reason"}
 
 
+def braking_response_dependency_missing(proposal: dict) -> bool:
+    """The response must name its braking dependency, even if available elsewhere."""
+    return (proposal.get("transition", {}).get("model") == "CONSTANT_NET_DECELERATION"
+            and not set(proposal["required_controls"]) & {"driver_braking", "braking"})
+
+
 def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
     """Retain shared faults/automatic response and scope personnel-specific paths."""
     assessment = hypothesis.get("driver_control_assessments", {}).get(driver_position)
@@ -236,7 +242,7 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
             elif transition["model"] == "CONSTANT_NET_DECELERATION":
                 if _number(transition.get("net_deceleration_mps2")) <= 0:
                     raise ValueError("Safe state transition requires positive net braking deceleration")
-                if not set(controls) & {"driver_braking", "braking"}:
+                if braking_response_dependency_missing(proposal):
                     raise ValueError("Braking transition requires a remaining braking path")
             else:
                 raise ValueError("Unsupported safe state response model")

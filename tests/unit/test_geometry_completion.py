@@ -57,6 +57,9 @@ def test_bounded_response_update_completes_timing_without_rewriting_world(method
         {**child.facts,'_fact_provenance':child.fact_provenance},method=method)
     assert timing.hazard_time_limit_s is not None and timing.hazard_time_limit_s > 0
     assert client.requests[-1].prompt_version == agent.RESPONSE_CORRECTION_VERSION
+    assert agent.RESPONSE_TIMING_POLICY in client.requests[-1].system_prompt
+    assert '停车保持不必机械依赖EPB' in client.requests[-1].system_prompt
+    assert '首次接触弧长' in client.requests[-1].system_prompt
     assert 'response_updates' in json.loads(client.requests[-1].user_prompt)['output_shape']
     entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
     from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
@@ -850,6 +853,48 @@ def test_invalid_semantic_correction_preserves_valid_sibling_and_local_gap(metho
     assert all(c.facts['physical_analysis']['engineering_approval'] == 'NOT_GRANTED' for c in result['MF'])
     _, resumed = run(method, agent, state=state, candidates={'MF': [parent]})
     assert resumed == result and len(client.requests) == 3
+
+
+def test_failed_optional_response_revalidates_saved_reply_once_after_validator_repair(method, tmp_path):
+    from test_moving_response_timing import proposal
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+
+    class OldResponseValidator(PhysicalScenarioAgent):
+        RESPONSE_VALIDATION_VERSION = 'old-optional-response-validator'
+
+        def propose(self, context, **kwargs):
+            result = super().propose(context, **kwargs)
+            if context.get('previous_plan'):
+                raise ValueError('Former response validator rejected a saved correction')
+            return result
+
+    full = proposal()
+    missing = deepcopy(full)
+    missing['hypotheses'][0]['safe_state_proposal']['transition'].pop('post_stop_motion')
+    client = Client([missing, full])
+    cache, repo = tmp_path/'responses', CheckpointRepository(tmp_path/'states')
+    parent = make_candidate(7.2)
+    state, _ = run(method, OldResponseValidator(client, response_checkpoint_dir=cache),
+                   candidates={'MF': [parent]}, checkpoint=repo.save)
+    old = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert old['status'] == 'VALIDATED' and old['semantic_correction_error']
+    saved_responses = deepcopy(old['responses'])
+    current = PhysicalScenarioAgent(client, response_checkpoint_dir=cache)
+    state, recovered = run(method, current, state=repo.load(state.run_id),
+                           candidates={'MF': [parent]}, checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'VALIDATED' and 'semantic_correction_error' not in entry
+    assert entry['validation_history'][0]['version'] == 'old-optional-response-validator'
+    assert entry['responses'] == saved_responses and len(client.requests) == 2
+    child = recovered['MF'][0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s is not None and timing.hazard_time_limit_s > 0
+    for field in ('geometry', 'parameters'):
+        assert entry['plan']['hypotheses'][0][field] == missing['hypotheses'][0][field]
+    _, resumed = run(method, current, state=repo.load(state.run_id), candidates={'MF': [parent]})
+    assert resumed == recovered and len(client.requests) == 2
+    assert state.item_definition['physical_analysis_metrics']['cumulative_uncached_requests'] == 2
 
 
 @pytest.mark.parametrize("reported_scope_error", [True, False])
