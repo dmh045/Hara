@@ -91,6 +91,74 @@ def test_larger_output_limit_does_not_retry_semantically_invalid_plan(method):
     assert client.calls == 1
 
 
+@pytest.mark.parametrize('repair_valid', [True, False])
+def test_duplicate_json_uses_existing_semantic_repair_and_retains_raw_reply(method, tmp_path, repair_valid):
+    from test_geometry_completion import run
+    from test_scoped_timing_and_avoidance import timed_plan
+    from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
+    raw = timed_plan()
+    raw['hypotheses'][0]['uncovered_conditions'] = ['first scope limit']
+    invalid = json.dumps(raw).replace(
+        '"uncovered_conditions": ["first scope limit"]',
+        '"uncovered_conditions": ["first scope limit"], "uncovered_conditions": ["second scope limit"]', 1)
+    corrected = deepcopy(raw)
+    corrected['hypotheses'][0]['uncovered_conditions'].append('second scope limit')
+    calls = []
+    client = _sequenced_scenario_client([invalid, json.dumps(corrected) if repair_valid else invalid], calls)
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    parent = make_candidate(initial=3.6)
+    parent.facts['driver_position'] = 'in_driver_seat'
+    state, children = run(method, agent, candidates={'MF': [parent]})
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['responses'][0]['response']['data']['raw_invalid_json'] == invalid
+    assert entry['responses'][0]['rejected_json']['duplicate_keys'] == ['uncovered_conditions']
+    assert json.loads(calls[1])['messages'][1]['content'].find('previous_invalid_response') >= 0
+    if repair_valid:
+        assert entry['status'] == 'VALIDATED'
+        assert entry['audit']['request_count'] == 2
+        assert entry['audit']['schema_repairs'] == 1
+        assert entry['plan']['hypotheses'][0]['uncovered_conditions'] == ['first scope limit', 'second scope limit']
+        assert entry['plan']['hypotheses'][0]['parameters'] == raw['hypotheses'][0]['parameters']
+        assert children['MF'][0].facts['motion_model_outcome']['status'] == 'CONTACT'
+    else:
+        assert entry['status'] == 'INVALID'
+    _, resumed = run(method, agent, state=state, candidates={'MF': [parent]})
+    assert resumed == children and len(calls) == 2
+    # A fresh workflow also replays both responses, including the original
+    # rejection; the rejected payload is never treated as a valid plan.
+    _, restored = run(method, PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path),
+                      candidates={'MF': [parent]})
+    assert restored == children and len(calls) == 2
+
+
+def test_duplicate_json_resume_after_rejection_does_not_repeat_primary_request(tmp_path):
+    from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
+    valid = raw_plan(assessed=True)
+    invalid = json.dumps(valid).replace('"hypotheses":', '"hypotheses":[],"hypotheses":', 1)
+    calls = []
+    client = _sequenced_scenario_client([invalid, json.dumps(valid)], calls)
+    context = {'plan_key': 'rejected-before-repair', 'evidence': {'MF.description': 'fault'}}
+    def interrupt(_):
+        raise RuntimeError('process interrupted after rejection')
+    with pytest.raises(RuntimeError, match='process interrupted'):
+        PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(context, on_response=interrupt)
+    assert len(calls) == 1
+    plan, audit = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(context)
+    assert plan.hypotheses and len(calls) == 2
+    assert audit['request_count'] == 1 and audit['response_cache_hits'] == 1
+
+
+def test_duplicate_json_after_used_format_retry_cannot_add_a_third_request(tmp_path):
+    from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
+    from hara_agent.infrastructure.llm import LLMJSONContractError
+    calls = []
+    client = _sequenced_scenario_client(['{"hypotheses":[', '{"hypotheses":[],"hypotheses":[]}'], calls)
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    with pytest.raises(LLMJSONContractError):
+        agent.propose({'plan_key': 'no-third-attempt', 'evidence': {'MF.description': 'fault'}})
+    assert len(calls) == 2
+
+
 def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_recovery(method, tmp_path):
     from test_geometry_completion import run
     from test_llm_malfunction_envelope_repair import _sequenced_scenario_client

@@ -8,6 +8,7 @@ import tempfile
 from threading import Lock
 
 from .protocol import LLMResponse
+from .openai_compatible import LLMJSONContractError
 
 _locks_guard = Lock()
 _request_locks = {}
@@ -47,21 +48,39 @@ class ResponseCheckpoint:
             saved = json.loads(path.read_text(encoding="utf-8"))
             if saved["request_hash"] != key:
                 raise ValueError("Scenario response checkpoint identity mismatch")
+            if "rejected_json" in saved:
+                rejected = saved["rejected_json"]
+                raise LLMJSONContractError(rejected["message"], {
+                    **rejected["diagnostics"], "response_checkpoint_hit": True,
+                    "prompt_tokens": 0, "completion_tokens": 0,
+                }, raw_content=rejected["raw_content"])
             response = LLMResponse(**saved["response"])
             return replace(response, usage={"response_checkpoint_hit": True,
                                             "prompt_tokens": 0, "completion_tokens": 0})
-        response = client.complete_json(request)
+        saved = {"request_hash": key, "task": request.task, "metadata": request.metadata}
+        rejected_error = None
+        try:
+            response = client.complete_json(request)
+            saved["response"] = asdict(response)
+        except LLMJSONContractError as error:
+            if not error.diagnostics.get("duplicate_keys") or not error.raw_content:
+                raise
+            # Retain rejection, never a silently selected first/last value.
+            # The owning semantic agent can use its bounded repair on resume.
+            saved["rejected_json"] = {"message": str(error),
+                "diagnostics": error.diagnostics, "raw_content": error.raw_content}
+            rejected_error = error
         self.directory.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(dir=self.directory, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"request_hash": key, "task": request.task,
-                           "metadata": request.metadata, "response": asdict(response)},
-                          stream, ensure_ascii=False)
+                json.dump(saved, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+        if rejected_error is not None:
+            raise rejected_error
         return response

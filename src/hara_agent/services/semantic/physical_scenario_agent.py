@@ -10,7 +10,7 @@ from hara_agent.contracts.physical_scenario_plan import (
     MODEL_CATALOG, PARAMETER_UNITS, PHYSICAL_PLAN_VERSION, PhysicalScenarioPlan, CONTROL_IDENTITIES,
     INTERVENTION_ASSUMPTION_FIELDS, response_control_dependency_missing,
 )
-from hara_agent.infrastructure.llm import LLMRequest
+from hara_agent.infrastructure.llm import LLMRequest, LLMResponse, LLMJSONContractError
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 
 
@@ -110,9 +110,9 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[dict]:
-    """Resolve only unique supplied Item block coordinates with omitted padding."""
+    """Resolve unique supplied coordinates with omitted padding or row marker."""
     def coordinate(value):
-        match = re.fullmatch(r"ITEM\.(?:T-(\d+)-R-(\d+)|P-(\d+))", value)
+        match = re.fullmatch(r"ITEM\.(?:T-(\d+)-(?:R-)?(\d+)|P-(\d+))", value)
         return tuple(int(v) if v is not None else None for v in match.groups()) if match else None
 
     by_coordinate = {}
@@ -657,7 +657,30 @@ class PhysicalScenarioAgent:
                     **({"strict_no_format_retry": True} if repair else {})},
                 max_tokens=self.max_tokens,
                 response_format=self.response_format)
-            response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
+            try:
+                response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
+            except LLMJSONContractError as error:
+                # The transport must never choose between duplicate values.
+                # Give the owning semantic task its existing single repair,
+                # retaining the entire rejected reply and the original inputs.
+                if (repair or error.diagnostics.get("format_retry_calls")
+                        or not error.diagnostics.get("duplicate_keys") or not error.raw_content):
+                    raise
+                previous_response = error.raw_content
+                errors = [error.diagnostics["json_error_message"]]
+                rejected = LLMResponse(
+                    data={"raw_invalid_json": error.raw_content},
+                    model=getattr(getattr(self.client, "config", None), "model", ""),
+                    request_id=error.diagnostics.get("request_id", ""),
+                    usage={k: error.diagnostics[k] for k in
+                           ("prompt_tokens", "completion_tokens", "response_checkpoint_hit")
+                           if k in error.diagnostics},
+                )
+                record = {"request": asdict(request), "response": asdict(rejected),
+                          "schema_repair": False, "rejected_json": error.diagnostics}
+                attempts.append(record)
+                on_response(record)
+                continue
             record = {"request": asdict(request), "response": asdict(response), "schema_repair": repair}
             attempts.append(record)
             on_response(record)  # Persist even a semantically invalid response before repair.

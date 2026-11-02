@@ -83,9 +83,10 @@ class LLMSchemaContractError(ValueError):
 class LLMJSONContractError(ValueError):
     """A complete provider response is not valid machine JSON."""
 
-    def __init__(self, message: str, diagnostics: dict[str, Any]):
+    def __init__(self, message: str, diagnostics: dict[str, Any], *, raw_content: str = ""):
         super().__init__(message)
         self.diagnostics = dict(diagnostics)
+        self.raw_content = raw_content
 
 
 class OpenAICompatibleClient:
@@ -878,6 +879,7 @@ class OpenAICompatibleClient:
             raise LLMJSONContractError(
                 "Scenario provider response违反machine JSON contract",
                 diagnostics,
+                raw_content=text,
             ) from exc
         if not isinstance(parsed, (dict, list)):
             raise LLMJSONContractError(

@@ -57,6 +57,17 @@ def test_real_padding_repair_still_rejects_a_separate_control_conflict():
     assert raw == json.loads(record['original_content'])
 
 
+def test_item_coordinate_row_marker_omission_requires_unique_supplied_source():
+    from hara_agent.services.semantic.physical_scenario_agent import normalize_item_basis_refs
+    data = {'basis_refs': ['ITEM.T-007-0015', 'ITEM.T-7-12', 'ITEM.T-7-9', 'ITEM.T-999-2']}
+    changes = normalize_item_basis_refs(data, {
+        'ITEM.T-007-R-0015', 'ITEM.T-007-R-0012', 'ITEM.T-007-R-0009', 'ITEM.T-7-R-9'})
+    assert changes == [
+        {'original': 'ITEM.T-007-0015', 'resolved': 'ITEM.T-007-R-0015'},
+        {'original': 'ITEM.T-7-12', 'resolved': 'ITEM.T-007-R-0012'}]
+    assert data['basis_refs'] == ['ITEM.T-007-R-0015', 'ITEM.T-007-R-0012', 'ITEM.T-7-9', 'ITEM.T-999-2']
+
+
 def test_item_coordinate_padding_only_resolves_a_unique_supplied_source():
     from hara_agent.services.semantic.physical_scenario_agent import normalize_item_basis_refs
     data = {'basis_refs': ['ITEM.T-004-R-003', 'ITEM.T-005-R-003', 'ITEM.P-99']}
