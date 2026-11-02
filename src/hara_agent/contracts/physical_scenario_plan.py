@@ -425,10 +425,14 @@ class PhysicalScenarioPlan:
             if "condition_changes" in h:
                 if isinstance(h["condition_changes"], dict) and "grade_frame" in h["condition_changes"]:
                     raise ValueError(_GRADE_FRAME_LOCATION)
-                changes = _object(h["condition_changes"], {"initial_state", "target", "rationale"})
+                changes = _object(h["condition_changes"], {"initial_state", "target", "rationale"}, {"basis_refs"})
                 if any(type(changes[k]) is not bool for k in ("initial_state", "target")):
                     raise ValueError("Condition changes require explicit boolean flags")
                 _text(changes["rationale"])
+                if "basis_refs" in changes:
+                    refs = _texts(changes["basis_refs"], limit=max(16, len(evidence_ids)))
+                    if not refs or not set(refs) <= evidence_ids:
+                        raise ValueError("condition_changes.basis_refs must use supplied IDs")
             if "grade_frame" in h:
                 if h["model"] not in {"GRADE_ROLLAWAY_TO_IMPACT_DISTANCE", "RECTILINEAR_MOVING_TARGET_CONTACT"}:
                     raise ValueError("grade_frame declares gravity-driven motion; use the existing grade or moving-target model")

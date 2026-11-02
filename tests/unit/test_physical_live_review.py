@@ -174,6 +174,26 @@ def test_physical_rejection_cache_does_not_change_other_task_retry_policy(tmp_pa
     assert len(calls) == 2 and not list(tmp_path.glob('*.json'))
 
 
+def test_condition_change_evidence_is_retained_without_changing_motion(method):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = raw_plan(assessed=True)
+    before = instantiate(method, raw)[0]
+    changes = {'initial_state': False, 'target': False,
+               'rationale': 'Same initial world', 'basis_refs': ['MF.description']}
+    raw['hypotheses'][0]['condition_changes'] = changes
+    plan = PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    assert plan.hypotheses[0]['condition_changes'] == changes
+    after = instantiate(method, raw)[0]
+    assert before.facts['motion_model_outcome'] == after.facts['motion_model_outcome']
+    changes['basis_refs'] = ['unprovided-source']
+    with pytest.raises(ValueError, match='condition_changes.basis_refs'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    changes['basis_refs'] = ['MF.description']
+    changes['initial_state'] = 'false'
+    with pytest.raises(ValueError, match='boolean flags'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+
+
 def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_recovery(method, tmp_path):
     from test_geometry_completion import run
     from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
