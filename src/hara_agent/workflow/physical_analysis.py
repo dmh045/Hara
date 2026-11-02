@@ -3,6 +3,7 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import asdict
 import sys
+import re
 from threading import Lock
 from time import perf_counter
 
@@ -13,6 +14,7 @@ from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenari
 from hara_agent.services.extraction.evidence_retrieval import (
     CoverageFirstContextAssembler, DeterministicEvidenceRetriever, FactRetrievalSpec,
 )
+from hara_agent.infrastructure.llm import LLMOutputLimitError
 
 
 def _unmodeled_declared_response(candidate, method):
@@ -387,6 +389,19 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     entry["correction_diagnostics"] = corrected_diagnostics
                     entry.pop("semantic_correction_completed", None)
             prior_status = entry.get("status")
+            if prior_status == "INVALID":
+                previous_limit = entry.get("output_limit_tokens")
+                # Older checkpoints retained only this specific transport error.
+                # Recover its limit, without treating semantic failures as retryable.
+                if previous_limit is None and "finish_reason=length" in entry.get("error", ""):
+                    match = re.search(r"本次max_tokens=(\d+)", entry["error"])
+                    previous_limit = int(match[1]) if match else None
+                if previous_limit and agent.max_tokens > previous_limit:
+                    entry.setdefault("validation_history", []).append({
+                        "reason": "OUTPUT_LIMIT_INCREASED", "error": entry.get("error", ""),
+                        "previous_max_tokens": previous_limit, "max_tokens": agent.max_tokens})
+                    entry["status"] = "REQUESTED"
+                    entry.pop("error", None)
             if (prior_status == "VALIDATED" and entry.get("initial_plan")
                     and not (entry.get("semantic_correction_error") and entry["plan"] == entry["initial_plan"])):
                 try:
@@ -702,6 +717,10 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                         "generated_scenarios": [asdict(g) for g in generated], "failures": failures}
             except (ValueError, KeyError, TypeError) as error:
                 entry.update(status="INVALID", error=str(error))
+                if isinstance(error, LLMOutputLimitError):
+                    entry["output_limit_tokens"] = error.diagnostics.get("max_tokens", agent.max_tokens)
+                else:
+                    entry.pop("output_limit_tokens", None)
                 for candidate in family:
                     candidate.analysis_instance["physical_plan_diagnostics"] = [{
                         "reason": "PHYSICAL_PLAN_INVALID", "task_scope": task_scope, "detail": str(error)}]

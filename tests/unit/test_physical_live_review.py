@@ -39,6 +39,58 @@ def test_physical_output_budget_can_recover_reasoning_truncation_and_resume(tmp_
     assert client.budgets == [8192, 32768]
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_workflow_resumes_truncated_plan_only_after_limit_increase(method, tmp_path, legacy):
+    from test_geometry_completion import run
+    from hara_agent.infrastructure.llm import LLMOutputLimitError
+    from hara_agent.workflow import CheckpointRepository
+    class Client:
+        config = SimpleNamespace(max_tokens=8192, model='reasoning-model')
+        def __init__(self):
+            self.calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            if request.max_tokens == 8192:
+                raise LLMOutputLimitError(
+                    'LLM输出达到长度上限；finish_reason=length；本次max_tokens=8192。',
+                    {'max_tokens': 8192})
+            return LLMResponse({'hypotheses': [], 'uncovered_conditions': ['No applicable motion model.']}, 'fake')
+    client = Client()
+    repo = CheckpointRepository(tmp_path / 'states')
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path / 'responses')
+    state, _ = run(method, agent, checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'INVALID'
+    if legacy:
+        entry.pop('output_limit_tokens')
+    run(method, agent, state=state, checkpoint=repo.save)
+    assert client.calls == 1
+    client.config.max_tokens = 32768
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path / 'responses')
+    state, _ = run(method, agent, state=repo.load(state.run_id), checkpoint=repo.save)
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert entry['status'] == 'VALIDATED'
+    assert entry['validation_history'][-1]['reason'] == 'OUTPUT_LIMIT_INCREASED'
+    run(method, agent, state=repo.load(state.run_id))
+    assert client.calls == 2
+
+
+def test_larger_output_limit_does_not_retry_semantically_invalid_plan(method):
+    from test_geometry_completion import run
+    class Client:
+        config = SimpleNamespace(max_tokens=8192, model='reasoning-model')
+        def __init__(self):
+            self.calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            raise ValueError('Conflicting model inputs')
+    client = Client()
+    state, _ = run(method, PhysicalScenarioAgent(client))
+    client.config.max_tokens = 32768
+    run(method, PhysicalScenarioAgent(client), state=state)
+    assert client.calls == 1
+
+
 def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_recovery(method, tmp_path):
     from test_geometry_completion import run
     from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
