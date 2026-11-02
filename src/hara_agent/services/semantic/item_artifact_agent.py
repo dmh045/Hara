@@ -580,6 +580,57 @@ class ItemArtifactExtractionAgent:
             response = schema_repair_response
             schema_repair_count = 1
 
+        # A schema-valid string can still confuse the function with its output.
+        # Repair that field from the same source, without changing membership or
+        # bypassing the existing domain/source validators below.
+        output_repair_response = None
+        repeated_outputs = [
+            index for index, item in enumerate(normalized_data["functions"])
+            if item["name"].strip() == item["output"].strip()
+        ]
+        if repeated_outputs:
+            print("[HARA] core item function-output repair attempt=1/1",
+                  file=sys.stderr, flush=True)
+            output_repair_response = self.client.complete_json(LLMRequest(
+                task="repair_core_item_function_outputs",
+                system_prompt=(
+                    "Repair only the output fields at the supplied function indices. "
+                    "Describe the output signal, command, or state explicitly supported "
+                    "by the Item, distinct from the function action/name. Do not invent "
+                    "capabilities or merely append filler words. Preserve all other "
+                    "fields, function identities, membership, order, sources and status. "
+                    "Return one raw CoreItemArtifacts JSON object."
+                ),
+                user_prompt=json.dumps({
+                    "function_indices": repeated_outputs,
+                    "invalid_payload": normalized_data,
+                    "item_definition_document": document_text,
+                }, ensure_ascii=False),
+                schema_name="CoreItemArtifacts",
+                prompt_version="item-artifacts-output-repair-v1",
+                metadata={"source_id": source_id, "strict_no_format_retry": True},
+                max_tokens=request.max_tokens,
+                response_schema=CORE_ITEM_ARTIFACTS_SCHEMA,
+            ))
+            llm_call_count += 1
+            repaired_data, output_normalizations = normalize_core_item_artifacts(
+                output_repair_response.data
+            )
+            expected = {
+                **normalized_data,
+                "functions": [dict(item) for item in normalized_data["functions"]],
+            }
+            if len(repaired_data["functions"]) == len(expected["functions"]):
+                for index in repeated_outputs:
+                    expected["functions"][index]["output"] = repaired_data["functions"][index]["output"]
+            if repaired_data != expected:
+                raise ValueError("function output repair altered non-output Item Definition content")
+            if candidate_recorder is not None:
+                candidate_recorder(output_repair_response)
+            normalized_data = repaired_data
+            contract_normalizations.extend(output_normalizations)
+            response = output_repair_response
+
         def parse_entities(payload: dict[str, Any]):
             facts_value, warnings_value = ItemDefinitionNormalizer._parse_with_warnings(
                 payload["item_definition"], source_id
@@ -690,6 +741,13 @@ class ItemArtifactExtractionAgent:
                 schema_repair_response.usage if schema_repair_response else {}
             ),
             "schema_repair_count": schema_repair_count,
+            "function_output_repair_count": int(output_repair_response is not None),
+            "function_output_repair_request_id": (
+                output_repair_response.request_id if output_repair_response else ""
+            ),
+            "function_output_repair_usage": (
+                output_repair_response.usage if output_repair_response else {}
+            ),
             "source_reference_repair_model": (
                 source_reference_repair_response.model
                 if source_reference_repair_response else ""

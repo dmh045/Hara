@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -344,6 +345,56 @@ def test_item_agent_repairs_unsafe_schema_once() -> None:
     ]
     assert audit["schema_repair_count"] == 1
     assert audit["llm_call_count"] == 2
+
+
+def test_item_agent_repairs_repeated_output_from_cached_candidate() -> None:
+    invalid = _payload()
+    invalid["functions"][0]["output"] = invalid["functions"][0]["name"]
+    client = _Client([_payload()])
+    recorded = []
+    document = "AVP system definition.\nControl vehicle motion in the parking area."
+    _, functions, audit = ItemArtifactExtractionAgent(client).extract(
+        document, "ItemDef.docx",
+        candidate_response=LLMResponse(data=invalid, model="fake", request_id="first", usage={}),
+        candidate_recorder=recorded.append,
+    )
+    assert functions[0].output == "Vehicle motion request"
+    assert functions[0].function_id == "F01"
+    assert audit["function_output_repair_count"] == 1
+    assert audit["llm_call_count"] == 1
+    assert [r.task for r in client.requests] == ["repair_core_item_function_outputs"]
+    assert json.loads(client.requests[0].user_prompt)["item_definition_document"] == document
+    # A subsequent resume revalidates the accepted candidate with no new request.
+    resumed = _Client([])
+    _, resumed_functions, resumed_audit = ItemArtifactExtractionAgent(resumed).extract(
+        document, "ItemDef.docx", candidate_response=recorded[-1],
+    )
+    assert resumed_functions == functions
+    assert resumed_audit["llm_call_count"] == 0
+
+
+@pytest.mark.parametrize("change", ["membership", "name", "source", "status", "unchanged"])
+def test_output_repair_is_bounded_and_preserves_other_fields(change: str) -> None:
+    invalid = _payload()
+    invalid["functions"][0]["output"] = invalid["functions"][0]["name"]
+    repaired = _payload()
+    if change == "membership":
+        repaired["functions"] = []
+    elif change == "unchanged":
+        repaired = invalid
+    else:
+        key = {"name": "name", "source": "source_excerpt", "status": "status"}[change]
+        repaired["functions"][0][key] = "Changed"
+    client = _Client([invalid, repaired])
+    recorded = []
+    with pytest.raises(ValueError, match="完全相同|non-output"):
+        ItemArtifactExtractionAgent(client).extract(
+            "AVP system definition.\nControl vehicle motion in the parking area.",
+            "ItemDef.docx", candidate_recorder=recorded.append,
+        )
+    assert len(client.requests) == 2
+    if change != "unchanged":
+        assert len(recorded) == 1  # A rejected rewrite cannot become a resume candidate.
 
 
 def test_item_agent_repairs_ungrounded_sources_without_changing_content() -> None:
