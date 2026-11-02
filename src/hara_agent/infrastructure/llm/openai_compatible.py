@@ -974,7 +974,10 @@ class OpenAICompatibleClient:
                     raw_socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
                     if raw_socket is not None:
                         raw_socket.settimeout(remaining)
-                    chunk = response.read(65536)
+                    # read(n) may wait for all n bytes while keep-alive bytes
+                    # continually reset the socket timeout. Return after one
+                    # buffered read so the whole-request deadline is checked.
+                    chunk = response.read1(65536)
                     if not chunk:
                         break
                     chunks.append(chunk)
