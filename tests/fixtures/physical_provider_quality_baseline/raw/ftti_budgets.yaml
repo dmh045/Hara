@@ -1,0 +1,30 @@
+version: "2.0"
+source: "ISO 26262 Part 4 §6 + 项目内 FTTI 表格反推 + 行业默认"
+
+budgets:
+  detection_default:
+    value: 0.3
+    unit: "s"
+    rationale: "感知系统从故障产生到上报的默认预算"
+    status: DRAFT
+  reaction_default:
+    value: 0.5
+    unit: "s"
+    rationale: "驾驶员 / 系统控制器对故障告警的反应时间"
+    status: DRAFT
+
+  a_rear_reaction_default:
+    value: 0.0
+    unit: "m/s²"
+    rationale: "驾驶员反应阶段后车加速度; 表格数据均为 0 (匀速逼近)"
+    status: FINALIZED
+  a_rear_action_default:
+    value: -12.0
+    unit: "m/s²"
+    rationale: "驾驶员紧急制动加速度; 表格数据多用 -12 (工程惯例)"
+    status: FINALIZED
+  a_front_default:
+    value: 0.0
+    unit: "m/s²"
+    rationale: "前车加速度默认 0 (匀速); 特殊场景可由 scenario.assumption.extra 覆盖"
+    status: FINALIZED

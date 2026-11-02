@@ -252,6 +252,17 @@ def test_frozen_assets_and_eight_guidewords_are_exactly_unchanged(method):
                 'driver_in_vehicle': True, 'emergency_braking_available': True}}
             assert current == yaml.safe_load(frozen.read_text())
             continue
+        if filename.endswith(("raw/ftti_formulas.yaml", "raw/ftti_budgets.yaml")):
+            # Explicit 2026-11-02 removal of unused contact-plus-stop and
+            # universal capability defaults. Preserve old source hashes for
+            # historical Provider replay; current records have no authority.
+            frozen = ROOT / 'tests/fixtures/physical_provider_quality_baseline/raw' / Path(filename).name
+            assert hashlib.sha256(frozen.read_bytes()).hexdigest() == digest
+            current = yaml.safe_load((ROOT / filename).read_text())
+            assert current['status'] == 'REFERENCE_ONLY'
+            assert current['authoritative_timing_policy'] == 'normalized/project_analysis_policy.yaml#timing_analysis'
+            assert current.get('formulas', current.get('budgets')) in ([], {})
+            continue
         assert hashlib.sha256((ROOT / filename).read_bytes()).hexdigest() == digest, filename
     assert method.metadata["project_analysis_policy"]["version"] == "2.1"
     assert [{"id": g.guideword_id, "name": g.name, "description": g.description} for g in method.guidewords.guidewords] == fixture["guidewords"]

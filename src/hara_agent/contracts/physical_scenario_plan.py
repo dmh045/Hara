@@ -19,6 +19,8 @@ PARAMETER_UNITS = {
     "post_fault_speed_cap_kph": "km/h",
     "object_speed_kph": "km/h", "object_offset_x_m": "m", "object_offset_y_m": "m",
     "contact_half_length_m": "m", "contact_half_width_m": "m",
+    "ego_heading_angle_deg": "deg", "object_heading_angle_deg": "deg",
+    "object_reaction_time_s": "s", "object_braking_deceleration_mps2": "m/s2",
 }
 MODEL_CATALOG = {
     "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": {
@@ -46,7 +48,8 @@ MODEL_CATALOG = {
         "required": ["ego_speed_kph", "longitudinal_acceleration_mps2", "object_speed_kph",
                      "object_offset_x_m", "object_offset_y_m", "contact_half_length_m",
                      "contact_half_width_m", "model_valid_until_s"],
-        "scope": "Body frame x forward, y left; initial target-center offsets signed. Ego straight constant acceleration along its travel direction, target constant velocity FORWARD/REVERSE/LEFT/RIGHT. Axis-aligned contact envelope half-length/width is the SUM of ego and target projected half-extents, justified as assumptions, not measured dimensions. First simultaneous x/y overlap within explicit horizon. By default evaluation ends at ego stop. Optional hypothesis.post_stop_motion=HOLD_POSITION explicitly assumes ego remains at its stopping position for the remaining horizon; explain its compatibility with grade and failed/remaining controls in conditions and rationale. This allows a moving target to contact the stopped ego without reversing it. With hypothesis.grade_frame, ego starts at rest: supply slope_percent and residual_resistance_mps2 instead of independent longitudinal_acceleration_mps2; the existing gravity model derives net acceleration and direction before the same contact calculation. Supports following, oncoming, rear approach and crossing; no turns, reversal or independent speed cap. Crossing contact time is not longitudinal TTC.",
+        "optional": ["ego_heading_angle_deg", "object_heading_angle_deg", "object_reaction_time_s", "object_braking_deceleration_mps2"],
+        "scope": "Fixed body frame x forward, y left; signed target-center offsets. Ego straight constant acceleration along travel. Optional headings are constant VELOCITY directions in degrees from +x toward +y, NOT steering-wheel/road-wheel angles; absent headings use the declared cardinal directions. Target may be stationary or travel straight; optional object_reaction_time_s AND object_braking_deceleration_mps2 define target constant speed then braking to a held stop, never reversal. These are explicit scoped hypotheses, not measured reaction/capability or automatic C credit. Axis-aligned envelope half-length/width is the SUM of projected half-extents, including the declared fixed headings. First simultaneous x/y overlap within horizon. Ego ends at stop unless hypothesis.post_stop_motion=HOLD_POSITION. With grade_frame, ego starts at rest; slope_percent/residual_resistance_mps2 replace independent acceleration. Supports following/oncoming/rear/crossing and fixed-angle approaches. No changing heading, wheel-angle dynamics or speed cap. Contact time is not an avoidance response deadline; side contact is not longitudinal TTC.",
     },
 }
 # Existing drive/steering/braking/parking_hold identities retain their capability
@@ -476,7 +479,7 @@ class PhysicalScenarioPlan:
             if g["object_extent"] not in {"POINT_ON_TRAVEL_PATH", "EXTENDED_ALONG_TRAVEL_PATH", "FINITE_CONTACT_ENVELOPE"}:
                 raise ValueError("Unknown target extent")
             if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT":
-                if (g.get("object_longitudinal_direction") not in {"FORWARD", "REVERSE", "LEFT", "RIGHT"}
+                if (g.get("object_longitudinal_direction") not in {"FORWARD", "REVERSE", "LEFT", "RIGHT", "STATIONARY"}
                         or g["object_extent"] != "FINITE_CONTACT_ENVELOPE"):
                     raise ValueError("Moving target requires explicit body-frame direction and finite contact envelope")
             elif g.get("object_longitudinal_direction", "STATIONARY") != "STATIONARY":
@@ -521,8 +524,13 @@ class PhysicalScenarioPlan:
                     values = []
                 else:
                     raise ValueError("Unknown parameter kind")
-                if field not in {"longitudinal_acceleration_mps2", "lateral_acceleration_mps2", "object_offset_x_m", "object_offset_y_m"} and any(v < 0 for v in values):
+                if field.endswith("heading_angle_deg") and any(not -180 <= v <= 180 for v in values):
+                    raise ValueError("Velocity heading must be within [-180, 180] degrees in the fixed body frame")
+                if field not in {"longitudinal_acceleration_mps2", "lateral_acceleration_mps2", "object_offset_x_m", "object_offset_y_m", "ego_heading_angle_deg", "object_heading_angle_deg"} and any(v < 0 for v in values):
                     raise ValueError("Negative magnitude")
+            response_fields = {"object_reaction_time_s", "object_braking_deceleration_mps2"}
+            if fields & (response_fields | {"ego_heading_angle_deg", "object_heading_angle_deg"}) and h["model"] != "RECTILINEAR_MOVING_TARGET_CONTACT":
+                raise ValueError("Fixed headings and target response belong to the rectilinear contact model")
         return cls(tuple(hypotheses), tuple(uncovered), control_assessment=control)
 
     def to_dict(self) -> dict:

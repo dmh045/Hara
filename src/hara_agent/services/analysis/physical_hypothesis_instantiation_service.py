@@ -202,7 +202,9 @@ class PhysicalHypothesisInstantiationService:
         if self._opposite_target(scoped, model):
             texts = ["当前模型的运动方向与目标位置不构成接近；未知参数不能改变该几何条件，不给出接触速度或TTC。"]
         elif model == "RECTILINEAR_MOVING_TARGET_CONTACT":
-            texts = ["车体坐标x前向、y左向；x(t)=dx+(u_x−v_x)t−a_x·t²/2，y(t)=dy+u_y·t。",
+            texts = ["固定车体坐标x前向、y左向；速度方向角从+x朝+y计，分量为v·cosθ和v·sinθ，不是车轮转角。",
+                     "相对位置r(t)=初始偏移+目标方向·目标行程−自车方向·自车行程；各段行程s=v₀·Δt+a·Δt²/2。",
+                     "目标若声明反应时间和制动减速度，先匀速、后制动、停止后保持，不反向启动。",
                      "接触要求同一时刻|x(t)|≤接触包络半长且|y(t)|≤接触包络半宽；取自车停止前和模型有效期内的首次重合。",
                      "路径相交不保证发生碰撞；交叉接触时间不作为纵向TTC。"]
             if h.get("grade_frame"):
@@ -301,10 +303,13 @@ class PhysicalHypothesisInstantiationService:
         if field == "slope_percent":
             return True, "ROAD_GEOMETRY_CONTEXT"
         if field in {"relative_distance_m", "lateral_clearance_m", "object_speed_kph",
-                     "object_offset_x_m", "object_offset_y_m", "contact_half_length_m", "contact_half_width_m"}:
+                     "object_offset_x_m", "object_offset_y_m", "contact_half_length_m", "contact_half_width_m",
+                     "object_heading_angle_deg", "object_reaction_time_s", "object_braking_deceleration_mps2"}:
             target = meta.get("object_id", parent.facts.get("object_id"))
             if h.get("condition_changes", {}).get("target") or target and target != h["geometry"]["object_id"]:
                 return False, "PARENT_INPUT_OTHER_OBJECT"
+            if field in {"object_heading_angle_deg", "object_reaction_time_s", "object_braking_deceleration_mps2"} and phase == "POST_FAULT_CONDITIONAL_MODEL":
+                return True, "SAME_TARGET_MODEL_PARAMETER"
             if "IMPACT" in phase or "POST_FAULT" in phase:
                 return False, "PARENT_DISTANCE_NOT_AT_INITIAL_STATE"
             return True, "SAME_TARGET_INITIAL_GEOMETRY"
@@ -324,6 +329,7 @@ class PhysicalHypothesisInstantiationService:
     @staticmethod
     def _required_inputs(h):
         required = set(MODEL_CATALOG[h["model"]]["required"])
+        required.update(p["field"] for p in h["parameters"] if p["field"] in MODEL_CATALOG[h["model"]].get("optional", []))
         if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT" and h.get("grade_frame"):
             required.remove("longitudinal_acceleration_mps2")
             required.update({"slope_percent", "residual_resistance_mps2"})
@@ -332,6 +338,7 @@ class PhysicalHypothesisInstantiationService:
     def _model_inputs(self, parent, h, malfunction_id):
         explicit = {p["field"]: p for p in h["parameters"]}
         allowed = self._required_inputs(h) | {"model_valid_until_s"}
+        allowed.update(MODEL_CATALOG[h["model"]].get("optional", []))
         if h["model"] in {"CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE", "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE"}:
             allowed.add("post_fault_speed_cap_kph")
         if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT" and h.get("grade_frame"):
@@ -865,7 +872,7 @@ class PhysicalHypothesisInstantiationService:
         stale = {"collision_branches", "relative_speed_kph", "closing_speed_kph", "ttc_s", "impact_speed_kph",
                  "ego_impact_speed_kph", "object_impact_speed_kph", "motion_model_outcome", "delta_v_kph",
                  "impact_time_id", "trajectory_id", "first_contact_time_s", "fault_motion_model", "trajectory_max_speed_kph",
-                 "travel_to_impact_m", "gravity_body_acceleration_mps2", "post_stop_motion",
+                 "travel_to_impact_m", "gravity_body_acceleration_mps2", "post_stop_motion", "contact_normal_speed_kph",
                  "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
                  "downhill_body_direction", "grade_orientation_basis"}
         for field in stale:

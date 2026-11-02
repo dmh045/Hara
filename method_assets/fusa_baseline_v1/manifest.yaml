@@ -52,12 +52,11 @@ policies:
   controllability_override_precedence: before_ttc
   severity_primary_method: relative_velocity
   severity_fallback_method: traffic_domain
-  ftti_formula_selection: collision_type_first
 
 asset_hashes:
   normalized/exposure_policy.yaml: 6a0ca9b544c24b8cde1c9912e9c4b1190fb2ed36d77446dd44ea60c2d41e1fcb
   normalized/malfunction_situation_selection.yaml: 108aa4cd5c7254534b5de26d780d677bbc163a3f12569d05f987d4dee3bea455
-  normalized/project_analysis_policy.yaml: b6c6ee9c6593ffac89d8c5f5a418384db5bde7da6ea61118722d5dddcc106ce1
+  normalized/project_analysis_policy.yaml: bcb15cc8a2c60442466a9fd21177df44fbcc603ef71b76bc16681b971a7e703c
   raw/atom_spec.yaml: 391ad0433a6f37bb8f1ddc0b7bc004c0c882d4dae364e1420322bb0813331108
   raw/c_iso26262.yaml: 5a64ce1fa4f8d133f51d0aec7d88506f8a0bdf01ce4aa1ea90318ab388aeb8b9
   raw/c_profiles/iav_avp.yaml: 98468b3e57fb492b1bf498ee83e3cfb85c4b813ba50270fc389db0dc49ea6239
@@ -70,8 +69,8 @@ asset_hashes:
   raw/failure_type_taxonomy.yaml: e2ba063b035ac7b55a05fa5caa944021c1c3137b928df55d18bac50ecfc6f663
   raw/fm_layer_classification.yaml: a49624ea6d48abbcc9ca1b851adf730e2fc3603d2d7587557b537c38bcc58485
   raw/fm_scenario_templates.yaml: df7ddc10578cd41fdc4a53688d6ecd69cd503ae469a37821f0f09e823d3a94de
-  raw/ftti_budgets.yaml: 47e789fcffc8b4b80a3eecd81480ca529b325239c1d4e0b41a73b7a13b4019c3
-  raw/ftti_formulas.yaml: 36dd7e947034d784af929b16b55e0267f3d7c25bdf1d23d5b9ffbb34205c9877
+  raw/ftti_budgets.yaml: 1a9ba767b72aefbdaec12bc1b5ab331b8ed04503c27833235d57cdc0bf2f47d1
+  raw/ftti_formulas.yaml: 25fd2e09d76c5062f79b00d685c4a41daf3fff32fe503d1271c021361542f8b5
   raw/infeasible_examples.yaml: 156496e129a0c97490351c6e57abc517de9b2e8c0ce1dc035b74c43b4a09bea6
   raw/iso26262_spec.yaml: 009dad63656731efc09ef4eaa76b3a170172506a0b6f9a404bc3b32b944edb20
   raw/kb_retrieval.yaml: 6d95d2672924249eb996c73d5e7bd4c1e2f5683eb367685d773345858df02c2b

@@ -44,6 +44,9 @@ def narrative_quantities(text: str) -> str:
 
 
 FIELD_UNITS = {
+    "ego_heading_angle_deg": "°", "object_heading_angle_deg": "°",
+    "object_reaction_time_s": "s", "object_braking_deceleration_mps2": "m/s²",
+    "contact_normal_speed_kph": "km/h",
     "object_offset_x_m": "m", "object_offset_y_m": "m", "contact_half_length_m": "m", "contact_half_width_m": "m",
     "ego_speed_kph": "km/h", "object_speed_kph": "km/h", "ego_impact_speed_kph": "km/h",
     "relative_speed_kph": "km/h", "closing_speed_kph": "km/h", "post_fault_speed_cap_kph": "km/h",

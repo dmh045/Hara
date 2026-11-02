@@ -1,0 +1,121 @@
+version: "2.0"
+source: |
+  ISO 26262 Part 3 §7 + 项目内 FTTI 表格反推 (2026-05-20)
+  公式由两车相对运动学推导, 数据验证通过 (1-001/1-002/3-001/3-002/3-003)
+
+# FTTI 公式定义。expression 字段必须对应 core/hara/evaluators/ftti_formulas.py
+# FORMULA_REGISTRY 中已注册的函数；yaml load 时校验所有 expression 在 registry 里
+# 都能解析，缺失 fail-loud。严禁运行时 eval() / sympy。
+#
+# status:
+#   DRAFT     - 占位 / 待维护者签字，evaluator 仍求值但标 escalation_reason=formula_draft
+#   FINALIZED - 已审定，evaluator 求值后给出 finalized 判定
+#
+# applies_to 优先级:
+#   collision_type ∈ {rear, front, side, crossing} → 新公式 (v2.0)
+#   collision_type 缺失 → 回退到 (component_category, failure_type) 旧公式 (DEPRECATED)
+
+formulas:
+
+  # ──────────────────────────────────────────────────────
+  # v2.0 新公式: 基于两车相对运动学
+  # ──────────────────────────────────────────────────────
+
+  - id: longitudinal_t1_t2
+    applies_to:
+      collision_type: [rear, front]
+    expression: "longitudinal_t1_t2"
+    inputs:
+      delta_s_m:
+        source: docx
+        ref: "scenario.assumption.obj_distance_m"
+      v_rear_mps:
+        source: docx
+        ref: "scenario.assumption.ego_v_kph (kph→mps)"
+      v_front_mps:
+        source: docx
+        ref: "scenario.assumption.obj_v_kph (kph→mps)"
+      a_front_mps2:
+        source: docx
+        ref: "scenario.assumption.extra.a_front_mps2 (默认 0)"
+      a_rear_reaction_mps2:
+        source: table
+        ref: "ftti_budgets.yaml#a_rear_reaction_default"
+      a_rear_action_mps2:
+        source: table
+        ref: "ftti_budgets.yaml#a_rear_action_default"
+    rationale: |
+      FTTI = t1 + t2
+      t1: 反应段 (后车默认匀速 a_rear_reaction=0), 解 (v_rear-v_front)·t + 0.5·(a_rear-a_front)·t² = Δs
+      t2: 动作段 (后车紧急制动 a_rear_action=-12), 相对速度归零所需时间
+          若反应段末已不接近 → t2=0
+          若制动不足以减速  → +inf (碰撞不可避免)
+    verification:
+      - case: "1-001: Δs=0.3, v_rear=1.944, v_front=0, a 全 0"
+        expected_t1: 0.155
+        formula: "0.3 / 1.944 = 0.154"
+      - case: "1-002: Δs=0.3, v_rear=1.944, v_front=-2.778 (对向)"
+        expected_t1: 0.064
+        formula: "0.3 / 4.722 = 0.0635"
+    status: FINALIZED
+
+  - id: lateral_simple
+    applies_to:
+      collision_type: [side, crossing]
+    expression: "lateral_simple"
+    inputs:
+      delta_s_m:
+        source: docx
+        ref: "scenario.assumption.obj_distance_m (横向间距)"
+      v_ego_lateral_mps:
+        source: docx
+        ref: "scenario.assumption.ego_v_kph · sin(θ) (θ=转向角, 相对自车纵轴)"
+      v_other_lateral_mps:
+        source: docx
+        ref: "scenario.assumption.obj_v_kph 横向分量 (默认 0)"
+    rationale: |
+      FTTI = ΔS / (v_自_横 - v_侧_横)
+      横向速度分量由转向角 sin 分解 (角度相对自车纵轴)。
+      rel_v ≤ 0 → +inf (不接近)
+    verification:
+      - case: "3-001: ΔS=0.5, v_自横=1.94, v_侧横=0"
+        expected_ftti: 0.2577
+        formula: "0.5 / 1.94 = 0.2577"
+      - case: "3-002: ΔS=0.5, Δv_横=4.72"
+        expected_ftti: 0.1059
+        formula: "0.5 / 4.72 = 0.1059"
+      - case: "3-003: ΔS=0.1, v_自横=1.25 (= 1.94·sin40°)"
+        expected_ftti: 0.08
+        formula: "0.1 / 1.25 = 0.08"
+    status: FINALIZED
+
+  # ──────────────────────────────────────────────────────
+  # v1.0 旧公式 (DEPRECATED, 仅作回退兜底)
+  # ──────────────────────────────────────────────────────
+
+  - id: longitudinal_collision_default
+    applies_to:
+      component_category: [actuator_longitudinal, actuator_propulsion]
+      failure_type: [loss, unintended_activation, excessive, wrong_value, stuck]
+    expression: "ttc - (t_detect + t_react + t_actuate)"
+    inputs:
+      ttc:
+        source: compute
+        ref: "controllability_evaluator.ttc_s"
+      t_detect:
+        source: table
+        ref: "ftti_budgets.yaml#detection_default"
+      t_react:
+        source: table
+        ref: "ftti_budgets.yaml#reaction_default"
+      t_actuate:
+        source: docx
+        ref: "performance_params.actuator_response_time"
+    rationale: "DEPRECATED: 旧管线延迟模型, v2.0 公式从相对运动学推导更精确"
+    status: DRAFT
+
+fallback:
+  strategy: engineer_input_required
+  description: |
+    未匹配到 formula 时不调 LLM（公式选择不是 LLM 该判的事），构造
+    pending FTTIJudgement，escalation_reason=upstream_field_missing。

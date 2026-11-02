@@ -53,6 +53,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
              "lateral_acceleration_mps2", "lateral_clearance_m", "turn_radius_m", "object_extent",
              "post_fault_speed_cap_kph", "post_stop_motion", "object_offset_x_m", "object_offset_y_m",
              "contact_half_length_m", "contact_half_width_m",
+             "ego_heading_angle_deg", "object_heading_angle_deg", "object_reaction_time_s", "object_braking_deceleration_mps2",
              "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
              "downhill_body_direction", "grade_orientation_basis",
              "impact_time_id", "trajectory_id", "assessment_reference"}
@@ -80,7 +81,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
         changed_model |= changed & phase_ids
     invalidate = set()
     if changed_geometry or changed & speeds or changed_model:
-        invalidate.update(("relative_speed_kph", "closing_speed_kph", "ttc_s", "first_contact_time_s", "trajectory_max_speed_kph"))
+        invalidate.update(("relative_speed_kph", "closing_speed_kph", "ttc_s", "first_contact_time_s", "contact_normal_speed_kph", "trajectory_max_speed_kph"))
     if changed & (distances | {"closing_speed_kph", "relative_speed_kph"}):
         invalidate.add("ttc_s")
     if changed_model or (changed & distances and view.get("fault_motion_model")):
@@ -107,7 +108,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
     conflicts = []
     outcome = next((r.value for r in records if r.evidence_ref == "DERIVED.motion_model_outcome"), {})
     if outcome and outcome.get("status") != "CONTACT":
-        for key in ("ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s", "trajectory_max_speed_kph"):
+        for key in ("ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s", "contact_normal_speed_kph", "trajectory_max_speed_kph"):
             if key in view:
                 view.pop(key)
                 view["_fact_provenance"].pop(key, None)
@@ -116,7 +117,7 @@ def branch_physics_view(parent: dict, branch: dict) -> dict:
     for record in records:
         key = record.evidence_ref.removeprefix("DERIVED.")
         if outcome and outcome.get("status") != "CONTACT" and key in {
-            "ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s", "trajectory_max_speed_kph",
+            "ego_impact_speed_kph", "object_impact_speed_kph", "relative_speed_kph", "ttc_s", "first_contact_time_s", "contact_normal_speed_kph", "trajectory_max_speed_kph",
         }:
             continue
         # A directly supplied branch measurement must not be silently overwritten
@@ -255,85 +256,167 @@ def constant_speed_curved_contact(facts: dict) -> dict:
             "normal_acceleration_mps2": v * v / radius}
 
 
-def rectilinear_moving_contact(facts: dict) -> dict:
-    """First simultaneous envelope overlap; all inputs are model assumptions.
+def _quadratic_roots(c, b, q):
+    if not q:
+        return [-c / b] if b else []
+    disc = b*b - 4*q*c
+    if disc < 0:
+        return []
+    stable = -.5 * (b + math.copysign(math.sqrt(disc), b))
+    return [stable / q, c / stable] if stable else [0.0]
 
-    Solve x(t)=dx+(u_x-v_x)t-a_x*t²/2 and y(t)=dy+u_y*t.
-    Partition at boundary roots, so non-overlapping crossing times and tangency
-    are distinguished without a time step or a sampling tolerance.
+
+def _straight_segments(speed, acceleration, horizon, *, change_at=None, after_acceleration=0.0):
+    """Scalar travel polynomials (begin, end, origin, speed, acceleration).
+
+    All phases use local time. Braking ends at a held stop, never reversal.
     """
+    result, position, begin = [], 0.0, 0.0
+    schedule = [(horizon, acceleration)] if change_at is None else [
+        (min(change_at, horizon), acceleration), (horizon, after_acceleration)]
+    for end, a in schedule:
+        if end <= begin:
+            continue
+        stop = begin + speed/-a if a < 0 else math.inf
+        finish = min(end, stop)
+        if finish > begin:
+            result.append((begin, finish, position, speed, a))
+            dt = finish-begin
+            position += speed*dt + a*dt*dt/2
+            speed = max(0.0, speed+a*dt)
+        if stop <= end:
+            result.append((finish, horizon, position, 0.0, 0.0))
+            break
+        begin = end
+    return result
+
+
+def _travel_at(segments, time):
+    phase = next((s for s in segments if s[0] <= time <= s[1]), segments[-1])
+    start, _, position, speed, acceleration = phase
+    dt = time-start
+    return position+speed*dt+acceleration*dt*dt/2, max(0.0, speed+acceleration*dt), acceleration
+
+
+def _heading_vector(facts, owner):
+    directions = {"FORWARD": (1.0, 0.0), "REVERSE": (-1.0, 0.0),
+                  "LEFT": (0.0, 1.0), "RIGHT": (0.0, -1.0)}
+    if owner == 'object' and facts.get('object_longitudinal_direction') == 'STATIONARY':
+        return (0.0, 0.0)
+    cardinal = directions[facts[owner + '_longitudinal_direction']]
+    field = owner + '_heading_angle_deg'
+    if field not in facts:
+        return cardinal
+    angle = facts[field]
+    if isinstance(angle, bool) or not isinstance(angle, (int, float)) or not math.isfinite(angle) or not -180 <= angle <= 180:
+        raise ValueError('MODEL_INPUTS_UNRESOLVED')
+    theta = math.radians(angle)
+    vector = (math.cos(theta), math.sin(theta))
+    # Exact cardinal headings do not create tiny artificial crossing motion.
+    if angle in {-180, -90, 0, 90, 180}:
+        vector = directions[{0:'FORWARD', 90:'LEFT', -90:'RIGHT', 180:'REVERSE', -180:'REVERSE'}[angle]]
+    if sum(x*y for x,y in zip(vector, cardinal)) < 0:
+        raise ValueError('HEADING_DIRECTION_CONFLICT')
+    return vector
+
+
+def _straight_world(facts, response_delay_s=None, response_deceleration_mps2=None):
     from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG
-    fields = MODEL_CATALOG["RECTILINEAR_MOVING_TARGET_CONTACT"]["required"]
+    spec = MODEL_CATALOG['RECTILINEAR_MOVING_TARGET_CONTACT']
+    fields = spec['required'] + [k for k in spec.get('optional', []) if k in facts]
     if any(isinstance(facts.get(k), bool) or not isinstance(facts.get(k), (int, float))
            or not math.isfinite(facts[k]) for k in fields):
-        return {"status": "MODEL_INPUTS_UNRESOLVED"}
-    v, u = facts["ego_speed_kph"] / 3.6, facts["object_speed_kph"] / 3.6
-    a, horizon = facts["longitudinal_acceleration_mps2"], facts["model_valid_until_s"]
-    hx, hy = facts["contact_half_length_m"], facts["contact_half_width_m"]
-    dx, dy = facts["object_offset_x_m"], facts["object_offset_y_m"]
-    vectors = {"FORWARD": (1, 0), "REVERSE": (-1, 0), "LEFT": (0, 1), "RIGHT": (0, -1)}
-    direction = facts.get("ego_longitudinal_direction")
-    target_direction = facts.get("object_longitudinal_direction")
-    if (v < 0 or u <= 0 or hx <= 0 or hy <= 0 or horizon <= 0
-            or direction not in {"FORWARD", "REVERSE"} or target_direction not in vectors
-            or facts.get("object_extent") != "FINITE_CONTACT_ENVELOPE"):
-        return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE"}
-    # Target travel direction is not an impact-side classification. A crossing
-    # pedestrian can meet the ego front; the finite envelopes decide contact.
-    position = facts.get("object_position")
-    if not {"FRONT": dx > 0, "REAR": dx < 0, "LEFT": dy > 0, "RIGHT": dy < 0}.get(position, False):
-        return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "TARGET_OFFSET_POSITION_CONFLICT"}
+        raise ValueError('MODEL_INPUTS_UNRESOLVED')
+    hypothesis = facts.get('physical_analysis', {}).get('hypothesis', {})
+    if any(p['kind'] == 'SYMBOLIC' and p['field'] in spec.get('optional', []) for p in hypothesis.get('parameters', [])):
+        raise ValueError('MODEL_INPUTS_UNRESOLVED')
+    v, u = facts['ego_speed_kph']/3.6, facts['object_speed_kph']/3.6
+    a, horizon = facts['longitudinal_acceleration_mps2'], facts['model_valid_until_s']
+    dx, dy = facts['object_offset_x_m'], facts['object_offset_y_m']
+    hx, hy = facts['contact_half_length_m'], facts['contact_half_width_m']
+    if (v < 0 or u < 0 or min(hx, hy, horizon) <= 0
+            or facts.get('ego_longitudinal_direction') not in {'FORWARD','REVERSE'}
+            or facts.get('object_longitudinal_direction') not in {'FORWARD','REVERSE','LEFT','RIGHT','STATIONARY'}
+            or facts.get('object_longitudinal_direction') == 'STATIONARY' and u != 0
+            or facts.get('object_extent') != 'FINITE_CONTACT_ENVELOPE'):
+        raise ValueError('MODEL_GEOMETRY_NOT_APPLICABLE')
+    if not {'FRONT':dx>0, 'REAR':dx<0, 'LEFT':dy>0, 'RIGHT':dy<0}.get(facts.get('object_position'), False):
+        raise ValueError('TARGET_OFFSET_POSITION_CONFLICT')
     if abs(dx) <= hx and abs(dy) <= hy:
-        return {"status": "INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE"}
-    # Negative acceleration is deceleration in the travel coordinate, never
-    # an implicit reverse launch. Continuing after stop requires a separate,
-    # explicit holding assumption; old plans retain their pre-stop scope.
-    stop = v / -a if a < 0 and v > 0 else horizon
-    end = min(horizon, stop)
+        raise ValueError('INITIAL_CONTACT_REQUIRES_SEPARATE_PHASE')
+    ev, ov = _heading_vector(facts, 'ego'), _heading_vector(facts, 'object')
+    reaction = facts.get('object_reaction_time_s')
+    braking = facts.get('object_braking_deceleration_mps2')
+    if ((reaction is None) != (braking is None)
+            or reaction is not None and (reaction < 0 or braking <= 0 or u <= 0)):
+        raise ValueError('TARGET_RESPONSE_INPUTS_UNRESOLVED')
+    stop = v/-a if a < 0 and v > 0 else horizon
+    end = horizon if facts.get('post_stop_motion') == 'HOLD_POSITION' else min(horizon, stop)
     if v == 0 and a < 0:
         a = 0.0
-    sign = vectors[direction][0]
-    ux, uy = (component * u for component in vectors[target_direction])
-    q, b = -sign * a / 2, ux - sign * v
-    phases = [(0.0, end, dx, b, q)]
-    held = stop < horizon and facts.get("post_stop_motion") == "HOLD_POSITION"
-    if held:
-        stopping_position = sign * (v*stop + a*stop*stop/2)
-        phases.append((stop, horizon, dx-stopping_position, ux, 0.0))
-    for phase_index, (start, end, offset, b, q) in enumerate(phases):
-        cuts = {start, end}
-        for bound in (-hx, hx):
-            c = offset - bound
-            if q == 0:
-                roots = [-c / b] if b else []
-            else:
-                disc = b*b - 4*q*c
-                if disc < 0:
-                    roots = []
-                else:
-                    # Stable quadratic roots, including a repeated root.
-                    t = -.5 * (b + math.copysign(math.sqrt(disc), b))
-                    roots = [t / q, c / t] if t else [-b / (2*q)]
-            cuts.update(t for t in roots if start <= t <= end)
-        if uy:
-            cuts.update(t for bound in (-hy, hy) if start <= (t := (bound-dy)/uy) <= end)
-        def inside(t):
-            return abs(offset+b*t+q*t*t) <= hx and abs(dy+uy*t) <= hy
+    if response_delay_s is not None:
+        if (not isinstance(response_delay_s, (int,float)) or isinstance(response_delay_s,bool)
+                or not math.isfinite(response_delay_s) or response_delay_s < 0
+                or _nonnegative_number(response_deceleration_mps2) is None):
+            raise ValueError('RESPONSE_INPUTS_UNRESOLVED')
+        end = horizon
+        ego = _straight_segments(v,a,end,change_at=response_delay_s,after_acceleration=-response_deceleration_mps2)
+        stop = next((phase[0] for phase in ego if phase[3] == phase[4] == 0), end)
+    else:
+        ego = _straight_segments(v, a, end)
+    target = _straight_segments(u, 0.0, horizon, change_at=reaction, after_acceleration=-braking if braking else 0.0)
+    return ego, target, ev, ov, end, stop
+
+
+def rectilinear_moving_contact(facts: dict, *, response_delay_s=None, response_deceleration_mps2=None) -> dict:
+    """Exact first overlap of fixed envelopes with piecewise straight motion.
+
+    Headings describe velocity, not wheel angles. Target reaction/braking and
+    held stops share the same local-time polynomials as response evaluation.
+    """
+    try:
+        ego, target, ev, ov, end, stop = _straight_world(facts, response_delay_s, response_deceleration_mps2)
+    except ValueError as error:
+        code = str(error)
+        return {'status': 'MODEL_GEOMETRY_NOT_APPLICABLE', 'reason': code} if code in {
+            'TARGET_OFFSET_POSITION_CONFLICT', 'HEADING_DIRECTION_CONFLICT'} else {'status': code}
+    offsets = (facts['object_offset_x_m'], facts['object_offset_y_m'])
+    extents = (facts['contact_half_length_m'], facts['contact_half_width_m'])
+    breaks = sorted({0.0, end} | {t for s in ego+target for t in s[:2] if 0 < t < end})
+    for begin, finish in zip(breaks, breaks[1:]):
+        ep, es, ea = _travel_at(ego, (begin+finish)/2)
+        op, os, oa = _travel_at(target, (begin+finish)/2)
+        # Midpoint selects the correct phase; evaluate its initial state locally.
+        half = (finish-begin)/2
+        ep, es = ep-es*half+ea*half*half/2, es-ea*half
+        op, os = op-os*half+oa*half*half/2, os-oa*half
+        polys = [(offsets[i]+ov[i]*op-ev[i]*ep, ov[i]*os-ev[i]*es, (ov[i]*oa-ev[i]*ea)/2) for i in (0,1)]
+        cuts = {0.0, finish-begin}
+        for (c,b,q), bound in zip(polys,extents):
+            cuts.update(t for side in (-bound,bound) for t in _quadratic_roots(c-side,b,q) if 0 <= t <= finish-begin)
+        def inside(dt):
+            return all(abs(c+b*dt+q*dt*dt) <= bound for (c,b,q),bound in zip(polys,extents))
         ordered = sorted(cuts)
-        for index, t in enumerate(ordered):
-            # The right-hand interval is inside even if roundoff at its root is
-            # a few ulps outside; do not widen the geometric contact envelope.
-            if inside(t) or index+1 < len(ordered) and inside((t+ordered[index+1])/2):
-                impact = 0.0 if phase_index else max(0.0, v+a*t)
-                return {"status": "CONTACT", "time_s": t, "ego_impact_speed_kph": impact*3.6,
-                    "object_impact_speed_kph": u*3.6,
-                    "relative_speed_kph": math.hypot(sign*impact-ux, uy)*3.6,
-                    "trajectory_max_speed_kph": max(v, impact)*3.6,
-                    "contact_offset_x_m": offset+b*t+q*t*t, "contact_offset_y_m": dy+uy*t,
-                    **({"contact_phase": "HELD_AFTER_STOP", "ego_stop_time_s": stop} if phase_index else {}),
-                    "longitudinal_contact": uy == 0 and not is_lateral_collision(facts.get("collision_type"))}
-    return {"status": "NO_CONTACT_WITHIN_MODEL", "evaluated_until_s": end,
-            "limiting_condition": "EGO_STOP" if stop < horizon and not held else "MODEL_HORIZON"}
+        for index, dt in enumerate(ordered):
+            if not (inside(dt) or index+1 < len(ordered) and inside((dt+ordered[index+1])/2)):
+                continue
+            time = begin+dt
+            speed, other = max(0.0, es+ea*dt), max(0.0, os+oa*dt)
+            rv = tuple(ev[i]*speed-ov[i]*other for i in (0,1))
+            xy = [c+b*dt+q*dt*dt for c,b,q in polys]
+            # First contact's closing component is retained separately from
+            # the full relative-speed norm used by the active severity method.
+            axes = [i for i in (0,1) if math.isclose(abs(xy[i]), extents[i], rel_tol=1e-10, abs_tol=1e-12)]
+            normal = max((abs(rv[i]) for i in axes), default=math.hypot(*rv))
+            return {'status':'CONTACT', 'time_s':time, 'ego_impact_speed_kph':speed*3.6,
+                'object_impact_speed_kph':other*3.6, 'relative_speed_kph':math.hypot(*rv)*3.6,
+                'contact_normal_speed_kph':normal*3.6,
+                'trajectory_max_speed_kph':max(max(s[3],s[3]+s[4]*(min(s[1],time)-s[0]))*3.6 for s in ego if s[0] <= time),
+                'contact_offset_x_m':xy[0], 'contact_offset_y_m':xy[1],
+                **({'contact_phase':'HELD_AFTER_STOP','ego_stop_time_s':stop} if time >= stop and stop < end else {}),
+                'longitudinal_contact':ev[1] == ov[1] == 0 and not is_lateral_collision(facts.get('collision_type'))}
+    return {'status':'NO_CONTACT_WITHIN_MODEL', 'evaluated_until_s':end,
+        'limiting_condition':'EGO_STOP' if end < facts['model_valid_until_s'] else 'MODEL_HORIZON'}
 
 
 def moving_target_avoidance(facts: dict, proposal: dict) -> dict:
@@ -342,7 +425,7 @@ def moving_target_avoidance(facts: dict, proposal: dict) -> dict:
     This establishes only the stated conditional trajectory, never human reaction
     capability. No C threshold, default reaction time or speed is introduced.
     """
-    if facts.get("fault_motion_model") != "RECTILINEAR_MOVING_TARGET_CONTACT":
+    if facts.get("fault_motion_model") != "RECTILINEAR_MOVING_TARGET_CONTACT" or any(k in facts for k in ("ego_heading_angle_deg", "object_heading_angle_deg", "object_reaction_time_s")):
         return {"status": "UNSUPPORTED_AVOIDANCE_TRAJECTORY"}
     escape = proposal.get("avoidance", {})
     required = ("recognition_delay_s", "escape_speed_mps", "available_clearance_m")
@@ -417,13 +500,60 @@ def braking_avoidability_boundary(speed_mps: float, acceleration_mps2: float,
             "distance_residual_m": v*delay+a*delay*delay/2+onset_speed*onset_speed/(2*b)-d}
 
 
+def _contact_corridor(facts, target, ego_direction, target_direction):
+    """Intervals of ego path distance that overlap the target envelope.
+
+    Project each box inequality onto the fixed ego ray. Boundary switches and
+    corridor entry/exit are quadratic roots, not time samples. A target moving
+    monotonically along one straight line intersects this convex strip over a
+    connected time interval, including its held stop.
+    """
+    result=[]
+    offsets=(facts['object_offset_x_m'],facts['object_offset_y_m'])
+    extents=(facts['contact_half_length_m'],facts['contact_half_width_m'])
+    for begin,end,p,s,a in target:
+        lower,upper,independent=[],[],[]
+        for i in (0,1):
+            c,b,q=offsets[i]+target_direction[i]*p,target_direction[i]*s,target_direction[i]*a/2
+            if ego_direction[i] == 0:
+                independent.append((c,b,q,extents[i]))
+            else:
+                axis=ego_direction[i]
+                center=(c/axis,b/axis,q/axis)
+                half=extents[i]/abs(axis)
+                lower.append((center[0]-half,center[1],center[2]))
+                upper.append((center[0]+half,center[1],center[2]))
+        cuts={0.0,end-begin}
+        for x in lower+upper:
+            for y in lower+upper:
+                cuts.update(t for t in _quadratic_roots(*(x[j]-y[j] for j in (0,1,2))) if 0 < t < end-begin)
+        for c,b,q,half in independent:
+            cuts.update(t for side in (-half,half) for t in _quadratic_roots(c-side,b,q) if 0 < t < end-begin)
+        def value(poly,t): return poly[0]+poly[1]*t+poly[2]*t*t
+        def bounds(t):
+            lo=max(lower,key=lambda x:value(x,t));hi=min(upper,key=lambda x:value(x,t))
+            valid=value(lo,t)<=value(hi,t) and all(abs(c+b*t+q*t*t)<=half for c,b,q,half in independent)
+            return lo,hi,valid
+        ordered=sorted(cuts)
+        covered=[]
+        for lo,hi in zip(ordered,ordered[1:]):
+            low,high,valid=bounds((lo+hi)/2)
+            if valid:
+                result.append((begin+lo,begin+hi,begin,low,high));covered.append((lo,hi))
+        for t in ordered:
+            low,high,valid=bounds(t)
+            if valid and not any(lo<=t<=hi for lo,hi in covered):
+                result.append((begin+t,begin+t,begin,low,high))
+    return result
+
+
 def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: float,
                                         *, release_deceleration: bool = False) -> dict:
     """First loss of the immediate-braking-connected safe window.
 
     Target motion and the contact envelope are unchanged. For each response
-    delay, minimize longitudinal separation analytically over the lateral
-    overlap interval, through fault motion, braking and a held stop. Ego
+    delay, minimize path clearance analytically over the contact-corridor
+    interval, through fault motion, braking and a held stop. Ego
     progress is monotone in response delay with the sign of a+b, including a
     weaker braking response that releases excessive fault deceleration. Follow
     the initial safe side of the envelope, then bracket its FIRST loss;
@@ -438,50 +568,47 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
         return {"status": "FAULT_RELEASE_NOT_APPLICABLE"}
     if b is None or not b and not release_deceleration:
         return {"status": "RESPONSE_INPUTS_UNRESOLVED"}
-    horizon = facts["model_valid_until_s"]
-    sign = 1 if facts["ego_longitudinal_direction"] == "FORWARD" else -1
-    vectors = {"FORWARD": (1, 0), "REVERSE": (-1, 0), "LEFT": (0, 1), "RIGHT": (0, -1)}
-    ux, uy = [k*facts["object_speed_kph"]/3.6 for k in vectors[facts["object_longitudinal_direction"]]]
-    dx, dy = sign*facts["object_offset_x_m"], facts["object_offset_y_m"]
-    hx, hy = facts["contact_half_length_m"], facts["contact_half_width_m"]
-    start_y, end_y = 0.0, horizon
-    if uy:
-        enter, leave = sorted(((-hy-dy)/uy, (hy-dy)/uy))
-        start_y, end_y = max(0.0, enter), min(horizon, leave)
+    try:
+        _, target, ev, ov, _, _ = _straight_world(facts)
+    except ValueError as error:
+        return {'status': str(error)}
+    horizon = facts['model_valid_until_s']
+    hx = facts['contact_half_length_m']
+    corridors = _contact_corridor(facts,target,ev,ov)
+    if not corridors:
+        return {'status':'NO_UNMITIGATED_CONTACT_BOUNDARY','original':original}
+    start_y,end_y=min(c[0] for c in corridors),max(c[1] for c in corridors)
 
     def separation(delay):
         onset_speed = max(0.0, v+a*delay)
         stop = delay+onset_speed/b if b else horizon
-        onset_position = v*delay+a*delay*delay/2
-        def position(t):
-            if t <= delay:
-                return v*t+a*t*t/2
-            elapsed = min(t-delay, onset_speed/b) if b else t-delay
-            return onset_position+onset_speed*elapsed-b*elapsed*elapsed/2
-        # Global linear/quadratic coefficients locate extrema; positions below
-        # are evaluated in local phase time for numerical stability.
-        phases = [(0.0, delay, v, a/2),
-                  (delay, stop, v+(a+b)*delay, -b/2),
-                  (stop, horizon, 0.0, 0.0)]
-        extrema = []
-        for begin, end, c1, c2 in phases:
-            lo, hi = max(begin, start_y), min(end, end_y)
-            if lo > hi:
-                continue
-            points = [lo, hi]
-            linear, quadratic = sign*ux-c1, -c2
-            if quadratic and lo < (turn := -linear/(2*quadratic)) < hi:
-                points.append(turn)
-            # Evaluate in each phase's local time to avoid cancelling large
-            # global polynomial coefficients near a small clearance boundary.
-            extrema.extend((math.fsum((dx, sign*ux*t, -position(t))), t) for t in points)
-        minimum, at = min(extrema)
-        return {"clearance_m": minimum-hx, "minimum_at_s": at,
-                "minimum_separation_m": minimum,
-                "maximum_separation_m": max(x for x, _ in extrema),
-                "brake_onset_speed_mps": onset_speed, "stopping_time_s": onset_speed/b if b else None,
-                "stopping_distance_m": onset_speed*onset_speed/(2*b) if b else None,
-                "stop_time_s": stop if b else None}
+        ego = _straight_segments(v,a,horizon,change_at=delay,after_acceleration=-b)
+        minima,maxima=[],[]
+        for eb,ee,ep,es,ea in ego:
+            for tb,te,origin,lower,upper in corridors:
+                lo,hi=max(eb,tb),min(ee,te)
+                if lo>hi:
+                    continue
+                ed,td=lo-eb,lo-origin
+                for bound,extrema in ((lower,minima),(upper,maxima)):
+                    bc,bb,bq=bound
+                    c=bc+bb*td+bq*td*td-(ep+es*ed+ea*ed*ed/2)
+                    linear=bb+2*bq*td-(es+ea*ed)
+                    quadratic=bq-ea/2
+                    points=[0.0,hi-lo]
+                    if quadratic and 0 < (turn := -linear/(2*quadratic)) < hi-lo:
+                        points.append(turn)
+                    extrema.extend((math.fsum((c,linear*t,quadratic*t*t)),lo+t) for t in points)
+        minimum,at=min(minima)
+        maximum=max(x for x,_ in maxima)
+        return {'clearance_m':minimum,'minimum_at_s':at,
+                'minimum_ahead_clearance_m':minimum,'minimum_behind_clearance_m':-maximum,
+                # Preserve historical longitudinal centre-separation fields.
+                # An angled ray instead has projected envelope bounds, not hx.
+                **({'minimum_separation_m':minimum+hx,'maximum_separation_m':maximum-hx} if ev[1] == 0 else {}),
+                'brake_onset_speed_mps':onset_speed,'stopping_time_s':onset_speed/b if b else None,
+                'stopping_distance_m':onset_speed*onset_speed/(2*b) if b else None,
+                'stop_time_s':stop if b else None}
 
     immediate = separation(0.0)
     common = {"response_model_family": "MOVING_TARGET_FAULT_RELEASE" if release_deceleration else "MOVING_TARGET_BRAKING",
@@ -489,17 +616,20 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
               "lateral_overlap_interval_s": [start_y, end_y],
               "response_motion": "CONTINUE_AT_ONSET_SPEED" if release_deceleration else "BRAKE_AND_HOLD",
               **({} if release_deceleration else {"post_stop_motion": "HOLD_POSITION"}),
-              "immediate_response": immediate}
+              "immediate_response": immediate,
+              "separation_coordinate": "EGO_PATH_ENVELOPE_INTERVAL",
+              **({'target_response': {k:facts[k] for k in ('object_reaction_time_s','object_braking_deceleration_mps2')},
+                  'target_response_time_origin':'MODEL_INITIAL_STATE'} if 'object_reaction_time_s' in facts else {})}
     # Longitudinal separation is continuous over one lateral-overlap interval.
     # No contact means the target stays wholly ahead OR wholly behind. Using
     # only the minimum would falsely reject every initially safe rear relation.
-    safe_side = (1 if immediate["minimum_separation_m"] > hx else
-                 -1 if immediate["maximum_separation_m"] < -hx else 0)
+    safe_side = (1 if immediate["minimum_ahead_clearance_m"] > 0 else
+                 -1 if immediate["minimum_behind_clearance_m"] > 0 else 0)
     if not safe_side:
-        return {**common, "status": "NO_IMMEDIATE_SAFE_BRAKING_WINDOW"}
+        return {**common, "status": "NO_IMMEDIATE_SAFE_BRAKING_WINDOW",
+                "response_contact": rectilinear_moving_contact(facts, response_delay_s=0.0, response_deceleration_mps2=b)}
     def margin(result):
-        return (result["minimum_separation_m"]-hx if safe_side == 1 else
-                -result["maximum_separation_m"]-hx)
+        return result['minimum_ahead_clearance_m' if safe_side == 1 else 'minimum_behind_clearance_m']
     immediate["clearance_m"] = margin(immediate)
     common["response_clearance_side"] = "TARGET_AHEAD" if safe_side == 1 else "TARGET_BEHIND"
     # d(progress)/d(delay) has the sign of a+b before and after the stop.
@@ -1191,20 +1321,20 @@ def derive_scenario_physics(
             return tuple(records)
     if model == "RECTILINEAR_MOVING_TARGET_CONTACT":
         from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG
-        keys = tuple(MODEL_CATALOG[model]["required"]) + (
+        keys = tuple(MODEL_CATALOG[model]["required"]) + tuple(k for k in MODEL_CATALOG[model].get("optional", []) if k in scenario.facts) + (
             "fault_motion_model", "object_position", "object_extent", "ego_longitudinal_direction",
             "object_longitudinal_direction", "impact_time_id")
         if "post_stop_motion" in scenario.facts:
             keys += ("post_stop_motion",)
         outcome = rectilinear_moving_contact(scenario.facts)
-        formula = "first simultaneous |dx+(ux-vx)t-ax*t^2/2|<=hx and |dy+uy*t|<=hy before ego stop/horizon"
+        formula = "first simultaneous envelope overlap: r(t)=offset+u_hat*s_target(t)-v_hat*s_ego(t); piecewise s=v0*dt+a*dt^2/2; headings from body +x toward +y; braking clamps at stop"
         if scenario.facts.get("post_stop_motion") == "HOLD_POSITION":
             formula += "; after stop ts, xe=sign*(v0*ts+a*ts^2/2), ve=0; solve |dx+ux*t-xe|<=hx and |dy+uy*t|<=hy until horizon"
         records.append(derived_record("motion_model_outcome", outcome, keys,
             DerivedPhysicsType.KINEMATIC_IMPACT_SPEED, formula=formula))
         if outcome["status"] == "CONTACT":
             results = {k: outcome[k] for k in ("ego_impact_speed_kph", "object_impact_speed_kph",
-                       "relative_speed_kph", "trajectory_max_speed_kph")}
+                       "relative_speed_kph", "contact_normal_speed_kph", "trajectory_max_speed_kph")}
             results["first_contact_time_s"] = outcome["time_s"]
             if outcome["longitudinal_contact"]:
                 results["ttc_s"] = outcome["time_s"]

@@ -365,6 +365,10 @@ class EngineeringReportTextMapper:
                 "residual_resistance_mps2": "残余阻力减速度(m/s²)", "lateral_clearance_m": "侧向净距(m)",
                 "lateral_speed_mps": "初始侧速(m/s)", "lateral_acceleration_mps2": "侧向加速度(m/s²)",
                 "turn_radius_m": "条件性转弯半径(m)",
+                "ego_heading_angle_deg": "自车速度方向角(°，车前向左为正)",
+                "object_heading_angle_deg": "目标速度方向角(°，车前向左为正)",
+                "object_reaction_time_s": "目标开始制动前的反应时间(s，模型起点计)",
+                "object_braking_deceleration_mps2": "目标条件性制动减速度(m/s²)",
                 "model_valid_until_s": "模型时域(s)", "post_fault_speed_cap_kph": "残余限速(km/h)",
                 "object_offset_x_m": "目标初始纵向中心偏移(m，车前为正)",
                 "object_offset_y_m": "目标初始横向中心偏移(m，车左为正)",
@@ -373,6 +377,12 @@ class EngineeringReportTextMapper:
             parts.extend(f"{labels[key]}：{quantity(number, FIELD_UNITS.get(key, ''))}"
                 for key, number in analysis.get("sample_parameters", {}).items()
                 if key in labels and key not in {"ego_speed_kph", "relative_distance_m"})
+            if "object_reaction_time_s" in facts:
+                parts.append("目标按所列反应时间先匀速、后制动、停止后保持；属于条件性轨迹，不自动证明人员可控性")
+            if "ego_heading_angle_deg" in facts or "object_heading_angle_deg" in facts:
+                parts.append("角度描述固定速度方向，不是方向盘或车轮转角，不表示主动转向避碰")
+            if facts.get("contact_normal_speed_kph") is not None:
+                parts.append(f"接触方向闭合速度：{quantity(facts['contact_normal_speed_kph'], 'km/h')} km/h；与完整相对速度分别记录，S沿用所列方法输入")
             for parameter in analysis.get("hypothesis", {}).get("parameters", []):
                 if parameter["kind"] == "SYMBOLIC":
                     parts.append(f"符号条件：{labels.get(parameter['field'], parameter['field'])}={parameter['symbol']}")
@@ -1191,7 +1201,7 @@ class EngineeringReportTextMapper:
             return (required_note + "条件性时间边界：从故障发生到失去所选响应的避碰能力；"
                     + ("主表取已计算有效成员的最小值，逐成员数值见时间追溯。" if len(calculated) > 1 else "")
                     + ("解除异常减速的成员保持响应开始时的速度，在声明时域内检查与移动目标的间隔，不表示停车或瞬间恢复故障前速度。" if release else "")
-                    + ("移动目标制动成员按原轨迹继续运动，检查故障行驶、制动及停车保持三段，在模型有效时段内确定首次失去避碰余量的边界。" if moving else
+                    + ("移动目标按已声明的匀速或反应后制动轨迹运动，检查自车故障行驶、制动及停车保持三段，在模型有效时段内确定首次失去避碰余量的边界。" if moving else
                        "依据同一轨迹、静止目标及剩余净减速假设计算。" if not release else "") +
                     "检测、决策和处置建立必须在该边界前完成；后续完成耗时不与此边界相加。"
                     "尚未经工程批准，不是完整ODD的FTTI；假设与逐成员计算见时间追溯。"

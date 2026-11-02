@@ -60,7 +60,8 @@ class FTTIMethodExecutor:
             return replace(inputs, status=CalculationStatus.NOT_APPLICABLE,
                 reason="所选响应已计算但不能避开当前目标，原提案及轨迹结论保留；其他处置策略尚未完成，不能归为缺少控制能力输入。",
                 method_rule_ids=(policy["rule_id"],), timing_trace=rejected["timing_trace"])
-        moving = scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
+        rectilinear = scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
+        moving = rectilinear and scenario.get("object_speed_kph") != 0
         if (scenario.get("fault_motion_model") not in policy["supported_models"]
                 or not moving and scenario.get("object_speed_kph") != 0):
             return pending("当前目标/运动不适用已接入的制动避碰响应模型；接触时间单列。")
@@ -112,6 +113,11 @@ class FTTIMethodExecutor:
         if scenario.get("fault_motion_model") == "CONSTANT_SPEED_CURVATURE_TO_CONTACT":
             a = 0.0
             d = v / 3.6 * outcome["time_s"] if isinstance(v, (int, float)) and outcome.get("time_s") is not None else None
+        if rectilinear and not moving and outcome.get("status") == "CONTACT":
+            # Fixed heading toward a stationary envelope: the first-contact
+            # travel along that ray is the same distance used by braking.
+            t = outcome["time_s"]
+            d = v/3.6*t + a*t*t/2
         b = 0.0 if release else response.get("net_deceleration_mps2")
         offset = timing.get("fault_to_model_start_s")
         numeric_inputs = (v, a, b) if moving else (v, a, d, b)

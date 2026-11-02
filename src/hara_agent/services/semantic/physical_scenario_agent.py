@@ -140,10 +140,10 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v24-retained-system-commands"
-    PROMPT_VERSION = "post-fault-physical-scenario-v50-retained-system-commands"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v32-retained-system-commands"
-    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v11-retained-system-commands"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v25-reference-kinematics"
+    PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -349,7 +349,14 @@ class PhysicalScenarioAgent:
             "半径、无侧滑和等速必须列为分析假设，不能冒充实测转向/附着能力；不覆盖失稳或同时驱动异常。"
             "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT表示惯性坐标独立横向加速/漂移，"
             "固定vx再增加vy会增大总速度，不能用它代替纯转向，也不能将运行暴露Atom的正常向心加速度直接当故障横向加速度。"
-            "RECTILINEAR_MOVING_TARGET_CONTACT支持同向、对向、后方接近和横穿的匀速移动目标；"
+            "RECTILINEAR_MOVING_TARGET_CONTACT支持同向、对向、后方接近、横穿与固定方向角接近，目标可静止；速度为0的目标明确写object_longitudinal_direction=STATIONARY。"
+            "需要角度时提出ego_heading_angle_deg/object_heading_angle_deg，取固定车体+x向前、+y向左的速度方向角（-180至180度）；"
+            "不是方向盘/车轮角，不与圆弧半径混用；接触包络须解释在这些固定方向下的投影范围。"
+            "有合理依据的车辆反应采用一组object_reaction_time_s与object_braking_deceleration_mps2，描述目标从模型起点先匀速、后制动、停止保持；"
+            "不要把另一辆车一律设为永不制动，也不默认它一定及时避让。给出明确条件性反应假设和未覆盖情况，不因这些参数自动赋C1。"
+            "不得从附录固定值直接复制12m/s²或0.5秒当项目能力。每机制仍用原有最多三方案，不按反应假设机械翻倍；"
+            "已有同世界目标条件改变时明确新候选，并重验因果。"
+
             "使用车体坐标x前、y左的初始中心偏移，接触包络半长/半宽为双方投影半尺寸之和，"
             "偏移从自车中心计量，不得把保险杠外净距直接当作中心偏移；半尺寸求和后不得再除以2，数值须与解释中的尺寸算术一致。"
             "须解释尺寸和有效时段假设。geometry用FINITE_CONTACT_ENVELOPE并给出"
