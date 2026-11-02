@@ -76,13 +76,16 @@ def test_incremental_body_read_preserves_complete_unicode_json(chunked):
 
 
 @pytest.mark.parametrize("recovers", [False, True])
-def test_invalid_http_json_uses_bounded_retry_and_preserves_rejected_body(tmp_path, recovers):
+@pytest.mark.parametrize("rejected,category", [
+    (b'{"choices":[', "invalid_http_json"),
+    (b'{"choices":[{"message":{"content":"\xe4', "invalid_http_encoding"),
+])
+def test_invalid_http_body_uses_bounded_retry_and_preserves_rejected_body(tmp_path, recovers, rejected, category):
     from hara_agent.config import LLMConfig
     from hara_agent.infrastructure.llm.protocol import LLMRequest
     from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
     from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 
-    rejected = b'{"choices":['
     valid = json.dumps({"choices": [{"message": {"content": '{"ok":true}'},
                                     "finish_reason": "stop"}], "model": "fake"}).encode()
     budget = ProviderAttemptBudget(tmp_path / "attempts.jsonl", run_id="test", limit=2)
@@ -101,12 +104,15 @@ def test_invalid_http_json_uses_bounded_retry_and_preserves_rejected_body(tmp_pa
         else:
             with pytest.raises(LLMTransportError) as error:
                 cache.complete(client, request)
-            assert error.value.category == "invalid_http_json"
+            assert error.value.category == category
             assert error.value.attempts == 2
             assert not list((tmp_path / "cache").glob("*.json"))
         assert send.call_count == budget.attempts == 2
     first = json.loads((tmp_path / "attempts.responses/000001.json").read_text())
-    assert first["response"]["transport_error"]["raw_body"] == rejected.decode()
+    error_body = first["response"]["transport_error"]
+    restored = (bytes.fromhex(error_body["raw_body"]) if error_body["raw_body_encoding"] == "hex"
+                else error_body["raw_body"].encode("utf-8"))
+    assert restored == rejected
     assert "choices" not in first["response"]
     ledger = [json.loads(line) for line in budget.path.read_text().splitlines()]
     assert [e["outcome"] for e in ledger if e["event"] == "attempt_finished"] == [

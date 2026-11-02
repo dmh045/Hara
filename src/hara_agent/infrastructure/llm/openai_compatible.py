@@ -24,7 +24,7 @@ class TransientLLMError(RuntimeError):
     """A timeout, throttling response or server error that may succeed on retry."""
 
     def __init__(self, message: str, category: str = "network_error", *,
-                 response_body: str | None = None):
+                 response_body: str | bytes | None = None):
         super().__init__(message)
         self.category = category
         self.response_body = response_body
@@ -714,7 +714,9 @@ class OpenAICompatibleClient:
                             "transport_error": {
                                 "category": exc.category,
                                 "message": str(exc),
-                                "raw_body": exc.response_body,
+                                "raw_body": (exc.response_body.hex() if isinstance(exc.response_body, bytes)
+                                             else exc.response_body),
+                                "raw_body_encoding": ("hex" if isinstance(exc.response_body, bytes) else "utf-8"),
                             },
                         })
                 category = (
@@ -1032,6 +1034,11 @@ class OpenAICompatibleClient:
         except ssl.SSLError as exc:
             category = "timeout" if isinstance(exc, socket.timeout) else "ssl_error"
             raise TransientLLMError(f"LLM TLS failure: {type(exc).__name__}", category=category) from exc
+        except UnicodeDecodeError as exc:
+            raise TransientLLMError(
+                f"LLM HTTP response is not UTF-8 at byte {exc.start}: {exc.reason}",
+                category="invalid_http_encoding", response_body=exc.object,
+            ) from exc
         if not payload.strip():
             raise ValueError("LLM返回空响应，请检查endpoint和认证配置")
         try:
