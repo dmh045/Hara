@@ -352,6 +352,52 @@ def test_driver_branches_replace_parent_in_review_progress(tmp_path, fm_origin):
     assert "MF-DRIVER: COMPLETED (2/2 assessed" in render_review(reader)
 
 
+@pytest.mark.parametrize("assessed_count", [3, 4])
+def test_physical_children_replace_only_their_scoped_parents_in_progress(tmp_path, assessed_count):
+    writer = ReviewArtifactWriter("physical-progress", tmp_path)
+    parent = replace(_candidates(1)[0], analysis_instance={"p6_generation": True})
+    for identity in ("MF-PHYSICAL", "MF-OTHER"):
+        writer.record_malfunction(_malfunction(identity))
+    writer.record_scenario_candidate(
+        parent, generated_for_malfunction_ids=["MF-PHYSICAL", "MF-OTHER"],
+    )
+    leaves = []
+    for driver, samples in (("in", 2), ("out", 1)):
+        branch = replace(parent, scenario_id=f"SCN-DRIVER-{driver}", analysis_instance={
+            "p6_generation": True, "parent_scenario_id": parent.scenario_id,
+            "driver_configuration_branch": {"parent_scenario_id": parent.scenario_id},
+        })
+        writer.record_scenario_candidate(branch, generated_for_malfunction_ids=["MF-PHYSICAL"])
+        for sample in range(samples):
+            child = replace(branch, scenario_id=f"SCN-PHYSICAL-{driver}-{sample}", analysis_instance={
+                **branch.analysis_instance,
+                "physical_hypothesis": {"parent_scenario_id": branch.scenario_id},
+            })
+            writer.record_scenario_candidate(child, generated_for_malfunction_ids=["MF-PHYSICAL"])
+            leaves.append(child.scenario_id)
+    # A plan that produced no child is still a task, not silently excluded.
+    unresolved = replace(parent, scenario_id="SCN-NO-PHYSICAL-CHILD")
+    writer.record_scenario_candidate(unresolved, generated_for_malfunction_ids=["MF-PHYSICAL"])
+    leaves.append(unresolved.scenario_id)
+    for identity in leaves[:assessed_count]:
+        writer.record_scenario_feasibility(_assessment("MF-PHYSICAL", identity))
+    writer.record_scenario_feasibility(_assessment("MF-OTHER", parent.scenario_id))
+    candidate_file = tmp_path / "physical-progress" / "scenario_candidates.jsonl"
+    before = candidate_file.read_bytes()
+    writer.write_summary(HARAState(run_id="physical-progress", stage=WorkflowStage.MALFUNCTIONS))
+    reader = ReviewArtifactReader("physical-progress", tmp_path)
+    persisted = json.loads((tmp_path / "physical-progress" / "summary.json").read_text())
+    for summary in (persisted, reader.summary()):
+        assert summary["scenario_candidate_count"] == 7
+        assert summary["per_malfunction_summary"]["MF-PHYSICAL"]["expected_scenario_count"] == 4
+        assert summary["per_malfunction_summary"]["MF-PHYSICAL"]["assessment_status"] == (
+            "COMPLETED" if assessed_count == 4 else "PARTIAL")
+        assert summary["per_malfunction_summary"]["MF-OTHER"]["expected_scenario_count"] == 1
+        assert summary["per_malfunction_summary"]["MF-OTHER"]["assessment_status"] == "COMPLETED"
+    assert candidate_file.read_bytes() == before
+    assert f"({assessed_count}/4 assessed" in render_review(reader)
+
+
 def test_candidate_review_projection_compacts_large_shared_method_excerpts(review_root):
     writer = ReviewArtifactWriter("c51-projection", review_root)
     giant_excerpt = "method asset " * 20000

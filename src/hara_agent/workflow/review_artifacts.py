@@ -198,7 +198,18 @@ def _expected_candidate_count(
     ]
     p6_instances = [item for item in scoped if item.get("analysis_instance", {}).get("p6_generation")]
     if p6_instances:
-        return len(p6_instances)
+        # Generated driver/physical children replace their own parent in the
+        # causal queue. Keep parent records for audit, but do not count them
+        # again as unfinished tasks. Parents with no generated child remain.
+        replaced_parents = set()
+        for item in p6_instances:
+            instance = item["analysis_instance"]
+            for origin in (instance, instance.get("driver_configuration_branch", {}),
+                           instance.get("physical_hypothesis", {})):
+                parent_id = origin.get("parent_scenario_id")
+                if parent_id:
+                    replaced_parents.add(parent_id)
+        return sum(item.get("scenario_id") not in replaced_parents for item in p6_instances)
     analytical = [
         item for item in scoped
         if isinstance(item.get("analysis_instance"), dict)
