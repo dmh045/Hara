@@ -30,6 +30,10 @@ def _unmodeled_declared_response(candidate, method):
             "hypothesis_id": h.get("hypothesis_id", "control_assessment"), "driver_position": driver,
             "resolution": "The actuator is explicitly retained, but its automatic command path has not been assessed. Evaluate the system as the responder using the supplied fault scope and interfaces, separately from manual or remote operation. Declare automatic_braking_command remaining, failed, or unresolved with a specific reason in the existing control fields. Absence of an outside person's remote interface does not resolve automatic response availability. Do not invent an interface or convert function disablement into braking. Use the existing single correction only."}
     if not declared_response_path(h, driver):
+        if "braking" in h.get("remaining_controls", []) and driver == "outside_driver_seat":
+            return {"reason": "SAFE_STATE_INDEPENDENT_RESPONSE_REQUIRED",
+                "hypothesis_id": h.get("hypothesis_id", "control_assessment"), "driver_position": driver,
+                "resolution": "An actuator is retained but no existing command path is established. Propose the independent system response as safe_state_proposal.required_command_path with REQUIRED_NOT_ESTABLISHED, so the same physics can calculate its design deadline. Keep the failed commands failed and the unmitigated world unchanged. Do not credit this required interface as existing capability or C intervention. Return a compatible response and fault clock, or a specific actuator/physical/model contradiction; unknown implementation delay is the quantity to bound, not a reason to omit the analysis. Use the same single correction."}
         return None
     return {"reason": "SAFE_STATE_DECLARED_PATH_UNMODELED",
         "hypothesis_id": h.get("hypothesis_id", "control_assessment"), "driver_position": driver,
@@ -618,9 +622,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     for deferred in entry.get("audit", {}).get("deferred_safe_states", []))
                 if (prior_status == "VALIDATED" and prior_validation != validation_version
                         and entry.get("semantic_correction_completed")
-                        and any(f.get("reason") == "CONTROL_AUTOMATIC_COMMAND_UNASSESSED" for f in failures)):
+                        and any(f.get("reason") in {"CONTROL_AUTOMATIC_COMMAND_UNASSESSED", "SAFE_STATE_INDEPENDENT_RESPONSE_REQUIRED"} for f in failures)):
                     entry.setdefault("validation_history", []).append({"version": prior_validation,
-                        "error": "Shared actuator retained; automatic command assessment was omitted",
+                        "error": "Retained actuator needs current command/response requirement assessment",
                         "initial_plan": entry.get("initial_plan"), "diagnostics": entry.get("correction_diagnostics", [])})
                     entry.update(response_validation_version=validation_version,
                         initial_plan=plan.to_dict(), correction_diagnostics=failures)

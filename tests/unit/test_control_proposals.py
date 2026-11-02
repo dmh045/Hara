@@ -642,7 +642,9 @@ def test_generated_braking_capability_and_driver_access_are_separate(method, tmp
     assert result['controllability']['engineering_status'] == 'PENDING'
     construct_physical_scenarios(state, {'MF': [parent]}, [mf()], method=method,
         agent=agent, project_facts=None)
-    assert client.calls == 1
+    # An outside-only actuator with no usable command now gets one bounded
+    # design-response assessment; the unchanged reply cannot invent a path.
+    assert client.calls == (2 if not inside and remote is not True else 1)
 
 
 def test_legacy_remaining_control_projection_preserves_checkpoint_and_provenance(method):

@@ -66,7 +66,8 @@ def response_control_dependency_missing(proposal: dict) -> bool:
     controls = set(proposal["required_controls"])
     if model == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
         return (not {"drive", "braking"} <= controls
-                or not controls & {"driver_braking", "remote_control", "automatic_braking_command"})
+                or not controls & {"driver_braking", "remote_control", "automatic_braking_command"}
+                and not proposal.get("required_command_path"))
     return model == "CONSTANT_NET_DECELERATION" and not controls & {"driver_braking", "braking"}
 
 
@@ -92,7 +93,7 @@ def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
         *shared_capabilities, *assessment["remaining_controls"]]))
     shared_response = hypothesis.get("safe_state_proposal", {})
     required = set(shared_response.get("required_controls", []))
-    if ("automatic_braking_command" in required
+    if (("automatic_braking_command" in required or shared_response.get("required_command_path"))
             and not required & {"driver_braking", "remote_control"}
             and not required & (set(selected["failed_controls"]) | set(assessment.get("unresolved_controls", {})))
             and (not shared_response.get("driver_positions") or driver_position in shared_response["driver_positions"])
@@ -252,11 +253,27 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
     if "safe_state_proposal" in h:
         proposal = _object(h["safe_state_proposal"],
             {"description", "required_controls", "basis_refs", "conditions"},
-            {"driver_positions", "transition"}, path="safe_state_proposal (post_stop_motion belongs inside transition)")
+            {"driver_positions", "transition", "required_command_path"}, path="safe_state_proposal (post_stop_motion belongs inside transition)")
         _text(proposal["description"])
         controls = _texts(proposal["required_controls"])
         if not controls or not set(controls) <= set(h["remaining_controls"]):
             raise ValueError("Safe state proposal must depend on explicitly remaining controls")
+        if "required_command_path" in proposal:
+            path = _object(proposal["required_command_path"],
+                {"description", "initiator", "implementation_status", "independent_of", "rationale", "basis_refs"})
+            if path["initiator"] != "SYSTEM" or path["implementation_status"] != "REQUIRED_NOT_ESTABLISHED":
+                raise ValueError("Required command path is a system design requirement, never an available or approved interface")
+            for key in ("description", "rationale"):
+                _text(path[key])
+            excluded = _texts(path["independent_of"])
+            commands = {c for c in CONTROL_IDENTITIES if c.startswith("automatic_")}
+            if (not set(excluded) <= commands
+                    or not (set(h["failed_controls"]) & commands) <= set(excluded)
+                    or not set(controls) <= {"braking", "drive", "steering", "parking_hold", "speed_limiter"} | commands):
+                raise ValueError("Required system path must exclude every failed automatic command and use only retained actuators or retained automatic commands; it cannot restore failed controls or borrow a personnel command")
+            refs = _texts(path["basis_refs"], limit=max(16, len(evidence_ids)))
+            if not refs or not set(refs) <= evidence_ids:
+                raise ValueError("Required command path needs supplied fault and actuator evidence")
         if "driver_positions" in proposal:
             positions = _texts(proposal["driver_positions"])
             if not positions or not set(positions) <= {"in_driver_seat", "outside_driver_seat"}:

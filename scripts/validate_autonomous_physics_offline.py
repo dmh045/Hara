@@ -25,13 +25,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OfflinePhysicalClient:
-    def __init__(self, output, *, range_proposals=False, symbolic_drive=False, interaction_coverage=False):
+    def __init__(self, output, *, range_proposals=False, symbolic_drive=False, interaction_coverage=False, required_responses=False):
         self.output = output
         self.config = SimpleNamespace(provider="OFFLINE_SCRIPTED", model="offline-physical-fixtures-v1", max_tokens=8192)
         self.calls = Counter()
         self.range_proposals = range_proposals
         self.symbolic_drive = symbolic_drive
         self.interaction_coverage = interaction_coverage
+        self.required_responses = required_responses
 
     def proposal(self, request):
         from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
@@ -177,6 +178,28 @@ class OfflinePhysicalClient:
         self.calls[request.task] += 1
         if request.task == "construct_post_fault_physical_scenario":
             data = self.proposal(request)
+            if self.required_responses:
+                # Explicitly synthetic Provider replies for the existing
+                # application replay. This is never a runtime response policy.
+                controls = data['hypotheses'] or [data['control_assessment']]
+                for h in controls:
+                    assert 'braking' not in h['failed_controls']
+                    h['remaining_controls'] = list(dict.fromkeys([*h['remaining_controls'], 'braking']))
+                    h.get('unresolved_controls', {}).pop('braking', None)
+                    h['safe_state_proposal'] = dict(description='离线试验目标：停止并保持静止',
+                        required_controls=['braking'], basis_refs=['MF.description'],
+                        conditions=['OFFLINE：需实现独立系统响应，执行器条件性保留；此接口尚不存在于已验证架构。'],
+                        required_command_path=dict(description='离线设计要求：独立系统命令剩余制动执行器',
+                            initiator='SYSTEM', implementation_status='REQUIRED_NOT_ESTABLISHED',
+                            independent_of=[c for c in h['failed_controls'] if c.startswith('automatic_')],
+                            rationale='OFFLINE：保留原故障，独立通道是待实现要求，不计入现有控制能力。',
+                            basis_refs=['MF.description']),
+                        transition=dict(model='CONSTANT_NET_DECELERATION', net_deceleration_mps2=2.5,
+                            post_stop_motion='HOLD_POSITION', rationale='OFFLINE固定试验净减速假设，不是车辆实测值',
+                            basis_refs=['MF.description']))
+                    h['hazard_timing'] = dict(time_origin='FAULT_ONSET', fault_to_model_start_s=0,
+                        hazard_criterion='LOSS_OF_BRAKING_AVOIDABILITY',
+                        rationale='OFFLINE试验初态明确设在故障发生时', basis_refs=['MF.description'])
         elif request.task == "assess_scenario_feasibility":
             data = self.causal(request)
         elif request.task == "interpret_scenario_risk_facts":

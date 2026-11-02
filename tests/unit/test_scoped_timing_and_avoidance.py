@@ -21,6 +21,99 @@ def timed_plan():
     return raw
 
 
+@pytest.mark.parametrize('release', [False, True])
+@pytest.mark.parametrize('command_unknown', [False, True])
+def test_required_system_response_is_calculated_without_crediting_available_control(method, tmp_path, release, command_unknown):
+    from test_autonomous_physics import make_candidate, mf
+    from test_geometry_completion import Client, run
+    from test_moving_response_timing import release_plan
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    from hara_agent.workflow import HARAState
+    import json
+    raw = release_plan() if release else timed_plan()
+    h = raw['hypotheses'][0]
+    h['failed_controls'] = ['automatic_braking_command']
+    h['remaining_controls'] = ['braking', 'drive'] if release else ['braking']
+    if release:
+        h['remaining_controls'].append('automatic_drive_command')
+    proposal = h['safe_state_proposal']
+    proposal['required_controls'] = h['remaining_controls'][:]
+    proposal['driver_positions'] = ['outside_driver_seat']
+    proposal['required_command_path'] = dict(description='Independent system response must be implemented.',
+        initiator='SYSTEM', implementation_status='REQUIRED_NOT_ESTABLISHED',
+        independent_of=['automatic_braking_command'], rationale='Retained actuator; failed command remains failed.',
+        basis_refs=['MF.description'])
+    if command_unknown:
+        h['failed_controls'] = []
+        h['unresolved_controls'] = {'automatic_braking_command': 'Independence is not established.'}
+        proposal['required_command_path']['independent_of'] = []
+    missing = deepcopy(raw); missing['hypotheses'][0].pop('safe_state_proposal')
+    missing['hypotheses'][0]['safe_state_unresolved_reason'] = 'No existing independent command path.'
+    parent = make_candidate(7.2 if release else 3.6)
+    parent.facts.update(driver_in_vehicle=False, driver_position='outside_driver_seat')
+    before = instantiate(method, missing, parent)[0]
+    client = Client([missing, raw]); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state, generated = run(method, agent, candidates={'MF': [parent]})
+    child = generated['MF'][0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s > 0
+    assert timing.timing_trace['response_path_status'] == 'REQUIRED_NOT_ESTABLISHED'
+    assert timing.timing_trace['engineering_approval'] == 'NOT_GRANTED'
+    effective = child.facts['physical_analysis']['hypothesis']
+    assert effective['failed_controls'] == h['failed_controls']
+    assert effective['remaining_controls'] == h['remaining_controls']
+    assert child.facts.get('emergency_braking_available') == before.facts.get('emergency_braking_available')
+    if not command_unknown:
+        assert child.facts.get('emergency_braking_available') is not True
+    before_rating, after_rating = score(method, before), score(method, child)
+    for field, grade in [('severity', 'severity_score'), ('exposure', 'exposure_score'), ('controllability', 'controllability_score')]:
+        assert before_rating[field].get(grade) == after_rating[field].get(grade)
+    assert child.facts['physical_analysis']['hypothesis']['parameters'] == h['parameters']
+    assert '不计入C' in EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+    outcome = EngineeringReportTextMapper.safe_state_outcome(proposal)
+    assert outcome and '需建立独立响应通道' in outcome[1]
+    _, resumed = run(method, agent, state=HARAState.read_committed(json.loads(json.dumps(state.to_dict()))), candidates={'MF': [parent]})
+    assert resumed == generated and len(client.requests) == 2
+
+
+@pytest.mark.parametrize('defect', ['approved', 'personnel', 'failed_actuator', 'unexcluded_fault', 'instruction_field'])
+def test_required_response_cannot_restore_failed_capabilities_or_claim_implementation(defect):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = timed_plan(); h = raw['hypotheses'][0]; p = h['safe_state_proposal']
+    h['failed_controls'] = ['automatic_braking_command']; h['remaining_controls'] = ['braking']
+    p['required_controls'] = ['braking']
+    p['required_command_path'] = dict(description='Required system path', initiator='SYSTEM',
+        implementation_status='REQUIRED_NOT_ESTABLISHED', independent_of=['automatic_braking_command'],
+        rationale='Conditional architecture requirement', basis_refs=['MF.description'])
+    if defect == 'approved': p['required_command_path']['implementation_status'] = 'APPROVED'
+    if defect == 'personnel': p['required_controls'] = h['remaining_controls'] = ['driver_braking']
+    if defect == 'failed_actuator': h['failed_controls'].append('braking')
+    if defect == 'unexcluded_fault': p['required_command_path']['independent_of'] = []
+    if defect == 'instruction_field': p['required_command_path']['scope'] = 'Copied prompt instruction'
+    with pytest.raises(ValueError):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+
+
+def test_sg_display_keeps_required_and_existing_response_paths_distinct():
+    from types import SimpleNamespace
+    from hara_agent.services.reporting import HARAReportProjectionService
+    existing = {**timed_plan()['hypotheses'][0]['safe_state_proposal'], 'scenario_id': 'existing'}
+    required = {**deepcopy(existing), 'scenario_id': 'required',
+        'required_command_path': {'description': 'Required system response'}}
+    text = HARAReportProjectionService._safe_state_display(
+        SimpleNamespace(associated_scenario_ids=['existing', 'required']),
+        {'safe_state_candidates': [existing, required]})
+    assert len(text.splitlines()) == 2 and text.count('适用1个成员') == 2
+    assert text.count('需建立独立响应通道') == 1
+    timings = [{'hazard_time_limit_s': .7}, {'hazard_time_limit_s': .3,
+        'timing_trace': {'response_path_status': 'REQUIRED_NOT_ESTABLISHED'}}]
+    original = deepcopy(timings)
+    assert EngineeringReportTextMapper.ftti_value(timings) == '0.3 s'
+    assert '1个成员按尚需建立' in EngineeringReportTextMapper.ftti_rationale(timings)
+    assert timings == original
+
+
 def test_timing_report_does_not_label_every_missing_value_as_a_missing_model():
     timings = [
         {'hazard_time_limit_s': .4, 'reason': '条件性危险时限'},

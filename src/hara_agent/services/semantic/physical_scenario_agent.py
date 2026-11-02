@@ -140,10 +140,10 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v21-shared-actuator-capability"
-    PROMPT_VERSION = "post-fault-physical-scenario-v47-system-response-origin"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v29-system-response-origin"
-    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v8-system-response-origin"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v24-retained-system-commands"
+    PROMPT_VERSION = "post-fault-physical-scenario-v50-retained-system-commands"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v32-retained-system-commands"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v11-retained-system-commands"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -174,6 +174,7 @@ class PhysicalScenarioAgent:
         "这两种表示互斥：如果本代表工况已条件性保留driver_braking或braking，"
         "不得同时在unresolved_controls.braking声明未知；尚未验证的独立性和未覆盖共同失效写入conditions和uncovered_conditions。"
         "若连条件性人工路径也不能成立，则保留unresolved_controls.braking并不把driver_braking列为remaining。"
+        "同一干预字段不能同时出现在unresolved_controls和intervention_assumptions：有条件性值则把限制写入conditions，否则只声明未知及具体原因。"
         "driver_positions是可选字段，只能用in_driver_seat或outside_driver_seat；没有位置限定时省略，不写空字符串。"
         "空的控制数组不等于已完成分析；不要为通过检查强填可用或不可用。"
     )
@@ -182,12 +183,20 @@ class PhysicalScenarioAgent:
         "不是已实现的安全状态或工程批准；它也可以是解除异常减速后保持运动，不只限于停车。"
         "先从来源接口、当前失效范围和已声明的remaining_controls选择相容的人工、自动或远程路径，"
         "把命令接管、执行能力及共同失效限制写清，再给出活动模型所需的结构化响应输入。"
+        "若现有命令链已失效或未建立，而来源支持执行器本身可在该故障下条件性保留，继续建立安全设计所需的系统响应。"
+        "在safe_state_proposal.required_command_path中明确它是REQUIRED_NOT_ESTABLISHED的独立系统通道要求，"
+        "不是项目已有接口；说明需要绕过哪些失效命令、如何使用已有执行器及故障独立性条件。"
+        "required_controls此时只列有来源依据且相容的剩余执行能力及仍正常的自动命令，不列失效命令、车外踏板或假造远程接口；"
+        "原failed_controls保持失效。仅为求设计时间边界而假设需实现该通道，不把它写入remaining_controls，"
+        "不赋予emergency_braking_available或其他C避险收益。需要的响应输入和时钟由你提出，Python仍验证物理可行性。"
+        "这允许提出常规请求异常后的独立制动/释放要求、驻车请求失效后的持续行车制动保持要求；"
+        "不是默认车辆已经具备这些措施，也不能恢复已失效的执行器。整体执行能力失效或响应模型不适用时保留具体缺口。"
         "若已有条件性控制路径，不得仅因缺少实测延迟、尚未验证独立性、预计停车太晚或预计仍会接触，"
         "就删掉提案或只留一段timing_unresolved_reason；这些不能代替响应计算。"
         "保留有依据的提案让程序计算是否安全及时间边界；若程序已证明该方案不能避碰，保留负面证据，"
         "仅在存在相容的另一条路径时选择其他活动模型，不提高减速度来凑结果。"
         "正常接口可作为条件性分析的依据，不自动证明故障后独立，也不因未验证独立性而拒绝所有假设；"
-        "确实需要不存在的接口、已失效执行器、矛盾使能或不支持的运动时才列具体模型/路径缺口。"
+        "不存在的命令接口只能表达为明确的安全设计要求，不能称为现有路径；已失效执行器、矛盾物理条件或不支持的运动仍列具体缺口。"
         "不在文字里计算或猜测FTTI；可计算的工况必须返回模型输入，由Python给出数值。"
         "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
         "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
@@ -242,6 +251,7 @@ class PhysicalScenarioAgent:
         self.client = client
         self.responses = ResponseCheckpoint(response_checkpoint_dir) if response_checkpoint_dir else None
         config = getattr(client, "config", None)
+        self.max_tokens = getattr(config, "max_tokens", 8192)
         self.response_format = ({"type": "json_object"}
             if getattr(config, "scenario_response_format", "none") == "json_object" else None)
 
@@ -419,6 +429,14 @@ class PhysicalScenarioAgent:
                     "rationale": "response plus holding capability basis", "basis_refs": ["supplied evidence ID"]},
                 "alternative": "Use the active timing policy's fault_release_response model when justified, without braking/holding parameters; otherwise give a concrete timing_unresolved_reason.",
                 "field_ownership": "hazard_timing and uncovered_conditions belong beside safe_state_proposal in the control assessment, never inside the proposal or transition.",
+                "required_command_path": {"optional": True,
+                    "shape": {"description": "required independent system response; not an existing interface",
+                        "initiator": "SYSTEM", "implementation_status": "REQUIRED_NOT_ESTABLISHED",
+                        "independent_of": ["failed automatic command ID"],
+                        "rationale": "fault exclusion, retained actuator basis and implementation conditions",
+                        "basis_refs": ["supplied fault/actuator evidence ID"]},
+                    "field_ownership": "Return only the six shape fields inside required_command_path. optional, shape, field_ownership and scope are instructions, not response fields. independent_of includes every declared failed automatic command.",
+                    "scope": "Design-requirement calculation only. required_controls contains retained actuators and compatible retained automatic commands, never personnel commands or failed controls. Keep failed commands failed; do not add the required path to remaining_controls or C intervention inputs."},
             },
             "hazard_timing": {"placement": "same hypothesis/control_assessment or driver entry as the response",
                 "time_origin": "FAULT_ONSET", "fault_to_model_start_s": "nonnegative elapsed time with explicit basis; no default",
@@ -428,7 +446,7 @@ class PhysicalScenarioAgent:
                 "alternative": "Give timing_unresolved_reason when the clock/criterion cannot be related. FIRST_CONTACT_BOUND alone does not complete response timing."},
             "fault_release_transition": {
                 "shape": {"model": "RELEASE_DECELERATION_TO_CONSTANT_SPEED", "rationale": "independent release and force-balance basis", "basis_refs": ["supplied evidence ID"]},
-                "applicability": "Only when supported by active response_timing.fault_release_response. Required controls include drive, braking, and an independently justified trigger from driver_braking, remote_control, automatic_braking_command; do not declare a failed trigger remaining.",
+                "applicability": "Only when supported by active response_timing.fault_release_response. Required controls include drive, braking, and an independently justified existing trigger OR an explicit required_command_path design requirement; do not declare a failed trigger remaining.",
                 "forbidden_fields": ["net_deceleration_mps2", "post_stop_motion"],
                 "criterion": "LOSS_OF_RESPONSE_AVOIDABILITY",
             },
@@ -597,6 +615,7 @@ class PhysicalScenarioAgent:
                 "读取context中的原文依据及限定。$context_ref引用context字段，$source_text引用source_texts，"
                 "$context_value引用context.$context_values；这些无损引用均可递归展开，不代表来源缺失。"
                 "只返回output_shape的response_updates，不输出完整PhysicalScenarioPlan或hypotheses。"
+                "顶层只有response_updates；uncovered_conditions放在对应control_assessment或人员分支内，不放在顶层。"
                 "previous_plan中的运动、对象、参数、坡向、Atom和初始状态只读，由程序保留；不要复制或修改它们。"
                 "previous_plan中的控制缺口、人员分支解释和响应判断正是本次复核对象，不是额外来源事实或不可更改的工程规则；"
                 "按当前原文和故障范围重新判断，不能因为旧解释要求车外人员触发，就漏掉系统自身的相容自动响应。"
@@ -625,12 +644,11 @@ class PhysicalScenarioAgent:
                     **({"previous_invalid_response": previous_response} if repair else {})}, ensure_ascii=False, default=str, separators=(",", ":")),
                 schema_name="PhysicalScenarioPlan", prompt_version=(self.RESPONSE_CORRECTION_VERSION if response_only_correction else
                     self.CONTROL_PROMPT_VERSION if controls_only else self.PROMPT_VERSION),
-                # Both motion plans and complete driver-scoped control replies
-                # have exceeded 4096 tokens in real runs. The same bounded
-                # output allowance prevents a valid response being truncated.
+                # Reasoning and final JSON may share the provider's token cap.
+                # Honor the configured bound instead of overriding it with 8k.
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair,
                     **({"strict_no_format_retry": True} if repair else {})},
-                max_tokens=8192,
+                max_tokens=self.max_tokens,
                 response_format=self.response_format)
             response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
             record = {"request": asdict(request), "response": asdict(response), "schema_repair": repair}

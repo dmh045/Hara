@@ -1079,13 +1079,17 @@ class EngineeringReportTextMapper:
         remain in the detail and do not become common engineering evidence.
         """
         response = candidate.get("transition", {})
+        outcome = None
         if response.get("model") == "CONSTANT_NET_DECELERATION":
             if response.get("post_stop_motion") == "HOLD_POSITION":
-                return "STOP_AND_HOLD", "车辆停止并保持静止，在已检查时域内避免与目标接触"
-            return "STOP", "车辆在与目标接触前停止；停车后的保持条件见成员明细"
-        if response.get("model") == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
-            return "CONTINUE", "解除异常减速，保持响应开始时的速度行驶，在已检查时域内避免与目标接触"
-        return None
+                outcome = ("STOP_AND_HOLD", "车辆停止并保持静止，在已检查时域内避免与目标接触")
+            else:
+                outcome = ("STOP", "车辆在与目标接触前停止；停车后的保持条件见成员明细")
+        elif response.get("model") == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
+            outcome = ("CONTINUE", "解除异常减速，保持响应开始时的速度行驶，在已检查时域内避免与目标接触")
+        if outcome and candidate.get("required_command_path"):
+            return outcome[0] + "_REQUIRED_PATH", "目标状态（需建立独立响应通道）：" + outcome[1]
+        return outcome
 
     @staticmethod
     def safe_state_path(candidate: Mapping[str, Any]) -> tuple[tuple, str] | None:
@@ -1111,6 +1115,9 @@ class EngineeringReportTextMapper:
     @classmethod
     def safe_state_member(cls, candidate: Mapping[str, Any], scenario: Any) -> str:
         text = "期望安全状态：" + cls.hazardous_event(candidate["description"], scenario)
+        required = candidate.get("required_command_path")
+        if required:
+            text += "；尚需建立的系统响应：" + cls.hazardous_event(required["description"], scenario)
         path = cls.safe_state_path(candidate)
         if path:
             text += "；处置路径：" + path[1]
@@ -1167,17 +1174,21 @@ class EngineeringReportTextMapper:
             if any("\u4e00" <= ch <= "\u9fff" for ch in reason):
                 explanations.append(reason)
         reasons = "；".join(dict.fromkeys(explanations))
+        required_count = sum(item.get("timing_trace", {}).get("response_path_status") == "REQUIRED_NOT_ESTABLISHED"
+                             for item in timing_inputs or [])
+        required_note = (f"{required_count}个成员按尚需建立的独立系统响应计算设计边界；该通道未被认定为现有能力，不计入C的避险收益。"
+                         if required_count else "")
         lost = [item for item in timing_inputs or [] if item.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST"]
         lost_note = (f"{len(lost)}个成员在模型初始状态已无制动避碰余量：即使立即按假设净减速度制动，也不能在目标前停下。"
                      "原始0秒表示没有可用的响应延迟窗口，不是可供设计采用的正常FTTI，也不证明所有其他处置均无效。" if lost else "")
         calculated = [item for item in timing_inputs or [] if item.get("hazard_time_limit_s") is not None and item not in lost]
         if lost and not calculated:
-            return lost_note + ("其余成员的具体时间缺口见逐成员追溯。" if len(lost) != len(timing_inputs or []) else "")
+            return required_note + lost_note + ("其余成员的具体时间缺口见逐成员追溯。" if len(lost) != len(timing_inputs or []) else "")
         if calculated:
             missing = len(timing_inputs or []) - len(calculated) - len(lost)
             moving = any(item.get("timing_trace", {}).get("response_model_family") == "MOVING_TARGET_BRAKING" for item in calculated)
             release = any(item.get("timing_trace", {}).get("response_model_family") == "MOVING_TARGET_FAULT_RELEASE" for item in calculated)
-            return ("条件性时间边界：从故障发生到失去所选响应的避碰能力；"
+            return (required_note + "条件性时间边界：从故障发生到失去所选响应的避碰能力；"
                     + ("主表取已计算有效成员的最小值，逐成员数值见时间追溯。" if len(calculated) > 1 else "")
                     + ("解除异常减速的成员保持响应开始时的速度，在声明时域内检查与移动目标的间隔，不表示停车或瞬间恢复故障前速度。" if release else "")
                     + ("移动目标制动成员按原轨迹继续运动，检查故障行驶、制动及停车保持三段，在模型有效时段内确定首次失去避碰余量的边界。" if moving else
@@ -1188,7 +1199,7 @@ class EngineeringReportTextMapper:
         timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]
         available = [item for item in timings if item.get("contact_time_s") is not None]
         if not available:
-            return "缺少可用的接触时间；" + (reasons or "故障起点、危险判据及安全处置时间预算尚未确定，FTTI待定。")
+            return required_note + "缺少可用的接触时间；" + (reasons or "故障起点、危险判据及安全处置时间预算尚未确定，FTTI待定。")
         kinds = {item.get("contact_time_kind") for item in available}
         label = "侧向首次接触" if kinds == {"first_contact_time_s"} else "轨迹接触"
         values = [item["contact_time_s"] for item in available]
@@ -1198,7 +1209,7 @@ class EngineeringReportTextMapper:
         origin = ("从各模型初始状态计时" if all(
             item.get("time_origin") == "MODEL_INITIAL_STATE" for item in available)
             else "计时起点以各成员来源为准")
-        return (f"已有{label}时间 {extent}（{origin}）；"
+        return (required_note + f"已有{label}时间 {extent}（{origin}）；"
                 + (reasons or "尚未绑定故障起点及危险判据") + "接触时间不能作为 FTTI。")
 
 

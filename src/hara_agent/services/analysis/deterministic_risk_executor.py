@@ -32,6 +32,7 @@ class FTTIMethodExecutor:
     @staticmethod
     def evaluate(inputs, scenario, method):
         import math
+        from hara_agent.contracts.physical_scenario_plan import response_control_dependency_missing
         from .scenario_physics import braking_avoidability_boundary, moving_braking_avoidability_boundary, source_is_accepted_for
         policy = method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {})
         if not policy:
@@ -75,8 +76,11 @@ class FTTIMethodExecutor:
                            + ("具体原因：" + detail if detail else ""), "CONTROL_PATH_UNRESOLVED")
         release_policy = policy.get("fault_release_response", {})
         release = bool(release_policy and response.get("model") == release_policy.get("model"))
-        if (release and (not moving or not {"drive", "braking"} <= controls
-                         or not controls & {"driver_braking", "remote_control", "automatic_braking_command"})
+        required_path = proposal.get("required_command_path", {})
+        if required_path and (required_path.get("implementation_status") != "REQUIRED_NOT_ESTABLISHED"
+                              or required_path.get("initiator") != "SYSTEM"):
+            return pending("独立响应要求的实现状态不明确，不能作为现有控制能力使用。")
+        if (release and (not moving or response_control_dependency_missing(proposal))
                 or not release and response.get("model") != policy["response_model"]
                 or not controls & {"braking", "driver_braking"}):
             return pending(hypothesis.get("timing_unresolved_reason") or "安全状态尚未给出兼容的响应模型及控制路径。")
@@ -119,6 +123,9 @@ class FTTIMethodExecutor:
             return pending("移动目标需明确制动后保持静止及其控制依据，不能在停车瞬间截断交互。", "POST_STOP_MOTION_UNRESOLVED")
         result = (moving_braking_avoidability_boundary(scenario, b, release_deceleration=release) if moving else
                   braking_avoidability_boundary(v/3.6, a, d, b))
+        if required_path:
+            result = {**result, "response_path_status": "REQUIRED_NOT_ESTABLISHED",
+                      "required_command_path": required_path}
         cap = scenario.get("post_fault_speed_cap_kph")
         if (cap is not None and result.get("brake_onset_speed_mps", 0) > cap/3.6):
             return pending("当前轨迹含故障后速度限幅；现有制动边界不能跨限幅阶段外推，接触时间仍保留。")

@@ -17,6 +17,28 @@ from hara_agent.services.analysis.scenario_physics import constant_acceleration_
 from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
 
 
+def test_physical_output_budget_can_recover_reasoning_truncation_and_resume(tmp_path):
+    from hara_agent.infrastructure.llm.openai_compatible import LLMOutputLimitError
+    class Client:
+        config = SimpleNamespace(max_tokens=8192, model='reasoning-model')
+        budgets = []
+        def complete_json(self, request):
+            self.budgets.append(request.max_tokens)
+            if request.max_tokens == 8192:
+                raise LLMOutputLimitError('reasoning exhausted the final JSON allowance')
+            return LLMResponse(raw_plan(), self.config.model)
+    client = Client()
+    context = {'plan_key': 'token-limit', 'evidence': {'MF.description': 'fault'}}
+    with pytest.raises(LLMOutputLimitError):
+        PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(context)
+    client.config.max_tokens = 32768
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    plan, _ = agent.propose(context)
+    resumed, audit = agent.propose(context)
+    assert resumed == plan and audit['response_cache_hits'] == 1
+    assert client.budgets == [8192, 32768]
+
+
 def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_recovery(method, tmp_path):
     from test_geometry_completion import run
     from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
@@ -162,6 +184,10 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             assert request.prompt_version == PhysicalScenarioAgent.PROMPT_VERSION
             assert PhysicalScenarioAgent.RESPONSE_TIMING_POLICY in request.system_prompt
             assert payload['output_contract']['safe_state_proposal']['transition']['post_stop_motion'].startswith('HOLD_POSITION')
+            required_path = payload['output_contract']['safe_state_proposal']['required_command_path']
+            assert set(required_path['shape']) == {'description', 'initiator', 'implementation_status',
+                                                  'independent_of', 'rationale', 'basis_refs'}
+            assert 'instructions, not response fields' in required_path['field_ownership']
             assert 'Unmitigated fault trajectory ONLY' in payload['output_contract']['unmitigated_post_stop_motion']['meaning']
             assert '允许的最大响应延迟' in request.system_prompt
             assert '程序由坡度与阻力推导' in request.system_prompt

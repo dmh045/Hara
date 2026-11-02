@@ -1325,7 +1325,8 @@ class HARAReportProjectionService:
         timing_counts = Counter(
             "初始已无制动避碰余量" if value.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST" else
             "所选响应不能避碰" if value.get("timing_trace", {}).get("status") == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW" else
-            "已计算条件性时间边界" if value.get("hazard_time_limit_s") is not None else self.text.ftti_gap(value)
+            ("已计算独立响应设计边界（通道待建立）" if value.get("timing_trace", {}).get("response_path_status") == "REQUIRED_NOT_ESTABLISHED"
+             else "已计算条件性时间边界") if value.get("hazard_time_limit_s") is not None else self.text.ftti_gap(value)
             for value in timing_inputs.values())
         basis = MethodBasisView(
             method_source=summary_view.method_source,
