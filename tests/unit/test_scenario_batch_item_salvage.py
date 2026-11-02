@@ -162,6 +162,40 @@ def test_scenario_request_uses_configured_budget_with_safety_cap():
     assert client.requests[0].max_tokens == 16384
 
 
+@pytest.mark.parametrize('configured,still_truncated', [(65536,False),(65536,True),(16384,True)])
+def test_singleton_reasoning_limit_escalates_once_and_resumes_exact_cache(tmp_path,configured,still_truncated):
+    from hara_agent.infrastructure.llm import LLMOutputLimitError
+    from hara_agent.services.semantic.scenario_batching import ScenarioAdaptiveBatchError
+    class Client:
+        config = SimpleNamespace(max_tokens=configured,model='reasoning-test')
+        def __init__(self):self.requests=[]
+        def complete_json(self,request):
+            self.requests.append(request)
+            if request.max_tokens==16384 or still_truncated:
+                raise LLMOutputLimitError('reasoning used allowance',{'completion_tokens':request.max_tokens})
+            return LLMResponse({'assessments':[_negative('A')]},'reasoning-test')
+    client=Client();agent=ScenarioFeasibilityAgent(client,response_checkpoint_dir=tmp_path)
+    if still_truncated:
+        with pytest.raises(ScenarioAdaptiveBatchError):agent.assess(_malfunction(),_scenarios()[:1])
+        assert [r.max_tokens for r in client.requests]==([16384,65536] if configured>16384 else [16384])
+    else:
+        result,audit=agent.assess(_malfunction(),_scenarios()[:1])
+        assert [r.max_tokens for r in client.requests]==[16384,65536]
+        assert audit['actual_llm_calls']==2 and audit['output_limit_count']==1 and audit['retry_calls']==1
+        restored,resume_audit=ScenarioFeasibilityAgent(client,response_checkpoint_dir=tmp_path).assess(_malfunction(),_scenarios()[:1])
+        assert restored==result and len(client.requests)==2
+        assert resume_audit['actual_llm_calls']==0 and resume_audit['response_checkpoint_hits']==1
+
+
+def test_normal_small_causal_response_is_reused_with_large_configured_allowance(tmp_path):
+    client=_QueueClient([{'assessments':[_negative('A')]}]);client.config=SimpleNamespace(max_tokens=65536)
+    agent=ScenarioFeasibilityAgent(client,response_checkpoint_dir=tmp_path)
+    first,_=agent.assess(_malfunction(),_scenarios()[:1])
+    second,audit=agent.assess(_malfunction(),_scenarios()[:1])
+    assert second==first and len(client.requests)==1
+    assert client.requests[0].max_tokens==16384 and audit['actual_llm_calls']==0
+
+
 def test_one_invalid_item_repairs_only_that_item():
     client, assessments, audit = _run([
         {"assessments": [_negative("A"), _self_referential("B"), _negative("C")]},

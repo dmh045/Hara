@@ -39,8 +39,10 @@ def ordered_parallel_map(
     with ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="hara-llm") as executor:
         futures = {executor.submit(worker, item): index for index, item in enumerate(items)}
         completed = 0
+        observed = set()
         try:
             for future in as_completed(futures):
+                observed.add(future)
                 index = futures[future]
                 result = future.result()
                 results[index] = result
@@ -49,9 +51,26 @@ def ordered_parallel_map(
                 completed += 1
                 if on_progress:
                     on_progress(completed, total)
-        except Exception:
+        except Exception as error:
             for future in futures:
                 future.cancel()
+            # Running workers cannot be cancelled. Their durable results must
+            # still reach the existing checkpoint callback while we drain them.
+            for future in as_completed([f for f in futures if f not in observed and not f.cancelled()]):
+                try:
+                    result = future.result()
+                except Exception:
+                    continue
+                index = futures[future]
+                results[index] = result
+                try:
+                    if on_result:
+                        on_result(items[index], result)
+                    completed += 1
+                    if on_progress:
+                        on_progress(completed, total)
+                except Exception as persistence_error:
+                    error.add_note(f"Completed task checkpoint/progress failed: {persistence_error}")
             raise
     if any(value is missing for value in results):
         raise RuntimeError("并发任务结果不完整")

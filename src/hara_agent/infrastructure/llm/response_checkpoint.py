@@ -23,7 +23,7 @@ class ResponseCheckpoint:
     def __init__(self, directory: Path):
         self.directory = Path(directory)
 
-    def complete(self, client, request):
+    def complete(self, client, request, *, cache_only=False):
         config = getattr(client, "config", None)
         # Full prompt/schema identity includes source facts, method and scenario
         # IDs. Credentials are neither part of the key nor written to disk.
@@ -41,6 +41,8 @@ class ResponseCheckpoint:
         # Same in-flight request in concurrent workers must not pay twice on a
         # cache miss. Atomic rename below still protects interrupted writes.
         with _request_lock(path):
+            if cache_only and not path.is_file():
+                return None
             return self._complete_locked(client, request, path, key)
 
     def _complete_locked(self, client, request, path, key):

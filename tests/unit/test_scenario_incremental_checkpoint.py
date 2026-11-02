@@ -94,3 +94,52 @@ def test_completed_malfunction_batch_survives_interruption_and_is_reused():
     assert completed.stage is WorkflowStage.SCORING
     assert len(completed.item_definition["scenario_assessments"]) == 2
     assert "scenario_assessment_batches" not in completed.item_definition
+
+
+def _signal_parallel_drain(monkeypatch, event):
+    from concurrent.futures import ThreadPoolExecutor
+    from hara_agent.workflow.nodes import parallel
+    class Executor(ThreadPoolExecutor):
+        def submit(self,*args,**kwargs):
+            future=super().submit(*args,**kwargs);cancel=future.cancel
+            def signal():
+                event.set()
+                return cancel()
+            future.cancel=signal
+            return future
+    monkeypatch.setattr(parallel,'ThreadPoolExecutor',Executor)
+
+
+def test_parallel_failure_still_persists_running_successful_workers(monkeypatch):
+    from threading import Barrier,Event
+    from hara_agent.workflow.nodes.parallel import ordered_parallel_map
+    import pytest
+    entered=Barrier(2);draining=Event();saved=[]
+    _signal_parallel_drain(monkeypatch,draining)
+    def worker(item):
+        entered.wait(timeout=5)
+        if item=='bad':
+            raise ValueError('original worker failure')
+        assert draining.wait(timeout=5)
+        return 'completed result'
+    with pytest.raises(ValueError,match='original worker failure'):
+        ordered_parallel_map(['bad','good'],worker,max_workers=2,
+            on_result=lambda item,result:saved.append((item,result)))
+    assert saved==[('good','completed result')]
+
+
+def test_parallel_drain_preserves_original_error_if_checkpoint_callback_fails(monkeypatch):
+    from threading import Barrier,Event
+    from hara_agent.workflow.nodes.parallel import ordered_parallel_map
+    import pytest
+    entered=Barrier(2);draining=Event()
+    _signal_parallel_drain(monkeypatch,draining)
+    def worker(item):
+        entered.wait(timeout=5)
+        if item=='bad':raise ValueError('original worker failure')
+        assert draining.wait(timeout=5)
+        return item
+    def save(item,result):raise OSError('checkpoint not writable')
+    with pytest.raises(ValueError,match='original worker failure') as caught:
+        ordered_parallel_map(['bad','good'],worker,max_workers=2,on_result=save)
+    assert any('checkpoint not writable' in x for x in caught.value.__notes__)

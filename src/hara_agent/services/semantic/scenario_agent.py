@@ -144,11 +144,11 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
         )
         self.provider_max_tokens = self._provider_max_tokens()
 
-    def _complete_json(self, request):
+    def _complete_json(self, request, *, cache_only=False):
         request = replace(request, metadata={**request.metadata,
             "method_execution_identity": getattr(self, "method_execution_identity", {})})
-        return (self.response_checkpoint.complete(self.client, request)
-                if self.response_checkpoint else self.client.complete_json(request))
+        return (self.response_checkpoint.complete(self.client, request, cache_only=cache_only)
+                if self.response_checkpoint else None if cache_only else self.client.complete_json(request))
 
     def _provider_max_tokens(self) -> int:
         configured = int(getattr(
@@ -394,6 +394,7 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
         models: list[str],
         request_ids: list[str],
         project_registry: FactRegistry | None = None,
+        output_limit: int | None = None,
     ) -> list[ScenarioFeasibilityAssessment]:
         user_prompt = build_scenario_user_prompt(
             malfunction, scenarios, project_registry, self.causal_evidence_budget,
@@ -441,7 +442,7 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                 "assessment_contract_version": self.assessment_contract_version,
                 "provider_response_constraint": "JSON_OBJECT" if self.response_format else "NONE",
             },
-            max_tokens=self.provider_max_tokens,
+            max_tokens=output_limit or self.provider_max_tokens,
             response_format=self.response_format,
         )
         batch_started = time.monotonic()
@@ -449,7 +450,13 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
         if split_path == "root":
             stats["initial_batch_provider_calls"] += 1
         try:
-            response = self._complete_json(request)
+            configured_limit = int(getattr(getattr(self.client, "config", None), "max_tokens", self.provider_max_tokens))
+            # A saved successful escalation avoids repeating the smaller failed
+            # request after interruption. Both cache identities stay exact.
+            response = (self._complete_json(replace(request, max_tokens=configured_limit), cache_only=True)
+                        if len(scenarios) == 1 and configured_limit > request.max_tokens else None)
+            if response is None:
+                response = self._complete_json(request)
             if len(scenarios) == 2 and '"shared_context"' in user_prompt and not response.usage.get("response_checkpoint_hit"):
                 stats["shared_context_batch_count"] += 1
             if response.usage.get("response_checkpoint_hit") and split_path == "root":
@@ -463,6 +470,14 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                     stats["reasoning_characters"].append(diagnostics["reasoning_characters"])
                 if isinstance(diagnostics.get("completion_tokens"), (int, float)):
                     stats["completion_tokens"].append(diagnostics["completion_tokens"])
+                if len(scenarios) == 1 and output_limit is None and configured_limit > request.max_tokens:
+                    stats["retry_calls"] += 1
+                    print(f"[HARA] singleton output allowance increased {request.max_tokens}->{configured_limit} "
+                          f"malfunction={malfunction.malfunction_id} scenario={scenarios[0].scenario_id}", file=sys.stderr, flush=True)
+                    return self._assess_batch_adaptively(malfunction, scenarios,
+                        parent_batch=parent_batch, split_path=split_path, depth=depth,
+                        stats=stats, batch_usages=batch_usages, models=models, request_ids=request_ids,
+                        project_registry=project_registry, output_limit=configured_limit)
             else:
                 reason = "timeout"
                 stats["timeout_count"] += 1
