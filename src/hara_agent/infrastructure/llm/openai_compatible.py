@@ -23,9 +23,11 @@ Transport = Callable[[str, dict[str, str], bytes, float], dict[str, Any]]
 class TransientLLMError(RuntimeError):
     """A timeout, throttling response or server error that may succeed on retry."""
 
-    def __init__(self, message: str, category: str = "network_error"):
+    def __init__(self, message: str, category: str = "network_error", *,
+                 response_body: str | None = None):
         super().__init__(message)
         self.category = category
+        self.response_body = response_body
 
 
 class LLMOutputLimitError(ValueError):
@@ -707,6 +709,14 @@ class OpenAICompatibleClient:
             ) as exc:
                 if budget_attempt_id is not None:
                     self.attempt_budget.finish(budget_attempt_id, error=exc)
+                    if isinstance(exc, TransientLLMError) and exc.response_body is not None:
+                        self.attempt_budget.save_response(budget_attempt_id, request, {
+                            "transport_error": {
+                                "category": exc.category,
+                                "message": str(exc),
+                                "raw_body": exc.response_body,
+                            },
+                        })
                 category = (
                     exc.category if isinstance(exc, TransientLLMError)
                     else self._exception_type(exc)
@@ -1024,7 +1034,13 @@ class OpenAICompatibleClient:
             raise TransientLLMError(f"LLM TLS failure: {type(exc).__name__}", category=category) from exc
         if not payload.strip():
             raise ValueError("LLM返回空响应，请检查endpoint和认证配置")
-        parsed = json.loads(payload)
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise TransientLLMError(
+                f"LLM HTTP response is not JSON at position {exc.pos}: {exc.msg}",
+                category="invalid_http_json", response_body=payload,
+            ) from exc
         if not isinstance(parsed, dict):
             raise ValueError("LLM HTTP响应顶层必须为object")
         return parsed

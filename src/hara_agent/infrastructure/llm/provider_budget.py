@@ -151,6 +151,8 @@ class ProviderAttemptBudget:
         Request fields contain no transport headers/credentials. Invalid JSON
         and format corrections remain inspectable instead of disappearing when
         the successful-response checkpoint cannot accept them.
+        An invalid HTTP JSON body is kept under transport_error.raw_body, never
+        as a successful model envelope; the ledger still records an error.
         """
         directory = self.path.with_suffix(".responses")
         directory.mkdir(parents=True, exist_ok=True)

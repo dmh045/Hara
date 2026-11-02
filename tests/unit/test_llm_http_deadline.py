@@ -1,13 +1,15 @@
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread
+from unittest.mock import patch
+import io
 import json
 import time
 
 import pytest
 
 from hara_agent.infrastructure.llm.openai_compatible import (
-    OpenAICompatibleClient, TransientLLMError,
+    OpenAICompatibleClient, TransientLLMError, LLMTransportError,
 )
 
 
@@ -71,3 +73,59 @@ def test_incremental_body_read_preserves_complete_unicode_json(chunked):
     body = json.dumps(expected, ensure_ascii=False).encode("utf-8")
     with response_server(body, chunked=chunked) as url:
         assert OpenAICompatibleClient._http_transport(url, {}, b"{}", 1) == expected
+
+
+@pytest.mark.parametrize("recovers", [False, True])
+def test_invalid_http_json_uses_bounded_retry_and_preserves_rejected_body(tmp_path, recovers):
+    from hara_agent.config import LLMConfig
+    from hara_agent.infrastructure.llm.protocol import LLMRequest
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+    from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
+
+    rejected = b'{"choices":['
+    valid = json.dumps({"choices": [{"message": {"content": '{"ok":true}'},
+                                    "finish_reason": "stop"}], "model": "fake"}).encode()
+    budget = ProviderAttemptBudget(tmp_path / "attempts.jsonl", run_id="test", limit=2)
+    client = OpenAICompatibleClient(LLMConfig(
+        provider="openai-compatible", base_url="https://example.invalid/v1",
+        model="fake", api_key="not-a-real-key", max_retries=1, retry_backoff_seconds=0,
+    ), attempt_budget=budget)
+    request = LLMRequest(task="test", system_prompt="system", user_prompt="user",
+                         schema_name="Test", prompt_version="test")
+    cache = ResponseCheckpoint(tmp_path / "cache")
+    with patch("urllib.request.urlopen", side_effect=[io.BytesIO(rejected),
+               io.BytesIO(valid if recovers else rejected)]) as send:
+        if recovers:
+            assert cache.complete(client, request).data == {"ok": True}
+            assert cache.complete(client, request).data == {"ok": True}
+        else:
+            with pytest.raises(LLMTransportError) as error:
+                cache.complete(client, request)
+            assert error.value.category == "invalid_http_json"
+            assert error.value.attempts == 2
+            assert not list((tmp_path / "cache").glob("*.json"))
+        assert send.call_count == budget.attempts == 2
+    first = json.loads((tmp_path / "attempts.responses/000001.json").read_text())
+    assert first["response"]["transport_error"]["raw_body"] == rejected.decode()
+    assert "choices" not in first["response"]
+    ledger = [json.loads(line) for line in budget.path.read_text().splitlines()]
+    assert [e["outcome"] for e in ledger if e["event"] == "attempt_finished"] == [
+        "error", "response" if recovers else "error"]
+    assert "not-a-real-key" not in json.dumps(first)
+
+
+def test_invalid_model_content_is_not_an_http_retry():
+    from hara_agent.config import LLMConfig
+    from hara_agent.infrastructure.llm.protocol import LLMRequest
+
+    client = OpenAICompatibleClient(LLMConfig(
+        provider="openai-compatible", base_url="https://example.invalid/v1",
+        model="fake", api_key="fake", max_retries=1, retry_backoff_seconds=0,
+    ))
+    response = json.dumps({"choices": [{"message": {"content": "invalid model JSON"},
+                                       "finish_reason": "stop"}]}).encode()
+    with patch("urllib.request.urlopen", return_value=io.BytesIO(response)) as send:
+        with pytest.raises(ValueError):
+            client.complete_json(LLMRequest(task="test", system_prompt="system",
+                user_prompt="user", schema_name="Test", prompt_version="test"))
+        assert send.call_count == 1
