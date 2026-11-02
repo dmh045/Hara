@@ -675,8 +675,7 @@ class OpenAICompatibleClient:
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         task = request.task
         context = self._request_context(request)
-        configured_attempts = self.config.max_retries + 1
-        attempts = min(configured_attempts, 2) if task == "assess_scenario_feasibility" else configured_attempts
+        attempts = self.config.max_retries + 1
         error_counts: dict[str, int] = {}
         for attempt in range(1, attempts + 1):
             # A confirmed account-wide exhaustion also applies to later tasks

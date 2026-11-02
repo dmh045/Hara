@@ -135,3 +135,35 @@ def test_invalid_model_content_is_not_an_http_retry():
             client.complete_json(LLMRequest(task="test", system_prompt="system",
                 user_prompt="user", schema_name="Test", prompt_version="test"))
         assert send.call_count == 1
+
+
+@pytest.mark.parametrize("budget_limit", [2, 3])
+def test_causal_transport_honors_retry_configuration_without_bypassing_budget(tmp_path, budget_limit):
+    from hara_agent.config import LLMConfig
+    from hara_agent.infrastructure.llm.protocol import LLMRequest
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget, ProviderAttemptBudgetExceeded
+
+    budget = ProviderAttemptBudget(tmp_path / "attempts.jsonl", run_id="retry-config", limit=budget_limit)
+    calls = []
+
+    def transport(*args):
+        calls.append(args)
+        if len(calls) < 3:
+            raise TransientLLMError("truncated HTTP JSON", category="invalid_http_json")
+        return {"choices": [{"message": {"content": '{"assessments":[]}'}, "finish_reason": "stop"}]}
+
+    client = OpenAICompatibleClient(LLMConfig(
+        provider="openai-compatible", base_url="https://example.invalid/v1", model="fake",
+        api_key="fake", max_retries=2, retry_backoff_seconds=0,
+    ), transport=transport, attempt_budget=budget)
+    request = LLMRequest(task="assess_scenario_feasibility", system_prompt="system",
+        user_prompt="user", schema_name="ScenarioFeasibilityAssessmentList", prompt_version="test")
+    if budget_limit == 2:
+        with pytest.raises(ProviderAttemptBudgetExceeded):
+            client.complete_json(request)
+    else:
+        result = client.complete_json(request)
+        assert result.data == {"assessments": []}
+        assert result.usage["transport_attempts"] == 3
+        assert result.usage["transient_error_counts"] == {"invalid_http_json": 2}
+    assert len(calls) == budget.attempts == budget_limit
