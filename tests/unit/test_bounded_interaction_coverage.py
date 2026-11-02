@@ -83,7 +83,11 @@ def test_explicit_post_stop_world_reaches_contact_and_invalidates_old_phase(meth
     assert not original.facts.get('collision_branches')
     h['post_stop_motion'] = 'HOLD_POSITION'
     h['conditions'].append('Conditional braking force maintains the stopping position on this road for four seconds; no restart or rollaway.')
-    client = Client([raw])
+    corrected = deepcopy(raw)
+    from test_moving_response_timing import proposal
+    for field in ('safe_state_proposal', 'hazard_timing'):
+        corrected['hypotheses'][0][field] = deepcopy(proposal()['hypotheses'][0][field])
+    client = Client([raw, corrected])
     agent = PhysicalScenarioAgent(client)
     state, results = run(method, agent, candidates={'MF': [parent]})
     child = results['MF'][0]
@@ -104,7 +108,7 @@ def test_explicit_post_stop_world_reaches_contact_and_invalidates_old_phase(meth
     assert removed['motion_model_outcome']['limiting_condition'] == 'EGO_STOP'
     assert 'ttc_s' not in removed and 'relative_speed_kph' not in removed
     run(method, agent, state=state, candidates={'MF': [deepcopy(parent)]})
-    assert len(client.requests) == 1
+    assert len(client.requests) == 2
 
 
 @pytest.mark.parametrize('reverse,lateral_offset,horizon,contact', [
@@ -247,20 +251,29 @@ def test_noncontact_does_not_invent_impact_or_ttc(method, kwargs, status):
 
 
 def test_moving_target_response_shared_between_drivers_and_recovered(method, tmp_path):
+    from test_moving_response_timing import proposal
     parent = make_candidate(3.6)
     parent.facts.update(object_speed_kph=3.6, object_id="object1")
     parent.fact_provenance["object_speed_kph"] = source()
     other = deepcopy(parent)
     other.scenario_id = "outside"
     other.facts["driver_in_vehicle"] = False
-    client = Client([moving_plan()])
+    complete = moving_plan(); h = complete['hypotheses'][0]
+    h['remaining_controls'] = ['automatic_braking_command', 'braking']
+    for field in ('safe_state_proposal', 'hazard_timing'):
+        h[field] = deepcopy(proposal()['hypotheses'][0][field])
+    h['safe_state_proposal']['required_controls'] = h['remaining_controls'][:]
+    h['safe_state_proposal'].pop('driver_positions', None)
+    client = Client([complete, complete])
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
     state, result = run(method, agent, candidates={"MF": [parent, other]})
-    assert len(client.requests) == 1 and len(result["MF"]) == 2
+    assert len(client.requests) == 2 and len(result["MF"]) == 2
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert any(d['reason'] == 'SAFE_STOP_RESPONSE_UNREACHABLE' for d in entry['correction_diagnostics'])
     assert all(c.facts["motion_model_outcome"]["status"] == "CONTACT" for c in result["MF"])
     original = [c.scenario_id for c in result["MF"]]
     _, recovered = run(method, agent, state=state, candidates={"MF": [parent, other]})
-    assert len(client.requests) == 1
+    assert len(client.requests) == 2
     assert [c.scenario_id for c in recovered["MF"]] == original
     child = result["MF"][0]
     view = {**child.facts, "scenario_id": child.scenario_id, "malfunction_id": "MF", "_fact_provenance": child.fact_provenance}

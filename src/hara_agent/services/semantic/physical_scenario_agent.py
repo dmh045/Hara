@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hara_agent.contracts.physical_scenario_plan import (
     MODEL_CATALOG, PARAMETER_UNITS, PHYSICAL_PLAN_VERSION, PhysicalScenarioPlan, CONTROL_IDENTITIES,
-    INTERVENTION_ASSUMPTION_FIELDS, braking_response_dependency_missing,
+    INTERVENTION_ASSUMPTION_FIELDS, response_control_dependency_missing,
 )
 from hara_agent.infrastructure.llm import LLMRequest
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
@@ -140,10 +140,10 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v14-shared-response-dependencies"
-    PROMPT_VERSION = "post-fault-physical-scenario-v45-shared-response-model-scope"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v27-shared-response-model-scope"
-    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v6-shared-response-model-scope"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v18-scoped-response-dependencies"
+    PROMPT_VERSION = "post-fault-physical-scenario-v46-conditional-response-production"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v28-conditional-response-production"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v7-conditional-response-production"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -171,6 +171,17 @@ class PhysicalScenarioAgent:
         "空的控制数组不等于已完成分析；不要为通过检查强填可用或不可用。"
     )
     RESPONSE_TIMING_POLICY = (
+        "按控制路径、响应建模、程序验证的顺序完成任务。safe_state_proposal是待验证的处置提案，"
+        "不是已实现的安全状态或工程批准；它也可以是解除异常减速后保持运动，不只限于停车。"
+        "先从来源接口、当前失效范围和已声明的remaining_controls选择相容的人工、自动或远程路径，"
+        "把命令接管、执行能力及共同失效限制写清，再给出活动模型所需的结构化响应输入。"
+        "若已有条件性控制路径，不得仅因缺少实测延迟、尚未验证独立性、预计停车太晚或预计仍会接触，"
+        "就删掉提案或只留一段timing_unresolved_reason；这些不能代替响应计算。"
+        "保留有依据的提案让程序计算是否安全及时间边界；若程序已证明该方案不能避碰，保留负面证据，"
+        "仅在存在相容的另一条路径时选择其他活动模型，不提高减速度来凑结果。"
+        "正常接口可作为条件性分析的依据，不自动证明故障后独立，也不因未验证独立性而拒绝所有假设；"
+        "确实需要不存在的接口、已失效执行器、矛盾使能或不支持的运动时才列具体模型/路径缺口。"
+        "不在文字里计算或猜测FTTI；可计算的工况必须返回模型输入，由Python给出数值。"
         "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
         "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
         "的净减速度假设，不是车辆实测能力，不得沿用方法示例的默认减速度。停止是否安全仍须考虑目标轨迹。"
@@ -616,6 +627,7 @@ class PhysicalScenarioAgent:
             on_response(record)  # Persist even a semantically invalid response before repair.
             try:
                 candidate = deepcopy(response.data)
+                PhysicalScenarioPlan.validate_generated_notes(candidate)
                 envelope_normalization = ""
                 if (not controls_only and isinstance(candidate, dict) and "hypotheses" not in candidate
                         and {"hypothesis_id", "model", "geometry", "parameters", "basis_refs", "uncovered_conditions"} <= candidate.keys()):
@@ -752,18 +764,21 @@ class PhysicalScenarioAgent:
                                             "driver_position": next(k for k, v in hypothesis["driver_control_assessments"].items() if v is controls_view),
                                             "controls": inherited, "normalization": "BOUND_EXPLICIT_SHARED_RESPONSE_DEPENDENCY"})
                                 transition = proposal.get("transition", {})
-                                missing_braking = (isinstance(transition, dict)
-                                    and braking_response_dependency_missing(proposal))
-                                if not set(controls) - set(remaining) and not missing_braking:
+                                missing_dependency = (isinstance(transition, dict)
+                                    and response_control_dependency_missing(proposal))
+                                missing_release = missing_dependency and transition.get("model") == "RELEASE_DECELERATION_TO_CONSTANT_SPEED"
+                                if not set(controls) - set(remaining) and not missing_dependency:
                                     continue
                                 failed_dependency = bool(set(controls) & set(failed))
                                 deferred_states.append({"hypothesis_id": hypothesis_id,
                                     **({"driver_position": next(k for k, v in hypothesis["driver_control_assessments"].items() if v is controls_view)} if controls_view is not hypothesis else {}),
-                                    "reason": "SAFE_STATE_MODEL_REQUIRES_BRAKING" if missing_braking else
+                                    "reason": "SAFE_STATE_RELEASE_PATH_INCOMPLETE" if missing_release else
+                                        "SAFE_STATE_MODEL_REQUIRES_BRAKING" if missing_dependency else
                                         "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
                                     "proposal": controls_view.pop("safe_state_proposal")})
                                 controls_view["safe_state_unresolved_reason"] = (
-                                    "所选减速响应未声明所依赖的制动通道；驻车保持能力不能代替动态减速能力。原提案保留在响应审计中。" if missing_braking else
+                                    "解除异常减速响应未完整声明触发、制动释放及驱动保持路径；不能只凭执行器存在推定接管有效。原提案保留在响应审计中。" if missing_release else
+                                    "所选减速响应未声明所依赖的制动通道；驻车保持能力不能代替动态减速能力。原提案保留在响应审计中。" if missing_dependency else
                                     "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
                                     "安全状态提案所需控制能力尚未成立，提案局部待定；原始提案保留在响应审计中。")
                                 controls_view["uncovered_conditions"].append(controls_view["safe_state_unresolved_reason"])

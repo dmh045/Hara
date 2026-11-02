@@ -124,6 +124,13 @@ def test_radius_range_stays_bounded_and_symbol_does_not_inherit_old_point(method
 
 
 def test_real_workflow_reuses_plan_not_changed_geometry_or_old_causal(method,tmp_path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    complete = curved_plan(); h = complete['hypotheses'][0]
+    h['remaining_controls'] = ['automatic_braking_command', 'braking']
+    for field in ('safe_state_proposal', 'hazard_timing'):
+        h[field] = deepcopy(timed_plan()['hypotheses'][0][field])
+    h['safe_state_proposal']['required_controls'] = h['remaining_controls'][:]
+    h['safe_state_proposal'].pop('driver_positions')
     class Frozen:
         calls = 0
         def complete_json(self, request):
@@ -131,7 +138,7 @@ def test_real_workflow_reuses_plan_not_changed_geometry_or_old_causal(method,tmp
             assert '不能用它代替纯转向' in request.system_prompt
             catalog = json.loads(request.user_prompt)['model_catalog']
             assert 'CONSTANT_SPEED_CURVATURE_TO_CONTACT' in catalog
-            return LLMResponse(curved_plan(), 'OFFLINE_SYNTHETIC')
+            return LLMResponse(deepcopy(complete), 'OFFLINE_SYNTHETIC')
     a = make_candidate(7)
     b = deepcopy(a); b.scenario_id += '-outside'
     a.facts.update(driver_position='in_driver_seat', driver_in_vehicle=True)

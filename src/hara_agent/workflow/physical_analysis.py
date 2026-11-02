@@ -6,13 +6,29 @@ import sys
 from threading import Lock
 from time import perf_counter
 
-from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability
+from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability, declared_response_path
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
 from hara_agent.services.extraction.evidence_retrieval import (
     CoverageFirstContextAssembler, DeterministicEvidenceRetriever, FactRetrievalSpec,
 )
+
+
+def _unmodeled_declared_response(candidate, method):
+    """One production diagnostic for all declared, model-supported response paths."""
+    facts = candidate.facts
+    h = (facts.get("control_analysis") or facts.get("physical_analysis", {})).get("hypothesis", {})
+    outcome = facts.get("motion_model_outcome", {})
+    driver = "in_driver_seat" if facts.get("driver_in_vehicle") is True else "outside_driver_seat" if facts.get("driver_in_vehicle") is False else ""
+    contact = outcome.get("status") == "CONTACT" or not outcome and bool(facts.get("collision_branches"))
+    supported = method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {}).get("supported_models", [])
+    if (not contact or h.get("safe_state_proposal") or not declared_response_path(h, driver)
+            or facts.get("fault_motion_model") not in supported):
+        return None
+    return {"reason": "SAFE_STATE_DECLARED_PATH_UNMODELED",
+        "hypothesis_id": h.get("hypothesis_id", "control_assessment"), "driver_position": driver,
+        "resolution": "This world already declares a conditional response control path. Supply the compatible structured response for deterministic evaluation of its maximum allowed response delay, or identify a specific model/enable/fault contradiction. A safe_state_proposal is a candidate, not proof of safe stopping or engineering approval; a fault-release response can remain in motion. Missing measured latency, unverified independence or a predicted short/unsafe window is not a substitute for this calculation. Do not invent interfaces, credit failed controls, borrow an in-seat pedal outside or change this trajectory. Use the existing single correction only."}
 
 
 def _source_evidence(state, function):
@@ -487,13 +503,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                 errors.append({"reason": "SAFE_STATE_DRIVER_SCOPE_UNASSESSED",
                                     "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
                                     "resolution": "Preserve the shared motion. In driver_control_assessments.outside_driver_seat assess a complete compatible command/execution path from source and fault scope, or give a concrete safe_state_unresolved_reason. Keep the in-seat path. Do not use a pedal outside, assume remote availability from an App, duplicate the trajectory, or alter parameters. Use the same one bounded correction."})
-                            if (outcome.get("status") == "CONTACT" and not proposal
-                                    and {"automatic_braking_command", "braking"}
-                                    <= set(response_hypothesis.get("remaining_controls", []))):
-                                errors.append({"reason": "SAFE_STATE_DECLARED_AUTOMATIC_PATH_UNMODELED",
-                                    "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
-                                    "driver_position": driver,
-                                    "resolution": "This world already declares an automatic braking command and actuator available conditionally. Evaluate its compatible response, or identify a specific model/enable/fault contradiction. Computing the maximum allowed response delay does not require a measured detection/reaction delay; actual delay is checked against that limit later. Driver absence does not require a remote trigger for an automatic path. Preserve the fault world and all conditional qualifications; do not assert engineering approval or invent a working path."})
+                            response_gap = _unmodeled_declared_response(child, method)
+                            if response_gap:
+                                errors.append(response_gap)
                             response_missing = (not proposal.get("transition") or
                                 child.facts.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
                                 and proposal.get("transition", {}).get("model") == "CONSTANT_NET_DECELERATION"

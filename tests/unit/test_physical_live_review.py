@@ -572,6 +572,34 @@ def test_parking_hold_cannot_supply_dynamic_braking_or_discard_valid_driver_bran
     assert restored == plan and len(client.requests) == 1
 
 
+@pytest.mark.parametrize('response_update', [False, True])
+def test_incomplete_shared_release_does_not_discard_valid_scoped_response(method, tmp_path, response_update):
+    from test_geometry_completion import Client
+    from test_moving_response_timing import release_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL, controls_for_driver
+    raw = release_plan(); h = raw['hypotheses'][0]
+    inside = {k: deepcopy(v) for k, v in h.items() if k in CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL}
+    h['remaining_controls'] = ['braking', 'drive']
+    h['safe_state_proposal']['required_controls'] = ['braking', 'drive']
+    h['driver_control_assessments'] = {'in_driver_seat': inside}
+    context = {'plan_key': 'release-scope', 'evidence': {'MF.description': 'fault'}}
+    if response_update:
+        context.update(previous_plan=release_plan(), correction_diagnostics=[{
+            'hypothesis_id': h['hypothesis_id'], 'reason': 'SAFE_STATE_RESPONSE_PATH_REVIEW'}])
+        raw = {'response_updates': [{'hypothesis_id': h['hypothesis_id'], 'control_assessment': {
+            k: deepcopy(v) for k, v in h.items() if k in CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL | {'driver_control_assessments'}}}]}
+    before = deepcopy(raw); client = Client([raw])
+    plan, audit = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(context)
+    assert controls_for_driver(plan.hypotheses[0], 'in_driver_seat')['safe_state_proposal'] == inside['safe_state_proposal']
+    assert 'safe_state_proposal' not in controls_for_driver(plan.hypotheses[0], 'outside_driver_seat')
+    assert plan.hypotheses[0]['parameters'] == h['parameters'] and plan.hypotheses[0]['geometry'] == h['geometry']
+    assert audit['deferred_safe_states'][0]['reason'] == 'SAFE_STATE_RELEASE_PATH_INCOMPLETE'
+    assert audit['deferred_safe_states'][0]['proposal'] == h['safe_state_proposal']
+    assert raw == before and audit['responses'][0]['response']['data'] == before
+    restored, _ = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(context)
+    assert restored == plan and len(client.requests) == 1
+
+
 def test_explicit_local_response_binds_shared_controls_and_reaches_both_driver_timings(method, tmp_path):
     from test_geometry_completion import Client, run
     from test_scoped_timing_and_avoidance import timed_plan

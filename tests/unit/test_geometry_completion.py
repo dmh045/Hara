@@ -29,8 +29,9 @@ def test_response_updates_keep_every_motion_field_and_remove_superseded_controls
     update = {'response_updates': [{'hypothesis_id': h['hypothesis_id'], 'control_assessment': assessment}]}
     before, raw = deepcopy(previous), deepcopy(update)
     result = PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
-    PhysicalScenarioPlan.validate_correction_scope(previous, result,
-        [{'reason': 'SAFE_STOP_FAULT_CLOCK_NOT_BOUND', 'hypothesis_id': h['hypothesis_id']}])
+    with pytest.raises(ValueError, match='CORRECTION_RESPONSE_STILL_INCOMPLETE'):
+        PhysicalScenarioPlan.validate_correction_scope(previous, result,
+            [{'reason': 'SAFE_STOP_FAULT_CLOCK_NOT_BOUND', 'hypothesis_id': h['hypothesis_id']}])
     assert previous == before and update == raw
     assert 'timing_unresolved_reason' not in result['hypotheses'][0]
     for field in ('geometry', 'parameters', 'model'):
@@ -38,6 +39,79 @@ def test_response_updates_keep_every_motion_field_and_remove_superseded_controls
     update['response_updates'][0]['control_assessment']['parameters'] = h['parameters']
     with pytest.raises(ValueError, match='keys must'):
         PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+
+
+@pytest.mark.parametrize('path', ['manual', 'automatic', 'remote'])
+def test_declared_response_path_gets_complete_timing_and_resumes_without_requests(method, tmp_path, path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    complete = timed_plan(); h = complete['hypotheses'][0]
+    driver = 'in_driver_seat' if path == 'manual' else 'outside_driver_seat'
+    controls = ['driver_braking'] if path == 'manual' else [
+        'braking', 'automatic_braking_command' if path == 'automatic' else 'remote_control']
+    h['remaining_controls'] = controls
+    h['safe_state_proposal']['required_controls'] = controls
+    h['safe_state_proposal']['driver_positions'] = [driver]
+    missing = deepcopy(complete)
+    missing['hypotheses'][0].pop('safe_state_proposal')
+    missing['hypotheses'][0]['timing_unresolved_reason'] = 'Measured latency and engineering approval are not available.'
+    parent = make_candidate(3.6); parent.facts['driver_in_vehicle'] = path == 'manual'
+    client = Client([missing, complete]); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state, generated = run(method, agent, candidates={'MF': [parent]})
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert any(d['reason'] == 'SAFE_STATE_DECLARED_PATH_UNMODELED' for d in entry['correction_diagnostics'])
+    child = generated['MF'][0]
+    value = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert value.hazard_time_limit_s == pytest.approx(.9364916731)
+    assert value.status.value == 'CONDITIONAL' and len(client.requests) == 2
+    assert entry['plan']['hypotheses'][0]['parameters'] == missing['hypotheses'][0]['parameters']
+    _, resumed = run(method, agent, state=state, candidates={'MF': [parent]})
+    assert resumed == generated and len(client.requests) == 2
+
+
+def test_requested_response_cannot_silently_disappear_but_specific_gap_is_retained():
+    from test_scoped_timing_and_avoidance import timed_plan
+    previous = timed_plan(); missing = deepcopy(previous)
+    h = missing['hypotheses'][0]; h.pop('safe_state_proposal')
+    diagnostics = [{'hypothesis_id': 'h1', 'driver_position': 'in_driver_seat',
+                    'reason': 'SAFE_STATE_DECLARED_PATH_UNMODELED'}]
+    with pytest.raises(ValueError, match='CORRECTION_DECLARED_RESPONSE_NOT_MODELED'):
+        PhysicalScenarioPlan.validate_correction_scope(previous, missing, diagnostics)
+    h['remaining_controls'] = []
+    h['unresolved_controls'] = {'braking': 'Mechanically locked brake cannot be independently overridden.'}
+    h['safe_state_unresolved_reason'] = 'The remaining pedal cannot release the mechanically locked brake.'
+    PhysicalScenarioPlan.validate_correction_scope(previous, missing, diagnostics)
+    assert 'safe_state_proposal' not in h
+
+
+def test_bounded_new_notes_compose_without_losing_historical_or_driver_evidence(tmp_path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL, controls_for_driver
+    previous = timed_plan(); h = previous['hypotheses'][0]
+    h['conditions'] = [f'Motion condition {i}' for i in range(12)]
+    assessment = {k: deepcopy(v) for k, v in h.items() if k in CONTROL_ASSESSMENT_REQUIRED | CONTROL_ASSESSMENT_OPTIONAL}
+    assessment['conditions'] = [f'Response condition {i}' for i in range(8)]
+    local = deepcopy(assessment); local['conditions'] = [f'Driver condition {i}' for i in range(5)]
+    assessment['driver_control_assessments'] = {'in_driver_seat': local}
+    update = {'response_updates': [{'hypothesis_id': 'h1', 'control_assessment': assessment}]}
+    original = deepcopy(update)
+    client = Client([update]); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'composed-notes', 'evidence': {'MF.description': 'fault'}, 'previous_plan': previous,
+               'correction_diagnostics': [{'hypothesis_id': 'h1', 'reason': 'SAFE_STATE_RESPONSE_PATH_REVIEW'}]}
+    plan, audit = agent.propose(context)
+    effective = controls_for_driver(plan.hypotheses[0], 'in_driver_seat')
+    assert effective['conditions'] == h['conditions'] + assessment['conditions'] + local['conditions']
+    assert plan == PhysicalScenarioPlan.from_dict(plan.to_dict(), evidence_ids={'MF.description'})
+    restored, _ = agent.propose(context)
+    assert restored == plan and len(client.requests) == 1 and update == original
+    assert audit['responses'][0]['response']['data'] == original
+    oversized = deepcopy(update); oversized['response_updates'][0]['control_assessment']['conditions'] = ['new'] * 17
+    with pytest.raises(ValueError, match='new response: at most 16 entries'):
+        PhysicalScenarioPlan.validate_generated_notes(oversized)
+    malformed = plan.to_dict(); malformed['hypotheses'][0]['conditions'].append(42)
+    with pytest.raises(ValueError, match='nonempty string'):
+        PhysicalScenarioPlan.from_dict(malformed, evidence_ids={'MF.description'})
 
 
 def test_bounded_response_update_completes_timing_without_rewriting_world(method, tmp_path):
@@ -676,6 +750,7 @@ def test_response_survives_full_snapshot_failure_and_scope_change_invalidates(me
 
 def test_invalid_plan_revalidates_saved_raw_reply_after_validator_change(method, tmp_path):
     from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    from test_scoped_timing_and_avoidance import timed_plan
 
     class OldStrictAgent(PhysicalScenarioAgent):
         RESPONSE_VALIDATION_VERSION = 'old-strict-controls'
@@ -687,7 +762,8 @@ def test_invalid_plan_revalidates_saved_raw_reply_after_validator_change(method,
                 evidence_ids=set(context['evidence']))
             return plan, audit
 
-    raw = raw_plan()
+    raw = timed_plan()
+    raw['hypotheses'][0]['parameters'][0]['value'] = 0
     raw['hypotheses'][0]['remaining_controls'] = [['driver_braking']]
     client = Client([raw])
     cache = tmp_path/'responses'
@@ -900,8 +976,12 @@ def test_failed_optional_response_revalidates_saved_reply_once_after_validator_r
 @pytest.mark.parametrize("reported_scope_error", [True, False])
 def test_reported_counterfactual_geometry_reaches_correction_and_legacy_resume(method, tmp_path, reported_scope_error):
     from test_bounded_interaction_coverage import moving_plan
+    from test_moving_response_timing import proposal
     raw = moving_plan(initial=0, acceleration=.2, target_direction='RIGHT',
         x=.5, y=1.5, position='LEFT', collision='SIDE', horizon=3)
+    response = proposal()['hypotheses'][0]
+    for field in ('safe_state_proposal', 'hazard_timing'):
+        raw['hypotheses'][0][field] = deepcopy(response[field])
     corrected = deepcopy(raw)
     next(p for p in corrected['hypotheses'][0]['parameters'] if p['field']=='object_offset_x_m')['value'] = 1.2
     client = Client([raw, corrected, corrected])

@@ -348,6 +348,8 @@ def test_withdrawn_response_evidence_is_not_borrowed_from_another_hypothesis(met
     raw = proposal(); raw['hypotheses'][0]['geometry']['object_longitudinal_direction']='REVERSE'
     other = deepcopy(raw['hypotheses'][0]); other['hypothesis_id']='different-response-scope'
     other.pop('safe_state_proposal')
+    other['remaining_controls'] = []
+    other['unresolved_controls'] = {'braking': 'No independent braking assumption for this separate hypothesis.'}
     other['safe_state_unresolved_reason']='No response proposed for this independent hypothesis.'
     raw['hypotheses'].append(other)
     corrected = deepcopy(raw); corrected['hypotheses'][0].pop('safe_state_proposal')

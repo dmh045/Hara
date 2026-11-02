@@ -60,10 +60,14 @@ CONTROL_ASSESSMENT_OPTIONAL = {"intervention_assumptions", "unresolved_controls"
                                "safe_state_unresolved_reason", "hazard_timing", "timing_unresolved_reason"}
 
 
-def braking_response_dependency_missing(proposal: dict) -> bool:
-    """The response must name its braking dependency, even if available elsewhere."""
-    return (proposal.get("transition", {}).get("model") == "CONSTANT_NET_DECELERATION"
-            and not set(proposal["required_controls"]) & {"driver_braking", "braking"})
+def response_control_dependency_missing(proposal: dict) -> bool:
+    """Require the declared dependencies of the existing response models."""
+    model = proposal.get("transition", {}).get("model")
+    controls = set(proposal["required_controls"])
+    if model == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
+        return (not {"drive", "braking"} <= controls
+                or not controls & {"driver_braking", "remote_control", "automatic_braking_command"})
+    return model == "CONSTANT_NET_DECELERATION" and not controls & {"driver_braking", "braking"}
 
 
 def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
@@ -116,6 +120,14 @@ def braking_capability(hypothesis: dict) -> bool | None:
         return None
     return True if remaining & {"braking", "driver_braking"} else None
 
+
+def declared_response_path(hypothesis: dict, driver_position: str) -> bool:
+    """Check an explicit command/actuator declaration, without adding capability."""
+    remaining = (set(hypothesis.get("remaining_controls", []))
+        - set(hypothesis.get("failed_controls", [])) - set(hypothesis.get("unresolved_controls", {})))
+    return (driver_position == "in_driver_seat" and "driver_braking" in remaining
+        or "braking" in remaining and bool(remaining & {"automatic_braking_command", "remote_control"}))
+
 _GRADE_FRAME_LOCATION = (
     "grade_frame must be an object at hypotheses[].grade_frame, alongside geometry, "
     "parameters and condition_changes; not a parameter or condition_changes member. "
@@ -144,8 +156,8 @@ def _text(value: Any) -> str:
     return value
 
 
-def _texts(value: Any, *, path: str = "text_array", limit: int = 16) -> list[str]:
-    if not isinstance(value, list) or len(value) > limit:
+def _texts(value: Any, *, path: str = "text_array", limit: int | None = 16) -> list[str]:
+    if not isinstance(value, list) or limit is not None and len(value) > limit:
         raise ValueError(f"{path}: expected a bounded text array")
     for index, item in enumerate(value):
         if not isinstance(item, str) or not item.strip():
@@ -195,7 +207,10 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         if not _texts(timing["basis_refs"], limit=max(16, len(evidence_ids))) or not set(timing["basis_refs"]) <= evidence_ids:
             raise ValueError("Hazard timing requires supplied evidence IDs")
     for key in ("conditions", "uncovered_conditions", "failed_controls", "remaining_controls"):
-        _texts(h[key], path=key)
+        # Conditions can be composed from accepted motion, response and driver
+        # scopes. The Agent bounds each new reply before composition; historical
+        # notes must not become invalid solely because they were joined.
+        _texts(h[key], path=key, limit=None if key in {"conditions", "uncovered_conditions"} else 16)
     if not set(h["failed_controls"] + h["remaining_controls"]) <= CONTROL_IDENTITIES:
         raise ValueError("Control identities must be " + ", ".join(sorted(CONTROL_IDENTITIES)))
     if set(h["failed_controls"]) & set(h["remaining_controls"]):
@@ -236,13 +251,12 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
                 raise ValueError("Safe stop response only supports explicit HOLD_POSITION after braking")
             if transition["model"] == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
                 if ("net_deceleration_mps2" in transition or "post_stop_motion" in transition
-                        or not {"drive", "braking"} <= set(controls)
-                        or not set(controls) & {"driver_braking", "remote_control", "automatic_braking_command"}):
+                        or response_control_dependency_missing(proposal)):
                     raise ValueError("Fault release requires an explicit independent override, braking release and drive path; no stop or new acceleration parameter")
             elif transition["model"] == "CONSTANT_NET_DECELERATION":
                 if _number(transition.get("net_deceleration_mps2")) <= 0:
                     raise ValueError("Safe state transition requires positive net braking deceleration")
-                if braking_response_dependency_missing(proposal):
+                if response_control_dependency_missing(proposal):
                     raise ValueError("Braking transition requires a remaining braking path")
             else:
                 raise ValueError("Unsupported safe state response model")
@@ -287,7 +301,7 @@ def _validate_control_assessment(control: dict, evidence_ids: set[str], *, scope
     if not _texts(control["basis_refs"], limit=max(16, len(evidence_ids))) or not set(control["basis_refs"]) <= evidence_ids:
         raise ValueError("Control assessment requires supplied evidence IDs; received="
             + repr(control["basis_refs"]) + "; allowed=" + repr(sorted(evidence_ids)))
-    if not _texts(control["conditions"]):
+    if not _texts(control["conditions"], limit=None):
         raise ValueError("Control assessment requires explicit applicability conditions")
     _validate_controls(control, evidence_ids)
 
@@ -298,6 +312,21 @@ class PhysicalScenarioPlan:
     uncovered_conditions: tuple[str, ...]
     version: str = PHYSICAL_PLAN_VERSION
     control_assessment: dict | None = None
+
+    @staticmethod
+    def validate_generated_notes(raw: Any) -> None:
+        """Bound new Provider notes, separately from composed durable evidence."""
+        def visit(value, path):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in {"conditions", "uncovered_conditions"}:
+                        _texts(child, path=f"{path}.{key} (new response: at most 16 entries)")
+                    else:
+                        visit(child, f"{path}.{key}")
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    visit(child, f"{path}[{index}]")
+        visit(raw, "response")
 
     @classmethod
     def from_dict(cls, raw: dict, *, evidence_ids: set[str]) -> "PhysicalScenarioPlan":
@@ -317,7 +346,7 @@ class PhysicalScenarioPlan:
             raise ValueError("A physical plan contains 0..3 hypotheses as a JSON array. "
                 "Do not duplicate the same motion solely for driver position; use the existing scoped driver fields when appropriate. "
                 "Keep genuinely different worlds separate and state uncovered conditions. Controls and safe-state fields belong directly in each motion hypothesis, not in nested control_assessment objects.")
-        uncovered = _texts(raw["uncovered_conditions"])
+        uncovered = _texts(raw["uncovered_conditions"], limit=None)
         if not hypotheses and not uncovered and control is None:
             raise ValueError("An empty physical plan requires a concrete model applicability gap")
         identities = set()
@@ -594,7 +623,20 @@ class PhysicalScenarioPlan:
                 effective = controls_for_driver(hypothesis, driver)
                 proposal = effective.get("safe_state_proposal", {})
                 response = proposal.get("transition", {})
-                if not proposal or effective.get("timing_unresolved_reason"):
+                if not proposal:
+                    if "SAFE_STATE_DECLARED_PATH_UNMODELED" in applicable and declared_response_path(effective, driver):
+                        raise ValueError(f"CORRECTION_DECLARED_RESPONSE_NOT_MODELED: {identity}/{driver}. "
+                            "This requested supported model still has explicitly remaining response controls. Return their structured conditional response, "
+                            "even if you expect no safe window; Python must check that result. Missing measured delay or approval is not a model conflict. "
+                            "If these controls actually cannot support this response, reconcile their declaration and specific fault/enable limitation; do not invent another path.")
+                    if (applicable & {"SAFE_STATE_DECLARED_PATH_UNMODELED", "SAFE_STATE_DECLARED_AUTOMATIC_PATH_UNMODELED",
+                                      "SAFE_STATE_RESPONSE_PATH_REVIEW", "SAFE_STOP_RESPONSE_NOT_MODELED", "SAFE_STOP_FAULT_CLOCK_NOT_BOUND"}
+                            and not (effective.get("timing_unresolved_reason") or effective.get("safe_state_unresolved_reason"))):
+                        raise ValueError(f"CORRECTION_RESPONSE_STILL_INCOMPLETE: {identity}/{driver}. "
+                            "The requested response was omitted without a concrete incompatibility. Supply its conditional model and inputs, "
+                            "or explain the specific control/model conflict. Do not require engineering approval or measured latency before conditional calculation.")
+                    continue
+                if effective.get("timing_unresolved_reason"):
                     continue  # An explicit local model gap is a valid outcome.
                 if ("SAFE_STOP_RESPONSE_NOT_MODELED" in applicable
                         and (not response or moving
