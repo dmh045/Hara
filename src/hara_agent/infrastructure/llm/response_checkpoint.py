@@ -63,7 +63,8 @@ class ResponseCheckpoint:
             response = client.complete_json(request)
             saved["response"] = asdict(response)
         except LLMJSONContractError as error:
-            if not error.diagnostics.get("duplicate_keys") or not error.raw_content:
+            if (request.task != "construct_post_fault_physical_scenario"
+                    or not error.diagnostics.get("duplicate_keys") or not error.raw_content):
                 raise
             # Retain rejection, never a silently selected first/last value.
             # The owning semantic agent can use its bounded repair on resume.

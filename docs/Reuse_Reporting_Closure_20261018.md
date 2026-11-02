@@ -2815,3 +2815,5 @@ FTTI中4条得到正的条件性边界：转向车内约1.05秒、车外约0.89�
 测试覆盖有效纠正、纠正仍冲突、拒绝后中断恢复、不得叠加第三次请求、旧成功缓存恢复、合法物理计算和来源坐标歧义；相关150项通过，完整1539 passed、1 skipped，doctor、compileall和diff检查通过。已跨模块检查Provider错误分类、Agent有界循环、原响应缓存、预算账本、workflow合并/落盘，以及评分和报告的下游关系；未改变物理、S/E/C、ASIL规则或工程审批，未证明可安全删除的其他职责。该fix独立提交，不附带重构。
 
 这轮检查到的3份失败中，来源坐标问题已用原响应零Provider重新通过物理方案契约；两份重复字段原回复已原样存为拒绝缓存，等待恢复时的真实语义纠正。证据为`semantic_recovery_preflight.json`和`rejected_response_recovery_cache.json`。探索过的说明数组直接合并方案**未进入最终代码**，对应文件标记为`prototype_not_shipped`。当前全量进程尚使用修复前已加载的模块，必须在最终交付前重新处理受影响记录，不能把这些准备工作写成新全量已全部修复。
+
+直接调用方检查进一步将拒绝缓存限定在`construct_post_fault_physical_scenario`：因果任务等其他消费者没有这条语义纠正入口，维持其原重试行为。新增反例验证其他任务的拒绝不会被该策略持久缓存。最终完整回归1540 passed、1 skipped，compileall、diff检查通过；方法未变。该边界限制以独立fix交付。

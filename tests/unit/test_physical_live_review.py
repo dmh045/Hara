@@ -159,6 +159,21 @@ def test_duplicate_json_after_used_format_retry_cannot_add_a_third_request(tmp_p
     assert len(calls) == 2
 
 
+def test_physical_rejection_cache_does_not_change_other_task_retry_policy(tmp_path):
+    from test_llm_malfunction_envelope_repair import _sequenced_scenario_client, _schema_request
+    from hara_agent.infrastructure.llm import LLMJSONContractError
+    from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
+    duplicate = '{"assessments":[],"assessments":[]}'
+    calls = []
+    client = _sequenced_scenario_client([duplicate, duplicate], calls)
+    store = ResponseCheckpoint(tmp_path)
+    request = _schema_request('assess_scenario_feasibility', 'ScenarioFeasibilityAssessmentList')
+    for _ in range(2):
+        with pytest.raises(LLMJSONContractError):
+            store.complete(client, request)
+    assert len(calls) == 2 and not list(tmp_path.glob('*.json'))
+
+
 def test_physical_json_repair_keeps_entire_reply_budget_usage_and_production_recovery(method, tmp_path):
     from test_geometry_completion import run
     from test_llm_malfunction_envelope_repair import _sequenced_scenario_client
