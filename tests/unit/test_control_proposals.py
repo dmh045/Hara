@@ -20,6 +20,35 @@ from hara_agent.workflow.nodes.scoring import score_structured_scenarios
 from hara_agent.workflow.physical_analysis import construct_physical_scenarios
 
 
+@pytest.mark.parametrize('language', ['zh', 'en'])
+def test_response_source_routing_keeps_fault_handling_with_renamed_actuators(language):
+    from hara_agent.workflow.physical_analysis import _source_evidence
+    texts = ([
+        '驾驶员通过制动踏板接管。', '自动停车依赖 Brake-X 执行器。',
+        '故障诊断检查通信超时。', '故障处理措施：通信故障时功能禁用。',
+        '功能退出后释放控制，不能由此证明已经停车。',
+        '停车控制具备保压能力，制动hold时间受执行器规范限定。',
+    ] if language == 'zh' else [
+        'The brake pedal allows driver override.', 'Automatic stop uses actuator Brake-X.',
+        'Diagnostic fault detection checks communication timeout.',
+        'Fault reaction: disable function after communication failure.',
+        'Abort releases control; handover is not evidence of stopping.',
+        'Brake holding capability and hold pressure duration are defined by actuator requirements.',
+    ])
+    blocks = [{'block_id': f'passage-{i}', 'location': f'paragraph[{i}]', 'kind': 'paragraph', 'text': text}
+              for i, text in enumerate(texts)]
+    state = HARAState('response-source', item_definition={'source_id': 'renamed-project', 'blocks': blocks})
+    evidence, routing = _source_evidence(state, {'name': 'Vehicle control'})
+    assert set(evidence) == {f'ITEM.passage-{i}' for i in range(len(blocks))}
+    assert routing['selected_characters'] <= routing['max_characters'] == 4000
+    assert all(v['sources'][0]['source_id'] == 'renamed-project' for v in evidence.values())
+    assert all(v['value'] == v['sources'][0]['excerpt'] for v in evidence.values())
+    for name in ('fault_detection', 'fault_reaction', 'control_transition', 'brake_holding'):
+        assert next(f for f in routing['facts'] if f['fact_type'] == name)['selected_block_ids']
+    # Retrieval supplies passages, never upgrades their meaning to a capability.
+    assert not any('remaining_controls' in v for v in evidence.values())
+
+
 def control_only_plan(*, braking=True):
     return {"hypotheses": [], "uncovered_conditions": [], "control_assessment": {
         "rationale": "命令异常与执行器能力分开；独立人工通道为条件性假设",
@@ -31,6 +60,53 @@ def control_only_plan(*, braking=True):
             "value": False, "rationale": "限定为无可用远程路径、目标无规避空间的代表工况",
             "basis_refs": ["SCENARIO.conditions"], "conditions": ["无远程干预；目标无规避空间"]}
             for field in ("remote_intervention_available", "other_road_user_avoidance_possible")}}}
+
+
+@pytest.mark.parametrize('available', [True, False])
+def test_retained_braking_assesses_system_command_separately_from_remote(method, available):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    h['remaining_controls'] = ['braking']
+    h.pop('safe_state_proposal'); h.pop('hazard_timing')
+    h['safe_state_unresolved_reason'] = 'There is no remote human interface.'
+    h['timing_unresolved_reason'] = 'No remote human trigger was identified.'
+    response = timed_plan()['hypotheses'][0]
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResponse(deepcopy(raw), 'OFFLINE')
+            assert 'CONTROL_AUTOMATIC_COMMAND_UNASSESSED' in request.user_prompt
+            answer = deepcopy(raw); revised = answer['hypotheses'][0]
+            if available:
+                revised['remaining_controls'].append('automatic_braking_command')
+                revised.pop('safe_state_unresolved_reason'); revised.pop('timing_unresolved_reason')
+                revised['safe_state_proposal'] = deepcopy(response['safe_state_proposal'])
+                revised['safe_state_proposal'].update(required_controls=revised['remaining_controls'],
+                    driver_positions=['outside_driver_seat'])
+                revised['hazard_timing'] = deepcopy(response['hazard_timing'])
+            else:
+                revised['unresolved_controls'] = {'automatic_braking_command':
+                    'No system command can be established from these sources; function disablement alone is not braking.'}
+            return LLMResponse(answer, 'OFFLINE')
+    parent = make_candidate(3.6); parent.facts.update(driver_in_vehicle=False, driver_position='outside_driver_seat')
+    state = HARAState('automatic-response-review', malfunctions=[asdict(mf())]); client = Client()
+    children = construct_physical_scenarios(state, {'MF': [parent]}, [mf()], method=method,
+        agent=PhysicalScenarioAgent(client), project_facts=None)['MF']
+    assert client.calls == 2 and len(children) == 1
+    child = children[0]
+    assert child.facts['physical_analysis']['hypothesis']['parameters'] == h['parameters']
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert (timing.hazard_time_limit_s is not None) is available
+    if not available:
+        assert timing.timing_trace['pending_reason'] == 'CONTROL_PATH_UNRESOLVED'
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    assert construct_physical_scenarios(restored, {'MF': [parent]}, [mf()], method=method,
+        agent=PhysicalScenarioAgent(client), project_facts=None)['MF'] == children
+    assert client.calls == 2
 
 
 def test_shared_motion_has_distinct_driver_responses_without_more_worlds(method, tmp_path):
@@ -161,6 +237,65 @@ def test_shared_automatic_response_survives_driver_only_deltas(method, tmp_path)
         if change=='failed':local['failed_controls']=['braking']
         if change=='unresolved':local['unresolved_controls']={'braking':'not established for this configuration'}
         assert 'safe_state_proposal' not in controls_for_driver(variant,'outside_driver_seat'),change
+
+
+def test_shared_actuator_does_not_disappear_or_invent_an_outside_command():
+    from hara_agent.contracts.physical_scenario_plan import controls_for_driver, declared_response_path, automatic_command_unassessed
+    raw = raw_plan(); h = raw['hypotheses'][0]
+    h['remaining_controls'] = ['braking', 'driver_braking']
+    h['driver_control_assessments'] = {'outside_driver_seat': {
+        'rationale': 'Outside has no direct pedal access.', 'basis_refs': ['MF.description'],
+        'conditions': ['Driver outside'], 'uncovered_conditions': [],
+        'remaining_controls': [], 'failed_controls': []}}
+    before = deepcopy(h)
+    effective = controls_for_driver(h, 'outside_driver_seat')
+    assert effective['remaining_controls'] == ['braking']
+    assert automatic_command_unassessed(effective, 'outside_driver_seat')
+    assert not declared_response_path(effective, 'outside_driver_seat')
+    assert 'safe_state_proposal' not in effective and h == before
+    for field, value in [('failed_controls', ['braking']), ('unresolved_controls', {'braking': 'Scoped actuator enable is unestablished.'})]:
+        scoped = deepcopy(h); scoped['driver_control_assessments']['outside_driver_seat'][field] = value
+        assert 'braking' not in controls_for_driver(scoped, 'outside_driver_seat')['remaining_controls']
+
+
+def test_cached_completed_control_review_rechecks_new_shared_actuator_gap_once(method, monkeypatch, tmp_path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    import hara_agent.workflow.physical_analysis as workflow
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    h['remaining_controls'] = ['braking']; h.pop('safe_state_proposal'); h.pop('hazard_timing')
+    h['driver_control_assessments'] = {'outside_driver_seat': {
+        'rationale': 'No remote human interface.', 'basis_refs': ['MF.description'],
+        'conditions': ['Driver outside'], 'uncovered_conditions': [], 'remaining_controls': [], 'failed_controls': [],
+        'safe_state_unresolved_reason': 'No remote human interface.'}}
+    complete = timed_plan(); fixed = complete['hypotheses'][0]
+    fixed['remaining_controls'] = ['braking', 'automatic_braking_command']
+    fixed['safe_state_proposal'].update(required_controls=fixed['remaining_controls'], driver_positions=['outside_driver_seat'])
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            if self.calls == 2:
+                assert 'CONTROL_AUTOMATIC_COMMAND_UNASSESSED' in request.user_prompt
+            return LLMResponse(deepcopy(raw if self.calls == 1 else complete), 'OFFLINE')
+    client = Client(); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    agent.RESPONSE_VALIDATION_VERSION = 'legacy-driver-capability'
+    state = HARAState('shared-actuator-recovery'); parent = make_candidate(3.6)
+    parent.facts.update(driver_in_vehicle=False, driver_position='outside_driver_seat')
+    def run(st):
+        return workflow.construct_physical_scenarios(st, {'MF': [parent]}, [mf()],
+            method=method, agent=agent, project_facts=None)['MF']
+    diagnostic = workflow._unmodeled_declared_response
+    monkeypatch.setattr(workflow, '_unmodeled_declared_response', lambda *args: None)
+    run(state); assert client.calls == 1
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    entry.update(semantic_correction_completed=True, initial_plan=deepcopy(raw), correction_diagnostics=[])
+    monkeypatch.setattr(workflow, '_unmodeled_declared_response', diagnostic)
+    agent.RESPONSE_VALIDATION_VERSION = PhysicalScenarioAgent.RESPONSE_VALIDATION_VERSION
+    children = run(state)
+    assert client.calls == 2 and entry['validation_history']
+    assert children[0].facts['physical_analysis']['hypothesis']['safe_state_proposal']['required_controls'] == fixed['remaining_controls']
+    assert run(HARAState.read_committed(json.loads(json.dumps(state.to_dict())))) == children
+    assert client.calls == 2
 
 
 def existing_motion(inside=True):
@@ -478,6 +613,8 @@ def test_generated_braking_capability_and_driver_access_are_separate(method, tmp
     h = raw['hypotheses'][0]
     h['parameters'][1]['value'] = 12
     h['remaining_controls'] = ['braking']
+    h['unresolved_controls'] = {'automatic_braking_command':
+        'The source establishes the actuator only; no automatic command path has been established for this representative.'}
     if remote is not None:
         h['intervention_assumptions'] = {'remote_intervention_available': {
             'value': remote, 'rationale': 'offline scope explicitly has no remote brake',

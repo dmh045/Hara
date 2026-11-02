@@ -6,7 +6,7 @@ import sys
 from threading import Lock
 from time import perf_counter
 
-from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability, declared_response_path
+from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability, declared_response_path, automatic_command_unassessed
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
@@ -23,8 +23,13 @@ def _unmodeled_declared_response(candidate, method):
     driver = "in_driver_seat" if facts.get("driver_in_vehicle") is True else "outside_driver_seat" if facts.get("driver_in_vehicle") is False else ""
     contact = outcome.get("status") == "CONTACT" or not outcome and bool(facts.get("collision_branches"))
     supported = method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {}).get("supported_models", [])
-    if (not contact or h.get("safe_state_proposal") or not declared_response_path(h, driver)
-            or facts.get("fault_motion_model") not in supported):
+    if (not contact or h.get("safe_state_proposal") or facts.get("fault_motion_model") not in supported):
+        return None
+    if automatic_command_unassessed(h, driver):
+        return {"reason": "CONTROL_AUTOMATIC_COMMAND_UNASSESSED",
+            "hypothesis_id": h.get("hypothesis_id", "control_assessment"), "driver_position": driver,
+            "resolution": "The actuator is explicitly retained, but its automatic command path has not been assessed. Evaluate the system as the responder using the supplied fault scope and interfaces, separately from manual or remote operation. Declare automatic_braking_command remaining, failed, or unresolved with a specific reason in the existing control fields. Absence of an outside person's remote interface does not resolve automatic response availability. Do not invent an interface or convert function disablement into braking. Use the existing single correction only."}
+    if not declared_response_path(h, driver):
         return None
     return {"reason": "SAFE_STATE_DECLARED_PATH_UNMODELED",
         "hypothesis_id": h.get("hypothesis_id", "control_assessment"), "driver_position": driver,
@@ -36,7 +41,13 @@ def _source_evidence(state, function):
     specs = [
         FactRetrievalSpec("intervention", ("制动踏板", "接管", "驾驶员干预", "remote", "brake pedal", "override")),
         FactRetrievalSpec("automatic_stop", ("自动停", "自动把车停", "automatic stop", "safe stop")),
-        FactRetrievalSpec("interfaces", ("IPB", "EPS", "VDC", "EPB", "interface", "接口")),
+        FactRetrievalSpec("brake_holding", ("制动保持", "制动hold", "保压", "brake holding", "hold pressure")),
+        FactRetrievalSpec("fault_detection", ("故障诊断", "故障检测", "检测到故障", "检测到异常", "被检测到", "诊断通过", "fault detection", "diagnostic"),
+            context_hints=("超时", "信号", "timeout", "signal")),
+        FactRetrievalSpec("fault_reaction", ("故障处理", "处理措施", "功能禁用", "功能被禁用", "功能不可用", "fault reaction", "disable function", "fault response"),
+            context_hints=("通信", "信号", "communication", "signal")),
+        FactRetrievalSpec("control_transition", ("释放", "移交", "退出", "中止", "release control", "handover", "abort")),
+        FactRetrievalSpec("interfaces", ("IPB", "EPS", "VDC", "EPB", "interface", "接口", "执行器", "actuator")),
         FactRetrievalSpec("participants", ("行人", "两轮车", "车辆", "pedestrian", "traffic")),
     ]
     terms = tuple(str(function[k]) for k in ("name", "output") if function.get(k))
@@ -400,12 +411,14 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 entry.pop("semantic_correction_completed", None)
             if (prior_status == "VALIDATED" and prior_validation != validation_version
                     and entry.get("initial_plan") and any(
-                        str(f.get("reason", "")).startswith("UNSUPPORTED_METHOD_VOCABULARY:")
+                        str(f.get("reason", "")).startswith(("UNSUPPORTED_METHOD_VOCABULARY:", "GRAVITY_DIRECTION_CONFLICT:"))
                         for row in entry.get("instantiations", {}).values() for f in row.get("failures", []))):
                 entry.setdefault("validation_history", []).append({"version": prior_validation,
-                    "error": "Generated vocabulary reached instantiation before contract validation"})
+                    "error": "Instantiation feedback revised for a retained failed proposal",
+                    "diagnostics": entry.get("correction_diagnostics", [])})
                 entry.update(status="CORRECTION_REQUESTED", response_validation_version=validation_version)
                 entry.pop("semantic_correction_completed", None)
+                entry.pop("correction_diagnostics", None)  # Regenerate feedback with the current owning instantiator.
             if prior_status == "INVALID" and prior_validation != validation_version:
                 # Revalidate the raw response through the existing checkpoint;
                 # successful plans do not need another model request. Same-version
@@ -603,6 +616,15 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 failures.extend({"reason": "SAFE_STATE_CONTROL_DEPENDENCY_UNRESOLVED", **deferred,
                     "resolution": "Reconcile the original safe-state proposal with failed/remaining controls. Assess the undeclared dependency from the provided source, or propose a reachable state using the remaining path (including continued service braking if physically supported). Do not silently assume a control works or delete a needed dependency. Preserve valid motion; one existing correction only."}
                     for deferred in entry.get("audit", {}).get("deferred_safe_states", []))
+                if (prior_status == "VALIDATED" and prior_validation != validation_version
+                        and entry.get("semantic_correction_completed")
+                        and any(f.get("reason") == "CONTROL_AUTOMATIC_COMMAND_UNASSESSED" for f in failures)):
+                    entry.setdefault("validation_history", []).append({"version": prior_validation,
+                        "error": "Shared actuator retained; automatic command assessment was omitted",
+                        "initial_plan": entry.get("initial_plan"), "diagnostics": entry.get("correction_diagnostics", [])})
+                    entry.update(response_validation_version=validation_version,
+                        initial_plan=plan.to_dict(), correction_diagnostics=failures)
+                    entry.pop("semantic_correction_completed", None)
                 if (failures or entry.get("status") == "CORRECTION_REQUESTED") and not entry.get("semantic_correction_completed"):
                     # One explicit, budgeted semantic correction. Persist the
                     # original response and feedback before transport so resume

@@ -230,6 +230,60 @@ def test_bounded_semantic_correction_retains_initial_response_and_resumes(method
     run();assert client.calls==2
 
 
+def test_retained_grade_failure_gets_specific_feedback_once_on_version_change(method, tmp_path, monkeypatch):
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    from hara_agent.infrastructure.llm.protocol import LLMResponse
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import (
+        PhysicalHypothesisInstantiationService, PhysicalInputConflict,
+    )
+    mapping = PhysicalHypothesisInstantiationService._grade_mapping
+    def old_feedback(parent, hypothesis):
+        try:
+            return mapping(parent, hypothesis)
+        except PhysicalInputConflict as error:
+            error.details['resolution'] = 'Preserve the applicable input, or explicitly propose a supported new initial condition/target; do not silently overwrite.'
+            raise
+    monkeypatch.setattr(PhysicalHypothesisInstantiationService, '_grade_mapping', staticmethod(old_feedback))
+    good = grade_raw('UPHILL', 'REAR')
+    good['hypotheses'][0]['unresolved_controls'] = {'braking': 'Actuator independence is not established in this fixture.'}
+    bad = deepcopy(good)
+    bad['hypotheses'][0]['grade_frame']['heading_relative_to_downhill'] = 'DOWNHILL'
+    class Client:
+        calls = 0
+        corrected = False
+        def complete_json(self, request):
+            self.calls += 1
+            if self.corrected:
+                assert 'heading_relative_to_downhill=DOWNHILL' in request.user_prompt
+                assert 'downhill_body_direction=FRONT' in request.user_prompt
+                assert 'ego_longitudinal_direction=FORWARD' in request.user_prompt
+            return LLMResponse(deepcopy(good if self.corrected else bad), 'OFFLINE')
+    client = Client(); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    agent.RESPONSE_VALIDATION_VERSION = 'old-grade-feedback'
+    state = HARAState('retained-grade')
+    def run(current):
+        return construct_physical_scenarios(current, {'MF': [make_candidate()]}, [mf()],
+            method=method, agent=agent, project_facts=None)['MF']
+    rejected = run(state)
+    assert client.calls == 2 and rejected[0].scenario_id == 'SC'
+    assert not rejected[0].facts.get('motion_model_outcome')
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert not entry['instantiations']['SC']['generated_ids']
+    assert entry['instantiations']['SC']['failures'][0]['reason_code'] == 'GRAVITY_DIRECTION_CONFLICT'
+    initial = deepcopy(entry['initial_plan'])
+    monkeypatch.setattr(PhysicalHypothesisInstantiationService, '_grade_mapping', staticmethod(mapping))
+    client.corrected = True
+    agent.RESPONSE_VALIDATION_VERSION = PhysicalScenarioAgent.RESPONSE_VALIDATION_VERSION
+    children = run(state)
+    assert len(children) == 1 and client.calls == 3
+    assert children[0].facts['ego_longitudinal_direction'] == 'REVERSE'
+    assert entry['initial_plan'] == initial and entry['validation_history']
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    assert run(restored) == children and client.calls == 3
+
+
 @pytest.mark.parametrize('alignment,heading,position', [('SAME','UPHILL','REAR'),('OPPOSITE','DOWNHILL','FRONT')])
 def test_road_reference_heading_maps_into_body_coordinates(method,alignment,heading,position):
     parent=make_candidate();parent.facts.update(source_slope_direction='上坡',slope_reference='ROAD_REFERENCE')

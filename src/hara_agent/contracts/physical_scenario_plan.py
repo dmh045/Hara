@@ -81,6 +81,15 @@ def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
     # Only additional failures may be scoped; personnel paths stay branch-local.
     selected["failed_controls"] = list(dict.fromkeys([
         *hypothesis["failed_controls"], *assessment["failed_controls"]]))
+    # Common actuator capability is not the person's access to its command.
+    # An explicit scoped failure/unknown still overrides the common assumption;
+    # manual, remote and automatic command paths are never inferred here.
+    capabilities = {"braking", "drive", "steering", "parking_hold", "speed_limiter"}
+    shared_capabilities = [control for control in hypothesis["remaining_controls"]
+        if control in capabilities and control not in selected["failed_controls"]
+        and control not in assessment.get("unresolved_controls", {})]
+    selected["remaining_controls"] = list(dict.fromkeys([
+        *shared_capabilities, *assessment["remaining_controls"]]))
     shared_response = hypothesis.get("safe_state_proposal", {})
     required = set(shared_response.get("required_controls", []))
     if ("automatic_braking_command" in required
@@ -93,7 +102,7 @@ def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
         # never acquire an extra personnel scope through inheritance.
         selected["safe_state_proposal"] = shared_response
         selected["remaining_controls"] = list(dict.fromkeys([
-            *assessment["remaining_controls"], *shared_response["required_controls"]]))
+            *selected["remaining_controls"], *shared_response["required_controls"]]))
     response_model = shared_response.get("transition", {}).get("model")
     local_response = selected.get("safe_state_proposal", {})
     if ("hazard_timing" in hypothesis and "hazard_timing" not in assessment
@@ -127,6 +136,14 @@ def declared_response_path(hypothesis: dict, driver_position: str) -> bool:
         - set(hypothesis.get("failed_controls", [])) - set(hypothesis.get("unresolved_controls", {})))
     return (driver_position == "in_driver_seat" and "driver_braking" in remaining
         or "braking" in remaining and bool(remaining & {"automatic_braking_command", "remote_control"}))
+
+
+def automatic_command_unassessed(hypothesis: dict, driver_position: str) -> bool:
+    """A retained actuator alone does not answer who can command it."""
+    return (driver_position == "outside_driver_seat" and not declared_response_path(hypothesis, driver_position)
+        and "braking" in hypothesis.get("remaining_controls", [])
+        and not any("automatic_braking_command" in hypothesis.get(field, {})
+                    for field in ("remaining_controls", "failed_controls", "unresolved_controls")))
 
 _GRADE_FRAME_LOCATION = (
     "grade_frame must be an object at hypotheses[].grade_frame, alongside geometry, "
@@ -621,6 +638,12 @@ class PhysicalScenarioPlan:
                 moving = (hypothesis.get("model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
                           or any(d.get("motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT" for d in requested))
                 effective = controls_for_driver(hypothesis, driver)
+                if ("CONTROL_AUTOMATIC_COMMAND_UNASSESSED" in applicable
+                        and automatic_command_unassessed(effective, driver)):
+                    raise ValueError(f"CORRECTION_AUTOMATIC_COMMAND_UNASSESSED: {identity}/{driver}. "
+                        "Retained braking needs a separate assessment of the automatic command path. "
+                        "Use remaining_controls, failed_controls or unresolved_controls. Lack of a remote human interface "
+                        "does not assess a system response; do not infer availability from the actuator alone.")
                 proposal = effective.get("safe_state_proposal", {})
                 response = proposal.get("transition", {})
                 if not proposal:

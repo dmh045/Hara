@@ -743,7 +743,14 @@ class PhysicalHypothesisInstantiationService:
         direction = "REVERSE" if downhill == "REAR" else "FORWARD"
         if frame["downhill_body_direction"] != downhill or h["geometry"]["ego_longitudinal_direction"] != direction:
             raise PhysicalInputConflict("GRAVITY_DIRECTION_CONFLICT", "ego_longitudinal_direction", direction,
-                h["geometry"]["ego_longitudinal_direction"], relation="Pure gravity follows downhill; residual resistance opposes motion")
+                h["geometry"]["ego_longitudinal_direction"], relation="Pure gravity follows downhill; residual resistance opposes motion",
+                resolution=f"The declared heading_relative_to_downhill={heading} implies downhill_body_direction={downhill} "
+                    f"and ego_longitudinal_direction={direction}, but this proposal declares "
+                    f"downhill_body_direction={frame['downhill_body_direction']} and "
+                    f"ego_longitudinal_direction={h['geometry']['ego_longitudinal_direction']}. "
+                    "Reconcile the structured heading, downhill direction, motion and target together with the source reference. "
+                    "An analytical orientation may be revised; an explicitly sourced heading must be preserved. "
+                    "Do not correct only the prose or condition_changes flag, and do not invent a reverse-driving force.")
         return {"grade_coordinate_frame": "BODY_FORWARD_POSITIVE", "slope_reference": frame["slope_reference"],
             "ego_heading_relative_to_downhill": heading, "downhill_body_direction": downhill,
             "grade_orientation_basis": frame["orientation_basis"]}
