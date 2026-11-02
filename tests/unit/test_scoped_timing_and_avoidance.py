@@ -95,6 +95,42 @@ def test_required_response_cannot_restore_failed_capabilities_or_claim_implement
         PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
 
 
+def test_required_path_feedback_identifies_conflicting_fields_for_bounded_repair(tmp_path):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    from hara_agent.infrastructure.llm.protocol import LLMResponse
+    import json
+    good = timed_plan(); h = good['hypotheses'][0]; p = h['safe_state_proposal']
+    h['failed_controls'] = ['automatic_braking_command', 'speed_limiter']
+    h['remaining_controls'] = ['braking']; p['required_controls'] = ['braking']
+    p['required_command_path'] = dict(description='Independent braking command requirement',
+        initiator='SYSTEM', implementation_status='REQUIRED_NOT_ESTABLISHED',
+        independent_of=['automatic_braking_command'], rationale='Retained brake actuator; speed limiter stays failed',
+        basis_refs=['MF.description'])
+    bad = deepcopy(good)
+    bad['hypotheses'][0]['safe_state_proposal']['required_command_path']['independent_of'] = ['speed_limiter']
+    with pytest.raises(ValueError) as rejected:
+        PhysicalScenarioPlan.from_dict(bad, evidence_ids={'MF.description'})
+    assert "independent_of non-command IDs=['speed_limiter']" in str(rejected.value)
+    assert "missing from independent_of=['automatic_braking_command']" in str(rejected.value)
+    class Client:
+        requests = []
+        def complete_json(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 2:
+                feedback = json.loads(request.user_prompt)['repair_errors']
+                assert 'speed_limiter' in str(feedback) and 'independent_of' in str(feedback)
+            return LLMResponse(deepcopy(bad if len(self.requests) == 1 else good), 'offline')
+    client = Client(); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'required-path-feedback', 'evidence': {'MF.description': 'fault'}}
+    plan, audit = agent.propose(context)
+    assert plan.to_dict() == PhysicalScenarioPlan.from_dict(good, evidence_ids={'MF.description'}).to_dict()
+    assert plan.to_dict()['hypotheses'][0]['failed_controls'] == h['failed_controls']
+    assert audit['schema_repairs'] == 1 and len(client.requests) == 2
+    restored, _ = agent.propose(context)
+    assert restored == plan and len(client.requests) == 2
+
+
 def test_sg_display_keeps_required_and_existing_response_paths_distinct():
     from types import SimpleNamespace
     from hara_agent.services.reporting import HARAReportProjectionService

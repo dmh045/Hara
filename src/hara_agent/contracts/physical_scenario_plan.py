@@ -273,7 +273,11 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
             if (not set(excluded) <= commands
                     or not (set(h["failed_controls"]) & commands) <= set(excluded)
                     or not set(controls) <= {"braking", "drive", "steering", "parking_hold", "speed_limiter"} | commands):
-                raise ValueError("Required system path must exclude every failed automatic command and use only retained actuators or retained automatic commands; it cannot restore failed controls or borrow a personnel command")
+                raise ValueError("Required system path must exclude every failed automatic command and use only retained actuators or retained automatic commands; it cannot restore failed controls or borrow a personnel command. "
+                    f"safe_state_proposal.required_command_path.independent_of non-command IDs={sorted(set(excluded) - commands)}; "
+                    f"failed automatic commands missing from independent_of={sorted((set(h['failed_controls']) & commands) - set(excluded))}; "
+                    f"required_controls personnel/unsupported IDs={sorted(set(controls) - ({'braking', 'drive', 'steering', 'parking_hold', 'speed_limiter'} | commands))}. "
+                    "independent_of names bypassed automatic command IDs only; actuator failure cannot be repaired merely by proposing a new command. Preserve the actual fault scope and use only genuinely retained capabilities.")
             refs = _texts(path["basis_refs"], limit=max(16, len(evidence_ids)))
             if not refs or not set(refs) <= evidence_ids:
                 raise ValueError("Required command path needs supplied fault and actuator evidence")
