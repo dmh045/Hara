@@ -17,6 +17,10 @@ DEFAULT_SCENARIO_BATCH_MAX_CHARS = LLMConfig.scenario_batch_max_chars
 DEFAULT_SCENARIO_BATCH_MAX_ITEMS = LLMConfig.scenario_batch_max_items
 
 
+DRIVER_COMPARISON_TASK = """只有输入 driver_reuse_comparison 时，额外比较其中明确列出的驾驶员配置；它表示非驾驶员结构化输入相同，不是无关性证明，也不是新增待返回身份。分别核查 enablement（功能在这些配置下使能）、trigger（失效触发）、interaction（故障车辆与当前目标交互）、hazard（危险事件形成）。当前运行状态已明确给定时，只判断该状态下的依赖，不要求证明全项目所有状态的使能；若该状态本身依赖驾驶员动作或在位条件，仍必须分别判断。trajectory_scope=UNMITIGATED时，比较的是已给定的无避险响应轨迹：不要求证明驾驶员不能踩制动或无法改变碰撞，也不把模型未加入干预等同于人员没有干预能力。驾驶员避险属于各分支后续C/FTTI评价；这里只证明既定失效、初态和未缓解轨迹形成同一危险事件。其他场景按其真实依赖判断。若有驾驶员动作、位置相关使能、不同目标或车内乘员伤害依赖，不复用。没有提到驾驶员不等于已证明无关。
+请求比较时返回 dependency_metadata={complete:false,driver_noninterference:{enablement:{independent:布尔值,evidence_refs:[精确ID],reason:一句依据或具体障碍},trigger:{...},interaction:{...},hazard:{...}}。complete=false仅表示没有声明全局依赖完备，不否定四项局部证明。可使用已验证且限于当前世界的条件性引用；结论仍为条件性。任一项不能证明则该项independent=false，evidence_refs允许为空，按当前身份正常完成因果判断；不要为复用编造事实。未请求比较时不分析或输出复用证明。"""
+
+
 class ScenarioBatchSizeError(ValueError):
     """A scenario request cannot fit within the configured prompt budget."""
 
@@ -57,6 +61,22 @@ def _scenario_json(
             continue
         if key in scenario.facts and scenario.facts[key] not in (None, ""):
             selected_facts[key] = scenario.facts[key]
+    comparison = scenario.analysis_instance.get("driver_reuse_comparison")
+    if comparison:
+        # Physical evidence consumes the ordinary top-k selection. Supply the
+        # existing operating/driver prerequisites only for the requested proof;
+        # do not infer enablement from an omitted driver dependency.
+        prerequisite_refs = {"SCN.driver_control_policy", "SCN.operating_mode", "SCN.vehicle_state"}
+        prerequisites = [record for record in registry.records
+            if (record.evidence_ref in prerequisite_refs
+                or record.metadata.get("parameter") == "DRIVER_IN_VEHICLE")
+            and record.approval_status.value == "FINALIZED"][:causal_evidence_budget]
+        comparison = {**comparison, "task": DRIVER_COMPARISON_TASK,
+            "trajectory_scope": "UNMITIGATED" if scenario.analysis_instance.get("physical_hypothesis") else "CURRENT_SCENARIO",
+            "prerequisite_evidence": {
+            record.evidence_ref: {"value": record.value, "kind": record.kind.value,
+                "source_excerpts": list(dict.fromkeys(source.excerpt for source in record.source_refs))}
+            for record in prerequisites}}
     return json.dumps(
         {
             "scenario_id": scenario.scenario_id,
@@ -71,6 +91,7 @@ def _scenario_json(
                 for field in ("driver_position", "allowed_driver_position", "driver_in_vehicle")
                 if field in scenario.facts
             },
+            **({"driver_reuse_comparison": comparison} if comparison else {}),
             "source_operating_conditions": scenario.facts.get("source_operating_conditions", {}),
             "selected_method_conditions": {
                 dimension: binding.get("atom_label") or binding.get("method_value", "")
@@ -141,7 +162,7 @@ def _prompt_parts(
     )
     suffix = (
         "The causal_evidence_view is a compact selected subset of the complete EvidenceRegistry. "
-        "Use exact evidence_ref keys shown in that view or in physical_interaction.evidence_refs/derived_physics_evidence; full provenance, source excerpts, "
+        "Use exact evidence_ref keys shown in that view, driver_reuse_comparison.prerequisite_evidence, or physical_interaction.evidence_refs/derived_physics_evidence; full provenance, source excerpts, "
         "and downstream risk-method metadata are intentionally omitted from this prompt. "
         "Validated analytical Scenario atom facts shown in causal_evidence_view are bounded "
         "Method-instantiated operating conditions and may be cited for the current Scenario only. "
@@ -177,7 +198,6 @@ def _prompt_parts(
         "confidence必须为0.0到1.0范围内的JSON number；禁止使用high、medium、low等文字等级，"
         "禁止字符串数字、百分数、null或缺失。"
         "不要返回rationale；可读说明由Python根据已验证的结构化因果字段确定性生成。"
-        "仅在四项驾驶员无关性都有明确引用时附加dependency_metadata；否则省略该可选字段。"
         "不要在输出中重复shared_causal_evidence或输入物理方案；复用统计由程序计算。"
     )
     return prefix, suffix

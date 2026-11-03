@@ -193,8 +193,9 @@ def test_json_mode_is_explicit_and_minimal_output_keeps_valid_driver_proof(monke
     monkeypatch.setenv('HARA_LLM_SCENARIO_RESPONSE_FORMAT','json_object')
     assert LLMConfig.from_env().scenario_response_format == 'json_object'
     assert ScenarioFeasibilityAgent(SimpleNamespace()).response_format is None
-    assert '缺少任一项引用时省略' in ScenarioFeasibilityAgent.SYSTEM_PROMPT
-    assert 'driver_noninterference' in ScenarioFeasibilityAgent.SYSTEM_PROMPT
+    from hara_agent.services.semantic.scenario_batching import DRIVER_COMPARISON_TASK
+    assert '任一项不能证明则该项independent=false' in DRIVER_COMPARISON_TASK
+    assert 'driver_noninterference' in DRIVER_COMPARISON_TASK
 
 
 @pytest.mark.parametrize('wrong_scope', [False, True])

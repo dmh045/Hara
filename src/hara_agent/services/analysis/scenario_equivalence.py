@@ -158,7 +158,8 @@ def driver_families(candidates: list[ScenarioCandidate]) -> list[list[ScenarioCa
     return list(groups.values())
 
 
-def driver_reuse_proof(assessment: dict, parent: ScenarioCandidate, child: ScenarioCandidate) -> dict:
+def driver_reuse_proof(assessment: dict, parent: ScenarioCandidate, child: ScenarioCandidate,
+                      project_registry=None) -> dict:
     """Require explicit noninterference as well as identical non-driver inputs."""
     changed = sorted(key for key in DRIVER_FIELDS
                      if parent.facts.get(key) != child.facts.get(key))
@@ -169,6 +170,12 @@ def driver_reuse_proof(assessment: dict, parent: ScenarioCandidate, child: Scena
     if parent_conditions != child_conditions:
         return {"reusable": False, "reason": "NON_DRIVER_EVIDENCE_AUTHORITY_CHANGED"}
     metadata = assessment.get("dependency_metadata", {})
+    scope = metadata.get("driver_scope")
+    if scope is not None and any(
+        {key: member.facts[key] for key in DRIVER_FIELDS if key in member.facts} not in scope
+        for member in (parent, child)
+    ):
+        return {"reusable": False, "reason": "DRIVER_CONFIGURATION_OUTSIDE_PROOF_SCOPE"}
     dependencies = set().union(*(set(metadata.get(key, [])) for key in (
         "causal_evidence_fields", "physical_feasibility_fields", "scenario_identity_fields")))
     declared = set(metadata.get("noninterference_fields", []))
@@ -184,6 +191,12 @@ def driver_reuse_proof(assessment: dict, parent: ScenarioCandidate, child: Scena
     causal_refs = {ref for hop in assessment.get("causal_chain", {}).values()
                    if isinstance(hop, dict) for ref in hop.get("evidence_refs", [])}
     if any(ref.removeprefix("SCN.") in changed for ref in causal_refs):
+        return {"reusable": False, "reason": "DRIVER_FACT_USED_BY_CAUSAL_CHAIN"}
+    if changed and project_registry and any(
+        (record := project_registry.resolve_record(ref)) is not None
+        and record.metadata.get("parameter") == "DRIVER_IN_VEHICLE"
+        for ref in causal_refs
+    ):
         return {"reusable": False, "reason": "DRIVER_FACT_USED_BY_CAUSAL_CHAIN"}
     local_refs = {ref for aspect in local.values() if isinstance(aspect, dict)
                   for ref in aspect.get("evidence_refs", [])}

@@ -68,7 +68,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v30-scoped-motion-evidence"
+    PROMPT_VERSION = "scenario-feasibility-v31-targeted-driver-comparison"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -104,7 +104,11 @@ OUTPUT CONTRACT
 输出 assessments 数组，每个请求 scenario_id 恰好一项。每项包含 scenario_id、physically_feasible、functionally_relevant、causally_relevant (JSON boolean)、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、physical_interaction、confidence (0..1)、status (PENDING/FINALIZED)。physical_interaction 按上面的对象/阶段结构返回，无当前外部目标主张时返回 {"target":"OTHER"}，不可省略。
 causal_chain 是对象而非数组，结构 {"m_to_b":{"claim":"...","basis_type":"DIRECT_FACT","evidence_refs":[]},"b_to_i":{...},"i_to_h":{...}}。所有返回的 hop 必须有非空 claim；示例只说明结构，不构成证据。
 risk_dimension_changes 每项含 dimension、evidence_refs、reason；只选择当前事实明确需要重评的维度，使用用户提示中的枚举，不输出 risk_dimensions_changed 或 rationale。
-只返回规定的必要字段，不重复输入、rationale或shared_causal_evidence。仅当四项都有明确证据时返回可选 dependency_metadata，保持 complete=false；driver_noninterference 分 enablement/trigger/interaction/hazard 四项，每项 {independent:boolean,evidence_refs:["精确ID"],reason:"简短依据"}。缺少任一项引用时省略该可选对象，不输出空引用或冗长的无法证明说明。输入 shared_causal_evidence 可用于共有步骤；差异步骤仍独立判断并返回完整链，程序自行记录复用。"""
+只返回规定的必要字段，不重复输入、rationale或shared_causal_evidence。输入 shared_causal_evidence 可用于共有步骤；差异步骤仍独立判断并返回完整链，程序自行记录复用。
+
+BOUNDED DECISION
+按失效行为→当前轨迹和交互→危险事件的顺序逐跳判断。已给出的确定性轨迹结果无需重新数值求解；仍须核对失效是否支持这些输入。遇到第一个证据断点即按上述契约结束，不展开未请求的场景、参数点或评分。条件完整且三跳成立后直接给出结构化结论，不重复讨论已明确的假设是否为来源事实。
+driver_reuse_comparison若存在，按其中task核对局部无关性；不存在则不分析或输出复用证明。"""
 
     MACHINE_OUTPUT_RULE = """MACHINE OUTPUT RULE
 Return exactly one JSON object {"assessments": [...]} with valid JSON strings, no markdown, comments, trailing commas or explanation outside JSON.
@@ -1750,29 +1754,45 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             evidence_contract_version=SCENARIO_ASSESSMENT_CONTRACT_VERSION,
             causal_assessment=causal_assessment,
             dependency_metadata=ScenarioFeasibilityAgent._dependencies(
-                item, scenario, build_fact_registry(malfunction, scenario, project_registry)),
+                item, scenario, build_fact_registry(malfunction, scenario, project_registry),
+                malfunction_id=malfunction.malfunction_id),
             physical_interaction=dict(interaction),
         )
 
     @staticmethod
-    def _dependencies(item: dict, scenario: ScenarioCandidate, registry=None) -> dict:
+    def _dependencies(item: dict, scenario: ScenarioCandidate, registry=None, *, malfunction_id=None) -> dict:
         """Invalid optional reuse metadata never upgrades or rejects causality."""
         value = item.get("dependency_metadata", {})
         if not isinstance(value, dict):
             return {}
+        from .scenario_evidence import _conditional_evidence
+        from hara_agent.services.analysis.scenario_physics import has_conditional_lineage
         local = value.get("driver_noninterference", {})
         valid_local = {}
         for aspect in ("enablement", "trigger", "interaction", "hazard"):
             record = local.get(aspect, {}) if isinstance(local, dict) else {}
-            refs = record.get("evidence_refs", []) if isinstance(record, dict) else []
-            if (registry and isinstance(refs, list) and refs and all(isinstance(ref, str)
+            if not isinstance(record, dict):
+                continue
+            refs = record.get("evidence_refs", [])
+            if (registry and isinstance(refs, list) and (refs or record.get("independent") is False) and all(isinstance(ref, str)
                     and registry.resolve_record(ref) is not None
-                    and registry.resolve_record(ref).approval_status.value == "FINALIZED" for ref in refs)
+                    and ((registry.resolve_record(ref).approval_status.value == "FINALIZED"
+                          and not has_conditional_lineage(registry.resolve_record(ref).metadata))
+                         or (malfunction_id and scenario.analysis_instance.get("physical_hypothesis")
+                             and _conditional_evidence(registry.resolve_record(ref),
+                                 malfunction_id, scenario.scenario_id))) for ref in refs)
                     and isinstance(record.get("independent"), bool)
                     and isinstance(record.get("reason"), str) and record["reason"].strip()):
                 valid_local[aspect] = {"independent": record["independent"],
                     "evidence_refs": sorted(set(refs)), "reason": record["reason"]}
         extra = {"driver_noninterference": valid_local} if len(valid_local) == 4 else {}
+        scope = scenario.analysis_instance.get("driver_reuse_comparison", {}).get(
+            "configurations", value.get("driver_scope"))
+        if extra and scope is not None:
+            if isinstance(scope, list) and scope and all(isinstance(row, dict) for row in scope):
+                extra["driver_scope"] = scope
+            else:
+                extra = {}
         fields = ("causal_evidence_fields", "physical_feasibility_fields",
                   "scenario_identity_fields", "noninterference_fields")
         allowed = set(scenario.facts) | {"driver_position", "allowed_driver_position", "driver_in_vehicle"}

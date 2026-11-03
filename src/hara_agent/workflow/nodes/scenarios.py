@@ -26,7 +26,7 @@ from hara_agent.workflow.state import HARAState, WorkflowStage
 from .parallel import ordered_parallel_map
 from ..review_artifacts import ReviewArtifactWriter
 from hara_agent.services.analysis.scenario_equivalence import (
-    driver_families, driver_reuse_proof, exact_task_key, rebind_assessment_payload,
+    DRIVER_FIELDS, driver_families, driver_reuse_proof, exact_task_key, rebind_assessment_payload,
 )
 
 
@@ -200,7 +200,21 @@ def _assess_instantiated_scenarios(
                         system_prompt=agent.system_prompt + "\n" + agent.MACHINE_OUTPUT_RULE,
                         project_registry=project_registry, causal_evidence_budget=agent.causal_evidence_budget)
                     <= agent.batch_max_chars)
-        first_wave.extend(family[:2] if together else family[:1])
+        if together:
+            first_wave.extend(family[:2])
+        else:
+            parent = family[0]
+            alternatives = [child for child in family[1:] if child.scenario_id not in restored]
+            if alternatives:
+                # A request-local comparison, not new facts or another causal
+                # identity. Families already have identical non-driver inputs.
+                parent = replace(parent, analysis_instance={**parent.analysis_instance,
+                    "driver_reuse_comparison": {
+                        "configurations": [{key: member.facts[key] for key in sorted(DRIVER_FIELDS)
+                                            if key in member.facts} for member in [parent, *alternatives]],
+                        "non_driver_inputs_equal": True,
+                    }})
+            first_wave.append(parent)
         if together:
             prebatched.add(family[1].scenario_id)
 
@@ -243,7 +257,7 @@ def _assess_instantiated_scenarios(
         for child in family[1:]:
             if child.scenario_id in restored:
                 continue
-            proof = driver_reuse_proof(assessed.to_dict(), parent, child)
+            proof = driver_reuse_proof(assessed.to_dict(), parent, child, project_registry)
             if child.scenario_id in prebatched:
                 reuse_records.append({"scenario_id": child.scenario_id,
                     "representative_scenario_id": parent.scenario_id, "kind": "complete_causal",

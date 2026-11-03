@@ -36,9 +36,9 @@ class CountingClient:
             data = causal_payload(candidate, driver_relevant=self.mode == "driver_relevant")
             data['physical_interaction'] = {'target': 'OTHER', 'object_id': candidate.facts.get('object_id', candidate.scenario_id + ':target')}
             data['dependency_metadata'] = {'complete': False}
-            if self.mode in {"local", "driver_relevant"}:
+            if self.mode in {"local", "driver_relevant", "enablement", "trigger", "interaction", "hazard"}:
                 data['dependency_metadata']['driver_noninterference'] = {
-                    aspect: {'independent': self.mode == 'local', 'reason': 'Fixture explicit two-position control policy supports this step',
+                    aspect: {'independent': self.mode not in {'driver_relevant', aspect}, 'reason': 'Fixture explicit two-position control policy supports this step',
                              'evidence_refs': ['SCN.driver_control_policy']}
                     for aspect in ('enablement','trigger','interaction','hazard')}
             if self.mode == 'pending':
@@ -131,6 +131,93 @@ def test_T09_T10_T11_paired_mode_executes_local_proof_without_complete(mode,call
     assert len(results)==2  # both downstream risk inputs survive
 
 
+def test_driver_comparison_is_targeted_and_scope_survives_child_revalidation():
+    from hara_agent.services.analysis.scenario_equivalence import driver_reuse_proof
+    a,b=pair(); before=deepcopy([a,b])
+    client, results, audit=run_candidates([a,b], 'local')
+    raw, _=json.JSONDecoder().raw_decode(client.calls[0].user_prompt.split('Scenarios=',1)[1])
+    item=(raw['scenarios'] if isinstance(raw,dict) else raw)[0]
+    assert 'complete=false' in item['driver_reuse_comparison'].pop('task')
+    assert item['driver_reuse_comparison'].pop('trajectory_scope')=='CURRENT_SCENARIO'
+    prerequisites=item['driver_reuse_comparison'].pop('prerequisite_evidence')
+    assert prerequisites['SCN.driver_control_policy']['value']==a.facts['driver_control_policy']
+    assert item['driver_reuse_comparison']=={'non_driver_inputs_equal':True,'configurations':[
+        {'driver_position':'in_driver_seat'},{'driver_position':'outside_driver_seat'}]}
+    assert [a,b]==before
+    assert results[0].dependency_metadata['driver_scope']==results[1].dependency_metadata['driver_scope']
+    other=deepcopy(b);other.facts['driver_position']='passenger_seat'
+    assert driver_reuse_proof(results[0].to_dict(),a,other)['reason']=='DRIVER_CONFIGURATION_OUTSIDE_PROOF_SCOPE'
+    single,_,_=run_candidates([a])
+    assert '"driver_reuse_comparison"' not in single.calls[0].user_prompt
+    assert audit['causal_reuse']['complete_causal_reuse']==1
+
+
+def test_pair_that_fits_one_request_still_has_two_independent_assessments():
+    a,b=pair();client=CountingClient([a,b],'local')
+    agent=ScenarioFeasibilityAgent(client,batch_max_items=2,batch_max_chars=100000)
+    results,audit=_assess_instantiated_scenarios(agent,malfunction(),[a,b],{},None)
+    assert len(client.calls)==1 and len(results)==2
+    assert '"driver_reuse_comparison"' not in client.calls[0].user_prompt
+    assert audit['causal_reuse']['complete_causal_reuse']==0
+    assert audit['causal_reuse']['co_batched_independent_members']==1
+
+
+@pytest.mark.parametrize('dependent_aspect', ['enablement','trigger','interaction','hazard'])
+def test_any_driver_dependent_causal_aspect_keeps_both_real_tasks(dependent_aspect):
+    a,b=pair()
+    client,results,audit=run_candidates([a,b],dependent_aspect)
+    assert len(client.calls)==2 and len(results)==2
+    assert audit['causal_reuse']['complete_causal_reuse']==0
+    assert all(r.causally_relevant for r in results)
+
+
+@pytest.mark.parametrize('scope', ['current','other_scenario','other_malfunction','unvalidated'])
+@pytest.mark.parametrize('approval', ['PENDING','FINALIZED'])
+def test_conditional_driver_proof_uses_existing_scope_contract(active_method, scope, approval):
+    from test_autonomous_physics import instantiate, mf
+    from hara_agent.services.semantic.scenario_evidence import build_fact_registry
+    sc=instantiate(active_method)[0]
+    metadata=sc.fact_provenance['longitudinal_acceleration_mps2']
+    metadata['approval']=approval
+    if scope=='other_scenario':metadata['applicable_scope']['scenario_id']='OTHER'
+    elif scope=='other_malfunction':metadata['applicable_scope']['malfunction_id']='OTHER'
+    elif scope=='unvalidated':metadata['validation_status']='PENDING'
+    before=deepcopy(sc)
+    payload={'dependency_metadata':{'complete':False,'driver_noninterference':{
+        aspect:{'independent':True,'evidence_refs':['SCN.longitudinal_acceleration_mps2'],
+                'reason':'Synthetic local proof under the instantiated motion condition'}
+        for aspect in ('enablement','trigger','interaction','hazard')}}}
+    parsed=ScenarioFeasibilityAgent._dependencies(payload,sc,build_fact_registry(mf(),sc),malfunction_id='MF')
+    assert bool(parsed.get('driver_noninterference'))==(scope=='current')
+    assert parsed['complete'] is False and sc==before
+    assert metadata['approval']==approval
+
+
+def test_negative_or_malformed_optional_comparison_cannot_enable_reuse():
+    from hara_agent.services.semantic.scenario_evidence import build_fact_registry
+    from hara_agent.services.analysis.scenario_equivalence import driver_reuse_proof
+    a,b=pair();registry=build_fact_registry(malfunction(),a)
+    local={aspect:{'independent':True,'evidence_refs':['SCN.driver_control_policy'],'reason':'Explicit fixture policy'}
+           for aspect in ('enablement','trigger','interaction','hazard')}
+    for invalid in (None, [], 'unknown', {'independent':False,'evidence_refs':[],'reason':'Enablement not established'}):
+        payload={'dependency_metadata':{'driver_noninterference':{**local,'enablement':invalid}}}
+        parsed=ScenarioFeasibilityAgent._dependencies(payload,a,registry)
+        assert not driver_reuse_proof({'dependency_metadata':parsed},a,b)['reusable']
+    parsed=ScenarioFeasibilityAgent._dependencies({'dependency_metadata':{
+        'driver_noninterference':local,'driver_scope':'not a configuration list'}},a,registry)
+    assert not driver_reuse_proof({'dependency_metadata':parsed},a,b)['reusable']
+
+
+def test_driver_fact_in_project_namespace_is_still_a_causal_dependency():
+    from hara_agent.services.analysis.scenario_equivalence import driver_reuse_proof
+    a,b=pair();_,results,_=run_candidates([a,b],'local')
+    payload=results[0].to_dict()
+    payload['causal_chain']['b_to_i']['evidence_refs'].append('PROJECT.risk.driver.context')
+    registry=SimpleNamespace(resolve_record=lambda ref: SimpleNamespace(metadata={'parameter':'DRIVER_IN_VEHICLE'})
+                             if ref=='PROJECT.risk.driver.context' else None)
+    assert driver_reuse_proof(payload,a,b,registry)['reason']=='DRIVER_FACT_USED_BY_CAUSAL_CHAIN'
+
+
 @pytest.mark.parametrize('mode,calls,reuse', [('local',1,1),('driver_relevant',2,0)])
 def test_generated_contact_identity_does_not_block_driver_reuse(mode, calls, reuse):
     a, b = pair()
@@ -165,14 +252,22 @@ def test_T13_T14_changed_interaction_reuses_only_upstream_step():
 
 def test_T15_T16_resume_and_display_changes_retain_request_identity(tmp_path):
     a,b=pair()
-    first,_,_=run_candidates([a,b],'local',tmp_path)
+    first,results,first_audit=run_candidates([a,b],'local',tmp_path)
     a.situational_description='Reformatted display';b.situational_description='Another display'
     second,_,audit=run_candidates([a,b],'local',tmp_path)
     assert len(first.calls)==1 and len(second.calls)==0
     assert audit['response_checkpoint_hits']==1
     b.facts['vehicle_state']='standby'
     third,_,_=run_candidates([a,b],'local',tmp_path)
-    assert len(third.calls)==1
+    # Without the production exact-task checkpoint, removing the comparison
+    # is a different request. It must not retrieve a proof about a stale pair.
+    assert len(third.calls)==2
+    prior={'assessments':[r.to_dict() for r in results],'audit':first_audit}
+    client=CountingClient([a,b], 'local')
+    agent=ScenarioFeasibilityAgent(client,batch_max_items=1)
+    _, resumed = _assess_instantiated_scenarios(agent, malfunction(), [a,b], {}, None, prior_batch=prior)
+    assert len(client.calls)==1  # ordinary resume retains unchanged parent
+    assert resumed['causal_reuse']['exact_task_checkpoint_hits']==1
 
 
 @pytest.mark.parametrize('value,unit,expected', [(10.182338,'km/h','10.2'),(.154286,'s','.15'),(1.454723,'m/s²','1.45'),
