@@ -216,9 +216,15 @@ def build_scenario_user_prompt(
         )) for item in scenarios]
     shared = {}
     if len(serialized) == 2:
-        for key in ("source_operating_conditions", "selected_method_conditions", "facts"):
+        # Share exact input values, including the often much larger physical
+        # hypothesis. Keep differing objects, phases and driver inputs local;
+        # this is transmission sharing, never a shared causal conclusion.
+        for key in ("source_operating_conditions", "selected_method_conditions", "facts",
+                    "physical_interaction", "conditional_physical_analysis"):
             left, right = (item.get(key, {}) for item in serialized)
-            common = {field: value for field, value in left.items() if field in right and right[field] == value}
+            common = {field: value for field, value in left.items() if field in right
+                      and json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                      == json.dumps(right[field], sort_keys=True, ensure_ascii=False, separators=(",", ":"))}
             if common:
                 shared[key] = common
                 for item in serialized:
@@ -228,7 +234,12 @@ def build_scenario_user_prompt(
         shared["causal_evidence_view"] = "\n".join(common_lines)
         for item, individual in zip(serialized, lines):
             item["causal_evidence_view"] = "\n".join(line for line in individual if line not in common_lines)
-    payload = json.dumps({"shared_context": shared, "scenarios": serialized}, ensure_ascii=False,
+    payload = json.dumps({"shared_context": shared,
+                         "shared_context_semantics": (
+                             "shared_context为每个成员共有的原始输入；字典字段按键与成员同名字段合并，"
+                             "causal_evidence_view按行合并，还原后逐成员独立判断。"
+                             "成员的对象、阶段、驾驶员身份和不同参数仍各自有效；共有输入不代表共有结论。"),
+                         "scenarios": serialized}, ensure_ascii=False,
                          separators=(",", ":")) if shared else json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
     return prefix + payload + suffix
 

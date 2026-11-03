@@ -162,6 +162,83 @@ def test_pair_that_fits_one_request_still_has_two_independent_assessments():
     assert audit['causal_reuse']['co_batched_independent_members']==1
 
 
+def _physical_input_pair():
+    from test_autonomous_physics import raw_plan
+    a, b = pair()
+    hypothesis = raw_plan()['hypotheses'][0]
+    for candidate in (a, b):
+        candidate.analysis_instance['physical_hypothesis'] = {
+            'hypothesis_id': 'h1', 'hypothesis': deepcopy(hypothesis),
+            'sample_parameters': {'ego_speed_kph': 0, 'relative_distance_m': 2,
+                                  'longitudinal_acceleration_mps2': 2},
+            'calculation_nature': 'CONDITIONAL',
+        }
+        candidate.facts.update(object_id=candidate.scenario_id + ':target',
+                               impact_time_id='CONTACT-' + candidate.scenario_id,
+                               ego_speed_kph=0, relative_distance_m=2)
+    return a, b
+
+
+def test_shared_physical_input_roundtrips_every_member_without_scope_or_precision_loss():
+    from hara_agent.services.semantic.scenario_batching import build_scenario_user_prompt, _scenario_json
+    a, b = _physical_input_pair()
+    # Equal displayed numbers, different raw inputs; also bool != numeric 1.
+    a.analysis_instance['physical_hypothesis']['sample_parameters']['relative_distance_m'] = 2.00001
+    b.analysis_instance['physical_hypothesis']['sample_parameters']['relative_distance_m'] = 2.00002
+    a.facts['selected_source_condition'] = {'value': True, 'source_id': 'same'}
+    b.facts['selected_source_condition'] = {'value': 1, 'source_id': 'same'}
+    b.analysis_instance['physical_hypothesis']['hypothesis']['basis_refs'] = ['MF.functional_effect']
+    before = deepcopy([a, b])
+    text = build_scenario_user_prompt(malfunction(), [a, b])
+    payload, _ = json.JSONDecoder().raw_decode(text.split('Scenarios=', 1)[1])
+    for candidate, local in zip((a, b), payload['scenarios']):
+        restored = deepcopy(local)
+        for key, common in payload['shared_context'].items():
+            if isinstance(common, dict):
+                restored[key] = {**common, **restored[key]}
+            else:
+                restored[key] = '\n'.join(filter(None, (common, restored[key])))
+        expected = json.loads(_scenario_json(malfunction(), candidate))
+        # JSON comparison preserves scalar types and unrounded values. Evidence
+        # selection order is not authority; each complete record stays exact.
+        assert sorted(restored.pop('causal_evidence_view').splitlines()) == sorted(expected.pop('causal_evidence_view').splitlines())
+        assert json.dumps(restored, sort_keys=True) == json.dumps(expected, sort_keys=True)
+        assert local['physical_interaction']['target_id'] == candidate.facts['object_id']
+        assert local['physical_interaction']['impact_time_id'] == candidate.facts['impact_time_id']
+    assert 'hypothesis' not in payload['shared_context']['conditional_physical_analysis']
+    assert 'sample_parameters' not in payload['shared_context']['conditional_physical_analysis']
+    assert 'conditions' not in payload['shared_context']['physical_interaction']
+    assert [a, b] == before
+
+
+def test_shared_physics_fits_real_scheduler_and_restores_both_independent_results(tmp_path):
+    from hara_agent.services.semantic.scenario_batching import estimate_scenario_prompt_chars
+    a, b = _physical_input_pair()
+    separate = CountingClient([a, b], 'driver_relevant')
+    expected, _ = ScenarioFeasibilityAgent(separate, batch_max_items=1).assess(malfunction(), [a, b])
+    assert len(separate.calls) == 2
+    client = CountingClient([a, b], 'driver_relevant')
+    limit = estimate_scenario_prompt_chars(malfunction(), [a, b],
+        system_prompt=ScenarioFeasibilityAgent.SYSTEM_PROMPT + '\n' + ScenarioFeasibilityAgent.MACHINE_OUTPUT_RULE)
+    agent = ScenarioFeasibilityAgent(client, batch_max_items=2, batch_max_chars=limit,
+                                     response_checkpoint_dir=tmp_path)
+    results, audit = _assess_instantiated_scenarios(agent, malfunction(), [a, b], {}, None)
+    assert len(client.calls) == 1
+    assert [r.to_dict() for r in results] == [r.to_dict() for r in expected]
+    assert audit['shared_context_batch_count'] == 1
+    assert audit['causal_reuse']['complete_causal_reuse'] == 0
+    assert audit['causal_reuse']['co_batched_independent_members'] == 1
+    assert '"driver_reuse_comparison"' not in client.calls[0].user_prompt
+    shared, _ = json.JSONDecoder().raw_decode(client.calls[0].user_prompt.split('Scenarios=', 1)[1])
+    assert shared['shared_context']['conditional_physical_analysis']['hypothesis']
+    again, resume = _assess_instantiated_scenarios(agent, malfunction(), [a, b], {}, None)
+    assert len(client.calls) == 1 and resume['response_checkpoint_hits'] == 1
+    assert [r.to_dict() for r in again] == [r.to_dict() for r in results]
+    prior = {'assessments': [r.to_dict() for r in expected], 'audit': audit}
+    _, restored = _assess_instantiated_scenarios(agent, malfunction(), [a, b], {}, None, prior_batch=prior)
+    assert len(client.calls) == 1 and restored['causal_reuse']['exact_task_checkpoint_hits'] == 2
+
+
 @pytest.mark.parametrize('dependent_aspect', ['enablement','trigger','interaction','hazard'])
 def test_any_driver_dependent_causal_aspect_keeps_both_real_tasks(dependent_aspect):
     a,b=pair()
