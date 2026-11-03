@@ -659,14 +659,7 @@ class HARAReportProjectionService:
         # than truncating a qualifier or repeating every member's narrative.
         # All original member explanations remain in safe_state_evidence.
         gap_text = "；".join(reasons)
-        gap_labels = {
-            "RESPONSE_INSUFFICIENT": "即刻制动也无法在接触前停止",
-            "RESPONSE_INTERACTION_UNSAFE": "停车或解除减速后仍会与目标接触",
-            "DRIVER_CONTROL_UNAVAILABLE": "驾驶员不在驾驶位，踏板方案不适用",
-            "DRIVER_POSITION_OUT_OF_SCOPE": "处置方案不适用当前驾驶员位置",
-            "NO_ANALYSIS": "尚未建立处置模型",
-            "NO_PROPOSAL": "尚未形成适用处置方案",
-        }
+        gap_labels = EngineeringReportTextMapper._SAFE_STATE_GAP_LABELS
         classified = Counter(g.get("reason_code") for g in gaps)
         if gaps and set(classified) <= gap_labels.keys():
             gap_text = "；".join(gap_labels[code] + (f"（{count}个成员）" if len(scope) > 1 else "")
@@ -949,9 +942,15 @@ class HARAReportProjectionService:
         grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
         for entry in entries:
             grouped[entry["group_key"]].append(entry)
+        function_order = {identity: index for index, identity in enumerate(functions)}
+        malfunction_order = {identity: index for index, identity in enumerate(malfunctions)}
         ordered_groups = sorted(
             grouped.values(),
-            key=lambda items: min(str(item["scenario"].scenario_id) for item in items),
+            key=lambda items: (
+                function_order.get(str(malfunctions.get(items[0]["risk"].malfunction_id, {}).get("function_id", "")), len(functions)),
+                malfunction_order.get(items[0]["risk"].malfunction_id, len(malfunctions)),
+                min(str(item["scenario"].scenario_id) for item in items),
+            ),
         )
         group_consistency_failures = []
         for siblings in ordered_groups:
@@ -1041,10 +1040,6 @@ class HARAReportProjectionService:
                 partial_rationales, distribution = self._group_grade_summary(
                     siblings, trace_provided=risk_trace is not None)
                 partial_group_distributions[f"HARA_{offset:03d}"] = distribution
-            pending_count = sum(
-                any(not _value(getattr(e["risk"], f)) for f in ("severity", "exposure", "controllability", "asil"))
-                or any(not all(b.get(k) for k in ("S", "E", "C", "ASIL")) for b in e["risk"].branch_evaluations)
-                for e in siblings)
             causal_status = causal_status_by_pair.get((risk.malfunction_id, risk.scenario_id), "")
             assessment_status = self._assessment_status(
                 risk=risk, scenario=scenario, trace=trace, causal_status=causal_status,
@@ -1066,7 +1061,8 @@ class HARAReportProjectionService:
                 hazard=str(malfunction.get("vehicle_level_hazard", "")),
                 operational_scenario=operational,
                 scenario_detail=detail,
-                hazardous_event=self.text.hazardous_event(risk.hazardous_event, scenario),
+                hazardous_event=("代表成员：" if len(siblings) > 1 else "")
+                    + self.text.review_event(risk.hazardous_event, scenario, malfunction),
                 potential_harm=self.text.potential_harm(
                     risk.potential_harm if not headline or values["severity"] == _value(risk.severity) else "",
                     severity=(replace(risk.severity, value=values["severity"])
@@ -1113,7 +1109,9 @@ class HARAReportProjectionService:
                 remark=(f"审核展示分组，不代表风险等价；{len(siblings)} 个成员。" if is_review_group and len(siblings) > 1 else "")
                   + (("并列最高 ASIL 有不同元组；主表显示其中一个实际分支的完整元组，其余见明细；" if tied_tuples else
                       "最高已知 ASIL 的完整元组；") if highest_members and (len(siblings) > 1 or len(risk.branch_evaluations) > 1) else "")
-                  + ("尚有未决成员，最高已知结果不是全组上界；" if pending_count and is_review_group else "")
+                  + ("尚有未决成员，最高已知结果不是全组上界；"
+                     if is_review_group and any(e["display_tuple"][-1] == "待评定" for e in siblings)
+                     and highest_members else "")
                   + self._status_note(score_states)
                   + ("；条件差异：" + self.text.group_differences([e["scenario"] for e in siblings]) if len(siblings) > 1 else "")
                   + ("；归并依据：相同结构化场景条件、因果链、伤害机制及完整评分；原始记录见场景明细"
@@ -1200,7 +1198,7 @@ class HARAReportProjectionService:
                     scenario_detail=child_detail,
                     speed_constraint=self.text.speed_text(child),
                     causal_status=child_status,
-                    hazardous_event=self.text.hazardous_event(child_risk.hazardous_event, child),
+                    hazardous_event=self.text.review_event(child_risk.hazardous_event, child, malfunction),
                     semantic_group_id=self._semantic_group_id(child),
                     object_interaction_summary=self.text.object_interaction_summary(child),
                     physical_inputs=self.text.physical_inputs(child, child_trace),
@@ -1209,7 +1207,9 @@ class HARAReportProjectionService:
                     analysis_basis=self.text.analysis_basis(child) + "\n" + boundary_notes(child.facts, method) + timing_note
                         + ("\n" + self.text.safe_state_member(safe_state_members[child.scenario_id], child)
                            if child.scenario_id in safe_state_members else
-                           "\n安全处置缺口：" + self.text.hazardous_event(safe_state_gaps[child.scenario_id]["reason"], child)
+                           "\n安全处置缺口：" + self.text.analysis_note(safe_state_gaps[child.scenario_id]["reason"],
+                               self.text._SAFE_STATE_GAP_LABELS.get(safe_state_gaps[child.scenario_id].get("reason_code"),
+                                   "当前成员缺少适用的处置路径") + "；控制依赖和未覆盖范围见审计表原始分析说明")
                            if child.scenario_id in safe_state_gaps else ""),
                     review_group_id=review_group_id,
                     **child_values,
@@ -1236,6 +1236,18 @@ class HARAReportProjectionService:
                     variant=variant,
                     selected_atom_ids=self._selected_atom_ids(child),
                     source_references=self._source_references(child),
+                    original_analysis_text="\n".join(f"{label}：{value}" for label, value in (
+                        ("危险事件原文", child_risk.hazardous_event),
+                        ("运行条件作用原文", child.facts.get("selected_source_condition", {}).get("physical_effect", "")),
+                        ("物理假设适用条件", "；".join(child.facts.get("physical_analysis", {}).get("hypothesis", {}).get("conditions", []))),
+                        ("控制假设适用条件", "；".join(child.facts.get("control_analysis", {}).get("hypothesis", {}).get("conditions", []))),
+                        ("未决控制依据原文", "；".join(f"{key}：{reason}" for key, reason in
+                            (child.facts.get("control_analysis") or child.facts.get("physical_analysis", {})).get("hypothesis", {}).get("unresolved_controls", {}).items())),
+                        ("安全状态原文", safe_state_members.get(child.scenario_id, {}).get("description", "")),
+                        ("响应通道原文", safe_state_members.get(child.scenario_id, {}).get("required_command_path", {}).get("description", "")),
+                        ("安全处置缺口原文", safe_state_gaps.get(child.scenario_id, {}).get("reason", "")),
+                        ("时间说明原文", timing.get("reason", "")),
+                    ) if value),
                 ))
 
         summary = run_summary or {}

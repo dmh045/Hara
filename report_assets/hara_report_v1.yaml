@@ -144,11 +144,42 @@ presentation:
       "Other road users (cyclists, pedestrians)": 其他道路使用者（骑行者、行人）
       "Passenger of own and other vehicles": 本车及其他车辆乘员
       "Persons in a vehicle": 车内人员
+      "µ-split (delta-µ > 0.3 left/right)": 左右分离附着路面（附着系数差>0.3）
+      "Parking longitudinal (V1)": 纵向泊车
+      "Slow drive (0 < v < 12 kph) (V1)": 低速行驶（0<速度<12 km/h）
+      "Splitt / gravel": 碎石或砾石路面
+      "Persons in danger area (V1 generic)": 危险区域内人员
+      "Normal friction coefficient": 正常附着路面
+      "Strong slope > 8% (driving on, V2 std)": 行驶于大坡度路面（坡度>8%）
+      "Parken/Halten 8% < slope ≤ 15%": 在大坡度路面停车或驻停（8%<坡度≤15%）
+      "Vehicle stands": 车辆静止
+      "Near cut-in": 近距离切入
+      "Medium slope > 2% (driving on, V2 std)": 行驶于中等坡度路面（坡度>2%）
+      "Left turn normal distance (V1)": 正常间距下左转
+      "Drive v ≤ 130 kph": 行驶（方法速度范围≤130 km/h）
+      "Halten: roadside in city": 城市道路路边停车
+      "Parking/holding: driver not in vehicle": 驾驶员不在车内时停车或驻停
+      "Significant vertical excitation (pothole)": 坑洼引起的明显垂向颠簸
+      "Accel medium a > 2 m/s² (V1)": 中等加速（加速度>2 m/s²）
+      "Persons in restricted danger zone (< 2 m) around slow/parked vehicle": 低速或停驻车辆周边受限危险区内人员（距离<2 m）
+      "Persons in danger zone (~1 vehicle length) of moving vehicle": 运动车辆周边危险区内人员（距离约一个车长）
+      "Stopping on mountain 2-8% (source HARA usage)": 在坡道停车（坡度2%–8%）
+      "Halten an Hang 2-8% (V1)": 在坡道驻停（坡度2%–8%）
+      "Halten an Hang > 8% (V1)": 在坡道驻停（坡度>8%）
+      "Stopping on mountain > 8% (source HARA usage)": 在坡道停车（坡度>8%）
+      "Accel normal a < 2 m/s² (V1)": 正常加速（加速度<2 m/s²）
     potential_harm_translations:
       "No injuries": 无伤害
       "Life-threatening (survival uncertain) or fatal injuries": 危及生命（生存可能性不确定）或致命伤害
       "Severe injuries, possibly life-threatening, survival probable": 严重伤害，可能危及生命，但生存可能性较高
       "Light and moderate injuries": 轻度和中度伤害
+  scenario_detail:
+    column_widths:
+      Hazardous Event: 48
+      Physical Inputs: 56
+      C Decision: 48
+      Analysis Basis: 48
+      Collision Branch S/E/C/ASIL: 42
   main_hara:
     sheet: 04_HARA
     visible_fields:

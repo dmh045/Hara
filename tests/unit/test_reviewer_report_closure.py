@@ -473,10 +473,17 @@ def test_driver_branches_and_trial_values_remain_distinct_in_formal_report(tmp_p
         headers = {detail.cell(4, column).value: column for column in range(1, detail.max_column + 1)}
         assert detail.cell(5, headers["Physical Inputs"]).value == view.scenario_details[0].physical_inputs
         assert detail.cell(6, headers["Driver Branch"]).value == view.scenario_details[1].driver_branch
-        assert all(
-            merged.max_row < 6 or merged.min_col > 24
-            for merged in hara.merged_cells.ranges
-        )
+        data_merges = [merged for merged in hara.merged_cells.ranges if merged.max_row >= 6]
+        assert data_merges
+        # Shared static descriptions may merge. Driver-specific conditions,
+        # grades, SG and remarks remain independent cells on both rows.
+        assert all(merged.min_col == merged.max_col and 2 <= merged.min_col <= 6
+                   for merged in data_merges)
+        for number, row in enumerate(view.rows, start=6):
+            for column, value in ((7, row.operational_scenario), (11, row.severity),
+                                  (13, row.exposure), (15, row.controllability), (17, row.asil),
+                                  (21, row.sg_id), (24, row.remark)):
+                assert (hara.cell(number, column).value or "") == value
     finally:
         workbook.close()
 

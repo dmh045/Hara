@@ -723,7 +723,11 @@ def test_motion_control_omission_corrects_once_per_plan_not_per_point_or_driver(
     if outcome == 'unresolved':
         assert '制动能力未决依据：故障是否同时影响人工制动' in EngineeringReportTextMapper.physical_inputs(inside[0], {})
     elif outcome == 'available':
-        assert 'Independent driver braking remains outside the drive fault' in EngineeringReportTextMapper.physical_inputs(inside[0], {})
+        text = EngineeringReportTextMapper.physical_inputs(inside[0], {})
+        assert '方案中保留的控制：驾驶员制动踏板' in text
+        assert '方案中失效的控制：驱动' in text
+        assert '控制能力分析假设' in text and '通道独立性' in text
+        assert 'Independent driver braking remains outside the drive fault' in inside[0].facts['physical_analysis']['hypothesis']['conditions']
     if outcome == 'omitted_again':
         assert inside[0].analysis_instance['physical_plan_diagnostics'][0]['reason'] == 'CONTROL_CAPABILITY_NOT_ASSESSED'
     # Numerical motion remains available even if the one correction fails.

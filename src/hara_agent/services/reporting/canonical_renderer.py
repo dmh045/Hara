@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 
 from .report_schema import ReportField, ReportSchema
 from .view_model import HARAReportViewModel
+from .engineering_text_mapper import EngineeringReportTextMapper
 
 
 MAIN_SHEET = "04_HARA"
@@ -246,7 +247,7 @@ class HARAReportWorkbookRenderer:
             )
             layout = self._render_main_hara(sheets[MAIN_SHEET], view_model, schema, registry)
             self._render_scenario_details(
-                sheets["04A_Scenario Detail"], view_model, registry,
+                sheets["04A_Scenario Detail"], view_model, registry, schema,
             )
             self._render_method_basis(sheets["05_Method Basis"], view_model, registry)
             self._render_safety_goals(sheets[SAFETY_GOAL_SHEET], view_model, registry)
@@ -420,7 +421,7 @@ class HARAReportWorkbookRenderer:
 
     def _render_scenario_details(
         self, sheet: Any, view_model: HARAReportViewModel,
-        registry: TemplateStyleRegistry,
+        registry: TemplateStyleRegistry, schema: ReportSchema,
     ) -> None:
         headers = (
             "HARA-ID", "Semantic Group ID", "Variant", "Scenario ID", "Situational Description",
@@ -433,7 +434,7 @@ class HARAReportWorkbookRenderer:
             (
                 item.hara_id, item.semantic_group_id, item.variant, item.scenario_id,
                 item.operational_scenario, item.scenario_detail,
-                item.speed_constraint, item.causal_status,
+                item.speed_constraint, EngineeringReportTextMapper.causal_status(item.causal_status),
                 item.object_interaction_summary, item.hazardous_event,
                 item.physical_inputs, item.driver_branch,
                 item.controllability_branch, item.analysis_basis, item.branch_results,
@@ -454,6 +455,14 @@ class HARAReportWorkbookRenderer:
         for column in (18, 19, 20, 21):
             sheet.column_dimensions[get_column_letter(column)].width = 10
         sheet.column_dimensions["Q"].width = 24
+        widths = schema.presentation.get("scenario_detail", {}).get("column_widths", {})
+        for column, header in enumerate(headers, start=2):
+            if header in widths:
+                sheet.column_dimensions[get_column_letter(column)].width = widths[header]
+        actual_widths = tuple(sheet.column_dimensions[get_column_letter(column)].width
+                              for column in range(2, 2 + len(headers)))
+        for row_number, record in enumerate(records, start=5):
+            sheet.row_dimensions[row_number].height = self._estimated_height(record, actual_widths, registry)
 
     @staticmethod
     def _clear_sheet(sheet: Any) -> None:
@@ -552,6 +561,10 @@ class HARAReportWorkbookRenderer:
         self._write_main_headers(sheet, fields, layout, groups, registry)
         for presentation_column in layout:
             registry.apply_width(sheet, presentation_column.column, presentation_column.source_column)
+            field = fields[presentation_column.field]
+            if field.wrap_text:
+                dimension = sheet.column_dimensions[get_column_letter(presentation_column.column)]
+                dimension.width = max(dimension.width or 0, field.width)
         first_detail_by_group = {}
         for index, detail in enumerate(view_model.scenario_details, start=5):
             first_detail_by_group.setdefault(detail.hara_id, index)
@@ -573,6 +586,22 @@ class HARAReportWorkbookRenderer:
                 tuple(sheet.column_dimensions[get_column_letter(item.column)].width or 15 for item in layout),
                 registry,
             )
+        # Reuse the report-contract renderer's hierarchy, with canonical field
+        # identities. Equal names in different functions/malfunctions are not
+        # the same engineering record. Dynamic grades and SG columns stay split.
+        from .excel_renderer import HARAExcelRenderer, _TableLayout
+
+        static_fields = {"function": "function_name", "output": "function_output",
+                         "guideword": "guideword", "malfunction": "malfunction",
+                         "hazard": "hazard", "scenario": "operational_scenario"}
+        merge_rows = [{**{key: getattr(row, field) for key, field in static_fields.items()},
+                       "function": (row.function_id, row.function_name) if row.function_name else "",
+                       "malfunction": (row.malfunction_id, row.malfunction) if row.malfunction else ""} for row in view_model.rows]
+        merge_layout = _TableLayout(MAIN_SHEET, DATA_START_ROW,
+            {key: item.column for key, field in static_fields.items() for item in layout if item.field == field},
+            (HEADER_TOP_ROW, HEADER_BOTTOM_ROW))
+        for reference in HARAExcelRenderer._merge_ranges(merge_rows, merge_layout):
+            sheet.merge_cells(reference)
         last_column = get_column_letter(len(layout))
         last_row = max(HEADER_BOTTOM_ROW, DATA_START_ROW + len(view_model.rows) - 1)
         sheet.freeze_panes = registry.hara.freeze_panes or "A6"
@@ -716,6 +745,7 @@ class HARAReportWorkbookRenderer:
                     child.risk_scoring_invoked,
                     child.source_conditions,
                     child.disposition_reason,
+                    item.original_analysis_text if item else "",
                 ))
         else:
             records = [(
@@ -726,7 +756,7 @@ class HARAReportWorkbookRenderer:
                 item.parent_scenario_id, item.variant, item.selected_atom_ids,
                 item.source_references, item.method_hash, item.report_schema_hash,
                 item.style_template_hash, item.risk_trace_reference,
-                "", "", "", "", "",
+                "", "", "", "", "", item.original_analysis_text,
             ) for item in view_model.audit_references]
         self._render_records(
             sheet, "Audit and Traceability", registry,
@@ -738,11 +768,12 @@ class HARAReportWorkbookRenderer:
                 "Method hash", "Report schema hash", "Style template hash",
                 "Risk execution trace", "Driver Branch", "Causal Disposition",
                 "Risk Scoring Invoked", "Source Operating Conditions", "Disposition Reason",
+                "原始分析说明（保留原语言）",
             ),
             records,
             width_source_columns=(
                 1, 2, 1, 7, 10, 16, 2, 5,
-                5, 14, 11, 7, 11, 11, 11, 16, 14, 16, 11, 7, 16,
+                5, 14, 11, 7, 11, 11, 11, 16, 14, 16, 11, 7, 16, 7,
             ),
         )
 
@@ -979,10 +1010,14 @@ class HARAReportWorkbookRenderer:
             ][:10]
             body_reused = 0
             body_total = 0
+            anchors = {(row, area.min_col): (area.min_row, area.min_col)
+                       for area in hara.merged_cells.ranges if area.min_row >= DATA_START_ROW
+                       for row in range(area.min_row, area.max_row + 1)}
             for row in body_rows:
                 for item in layout:
                     body_total += 1
-                    if HARAReportWorkbookRenderer._visual_style_matches(hara.cell(row, item.column), registry._styles[item.body_token]):
+                    cell = hara.cell(*anchors.get((row, item.column), (row, item.column)))
+                    if HARAReportWorkbookRenderer._visual_style_matches(cell, registry._styles[item.body_token]):
                         body_reused += 1
             headers = [str(hara.cell(HEADER_BOTTOM_ROW, column).value or hara.cell(HEADER_TOP_ROW, column).value or "") for column in range(1, 25)]
             audit_headers = [str(cell.value or "") for cell in output["99_Audit"][4]]

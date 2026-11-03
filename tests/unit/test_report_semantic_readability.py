@@ -221,7 +221,11 @@ def test_multiple_members_keep_only_shared_raw_conditions_and_all_ratings(active
     assert all('初始车速' in row.operational_scenario for row in view.rows)
     assert any('室外停车场' in row.operational_scenario for row in view.rows)
     assert any('地下停车场' in row.operational_scenario for row in view.rows)
-    assert any('最高已知结果不是全组上界' in row.remark for row in view.rows)
+    # Different SEC tuples remain separate rows. Neither is a partially known
+    # multi-member upper bound: the incomplete member keeps its own pending C.
+    assert all('最高已知结果不是全组上界' not in row.remark for row in view.rows)
+    pending = next(row for row in view.rows if row.asil == '待评定')
+    assert pending.controllability == '待评定' and pending.controllability_rationale
     assert {d.asil for d in view.scenario_details} == {'A','待评定'}
     assert any('15.6' in row.scenario_detail for row in view.rows)
     assert any('18.1' in row.scenario_detail for row in view.rows)

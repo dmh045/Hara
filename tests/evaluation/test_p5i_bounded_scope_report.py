@@ -44,8 +44,8 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
         review_root=ROOT / "runtime/review",
         audit_output_dir=tmp_path / "audits",
     )
-    current = load_workbook(output, read_only=True, data_only=True)
-    previous = load_workbook(PREVIOUS, read_only=True, data_only=True)
+    current = load_workbook(output, data_only=True)
+    previous = load_workbook(PREVIOUS, data_only=True)
     try:
         summary = {
             row[1]: row[2]
@@ -63,8 +63,19 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
         assert summary["主表审核组数（04_HARA）"] == 13
         assert summary["风险记录数"] == 13
 
-        current_risks = list(current["04_HARA"].iter_rows(min_row=6, values_only=True))
-        previous_risks = list(previous["04_HARA"].iter_rows(min_row=6, values_only=True))
+        def risk_rows(book):
+            sheet = book["04_HARA"]
+            anchors = {}
+            for area in sheet.merged_cells.ranges:
+                if area.min_row < 6:
+                    continue
+                assert area.min_col == area.max_col and 2 <= area.min_col <= 7
+                for row in range(area.min_row, area.max_row + 1):
+                    anchors[row, area.min_col] = sheet.cell(area.min_row, area.min_col).value
+            return [tuple(anchors.get((cell.row, cell.column), cell.value)
+                          for cell in row) for row in sheet.iter_rows(min_row=6)]
+        current_risks = risk_rows(current)
+        previous_risks = risk_rows(previous)
         assert len(current_risks) == len(previous_risks) == 13
         # This historical run never produced a response model. The new
         # diagnostic label makes the existing absence explicit, not numeric.
@@ -81,6 +92,7 @@ def test_current_bounded_run_rebuild_preserves_risk_rows_and_shows_child_lineage
                          else "待确定" if index == 18 and value == "尚未建立响应模型"
                          else "待确定" if index in {18,22} and value in {None,"", "Pending"}
                          else harm_translation.get(value, value) if index == 9
+                         else value.replace('vehicle_control', '泊车控车') if index == 8 and isinstance(value, str)
                          else "" if value is None else value for index,value in enumerate(row)
                          if index in {0,1,2,3,4,5,8,9,10,12,14,16,18,20,22})
         assert [display_compatible(row) for row in current_risks] == [

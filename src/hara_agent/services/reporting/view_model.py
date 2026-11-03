@@ -199,6 +199,7 @@ class AuditReferenceView:
     variant: str = ""
     selected_atom_ids: str = ""
     source_references: str = ""
+    original_analysis_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}

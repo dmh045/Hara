@@ -100,6 +100,21 @@ class EngineeringReportTextMapper:
         "offline proposal; no live validation": "离线方案，未做真实模型验证",
         "moving targets; real capability bound unknown": "移动目标未覆盖，车辆真实能力上界未知",
     }
+    _CONTROL_TEXT = {
+        "driver_braking": "驾驶员制动踏板", "braking": "制动执行器",
+        "automatic_braking_command": "自动制动命令链", "remote_control": "远程控制链",
+        "automatic_drive_command": "自动驱动命令链", "automatic_steering_command": "自动转向命令链",
+        "automatic_parking_command": "自动驻车命令链", "parking_hold": "驻车保持",
+        "steering": "转向", "drive": "驱动", "speed_limiter": "限速控制",
+    }
+    _SAFE_STATE_GAP_LABELS = {
+        "RESPONSE_INSUFFICIENT": "即刻制动也无法在接触前停止",
+        "RESPONSE_INTERACTION_UNSAFE": "停车或解除减速后仍会与目标接触",
+        "DRIVER_CONTROL_UNAVAILABLE": "驾驶员不在驾驶位，踏板方案不适用",
+        "DRIVER_POSITION_OUT_OF_SCOPE": "处置方案不适用当前驾驶员位置",
+        "NO_ANALYSIS": "尚未建立处置模型",
+        "NO_PROPOSAL": "尚未形成适用处置方案",
+    }
 
     @staticmethod
     def _has_reason(value: Any, token: str) -> bool:
@@ -224,6 +239,53 @@ class EngineeringReportTextMapper:
     def _chinese_source(value: Any) -> str:
         text = str(value or "").strip().rstrip("。；;")
         return text if re.search(r"[\u3400-\u9fff]", text) else ""
+
+    @staticmethod
+    def has_foreign_prose(value: Any) -> bool:
+        """Detect narrative prose, not units, IDs or accepted abbreviations."""
+        return bool(re.search(r"\b[A-Za-z]{3,}(?:[ -]+[A-Za-z]{2,}){2,}\b", str(value or "")))
+
+    @classmethod
+    def analysis_note(cls, value: Any, fallback: str) -> str:
+        # This is a structured presentation fallback, not an alleged translation.
+        # The full source language is retained in the existing audit table.
+        return fallback if cls.has_foreign_prose(value) else cls.engineering_terms(narrative_quantities(str(value or "")))
+
+    @classmethod
+    def engineering_terms(cls, text: str) -> str:
+        """Localize known contract tokens in prose, never inside identifiers."""
+        labels = {**cls._MODE_TEXT, **cls._CONTROL_TEXT,
+            "FORWARD": "前向", "REVERSE": "后向", "LEFT": "左", "RIGHT": "右",
+            "FRONT": "前方", "REAR": "后方", "STATIONARY": "静止",
+            "CONTACT": "发生接触", "REAR_END": "追尾",
+            "NO_CONTACT_WITHIN_MODEL": "模型时域内未接触", "HELD_AFTER_STOP": "停止后保持",
+            "HOLD_POSITION": "保持当前位置", "CONSTANT_NET_DECELERATION": "恒定净减速度响应",
+            "REQUIRED_NOT_ESTABLISHED": "所需通道尚未建立",
+            "in_driver_seat": "在驾驶位", "outside_driver_seat": "不在驾驶位",
+            "intervention_assumptions": "干预能力假设", "post_stop_motion": "停止后运动",
+            "control_assessment": "控制能力分析",
+            "uncovered_conditions": "未覆盖条件", "driver_control_assessments": "驾驶员控制能力分析",
+            "safe_state_proposal": "安全处置方案", "vehicle_control": "泊车控车",
+            "pedestrian": "行人", "clearance": "净距", "hold": "保持", "brake": "制动",
+            "µ-split": "左右分离附着", "Splitt / gravel": "碎石或砾石", "gravel": "砾石",
+            "kph": "km/h"}
+        if cls.has_foreign_prose(text) and not re.search(r"[\u3400-\u9fff]", text):
+            return text
+        text = re.sub(r"向(FORWARD|REVERSE)(?:方向)?(?![A-Za-z0-9_-])",
+                      lambda match: "向前" if match[1] == "FORWARD" else "向后", text)
+        for raw, display in sorted(labels.items(), key=lambda item: -len(item[0])):
+            text = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(raw)}(?![A-Za-z0-9_-])",
+                          lambda _match, label=display: label, text, flags=re.IGNORECASE)
+        return text
+
+    @staticmethod
+    def causal_status(value: str) -> str:
+        return {
+            "ELIGIBLE — RISK SCORING INVOKED": "因果已通过校验，已执行风险计算",
+            "METHOD_VALID — CAUSAL_REVALIDATION_REQUIRED": "方法条件有效，因果需重新验证",
+            "PENDING — RISK SCORING NOT EXECUTED": "因果待定，尚未执行风险计算",
+            "CAUSAL_GAP — EXCLUDED_FROM_RISK": "因果不成立，未进入风险计算",
+        }.get(value, value)
 
     @classmethod
     def _first_category(cls, categories: set[str], names: tuple[str, ...]) -> str:
@@ -352,7 +414,8 @@ class EngineeringReportTextMapper:
         analysis = facts.get("physical_analysis", {})
         control_hypothesis = (facts.get("control_analysis") or analysis).get("hypothesis", {})
         if reason := control_hypothesis.get("unresolved_controls", {}).get("braking"):
-            parts.append("制动能力未决依据：" + reason)
+            parts.append("制动能力未决依据：" + cls.analysis_note(reason,
+                "当前人员配置下尚未建立可用的制动响应结论；命令通道、执行能力及独立性限定见审计表原始分析说明"))
         if controls := facts.get("control_analysis", {}).get("hypothesis"):
             parts.append("干预能力假设：" + "；".join(controls["conditions"]))
             for proposal in controls.get("intervention_assumptions", {}).values():
@@ -403,12 +466,20 @@ class EngineeringReportTextMapper:
                 parts.append("朝向假设：" + ("车头朝上坡，重力向车后" if grade.get("ego_heading_relative_to_downhill") == "UPHILL" else "车头朝下坡，重力向车前"))
             # Full conditions, parameter objects and exclusions remain in the
             # existing risk trace. Keep intervention assumptions visible here.
-            parts.extend(text for text in analysis.get("hypothesis", {}).get("conditions", [])
-                if re.search(r"接管|介入|干预|制动通道|制动能力|interven|driver braking|braking path", text, re.IGNORECASE))
+            intervention_notes = [text for text in analysis.get("hypothesis", {}).get("conditions", [])
+                if re.search(r"接管|介入|干预|制动通道|制动能力|interven|driver braking|braking path", text, re.IGNORECASE)]
+            parts.extend(text for text in intervention_notes if not cls.has_foreign_prose(text))
+            if any(cls.has_foreign_prose(text) for text in intervention_notes):
+                for field, label in (("remaining_controls", "方案中保留的控制"), ("failed_controls", "方案中失效的控制")):
+                    controls = control_hypothesis.get(field, [])
+                    if controls:
+                        parts.append(label + "：" + "、".join(cls._CONTROL_TEXT.get(c, c) for c in controls))
+                parts.append("以上为控制能力分析假设；通道独立性、触发条件及限定原文见审计表，实际用于C评定的条件见本行可控性依据")
             if facts.get("first_contact_time_s") is not None and facts.get("ttc_s") is None:
                 parts.append(f"首次接触：{quantity(facts['first_contact_time_s'], 's')} s（不作为纵向 TTC）")
             if condition := facts.get("selected_source_condition"):
-                parts.append(f"代表运行条件：{condition['value']}；物理影响：{condition['physical_effect']}")
+                parts.append(f"代表运行条件：{condition['value']}；物理影响：" + cls.analysis_note(
+                    condition['physical_effect'], "本行列示该条件下的对象、几何和运动参数；完整作用说明见审计表原始分析说明"))
         if model == "CONSTANT_SPEED_REPRESENTATIVE":
             parts.append("恒速代表工况；用于所列碰撞条件，不是故障最大速度包络")
         elif model:
@@ -438,7 +509,7 @@ class EngineeringReportTextMapper:
             return ""
         return (
             "场景候选（未核实用于评分）：" if candidate_only else ""
-        ) + "；".join(parts)
+        ) + cls.engineering_terms("；".join(parts))
 
     @staticmethod
     def driver_branch(scenario: Any, trace: Mapping[str, Any]) -> str:
@@ -699,7 +770,8 @@ class EngineeringReportTextMapper:
         if motion:
             details.append(motion)
         if condition:
-            details.append(f"条件影响：{condition['physical_effect']}")
+            details.append("条件影响：" + self.analysis_note(condition['physical_effect'],
+                "本行列示当前对象、位置和运动条件；完整作用说明见关联场景明细及审计表"))
         if speed:
             details.append(speed)
         for field, label in (("relative_distance_m", "目标距离"), ("longitudinal_acceleration_mps2", "故障后纵向加速度")):
@@ -733,12 +805,36 @@ class EngineeringReportTextMapper:
         text = re.sub(r"(?<![A-Za-z0-9_])BRAKE_AND_HOLD(?![A-Za-z0-9_])", "制动并停车保持", text)
         text = re.sub(r"(?<![A-Za-z])EPB(?![A-Za-z])", "电子驻车制动", text, flags=re.IGNORECASE)
         text = re.sub(r"(?<![A-Za-z])System\s+OK(?![A-Za-z])", "系统正常", text, flags=re.IGNORECASE)
-        for raw, display in cls._MODE_TEXT.items():
-            text = re.sub(rf"(?<![A-Za-z]){re.escape(raw)}(?![A-Za-z])", display, text, flags=re.IGNORECASE)
         for raw, display in cls._COLLISION_TEXT.items():
             text = re.sub(rf"(?<![A-Za-z0-9_-]){raw}\s*(?:接触|碰撞)", display, text)
+        text = cls.engineering_terms(text)
         clauses = [item.strip() for item in re.split(r"[；;]", text) if item.strip()]
         return "；".join(dict.fromkeys(clauses)).rstrip("。") + "。" if clauses else "待危险事件确认。"
+
+    def review_event(self, value: Any, scenario: Any, malfunction: Mapping) -> str:
+        """Present a foreign narrative using its own structured world only.
+
+        No machine translation, new causal approval or collision claim is made.
+        The original statement is kept verbatim in AuditReferenceView.
+        """
+        if not self.has_foreign_prose(value):
+            return self.hazardous_event(value, scenario)
+        facts = getattr(scenario, "facts", {}) or {}
+        fault = self._chinese_source(malfunction.get("description"))
+        interaction = self.object_interaction_summary(scenario)
+        if not fault or not interaction:
+            return self.hazardous_event(value, scenario)
+        parts = ["结构化摘要", "失效表现：" + fault, interaction]
+        outcome = facts.get("motion_model_outcome", {}).get("status")
+        if outcome == "CONTACT":
+            time = facts.get("first_contact_time_s", facts.get("ttc_s"))
+            parts.append("当前条件轨迹" + (f"在{quantity(time, 's')} s" if time is not None else "") + "与所列对象接触")
+        elif outcome in {"NO_CONTACT_WITHIN_MODEL", "NO_POSITIVE_CONTACT_ROOT"}:
+            parts.append("当前条件轨迹未确认接触；保留危险状态不等于已发生碰撞")
+        else:
+            parts.append("该条件下的危险交互尚不能由当前物理模型完整表达")
+        parts.append("完整因果声明及限定见审计表原始分析说明")
+        return "；".join(parts) + "。"
 
     def pending_value(self, evidence: Any) -> str:
         return self._PENDING_VALUE
@@ -1107,12 +1203,7 @@ class EngineeringReportTextMapper:
         response = candidate.get("transition", {})
         if response.get("model") != "CONSTANT_NET_DECELERATION":
             return None
-        labels = {"driver_braking": "驾驶员制动踏板", "braking": "制动执行器",
-                  "automatic_braking_command": "自动制动命令链", "remote_control": "远程控制链",
-                  "automatic_drive_command": "自动驱动命令链", "automatic_steering_command": "自动转向命令链",
-                  "automatic_parking_command": "自动驻车命令链",
-                  "parking_hold": "驻车保持", "steering": "转向", "drive": "驱动",
-                  "speed_limiter": "限速控制"}
+        labels = EngineeringReportTextMapper._CONTROL_TEXT
         controls = tuple(sorted(candidate.get("required_controls", [])))
         if not controls or any(c not in labels for c in controls):
             return None
@@ -1124,10 +1215,13 @@ class EngineeringReportTextMapper:
 
     @classmethod
     def safe_state_member(cls, candidate: Mapping[str, Any], scenario: Any) -> str:
-        text = "期望安全状态：" + cls.hazardous_event(candidate["description"], scenario)
+        outcome = cls.safe_state_outcome(candidate)
+        text = "期望安全状态：" + (outcome[1] if outcome and cls.has_foreign_prose(candidate["description"])
+                                else cls.hazardous_event(candidate["description"], scenario))
         required = candidate.get("required_command_path")
         if required:
-            text += "；尚需建立的系统响应：" + cls.hazardous_event(required["description"], scenario)
+            text += "；尚需建立的系统响应：" + cls.analysis_note(required["description"],
+                "独立系统命令通道尚未建立，完整依赖和原始要求见审计表原始分析说明")
         path = cls.safe_state_path(candidate)
         if path:
             text += "；处置路径：" + path[1]
@@ -1181,6 +1275,11 @@ class EngineeringReportTextMapper:
             if reason.startswith("未形成该危险判据的数值边界："):
                 code = reason.split("：", 1)[1]
                 reason = boundary_reasons.get(code, "当前轨迹尚未形成有效时间边界，具体原因见时间追溯。")
+            if EngineeringReportTextMapper.has_foreign_prose(reason):
+                code = item.get("timing_trace", {}).get("pending_reason")
+                reason = boundary_reasons.get(code) or EngineeringReportTextMapper.ftti_gap(item)
+                reason = (reason + "；具体处置依据及原始解释见审计表原始分析说明。"
+                          if reason != "待确定" else "")
             if any("\u4e00" <= ch <= "\u9fff" for ch in reason):
                 explanations.append(reason)
         reasons = "；".join(dict.fromkeys(explanations))
@@ -1211,7 +1310,7 @@ class EngineeringReportTextMapper:
         if not available:
             return required_note + "缺少可用的接触时间；" + (reasons or "故障起点、危险判据及安全处置时间预算尚未确定，FTTI待定。")
         kinds = {item.get("contact_time_kind") for item in available}
-        label = "侧向首次接触" if kinds == {"first_contact_time_s"} else "轨迹接触"
+        label = "首次接触" if kinds == {"first_contact_time_s"} else "轨迹接触"
         values = [item["contact_time_s"] for item in available]
         extent = (f"最小 {quantity(min(values), 's')} s、最大 {quantity(max(values), 's')} s"
                   "（仅为已计算样本统计，不代表连续可达范围）" if min(values) != max(values)
