@@ -335,6 +335,7 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             expected = deepcopy(before)
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
+            timing = policy.pop('timing_analysis')
             assert projected == expected
             assert request.prompt_version == PhysicalScenarioAgent.PROMPT_VERSION
             assert PhysicalScenarioAgent.RESPONSE_TIMING_POLICY in request.system_prompt
@@ -353,11 +354,75 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             assert payload['output_contract']['driver_control_assessments']['entry_shape']['failed_controls']==[]
             assert 'driver_control_assessments' not in payload['output_shape']['hypotheses'][0]
             assert '人员缺席' in request.system_prompt
-            assert payload['output_contract']['response_timing'] == policy['timing_analysis']
+            assert payload['output_contract']['response_timing'] == timing
             assert payload['output_contract']['control_arrays']['shape_example'] == ['driver_braking', 'braking']
             return LLMResponse(raw_plan(), 'OFFLINE', usage={})
     PhysicalScenarioAgent(Client()).propose(context)
     assert context == before
+
+
+def test_request_compaction_retains_sources_and_coverage_and_resumes_exact_old_reply(tmp_path):
+    from dataclasses import replace
+    from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
+    from test_geometry_completion import Client
+
+    context = {'plan_key': 'same-source-world', 'conditions': {'facts': {'ego_speed_kph': 0.001}},
+        'evidence': {'MF.description': 'drive fault; independent brake not proven'},
+        'method_identity': {'method_source_hash': 'method', 'project_analysis_policy': {
+            'timing_analysis': {'supported_models': ['GRADE_ROLLAWAY_TO_IMPACT_DISTANCE'],
+                'limitations': 'Only conditional responses, not approved control capability'}}},
+        'source_routing': {'selected_block_ids': ['S1'], 'facts': [
+            {'fact_type': 'response', 'required': True, 'coverage_status': 'COVERED',
+             'selected_block_ids': ['S1'], 'top_scores': [{'block_id': 'S1', 'score': 20}]},
+            {'fact_type': 'remote', 'required': True, 'coverage_status': 'NOT_FOUND',
+             'selected_block_ids': [], 'top_scores': []}]}}
+    before = deepcopy(context)
+    capture = Client([raw_plan()])
+    PhysicalScenarioAgent(capture).propose(context)
+    compact = capture.requests[0]
+    body = json.loads(compact.user_prompt)
+    expanded = expand_physical_prompt_view(body['context'], body['source_texts'])
+    expected = deepcopy(before)
+    timing = expected['method_identity']['project_analysis_policy'].pop('timing_analysis')
+    for row in expected['source_routing']['facts']:
+        row.pop('top_scores')
+    assert expanded == expected
+    assert body['output_contract']['response_timing'] == timing
+    assert context == before
+    assert compact.metadata['request_view_version'] == PhysicalScenarioAgent.REQUEST_VIEW_VERSION
+
+    legacy_context, legacy_sources = physical_prompt_view(before)
+    legacy = replace(compact, metadata={k: v for k, v in compact.metadata.items() if k != 'request_view_version'},
+        user_prompt=json.dumps({**body, 'context': legacy_context, 'source_texts': legacy_sources},
+                               ensure_ascii=False, default=str, separators=(',', ':')))
+    old_client = Client([raw_plan()])
+    ResponseCheckpoint(tmp_path).complete(old_client, legacy)
+    frozen = {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
+    no_calls = Client([])
+    plan, audit = PhysicalScenarioAgent(no_calls, response_checkpoint_dir=tmp_path).propose(context)
+    assert not no_calls.requests and audit['response_cache_hits'] == 1
+    assert audit['responses'][0]['request']['user_prompt'] == legacy.user_prompt
+    assert frozen == {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
+    assert plan.to_dict() == raw_plan()
+
+    # If both formats exist, the current exact reply wins; restoring a legacy
+    # response must never roll a completed compact task back to another reply.
+    current_reply = raw_plan()
+    current_reply['hypotheses'][0]['rationale'] = 'Current recorded mechanism explanation'
+    ResponseCheckpoint(tmp_path).complete(Client([current_reply]), compact)
+    current, audit = PhysicalScenarioAgent(no_calls, response_checkpoint_dir=tmp_path).propose(context)
+    assert current.to_dict() == current_reply and not no_calls.requests
+    assert audit['responses'][0]['request']['user_prompt'] == compact.user_prompt
+
+    # A changed source qualifier cannot reuse the old reply. The new compact
+    # request is saved once and subsequently resumes without another call.
+    context['evidence']['MF.description'] += '; independent braking is unavailable'
+    fresh = Client([raw_plan()])
+    agent = PhysicalScenarioAgent(fresh, response_checkpoint_dir=tmp_path)
+    agent.propose(context)
+    agent.propose(context)
+    assert len(fresh.requests) == 1
+    assert 'top_scores' not in fresh.requests[0].user_prompt
 
 
 @pytest.mark.parametrize('controls_only', [False, True])

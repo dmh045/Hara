@@ -1,5 +1,5 @@
 """A workflow-scheduled proposal task; no scoring or approval authority."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from collections import Counter
 from copy import deepcopy
 import json
@@ -140,6 +140,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
+    REQUEST_VIEW_VERSION = "physical-request-view-v2-ranking-and-rule-dedup"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v25-reference-kinematics"
     PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics"
@@ -480,6 +481,16 @@ class PhysicalScenarioAgent:
         # motion model. This is a projection of MethodContract, not a new rule.
         if timing := policy.get("timing_analysis"):
             output_contract["response_timing"] = deepcopy(timing)
+        # Keep the old exact request available for unfinished pre-compaction
+        # checkpoints. A read-only cache probe may reuse it; it is never sent.
+        legacy_prompt_inputs = deepcopy(prompt_inputs)
+        if timing:
+            policy.pop("timing_analysis")  # complete rule already in output_contract
+        for diagnostic in prompt_inputs.get("source_routing", {}).get("facts", []):
+            # Retrieval scores explain selection, not vehicle behavior. Keep
+            # selected source IDs and uncovered/coverage status in the request;
+            # the full ranking remains in the unchanged plan context/audit.
+            diagnostic.pop("top_scores", None)
         prompt_context, source_texts = physical_prompt_view(prompt_inputs)
         content = {"output_contract": output_contract, "context": prompt_context, "source_texts": source_texts,
                    "model_catalog": MODEL_CATALOG,
@@ -645,6 +656,7 @@ class PhysicalScenarioAgent:
         attempts = []
         errors = []
         previous_response = None
+        legacy_context, legacy_sources = physical_prompt_view(legacy_prompt_inputs)
         for repair in (False, True):
             request = LLMRequest(task="construct_post_fault_physical_scenario",
                 system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
@@ -654,11 +666,28 @@ class PhysicalScenarioAgent:
                 # Reasoning and final JSON may share the provider's token cap.
                 # Honor the configured bound instead of overriding it with 8k.
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair,
+                    "request_view_version": self.REQUEST_VIEW_VERSION,
                     **({"strict_no_format_retry": True} if repair else {})},
                 max_tokens=self.max_tokens,
                 response_format=self.response_format)
             try:
-                response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
+                response = self.responses.complete(self.client, request, cache_only=True) if self.responses else None
+                if self.responses and response is None:
+                    # Until older REQUESTED plans have completed, use only an
+                    # exact old request hit (same world, route, cap and repair).
+                    compact_request = request
+                    request = replace(request,
+                        metadata={k: v for k, v in request.metadata.items() if k != "request_view_version"},
+                        user_prompt=json.dumps({**content,
+                        "context": legacy_context, "source_texts": legacy_sources,
+                        "repair_errors": errors,
+                        **({"previous_invalid_response": previous_response} if repair else {})},
+                        ensure_ascii=False, default=str, separators=(",", ":")))
+                    response = self.responses.complete(self.client, request, cache_only=True)
+                    if response is None:
+                        request = compact_request
+                if response is None:
+                    response = self.responses.complete(self.client, request) if self.responses else self.client.complete_json(request)
             except LLMJSONContractError as error:
                 # The transport must never choose between duplicate values.
                 # Give the owning semantic task its existing single repair,
