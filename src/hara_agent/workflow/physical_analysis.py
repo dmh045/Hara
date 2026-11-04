@@ -89,6 +89,17 @@ def _update_response_totals(metrics, responses, sign=1):
             tokens[name] = tokens.get(name, 0) + sign * usage.get(name, 0)
 
 
+def _physical_families(producer, candidates, malfunction_id):
+    groups, kept = defaultdict(list), []
+    for candidate in candidates:
+        scope = producer.task_scope(candidate, malfunction_id)
+        if scope:
+            groups[(scope, signature(scenario_conditions(candidate, without_driver=True)))].append(candidate)
+        else:
+            kept.append(candidate)
+    return groups, kept
+
+
 def _construct_parallel(state, candidates, malfunctions, *, method, agent, project_facts,
                         checkpoint, progress, max_workers):
     """Private workers, changed-entry copies, and one ordered snapshot writer.
@@ -101,6 +112,27 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
     lock = Lock()
     cache = state.item_definition.setdefault("physical_analysis_plans", {})
     reports, totals = {}, {}
+    producer = PhysicalHypothesisInstantiationService(method)
+    tasks, kept, configurations, remaining = [], {}, {}, {}
+    for mf in malfunctions:
+        groups, kept[mf.malfunction_id] = _physical_families(producer, candidates[mf.malfunction_id], mf.malfunction_id)
+        configurations[mf.malfunction_id] = sorted({str(c.facts.get("driver_position", ""))
+            for c in candidates[mf.malfunction_id] if c.facts.get("driver_position")})
+        remaining[mf.malfunction_id] = len(groups)
+        for group, family in sorted(groups.items()):
+            tasks.append((mf, group, family))
+    if not tasks:
+        result = construct_physical_scenarios(state, candidates, malfunctions, method=method,
+            agent=agent, project_facts=project_facts, checkpoint=checkpoint)
+        if progress:
+            progress(len(malfunctions), len(malfunctions))
+        return result
+    # Index immutable prior entries once; a worker copies only its own family.
+    prior_groups = defaultdict(dict)
+    for key, entry in cache.items():
+        context = entry.get("context", {})
+        prior_groups[(context.get("malfunction", {}).get("malfunction_id"),
+            context.get("task_scope", "MOTION_AND_CONTROLS"), signature(context.get("conditions", {})))][key] = entry
     _update_response_totals(totals, [])
     for entry in cache.values():
         _update_response_totals(totals, entry.get("responses", []))
@@ -110,17 +142,19 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
               "checkpoint_s": 0.0, "checkpoint_count": 0, "copied_plan_entries": 0, "workers": {}}
     state.item_definition["physical_analysis_timing"] = timing
     needs_snapshot = False
+    unsaved_new_plans = 0
 
     def save_snapshot():
-        nonlocal needs_snapshot
+        nonlocal needs_snapshot, unsaved_new_plans
         saving = perf_counter()
         checkpoint(state)
         timing["checkpoint_s"] += perf_counter() - saving
         timing["checkpoint_count"] += 1
         needs_snapshot = False
+        unsaved_new_plans = 0
 
-    def merge(malfunction_id, key, entry, report, *, cached_refresh=False):
-        nonlocal needs_snapshot
+    def merge(task_id, key, entry, report, *, cached_refresh=False):
+        nonlocal needs_snapshot, unsaved_new_plans
         copying = perf_counter()
         isolated_entry = deepcopy(entry) if entry is not None else None
         isolated_report = deepcopy(report)
@@ -134,8 +168,8 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
                 _update_response_totals(totals, isolated_entry.get("responses", []))
                 timing["copied_plan_entries"] += 1
                 needs_snapshot = True
-            reports[malfunction_id] = isolated_report
-            metrics = {}
+            reports[task_id] = isolated_report
+            metrics = {"existing_path_skipped": sum(len(rows) for rows in kept.values())}
             for report in reports.values():
                 for name, value in report.items():
                     if name.startswith("cumulative_"):
@@ -151,14 +185,18 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
             )
             state.item_definition["physical_analysis_metrics"] = metrics
             if checkpoint and key is not None and not cached_refresh:
-                save_snapshot()
+                unsaved_new_plans += 1
+                # Raw responses are already atomically durable. Batch the
+                # reproducible full-state snapshots, not the paid responses.
+                # A client without durable responses keeps immediate saving.
+                if not getattr(agent, "responses", None) or unsaved_new_plans >= max_workers:
+                    save_snapshot()
 
-    def worker(mf):
+    def worker(task):
+        mf, group, family = task
+        task_id = (mf.malfunction_id, group)
         started = perf_counter()
-        with lock:
-            # Parent entries are replaced, never mutated by another worker.
-            references = {key: value for key, value in cache.items()
-                if value.get("context", {}).get("malfunction", {}).get("malfunction_id") == mf.malfunction_id}
+        references = prior_groups.get((mf.malfunction_id, *group), {})
         local = HARAState(state.run_id, functions=deepcopy(state.functions), item_definition={
             "physical_analysis_plans": deepcopy(references),
             # Read-only source passages are shared; workers never change them.
@@ -167,30 +205,45 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
         })
         try:
             result = construct_physical_scenarios(local,
-                {mf.malfunction_id: deepcopy(candidates[mf.malfunction_id])}, [mf], method=method,
+                {mf.malfunction_id: deepcopy(family)}, [mf], method=method,
                 agent=agent, project_facts=project_facts,
-                _commit_plan=lambda key, entry, report, **options: merge(mf.malfunction_id, key, entry, report, **options))
+                _driver_configurations=configurations[mf.malfunction_id],
+                _commit_plan=lambda key, entry, report, **options: merge(task_id, key, entry, report, **options))
             return result[mf.malfunction_id]
         finally:
             # Include no-proposal cases and failures without copying all plans
             # or writing a duplicate full snapshot at every worker completion.
-            merge(mf.malfunction_id, None, None, local.item_definition.get("physical_analysis_metrics", {}))
+            merge(task_id, None, None, local.item_definition.get("physical_analysis_metrics", {}))
             with lock:
-                timing["workers"][mf.malfunction_id] = {
-                    "elapsed_s": perf_counter() - started,
-                    "plan_groups": len(local.item_definition["physical_analysis_plans"]),
-                    "candidate_count": len(candidates[mf.malfunction_id])}
+                report = timing["workers"].setdefault(mf.malfunction_id,
+                    {"elapsed_s": 0.0, "plan_groups": 0, "candidate_count": 0})
+                report["elapsed_s"] += perf_counter() - started
+                report["plan_groups"] += len(local.item_definition["physical_analysis_plans"])
+                report["candidate_count"] += len(family)
+
+    completed = sum(count == 0 for count in remaining.values())
+    if progress and completed:
+        progress(completed, len(malfunctions))
+    def completed_task(task, result):
+        nonlocal completed
+        mid = task[0].malfunction_id
+        remaining[mid] -= 1
+        if remaining[mid] == 0:
+            completed += 1
+            if progress:
+                progress(completed, len(malfunctions))
 
     try:
-        results = ordered_parallel_map(malfunctions, worker, max_workers=max_workers, on_progress=progress)
+        results = ordered_parallel_map(tasks, worker, max_workers=max_workers, on_result=completed_task)
     finally:
         # Cached deterministic recalculation is reproducible without a request.
-        # Flush it together after workers drain; new responses/status changes
-        # still trigger immediate ordered snapshots inside merge().
+        # Flush every remaining change after workers drain, including errors.
         with lock:
             if checkpoint and needs_snapshot:
                 save_snapshot()
-    return {mf.malfunction_id: result for mf, result in zip(malfunctions, results)}
+    for (mf, _, _), result in zip(tasks, results):
+        kept[mf.malfunction_id].extend(result)
+    return kept
 
 
 def _retain_rejected_response(candidate, generated, entry, *, producer, mf, method,
@@ -227,8 +280,9 @@ def _retain_rejected_response(candidate, generated, entry, *, producer, mf, meth
 
 
 def construct_physical_scenarios(state, candidates, malfunctions, *, method, agent, project_facts,
-                                 checkpoint=None, progress=None, max_workers=1, _commit_plan=None):
-    if max_workers > 1 and len(malfunctions) > 1:
+                                 checkpoint=None, progress=None, max_workers=1, _commit_plan=None,
+                                 _driver_configurations=None):
+    if max_workers > 1:
         return _construct_parallel(state, candidates, malfunctions, method=method, agent=agent,
             project_facts=project_facts, checkpoint=checkpoint, progress=progress, max_workers=max_workers)
     producer = PhysicalHypothesisInstantiationService(method)
@@ -258,16 +312,11 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     route = {key: getattr(config, key, "") for key in ("provider", "model", "base_url", "scenario_thinking")}
     for mf in malfunctions:
         source_evidence, source_routing = _source_evidence(state, functions.get(mf.function_id, {}))
-        driver_configurations = sorted({str(c.facts.get("driver_position", ""))
+        driver_configurations = _driver_configurations if _driver_configurations is not None else sorted({str(c.facts.get("driver_position", ""))
                                         for c in candidates[mf.malfunction_id]
                                         if c.facts.get("driver_position")})
-        groups, kept = defaultdict(list), []
-        for candidate in candidates[mf.malfunction_id]:
-            task_scope = producer.task_scope(candidate, mf.malfunction_id)
-            if not task_scope:
-                kept.append(candidate); metrics["existing_path_skipped"] += 1
-            else:
-                groups[(task_scope, signature(scenario_conditions(candidate, without_driver=True)))].append(candidate)
+        groups, kept = _physical_families(producer, candidates[mf.malfunction_id], mf.malfunction_id)
+        metrics["existing_path_skipped"] += len(kept)
         # Distribute source-condition requests over existing motion groups;
         # never multiply groups by all parking layouts or weather conditions.
         source_conditions = [{"source_field": field, "value": value}

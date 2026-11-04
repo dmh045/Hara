@@ -74,9 +74,6 @@ class PhysicalHypothesisInstantiationService:
     def task_scope(self, candidate, malfunction_id):
         """Retain solved motion; assess its controls and response once."""
         scope = dict(malfunction_id=malfunction_id, scenario_id=candidate.scenario_id)
-        if not (candidate.facts.get("collision_branches") and
-                source_is_accepted_for(candidate.fact_provenance.get("collision_branches", {}), **scope)):
-            return "MOTION_AND_CONTROLS"
         if candidate.facts.get("control_analysis") and source_is_accepted_for(
                 candidate.fact_provenance.get("control_analysis", {}), **scope):
             return ""  # An assessed limitation is not another request on resume.
@@ -85,6 +82,12 @@ class PhysicalHypothesisInstantiationService:
             # The motion task already requested control capabilities. Do not
             # fan a saved plan's unresolved assumptions into another paid pass.
             return ""
+        # A validated symbolic/no-contact world may intentionally have no
+        # collision branches. Reuse its assessment rather than proposing the
+        # same world again just to manufacture a numeric contact.
+        if not (candidate.facts.get("collision_branches") and
+                source_is_accepted_for(candidate.fact_provenance.get("collision_branches", {}), **scope)):
+            return "MOTION_AND_CONTROLS"
         if self.method.metadata.get("project_analysis_policy", {}).get("timing_analysis"):
             # C readiness does not establish a reachable safe state or a timed
             # response. Existing source/method motion needs the same assessment

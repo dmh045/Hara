@@ -141,7 +141,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v2-ranking-and-rule-dedup"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v25-reference-kinematics"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v26-explicit-driver-scope"
     PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics"
@@ -491,6 +491,22 @@ class PhysicalScenarioAgent:
             # selected source IDs and uncovered/coverage status in the request;
             # the full ranking remains in the unchanged plan context/audit.
             diagnostic.pop("top_scores", None)
+        full_response_inputs = deepcopy(prompt_inputs) if response_only_correction else None
+        response_ids = []
+        if response_only_correction:
+            previous = prompt_inputs["previous_plan"]
+            response_ids = [h["hypothesis_id"] for h in previous.get("hypotheses", [])]
+            if previous.get("control_assessment") is not None:
+                response_ids.append("control_assessment")
+            reported = {d.get("hypothesis_id") for d in context["correction_diagnostics"]}
+            # An unscoped/unknown diagnostic still needs the complete plan.
+            # Only explicitly targeted response work can omit other worlds.
+            if reported and reported <= set(response_ids):
+                response_ids = [identity for identity in response_ids if identity in reported]
+                previous["hypotheses"] = [h for h in previous.get("hypotheses", [])
+                    if h["hypothesis_id"] in reported]
+                if "control_assessment" not in reported:
+                    previous.pop("control_assessment", None)
         prompt_context, source_texts = physical_prompt_view(prompt_inputs)
         content = {"output_contract": output_contract, "context": prompt_context, "source_texts": source_texts,
                    "model_catalog": MODEL_CATALOG,
@@ -616,10 +632,7 @@ class PhysicalScenarioAgent:
                    "已有的整车失效在人员分支继续有效；关于失效通道无法恢复的解释写在uncovered_conditions，"
                    "不再把同一失效通道同时列入unresolved_controls。")
         if response_only_correction:
-            previous = context["previous_plan"]
-            identities = [h["hypothesis_id"] for h in previous.get("hypotheses", [])]
-            if previous.get("control_assessment") is not None:
-                identities.append("control_assessment")
+            identities = response_ids
             content["output_shape"] = {"response_updates": [{"hypothesis_id": identities[0], "control_assessment": {
                 "rationale": "response and capability basis for this unchanged world", "basis_refs": ["MF.description"],
                 "conditions": ["explicit applicability"], "uncovered_conditions": [],
@@ -657,6 +670,16 @@ class PhysicalScenarioAgent:
         errors = []
         previous_response = None
         legacy_context, legacy_sources = physical_prompt_view(legacy_prompt_inputs)
+        # Same semantic task, older complete input projection: read-only exact
+        # cache probes keep interrupted paid corrections recoverable.
+        old_content = deepcopy(content)
+        if response_only_correction:
+            old_content["context"], old_content["source_texts"] = physical_prompt_view(full_response_inputs)
+            old_ids = [h["hypothesis_id"] for h in context["previous_plan"].get("hypotheses", [])]
+            if context["previous_plan"].get("control_assessment") is not None:
+                old_ids.append("control_assessment")
+            old_content["response_update_identities"] = old_ids
+            old_content["output_shape"]["response_updates"][0]["hypothesis_id"] = old_ids[0]
         for repair in (False, True):
             request = LLMRequest(task="construct_post_fault_physical_scenario",
                 system_prompt=system, user_prompt=json.dumps({**content, "repair_errors": errors,
@@ -667,6 +690,7 @@ class PhysicalScenarioAgent:
                 # Honor the configured bound instead of overriding it with 8k.
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair,
                     "request_view_version": self.REQUEST_VIEW_VERSION,
+                    **({"response_update_scope": response_ids} if response_only_correction else {}),
                     **({"strict_no_format_retry": True} if repair else {})},
                 max_tokens=self.max_tokens,
                 response_format=self.response_format)
@@ -676,14 +700,22 @@ class PhysicalScenarioAgent:
                     # Until older REQUESTED plans have completed, use only an
                     # exact old request hit (same world, route, cap and repair).
                     compact_request = request
-                    request = replace(request,
-                        metadata={k: v for k, v in request.metadata.items() if k != "request_view_version"},
-                        user_prompt=json.dumps({**content,
-                        "context": legacy_context, "source_texts": legacy_sources,
-                        "repair_errors": errors,
-                        **({"previous_invalid_response": previous_response} if repair else {})},
-                        ensure_ascii=False, default=str, separators=(",", ":")))
-                    response = self.responses.complete(self.client, request, cache_only=True)
+                    if response_only_correction:
+                        request = replace(request,
+                            metadata={k: v for k, v in request.metadata.items() if k != "response_update_scope"},
+                            user_prompt=json.dumps({**old_content, "repair_errors": errors,
+                                **({"previous_invalid_response": previous_response} if repair else {})},
+                                ensure_ascii=False, default=str, separators=(",", ":")))
+                        response = self.responses.complete(self.client, request, cache_only=True)
+                    if response is None:
+                        request = replace(request,
+                            metadata={k: v for k, v in request.metadata.items() if k != "request_view_version"},
+                            user_prompt=json.dumps({**old_content,
+                            "context": legacy_context, "source_texts": legacy_sources,
+                            "repair_errors": errors,
+                            **({"previous_invalid_response": previous_response} if repair else {})},
+                            ensure_ascii=False, default=str, separators=(",", ":")))
+                        response = self.responses.complete(self.client, request, cache_only=True)
                     if response is None:
                         request = compact_request
                 if response is None:
@@ -785,6 +817,18 @@ class PhysicalScenarioAgent:
                         hypothesis_id = hypothesis.get("hypothesis_id") or next((
                             row.get("hypothesis_id") for row in candidate.get("response_updates", [])
                             if isinstance(row, dict) and row.get("control_assessment") is hypothesis), "control_assessment")
+                        # Relocate only explicit personnel objects in their
+                        # unique contract slot. Never choose between duplicates
+                        # or synthesize a missing control declaration.
+                        misplaced = {k: hypothesis[k] for k in output_contract["driver_control_assessments"]["keys"]
+                            if k in hypothesis and isinstance(hypothesis[k], dict)}
+                        existing = hypothesis.get("driver_control_assessments", {})
+                        if misplaced and isinstance(existing, dict) and not (misplaced.keys() & existing.keys()):
+                            hypothesis["driver_control_assessments"] = {**existing, **misplaced}
+                            for key in misplaced:
+                                hypothesis.pop(key)
+                            control_scope_normalizations.append({"hypothesis_id": hypothesis_id,
+                                "driver_positions": sorted(misplaced), "normalization": "SCOPED_EXPLICIT_DRIVER_OBJECTS"})
                         scoped = [(hypothesis, [])]
                         if isinstance(hypothesis.get("driver_control_assessments"), dict):
                             scoped.extend((h, hypothesis.get("failed_controls", []))

@@ -448,6 +448,88 @@ def test_parallel_physical_plans_equal_serial_and_resume_without_requests(method
     assert restored.item_definition['physical_analysis_metrics']['plan_cache_hits'] == 2
 
 
+def test_one_malfunction_parallelizes_families_and_batches_durable_snapshots(method, tmp_path):
+    from threading import Barrier, Lock
+    from hara_agent.workflow import HARAState, CheckpointRepository
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    class Client:
+        def __init__(self, parallel=False):
+            self.requests=[]; self.lock=Lock(); self.barrier=Barrier(4) if parallel else None
+        def complete_json(self, request):
+            with self.lock: self.requests.append(request)
+            if self.barrier: self.barrier.wait(timeout=5)
+            return LLMResponse(raw_plan(assessed=True), 'offline')
+    parents=[]
+    for i in range(4):
+        sc=make_candidate(); sc.scenario_id=f'family-{i}'
+        sc.facts.update(weather_conditions=f'explicit source weather {i}',
+                        driver_position='in_driver_seat' if i%2 else 'outside_driver_seat')
+        parents.append(sc)
+    inputs={'MF':parents}; old_client=Client()
+    serial=construct_physical_scenarios(HARAState('serial-families'),deepcopy(inputs),[mf()],
+        method=method,agent=PhysicalScenarioAgent(old_client),project_facts=None)
+    client=Client(True); state=HARAState('families'); repo=CheckpointRepository(tmp_path/'state')
+    agent=PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path/'responses')
+    writes=[]; progress=[]
+    def save(s): writes.append(repo.save(s))
+    result=construct_physical_scenarios(state,deepcopy(inputs),[mf()],method=method,agent=agent,
+        project_facts=None,max_workers=4,checkpoint=save,progress=lambda *p:progress.append(p))
+    assert result==serial and len(client.requests)==4 and len(writes)==1
+    # Includes the full driver scope, source focus, plan keys and constraints.
+    assert sorted(r.user_prompt for r in old_client.requests)==sorted(r.user_prompt for r in client.requests)
+    assert progress==[(1,1)]
+    assert len(repo.load(state.run_id).item_definition['physical_analysis_plans'])==4
+    assert state.item_definition['physical_analysis_metrics']['generated_instances']==4
+    assert len(list((tmp_path/'responses').glob('*.json')))==4
+
+
+def test_raw_responses_recover_after_batched_snapshot_write_failure(method, tmp_path):
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    from test_geometry_completion import Client
+    parents=[make_candidate(),make_candidate()]
+    parents[0].facts['weather_conditions']='dry'
+    parents[1].facts['weather_conditions']='rain'
+    parents[1].scenario_id='rain-world'
+    client=Client([raw_plan(assessed=True),raw_plan(assessed=True)])
+    agent=PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path)
+    def fail(s): raise OSError('simulated snapshot write failure')
+    with pytest.raises(OSError,match='snapshot write failure'):
+        construct_physical_scenarios(HARAState('failed-save'),{'MF':deepcopy(parents)},[mf()],
+            method=method,agent=agent,project_facts=None,max_workers=2,checkpoint=fail)
+    assert len(client.requests)==2 and len(list(tmp_path.glob('*.json')))==2
+    # The last whole-state snapshot can predate both paid responses.
+    resumed=construct_physical_scenarios(HARAState('recovered'),{'MF':deepcopy(parents)},[mf()],
+        method=method,agent=agent,project_facts=None,max_workers=2)
+    assert len(client.requests)==2 and len(resumed['MF'])==2
+
+
+@pytest.mark.parametrize('symbolic', [True, False])
+def test_validated_non_contact_or_symbolic_world_is_not_reproposed(method, symbolic):
+    raw=raw_plan(initial=0 if symbolic else 3.6, acceleration=2 if symbolic else -2)
+    if symbolic:
+        parameter=raw['hypotheses'][0]['parameters'][-1]
+        parameter.pop('value'); parameter.update(kind='SYMBOLIC',symbol='a_fault')
+    sc=instantiate(method,raw,make_candidate(0 if symbolic else 3.6))[0]
+    assert not sc.facts.get('collision_branches')
+    service=PhysicalHypothesisInstantiationService(method)
+    assert service.task_scope(sc,'MF')==''
+    assert service.task_scope(sc,'OTHER-MF')=='MOTION_AND_CONTROLS'
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    class NoRequest:
+        def complete_json(self, request):
+            pytest.fail('Validated world must not generate another proposal')
+    state, progress = HARAState('solved-world'), []
+    state.item_definition['physical_analysis_metrics'] = {'plan_requests': 99}
+    result = construct_physical_scenarios(state, {'MF': [sc]}, [mf()], method=method,
+        agent=PhysicalScenarioAgent(NoRequest()), project_facts=None, max_workers=4,
+        progress=lambda done, total: progress.append((done, total)))
+    assert result == {'MF': [sc]} and progress == [(1, 1)]
+    assert state.item_definition['physical_analysis_metrics']['plan_requests'] == 0
+    assert state.item_definition['physical_analysis_metrics']['existing_path_skipped'] == 1
+
+
 def test_physical_resume_skips_unchanged_writes_but_persists_recomputed_values(method, tmp_path):
     from hara_agent.workflow import HARAState, CheckpointRepository
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios

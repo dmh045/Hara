@@ -155,6 +155,69 @@ def test_bounded_response_update_completes_timing_without_rewriting_world(method
     assert restored == result and len(client.requests) == 2
 
 
+def test_response_request_targets_only_reported_world_and_preserves_other_world(tmp_path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL
+    from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+    previous=timed_plan(); first=previous['hypotheses'][0]
+    second=deepcopy(first); second['hypothesis_id']='h2'
+    second['geometry']['object_id']='second-target'
+    previous['hypotheses'].append(second)
+    assessment={k:deepcopy(v) for k,v in second.items() if k in CONTROL_ASSESSMENT_REQUIRED|CONTROL_ASSESSMENT_OPTIONAL}
+    assessment['rationale']='Updated response for the second target only'
+    update={'response_updates':[{'hypothesis_id':'h2','control_assessment':assessment}]}
+    client=Client([update]); agent=PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path)
+    context={'plan_key':'two-worlds','evidence':{'MF.description':'fault'},'previous_plan':previous,
+        'correction_diagnostics':[{'hypothesis_id':'h2','reason':'SAFE_STATE_RESPONSE_PATH_REVIEW'}]}
+    before=deepcopy(context)
+    plan,_=agent.propose(context)
+    body=json.loads(client.requests[0].user_prompt)
+    view=expand_physical_prompt_view(body['context'],body['source_texts'])
+    assert body['response_update_identities']==['h2']
+    assert view['previous_plan']['hypotheses']==[second]
+    assert plan.hypotheses[0]==first and context==before
+    assert plan.hypotheses[1]['geometry']==second['geometry']
+    assert plan.hypotheses[1]['parameters']==second['parameters']
+    assert agent.propose(context)[0]==plan and len(client.requests)==1
+    # An older paid correction may already be durable before its plan snapshot.
+    # Restore that exact full-view response without sending either view again.
+    from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
+    from hara_agent.services.semantic.physical_scenario_agent import physical_prompt_view
+    full_view=deepcopy(view); full_view['previous_plan']=deepcopy(previous)
+    old_body=deepcopy(body)
+    old_body['context'],old_body['source_texts']=physical_prompt_view(full_view)
+    old_body['response_update_identities']=['h1','h2']
+    old_body['output_shape']['response_updates'][0]['hypothesis_id']='h1'
+    old_request=replace(client.requests[0],metadata={k:v for k,v in client.requests[0].metadata.items()
+        if k!='response_update_scope'},user_prompt=json.dumps(old_body,ensure_ascii=False,default=str,separators=(',',':')))
+    legacy=tmp_path/'legacy'
+    ResponseCheckpoint(legacy).complete(Client([update]),old_request)
+    no_calls=Client([])
+    restored,audit=PhysicalScenarioAgent(no_calls,response_checkpoint_dir=legacy).propose(context)
+    assert restored==plan and not no_calls.requests and audit['response_cache_hits']==1
+
+
+@pytest.mark.parametrize('conflict', [False,True])
+def test_explicit_personnel_object_is_relocated_without_inferring_controls(conflict):
+    raw=raw_plan(); h=raw['hypotheses'][0]
+    local={'rationale':'Driver is outside; no manual pedal input', 'basis_refs':['MF.description'],
+        'conditions':['outside driver position'],'uncovered_conditions':['remote capability not supplied'],
+        'failed_controls':[],'remaining_controls':[]}
+    h['outside_driver_seat']=deepcopy(local)
+    if conflict: h['driver_control_assessments']={'outside_driver_seat':{**local,'remaining_controls':['remote_control']}}
+    before=deepcopy(raw); client=Client([raw,raw]); agent=PhysicalScenarioAgent(client)
+    context={'plan_key':'explicit-scope','evidence':{'MF.description':'fault'}}
+    if conflict:
+        with pytest.raises(ValueError,match='unexpected'): agent.propose(context)
+        assert len(client.requests)==2
+    else:
+        plan,audit=agent.propose(context)
+        assert len(client.requests)==1
+        assert plan.hypotheses[0]['driver_control_assessments']['outside_driver_seat']==local
+        assert audit['control_scope_normalizations'][0]['normalization']=='SCOPED_EXPLICIT_DRIVER_OBJECTS'
+    assert raw==before
+
+
 def test_response_criterion_options_are_rejected_and_repaired_without_selecting_for_model(method, tmp_path):
     from test_moving_response_timing import proposal
     from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, CONTROL_ASSESSMENT_OPTIONAL
