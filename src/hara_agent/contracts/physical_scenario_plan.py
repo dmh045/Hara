@@ -206,17 +206,6 @@ INTERVENTION_ASSUMPTION_FIELDS = frozenset({
 
 
 def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
-    if "driver_control_assessments" in h:
-        assessments = _object(h["driver_control_assessments"], set(), {"in_driver_seat", "outside_driver_seat"})
-        for driver, assessment in assessments.items():
-            _validate_control_assessment(assessment, evidence_ids)
-            effective = controls_for_driver(h, driver)
-            effective.pop("driver_control_assessments", None)
-            _validate_controls(effective, evidence_ids)
-            proposal = assessment.get("safe_state_proposal", {})
-            if (driver == "outside_driver_seat" and "driver_braking" in proposal.get("required_controls", [])
-                    or proposal.get("driver_positions") and driver not in proposal["driver_positions"]):
-                raise ValueError("Scoped safe state must apply to its driver position: " + driver)
     if "hazard_timing" in h:
         timing = _object(h["hazard_timing"], {"time_origin", "fault_to_model_start_s", "hazard_criterion", "rationale", "basis_refs"})
         if timing["time_origin"] != "FAULT_ONSET" or _number(timing["fault_to_model_start_s"]) < 0:
@@ -333,6 +322,19 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
     remote = interventions.get("remote_intervention_available", {})
     if remote.get("value") is True and "remote_control" not in h["remaining_controls"]:
         raise ValueError("Remote intervention requires an explicitly remaining remote control path")
+    # Validate shared inputs before driver inheritance reads their structure.
+    # Malformed optional responses must reach the existing bounded repair.
+    if "driver_control_assessments" in h:
+        assessments = _object(h["driver_control_assessments"], set(), {"in_driver_seat", "outside_driver_seat"})
+        for driver, assessment in assessments.items():
+            _validate_control_assessment(assessment, evidence_ids)
+            effective = controls_for_driver(h, driver)
+            effective.pop("driver_control_assessments", None)
+            _validate_controls(effective, evidence_ids)
+            proposal = assessment.get("safe_state_proposal", {})
+            if (driver == "outside_driver_seat" and "driver_braking" in proposal.get("required_controls", [])
+                    or proposal.get("driver_positions") and driver not in proposal["driver_positions"]):
+                raise ValueError("Scoped safe state must apply to its driver position: " + driver)
 
 
 def _validate_control_assessment(control: dict, evidence_ids: set[str], *, scoped=False) -> None:

@@ -20,6 +20,58 @@ from hara_agent.workflow.nodes.scoring import score_structured_scenarios
 from hara_agent.workflow.physical_analysis import construct_physical_scenarios
 
 
+@pytest.mark.parametrize('invalid_field', ['proposal', 'transition'])
+def test_shared_response_is_validated_before_driver_inheritance(invalid_field):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED
+    raw = timed_plan()
+    h = raw['hypotheses'][0]
+    h['driver_control_assessments'] = {'in_driver_seat': {
+        key: deepcopy(h[key]) for key in CONTROL_ASSESSMENT_REQUIRED}}
+    if invalid_field == 'proposal':
+        h['safe_state_proposal'] = None
+    else:
+        h['safe_state_proposal']['transition'] = None
+    original = deepcopy(raw)
+    with pytest.raises(ValueError, match='expected object'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    assert raw == original
+
+
+def test_null_shared_response_uses_bounded_agent_repair_and_cached_resume(tmp_path):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED
+    valid = timed_plan()
+    h = valid['hypotheses'][0]
+    h['driver_control_assessments'] = {'in_driver_seat': {
+        key: deepcopy(h[key]) for key in CONTROL_ASSESSMENT_REQUIRED}}
+    invalid = deepcopy(valid)
+    invalid['hypotheses'][0]['safe_state_proposal'] = None
+    original = deepcopy(invalid)
+
+    class Client:
+        calls = 0
+
+        def complete_json(self, request):
+            self.calls += 1
+            if self.calls == 2:
+                assert request.metadata['schema_repair']
+                assert 'expected object' in request.user_prompt
+            return LLMResponse(invalid if self.calls == 1 else valid, 'OFFLINE')
+
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'null-response', 'evidence': {'MF.description': 'fault'}}
+    plan, audit = agent.propose(context)
+    assert client.calls == 2 and audit['schema_repairs'] == 1
+    assert invalid == original
+    for field in ('geometry', 'parameters', 'model'):
+        assert plan.hypotheses[0][field] == h[field]
+    resumed, resumed_audit = agent.propose(context)
+    assert resumed == plan and client.calls == 2
+    assert resumed_audit['request_count'] == 0
+
+
 @pytest.mark.parametrize('language', ['zh', 'en'])
 def test_response_source_routing_keeps_fault_handling_with_renamed_actuators(language):
     from hara_agent.workflow.physical_analysis import _source_evidence
