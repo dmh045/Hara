@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 
 from hara_agent.config import LLMConfig, RunConfig
+from hara_agent.config.llm_config import physical_reasoning_identity
 from hara_agent.contracts import CompileStatus
 from hara_agent.infrastructure.llm import LLMClient, create_llm_client
 from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
@@ -86,6 +87,7 @@ class HARAApplication:
             "guideword_thinking": getattr(provider_config, "guideword_thinking", ""),
             "malfunction_thinking": getattr(provider_config, "malfunction_thinking", ""),
             "scenario_thinking": getattr(provider_config, "scenario_thinking", ""),
+            **physical_reasoning_identity(provider_config),
         } if self.config.bounded_sample else {}
 
     def run(self) -> WorkflowRunResult:

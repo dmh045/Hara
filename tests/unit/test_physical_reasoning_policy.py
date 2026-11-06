@@ -191,3 +191,23 @@ def test_workflow_plan_cache_isolated_by_physical_policy_and_old_entry_survives(
         assert state.item_definition['physical_analysis_plans'][key] == entry
     assert {json.loads(r.user_prompt)['context']['route'].get('physical_reasoning', {}).get(
         'initial', {}).get('reasoning_effort', 'not_sent') for r in client.requests} == {'low', 'not_sent'}
+
+
+def test_bounded_application_resume_context_binds_physics_policy_without_changing_old_default(tmp_path):
+    from types import SimpleNamespace
+    from hara_agent.application import HARAApplication
+    from hara_agent.config import RunConfig
+    item = tmp_path / 'item.docx'
+    item.write_bytes(b'unchanged source')
+    run = RunConfig(item, None, tmp_path / 'report.xlsx', tmp_path / 'checkpoints', provider_attempt_limit=80)
+    client = SimpleNamespace(config=config())
+    app = HARAApplication(run, client)
+    method_ref = {'method_source_hash': 'method', 'report_template_hash': 'report'}
+    old = app.bounded_source_context(method_ref)
+    assert 'physical_reasoning' not in old
+    client.config = config(physics_reasoning_effort='low')
+    low = app.bounded_source_context(method_ref)
+    assert low != old
+    assert {k: v for k, v in low.items() if k != 'physical_reasoning'} == old
+    client.config = config(physics_thinking='disabled')
+    assert app.bounded_source_context(method_ref) != low
