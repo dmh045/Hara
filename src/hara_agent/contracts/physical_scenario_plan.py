@@ -567,7 +567,9 @@ class PhysicalScenarioPlan:
         if previous.get("control_assessment") is not None:
             targets["control_assessment"] = previous["control_assessment"]
         if not isinstance(rows, list) or not rows or len(rows) > len(targets):
-            raise ValueError("response_updates must cover existing hypotheses only")
+            raise ValueError("response_updates must cover existing hypotheses only; allowed IDs="
+                + repr(sorted(targets)) + "; at most one row per ID. Put driver branches inside that row's "
+                "control_assessment.driver_control_assessments, not duplicate response_updates rows.")
         result = deepcopy(previous)
         destination = {h["hypothesis_id"]: h for h in result.get("hypotheses", [])}
         if result.get("control_assessment") is not None:

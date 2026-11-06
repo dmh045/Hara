@@ -121,6 +121,7 @@ class ProviderAttemptBudget:
                     "task": request.task,
                     "schema_name": request.schema_name,
                     "model": model,
+                    "request_options": request.metadata.get("_provider_options", {}),
                 })
                 self._attempts = attempt_id
                 self._session_attempts += 1
@@ -143,6 +144,9 @@ class ProviderAttemptBudget:
                 "error_type": type(error).__name__ if error is not None else "",
                 "finish_reason": str(first.get("finish_reason", "")) if isinstance(first, dict) else "",
                 "model": str((response or {}).get("model", "")),
+                "usage": {key: value for key, value in ((response or {}).get("usage") or {}).items()
+                          if key in {"prompt_tokens", "completion_tokens", "total_tokens", "input_tokens",
+                                     "output_tokens", "reasoning_tokens", "prompt_tokens_details", "completion_tokens_details"}},
             })
 
     def save_response(self, attempt_id: int, request: LLMRequest, response: dict[str, Any]) -> None:

@@ -182,14 +182,13 @@ def test_response_request_targets_only_reported_world_and_preserves_other_world(
     # An older paid correction may already be durable before its plan snapshot.
     # Restore that exact full-view response without sending either view again.
     from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
-    from hara_agent.services.semantic.physical_scenario_agent import physical_prompt_view
-    full_view=deepcopy(view); full_view['previous_plan']=deepcopy(previous)
-    old_body=deepcopy(body)
-    old_body['context'],old_body['source_texts']=physical_prompt_view(full_view)
-    old_body['response_update_identities']=['h1','h2']
-    old_body['output_shape']['response_updates'][0]['hypothesis_id']='h1'
-    old_request=replace(client.requests[0],metadata={k:v for k,v in client.requests[0].metadata.items()
-        if k!='response_update_scope'},user_prompt=json.dumps(old_body,ensure_ascii=False,default=str,separators=(',',':')))
+    # Frozen pre-v3 projection, rather than synthesizing a supposed old request
+    # from the current (now scoped) output contract and prompt.
+    import gzip
+    from hara_agent.infrastructure.llm import LLMRequest
+    frozen=json.loads(gzip.decompress((Path(__file__).parents[1]/'fixtures/physical_request_v2_resume.json.gz').read_bytes()))
+    assert frozen['context']==context
+    old_request=LLMRequest(**frozen['request'])
     legacy=tmp_path/'legacy'
     ResponseCheckpoint(legacy).complete(Client([update]),old_request)
     no_calls=Client([])

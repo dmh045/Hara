@@ -9,9 +9,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from typing import Any, Callable, Optional
 
 from hara_agent.config import LLMConfig
+from hara_agent.config.llm_config import physical_reasoning_options
 
 from .provider_budget import ProviderAttemptBudget
 from .protocol import LLMRequest, LLMResponse
@@ -120,6 +122,12 @@ class OpenAICompatibleClient:
         if request.response_format is not None:
             body["response_format"] = request.response_format
         thinking_mode = self._resolve_thinking_mode(request.task)
+        if request.task == "construct_post_fault_physical_scenario":
+            options = physical_reasoning_options(self.config, repair=bool(
+                request.metadata.get("schema_repair") or request.metadata.get("physical_semantic_correction")
+                or request.metadata.get("_format_retry_attempt")))
+            body.update(options)
+            thinking_mode = options.get("thinking", {}).get("type", thinking_mode)
         if (request.task == "construct_post_fault_physical_scenario"
                 and request.metadata.get("_format_retry_attempt") == 1
                 and request.metadata.get("_format_retry_thinking") == "enabled"
@@ -127,6 +135,10 @@ class OpenAICompatibleClient:
             thinking_mode = "enabled"
         if thinking_mode in {"disabled", "enabled", "auto"}:
             body["thinking"] = {"type": thinking_mode}
+        request_options = {key: body[key] for key in ("thinking", "reasoning_effort", "max_tokens") if key in body}
+        # Persist the actual wire options for every attempt, including repairs.
+        # This is request-local; concurrent workers never mutate shared config.
+        request = replace(request, metadata={**request.metadata, "_provider_options": request_options})
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
@@ -140,6 +152,7 @@ class OpenAICompatibleClient:
             f"task={request.task}{request_context} schema_name={request.schema_name} "
             f"input_chars={input_characters} max_tokens={body['max_tokens']} "
             f"thinking={thinking_mode} "
+            f"reasoning_effort={body.get('reasoning_effort', 'provider_default')} "
             f"timeout={self.config.timeout_seconds:.1f}s attempts={self.config.max_retries + 1}",
             file=sys.stderr,
             flush=True,
@@ -340,6 +353,7 @@ class OpenAICompatibleClient:
             "format_retry_successes": 0,
             "format_retry_failures": 0,
             "markdown_fence_normalizations": markdown_fence_normalizations,
+            "request_options": request_options,
         })
         result = LLMResponse(
             data=data,
@@ -376,11 +390,12 @@ class OpenAICompatibleClient:
             configured_mode = self.config.guideword_thinking
         elif task == "derive_malfunctions_and_hazards":
             configured_mode = self.config.malfunction_thinking
+        elif task == "construct_post_fault_physical_scenario":
+            configured_mode = self.config.physics_thinking or self.config.scenario_thinking
         elif task in {
             "assess_scenario_feasibility",
             "interpret_scenario_risk_facts",
             "select_scenario_synthesis",
-            "construct_post_fault_physical_scenario",
         }:
             configured_mode = self.config.scenario_thinking
         elif task == "repair_schema_envelope":

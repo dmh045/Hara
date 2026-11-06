@@ -23,6 +23,9 @@ class LLMConfig:
     scenario_max_split_depth: int = 8
     scenario_causal_evidence_budget: int = 10
     scenario_response_format: str = "none"
+    # Empty means the historical scenario policy, including its repair policy.
+    physics_thinking: str = ""
+    physics_reasoning_effort: str = ""
 
     @classmethod
     def from_env(cls, prefix: str = "HARA_LLM_") -> "LLMConfig":
@@ -48,6 +51,8 @@ class LLMConfig:
             scenario_thinking=os.getenv(
                 f"{prefix}SCENARIO_THINKING", "default"
             ).strip().lower(),
+            physics_thinking=os.getenv(f"{prefix}PHYSICS_THINKING", "").strip().lower(),
+            physics_reasoning_effort=os.getenv(f"{prefix}PHYSICS_REASONING_EFFORT", "").strip().lower(),
             scenario_batch_max_chars=int(os.getenv(
                 f"{prefix}SCENARIO_BATCH_MAX_CHARS", str(cls.scenario_batch_max_chars)
             )),
@@ -110,3 +115,42 @@ class LLMConfig:
             raise ValueError("HARA_LLM_SCENARIO_MAX_SPLIT_DEPTH不得小于0")
         if self.scenario_response_format not in {"none", "json_object"}:
             raise ValueError("HARA_LLM_SCENARIO_RESPONSE_FORMAT必须为none或json_object")
+        if self.physics_thinking not in {"", "default", "disabled", "enabled", "auto"}:
+            raise ValueError("HARA_LLM_PHYSICS_THINKING必须为空、default、disabled、enabled或auto")
+        if self.physics_reasoning_effort not in {"", "low", "high", "max"}:
+            raise ValueError("HARA_LLM_PHYSICS_REASONING_EFFORT必须为空、low、high或max")
+        if (self.physics_thinking or self.physics_reasoning_effort) and self.provider != "volcengine-agent-plan":
+            raise ValueError("物理任务独立推理配置目前仅验证了volcengine-agent-plan参数契约")
+
+
+def physical_reasoning_options(config, *, repair: bool = False) -> dict:
+    """The physical task's wire options; also used by both cache identities.
+
+    Escalation consumes an existing repair opportunity, never an extra request.
+    Empty settings preserve old requests and their historical cache keys.
+    """
+    if getattr(config, "provider", "") != "volcengine-agent-plan":
+        return {}
+    explicit = getattr(config, "physics_thinking", "")
+    mode = explicit or getattr(config, "scenario_thinking", "default")
+    effort = getattr(config, "physics_reasoning_effort", "")
+    if mode == "disabled":
+        effort = ""
+    elif effort and mode == "default":
+        mode = "enabled"
+    if repair and (effort == "low" or explicit == "disabled"):
+        mode, effort = "enabled", "high"
+    result = {"thinking": {"type": mode}} if mode in {"enabled", "disabled", "auto"} else {}
+    if effort:
+        result["reasoning_effort"] = effort
+    return result
+
+
+def physical_reasoning_identity(config) -> dict:
+    """Opt-in route extension; untouched policies retain exact old identities."""
+    if not (getattr(config, "physics_thinking", "") or getattr(config, "physics_reasoning_effort", "")):
+        return {}
+    return {"physical_reasoning": {
+        "initial": physical_reasoning_options(config),
+        "repair": physical_reasoning_options(config, repair=True),
+    }}

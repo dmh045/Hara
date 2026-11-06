@@ -40,6 +40,18 @@ corrections by default; this route was exercised with two real replies on
 syntax only; local schema, evidence and physics validation still apply. A schema
 name in the audit log alone does not enable provider structured output.
 
+Physical proposals can be tuned independently on `volcengine-agent-plan` with
+`HARA_LLM_PHYSICS_THINKING=enabled` and `HARA_LLM_PHYSICS_REASONING_EFFORT=low`
+(`low`, `high`, or `max`). Both are unset by default, preserving the existing
+scenario policy; causal judgments and risk-fact extraction are unaffected.
+`HARA_LLM_PHYSICS_THINKING=disabled` omits the effort parameter. An existing physical
+format/schema/semantic repair may escalate low or explicitly disabled thinking
+to high, within the same retry limits and Provider budget. Wire options are
+recorded per attempt and isolated in physical caches. This is an opt-in control,
+not evidence that a lower setting has passed live engineering-quality validation.
+Do not change `.env` defaults until the same-input comparison in the
+[reuse/performance closure checklist](docs/Reuse_Reporting_Closure_20261018.md) passes.
+
 ### Autonomous physics targeted closure (2026-10-18)
 
 The [F01–F06 follow-up ledger](docs/Autonomous_Physics_Followup_20261018.md)

@@ -6,6 +6,7 @@ import sys
 import re
 from threading import Lock
 from time import perf_counter
+from hara_agent.config.llm_config import physical_reasoning_identity
 
 from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability, declared_response_path, automatic_command_unassessed
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
@@ -310,6 +311,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     functions = {f["function_id"]: f for f in state.functions}
     config = getattr(agent.client, "config", None)
     route = {key: getattr(config, key, "") for key in ("provider", "model", "base_url", "scenario_thinking")}
+    route.update(physical_reasoning_identity(config))
     for mf in malfunctions:
         source_evidence, source_routing = _source_evidence(state, functions.get(mf.function_id, {}))
         driver_configurations = _driver_configurations if _driver_configurations is not None else sorted({str(c.facts.get("driver_position", ""))

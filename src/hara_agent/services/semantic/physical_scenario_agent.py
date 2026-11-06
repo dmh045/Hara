@@ -96,6 +96,12 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
     """Reconstruct the original context for audits and offline equivalence tests."""
     def expand(value):
         if isinstance(value, dict):
+            if set(value) == {"$diagnostic_groups"}:
+                rows = []
+                for group in value["$diagnostic_groups"]:
+                    for case in group["occurrences"]:
+                        rows.append((case["index"], {**expand(group["diagnostic"]), **case["identity"]}))
+                return [row for _, row in sorted(rows, key=lambda pair: pair[0])]
             if set(value) == {"$source_text"}:
                 return source_texts[value["$source_text"]]
             if set(value) == {"$context_ref"}:
@@ -107,6 +113,44 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
             return [expand(item) for item in value]
         return value
     return expand({key: value for key, value in view.items() if key != "$context_values"})
+
+
+def compact_physical_request(content: dict, *, response_only: bool, controls_only: bool) -> dict:
+    """Project existing task scopes; no change to the complete audit context.
+
+    Diagnostic grouping is exact apart from generated instance references.
+    Driver, object, stage, raw numeric traces and resolution remain in the key.
+    """
+    result = deepcopy(content)
+    context = expand_physical_prompt_view(content["context"], content["source_texts"])
+    groups = {}
+    diagnostics = context.get("correction_diagnostics", [])
+    for index, diagnostic in enumerate(diagnostics):
+        identity = {k: diagnostic[k] for k in ("scenario_id", "instance_hypothesis_id") if k in diagnostic}
+        body = {k: v for k, v in diagnostic.items() if k not in identity}
+        key = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        group = groups.setdefault(key, {"diagnostic": body, "occurrences": []})
+        group["occurrences"].append({"index": index, "identity": identity})
+    if len(groups) < len(diagnostics):
+        context["correction_diagnostics"] = {"$diagnostic_groups": list(groups.values())}
+        result["context"], result["source_texts"] = physical_prompt_view(context)
+    if controls_only or response_only:
+        # These are output-only motion selection contracts. Actual trajectories,
+        # their provenance and all response/control methods remain in context.
+        for key in ("geometry_values", "driver_positions", "parameter_payloads", "moving_target_geometry",
+                    "unmitigated_post_stop_motion", "operating_atoms"):
+            result["output_contract"].pop(key, None)
+    if response_only:
+        assessment = result["output_shape"]["response_updates"][0]["control_assessment"]
+        result["output_shape"]["response_updates"] = [
+            {"hypothesis_id": identity, "control_assessment": deepcopy(assessment)}
+            for identity in result["response_update_identities"]]
+        result["output_contract"]["response_update_cardinality"] = {
+            "allowed_ids": result["response_update_identities"], "max_entries_per_id": 1,
+            "driver_branches": "Different driver responses belong INSIDE that one control_assessment.driver_control_assessments, never in duplicate response_updates rows.",
+            "unreachable_response": "Keep the actual response inputs and computed negative evidence; explain the limitation in its control assessment. Do not add placeholder/empty rows or change the world to make avoidance succeed.",
+        }
+    return result
 
 
 def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[dict]:
@@ -140,7 +184,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    REQUEST_VIEW_VERSION = "physical-request-view-v2-ranking-and-rule-dedup"
+    REQUEST_VIEW_VERSION = "physical-request-view-v3-scoped-contract-and-diagnostics"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v26-explicit-driver-scope"
     PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics"
@@ -666,13 +710,22 @@ class PhysicalScenarioAgent:
                 "程序会重新检查同一轨迹，不能声称已经安全、工程批准或给出S/E/C/ASIL/FTTI结果。"
                 "每个rationale限一两句，条件和未覆盖范围用短句；共同依据不要在两个人员分支重复全文。"
             ) + self.CONTROL_ANALYSIS_POLICY + self.RESPONSE_TIMING_POLICY
+        previous_view_content = deepcopy(content)
+        previous_view_system = system
+        content = compact_physical_request(content, response_only=response_only_correction, controls_only=controls_only)
+        if "$diagnostic_groups" in content["context"].get("correction_diagnostics", {}):
+            system += ("correction_diagnostics.$diagnostic_groups将完全相同的诊断列一次；occurrences保留所有原始身份与顺序。"
+                       "每组只分析一次，但结论仍受其中的驾驶员、对象、阶段及原始数值约束，不扩大适用范围。")
+        if response_only_correction:
+            system += ("response_updates内同一个hypothesis_id最多出现一次；多个驾驶员的处置写在这一个control_assessment"
+                       "的driver_control_assessments内，不能为每个驾驶员重复该ID。只用response_update_identities列出的身份。")
         attempts = []
         errors = []
         previous_response = None
         legacy_context, legacy_sources = physical_prompt_view(legacy_prompt_inputs)
         # Same semantic task, older complete input projection: read-only exact
         # cache probes keep interrupted paid corrections recoverable.
-        old_content = deepcopy(content)
+        old_content = deepcopy(previous_view_content)
         if response_only_correction:
             old_content["context"], old_content["source_texts"] = physical_prompt_view(full_response_inputs)
             old_ids = [h["hypothesis_id"] for h in context["previous_plan"].get("hypotheses", [])]
@@ -689,6 +742,9 @@ class PhysicalScenarioAgent:
                 # Reasoning and final JSON may share the provider's token cap.
                 # Honor the configured bound instead of overriding it with 8k.
                 metadata={"physical_plan_key": context["plan_key"], "schema_repair": repair,
+                    **({"physical_semantic_correction": True} if context.get("previous_plan") is not None
+                       and (getattr(getattr(self.client, "config", None), "physics_thinking", "")
+                            or getattr(getattr(self.client, "config", None), "physics_reasoning_effort", "")) else {}),
                     "request_view_version": self.REQUEST_VIEW_VERSION,
                     **({"response_update_scope": response_ids} if response_only_correction else {}),
                     **({"strict_no_format_retry": True} if repair else {})},
@@ -697,18 +753,30 @@ class PhysicalScenarioAgent:
             try:
                 response = self.responses.complete(self.client, request, cache_only=True) if self.responses else None
                 if self.responses and response is None:
+                    # Interrupted v2 requests retain their exact paid reply.
+                    # Never send this older projection or use a different route.
+                    previous_view_request = replace(request, system_prompt=previous_view_system,
+                        metadata={**request.metadata, "request_view_version": "physical-request-view-v2-ranking-and-rule-dedup"},
+                        user_prompt=json.dumps({**previous_view_content, "repair_errors": errors,
+                            **({"previous_invalid_response": previous_response} if repair else {})},
+                            ensure_ascii=False, default=str, separators=(",", ":")))
+                    response = self.responses.complete(self.client, previous_view_request, cache_only=True)
+                    if response is not None:
+                        request = previous_view_request
+                if self.responses and response is None:
                     # Until older REQUESTED plans have completed, use only an
                     # exact old request hit (same world, route, cap and repair).
                     compact_request = request
                     if response_only_correction:
-                        request = replace(request,
-                            metadata={k: v for k, v in request.metadata.items() if k != "response_update_scope"},
+                        request = replace(request, system_prompt=previous_view_system,
+                            metadata={**{k: v for k, v in request.metadata.items() if k != "response_update_scope"},
+                                "request_view_version": "physical-request-view-v2-ranking-and-rule-dedup"},
                             user_prompt=json.dumps({**old_content, "repair_errors": errors,
                                 **({"previous_invalid_response": previous_response} if repair else {})},
                                 ensure_ascii=False, default=str, separators=(",", ":")))
                         response = self.responses.complete(self.client, request, cache_only=True)
                     if response is None:
-                        request = replace(request,
+                        request = replace(request, system_prompt=previous_view_system,
                             metadata={k: v for k, v in request.metadata.items() if k != "request_view_version"},
                             user_prompt=json.dumps({**old_content,
                             "context": legacy_context, "source_texts": legacy_sources,

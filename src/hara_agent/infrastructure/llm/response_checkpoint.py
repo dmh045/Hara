@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 from threading import Lock
+from hara_agent.config.llm_config import physical_reasoning_identity
 
 from .protocol import LLMResponse
 from .openai_compatible import LLMJSONContractError
@@ -35,6 +36,8 @@ class ResponseCheckpoint:
         material = {"request": effective_request, "route": {
             key: getattr(config, key, "") for key in ("provider", "base_url", "model", "scenario_thinking")
         }}
+        if request.task == "construct_post_fault_physical_scenario":
+            material["route"].update(physical_reasoning_identity(config))
         key = hashlib.sha256(json.dumps(material, ensure_ascii=False, sort_keys=True,
                                        separators=(",", ":"), default=str).encode()).hexdigest()
         path = self.directory / f"{key}.json"
