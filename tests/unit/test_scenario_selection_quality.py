@@ -28,6 +28,18 @@ from hara_agent.template import TemplateRoleCompiler
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_dynamics_traffic_atom_requires_actual_operating_interaction():
+    atom = {"atom_id": "unseen-cut-in", "label": "Near cut-in", "filled_dimensions": ["EGO_DYNAMICS"]}
+    query = {"operating_action_categories": ["ACTION_PARK"], "action_categories": ["ACTION_PARK"],
+             "operating_traffic_relations": []}
+    classifier = ScenarioSemanticCompatibilityClassifier
+    status, reason = classifier.classify(dimension="EGO_DYNAMICS", atom=atom, query=query, fm_template={})
+    assert status.value == "CONTRADICTED" and reason == "OPERATING_TRAFFIC_QUALIFIER_UNPROVEN"
+    query["operating_traffic_relations"] = ["TRAFFIC_CUT_IN"]
+    status, _ = classifier.classify(dimension="EGO_DYNAMICS", atom=atom, query=query, fm_template={})
+    assert status.value != "CONTRADICTED"
+
+
 @pytest.fixture(scope="module")
 def method():
     report = TemplateRoleCompiler().compile_method(

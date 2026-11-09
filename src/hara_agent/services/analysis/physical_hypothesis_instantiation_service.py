@@ -430,9 +430,13 @@ class PhysicalHypothesisInstantiationService:
             except PhysicalInputConflict as error:
                 return [], [{"reason": str(error), **error.details}]
         for h in plan.hypotheses:
-            if "driver_positions" in h and candidate.facts.get("driver_position") not in h["driver_positions"]:
+            positions = h.get("driver_positions", [])
+            if positions and driver_position and driver_position not in positions:
                 continue  # Explicit applicability, not a risk-equivalence judgement.
-            h = controls_for_driver(h, driver_position)
+            # A singleton scope explicitly proposed by the model can narrow an
+            # unknown operating condition. It is not a new project source fact.
+            assumed_driver = positions[0] if not driver_position and len(positions) == 1 else ""
+            h = controls_for_driver(h, driver_position or assumed_driver)
             try:
                 inputs, inheritance = self._model_inputs(candidate, h, malfunction.malfunction_id)
             except PhysicalInputConflict as error:
@@ -447,6 +451,8 @@ class PhysicalHypothesisInstantiationService:
                     "resolution": "Jointly justify geometry and motion, or explicitly declare SYMBOLIC with a reason and scope. Never fill a default."})
                 continue
             samples, sensitivity = self._samples(h, inputs, self.MAX_INSTANCES_PER_PLAN // len(plan.hypotheses))
+            if assumed_driver:
+                sensitivity["driver_position_assumption"] = assumed_driver
             sensitivity["model_input_view"] = inheritance
             sensitivity["input_completeness"] = {
                 "classification": "EXPLAINED_SYMBOLIC_RELATION" if any(p["kind"] == "SYMBOLIC"
@@ -463,6 +469,11 @@ class PhysicalHypothesisInstantiationService:
                     diagnostics.append({"hypothesis_id": h["hypothesis_id"], "point_index": index,
                                         "reason": str(error), "parameters": values,
                                         **(error.details if isinstance(error, PhysicalInputConflict) else {})})
+        if plan.hypotheses and not results and not diagnostics:
+            diagnostics.append({"reason": "HYPOTHESIS_DRIVER_SCOPE_NOT_APPLICABLE",
+                "driver_position": driver_position,
+                "hypothesis_scopes": {h["hypothesis_id"]: h.get("driver_positions", []) for h in plan.hypotheses},
+                "detail": "方案限定的驾驶员位置与当前已绑定条件不符；原条件保留，不生成冲突分支。"})
         return results, diagnostics
 
     @staticmethod
@@ -606,7 +617,8 @@ class PhysicalHypothesisInstantiationService:
             bindings[dimension] = {"binding_authority": "ANALYTICAL_SELECTION", "refinable": True,
                 "resolution_status": "PENDING", "project_value": geometry["road_user_type"] if dimension == "OBJECT" else str(initial)}
         query_parent = replace(parent, facts={**parent.facts, "method_scenario_dimensions": bindings,
-            **{k: current_facts[k] for k in ("object_speed_kph", "object_position", "object_longitudinal_direction")
+            **{k: current_facts[k] for k in ("object_speed_kph", "object_position", "object_longitudinal_direction",
+                                           "driver_position", "driver_in_vehicle")
                if current_facts and k in current_facts},
             "road_user_type": geometry["road_user_type"], "object_type": geometry["road_user_type"].lower(),
             **({"ego_speed_kph": initial, "ego_speed_constraint": {"min_kph": initial, "max_kph": initial}}
@@ -663,7 +675,7 @@ class PhysicalHypothesisInstantiationService:
                     atom = synthesis.by_id.get(selected_id, {})
                     presence = explicit_driver_presence(atom.get("label", ""))
                     if presence is not None:
-                        if parent.facts.get("driver_in_vehicle") is not presence:
+                        if query_parent.facts.get("driver_in_vehicle") is not presence:
                             return {}, "ATOM_DRIVER_CONDITION_CONFLICT:" + selected_id
                         # This is the explicitly qualified counterpart offered
                         # by operating_atom_options. The normal materializer still
@@ -805,7 +817,8 @@ class PhysicalHypothesisInstantiationService:
         lower = speed_range.get("min_kph", speed_range.get("speed_min_kph"))
         upper = speed_range.get("max_kph", speed_range.get("speed_max_kph"))
         if initial is not None and (
-            lower is not None and initial < lower or upper is not None and initial > upper):
+            lower is not None and (initial < lower or initial == lower and speed_range.get("min_inclusive") is False)
+            or upper is not None and (initial > upper or initial == upper and speed_range.get("max_inclusive") is False)):
             raise ValueError("INITIAL_SPEED_OUTSIDE_OPERATING_CONSTRAINT")
         slope = values.get("slope_percent")
         from .scenario_synthesis_service import ConstrainedScenarioSynthesisService
@@ -844,6 +857,12 @@ class PhysicalHypothesisInstantiationService:
             "object_speed_kph": 0, "object_longitudinal_direction": "STATIONARY"}
         supplied = {**g, **values, **target,
                     "fault_motion_model": h["model"], **grade_mapping}
+        assumed_driver = sensitivity.get("driver_position_assumption")
+        if assumed_driver:
+            supplied["driver_position"] = assumed_driver
+            if assumed_driver == "in_driver_seat":
+                supplied["driver_in_vehicle"] = True
+            # Outside the driver's seat does not establish outside the vehicle.
         if "post_stop_motion" in h:
             supplied["post_stop_motion"] = h["post_stop_motion"]
         supplied.update({field: proposal["value"]
@@ -919,6 +938,11 @@ class PhysicalHypothesisInstantiationService:
                 provenance[field]["source_refs"][0]["excerpt"] = assumption["rationale"]
         if "ego_speed_kph" in values:
             provenance["ego_speed_kph"] = {**provenance["ego_speed_kph"], "analysis_value_semantic": "PRE_FAULT_OPERATING_SPEED"}
+        if assumed_driver:
+            for field in ("driver_position", "driver_in_vehicle"):
+                if field in supplied:
+                    provenance[field].update(analysis_value_semantic="OPERATING_DRIVER_CONFIGURATION",
+                        selection_basis="EXPLICIT_PHYSICAL_HYPOTHESIS_DRIVER_SCOPE", basis_refs=list(h["basis_refs"]))
         if "steering" in [control.lower() for control in h["failed_controls"]]:
             facts["steering_control_available"], provenance["steering_control_available"] = False, deepcopy(meta)
         if braking_capability(h) is False:
@@ -937,6 +961,10 @@ class PhysicalHypothesisInstantiationService:
             "consumer": "ordinary_analyze:causality->StructuredRiskScoringService->report"}
         info["model_input_view"] = sensitivity["model_input_view"]
         info["condition_changes"] = changes
+        if assumed_driver:
+            info["driver_configuration_assumption"] = {
+                "driver_position": assumed_driver, "status": "PENDING",
+                "basis": "模型明确限定的分析工况；不是原文已确认的人员位置。"}
         info["grade_mapping"] = {"source_tag": parent.facts.get("source_slope_direction", parent.facts.get("source_operating_conditions", {}).get("source_slope_direction")),
             "source_reference": parent.facts.get("slope_reference", "UNSPECIFIED"), **grade_mapping} if grade_mapping else {}
         # A newly assumed object does not inherit another object's Exposure.
@@ -945,8 +973,11 @@ class PhysicalHypothesisInstantiationService:
             dimensions.append("OBJECT")
         if new_initial and initial is not None and parent.facts.get("ego_speed_kph") != initial:
             dimensions.append("EGO_DYNAMICS")
-        location = parent.facts.get("driver_in_vehicle")
-        driver_position = "in_driver_seat" if location is True else "outside_driver_seat" if location is False else ""
+        if assumed_driver:
+            dimensions.append("EGO_ACTION")
+        location = facts.get("driver_in_vehicle")
+        driver_position = facts.get("driver_position") or (
+            "in_driver_seat" if location is True else "outside_driver_seat" if location is False else "")
         explicit_atoms = {**h.get("operating_atoms", {}), **h.get("driver_operating_atoms", {}).get(driver_position, {})}
         dimensions = list(dict.fromkeys([*dimensions, *explicit_atoms]))
         if dimensions:

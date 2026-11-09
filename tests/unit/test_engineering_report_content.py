@@ -67,7 +67,7 @@ def test_text_mapper_keeps_scenario_facts_and_hides_dimension_reason_codes():
     mapper = EngineeringReportTextMapper()
     scenario = _state().scenarios[0]
     operational, detail = mapper.scenario(scenario)
-    assert operational == "室外停车场，AVP处于激活状态，适用车速范围为0–20 km/h。"
+    assert operational == "室外停车场，系统处于激活状态，适用车速范围为0–20 km/h。"
     assert detail == "适用车速范围：0–20 km/h。"
     assert "交通参与者信息未提供" not in detail
     assert "AMBIGUOUS_BINDING" not in detail
@@ -90,7 +90,7 @@ def test_text_mapper_projects_resolved_synthesized_dimensions_separately():
         },
     )
     operational, detail = EngineeringReportTextMapper().scenario(scenario)
-    assert operational == "项目运行区域内，AVP处于激活状态。"
+    assert operational == "项目运行区域内，系统处于激活状态。"
     assert detail == "运行细节未确定。"
     for raw in ("Garage", "Parking in/out", "Low speed", "Pedestrian", "EGO_X_ROAD", "FA001"):
         assert raw not in operational + detail

@@ -778,6 +778,9 @@ class ScenarioSemanticCompatibilityClassifier:
         if dimension == "EGO_DYNAMICS":
             operating = set(query.get("operating_action_categories", []))
             consequences = set(query.get("control_consequence_action_categories", []))
+            traffic_qualifiers = ScenarioCandidateRanker.atom_categories(atom) & _TRAFFIC_CATEGORIES
+            if operating and traffic_qualifiers - set(query.get("operating_traffic_relations", [])):
+                return SemanticCompatibility.CONTRADICTED, "OPERATING_TRAFFIC_QUALIFIER_UNPROVEN"
             # Lateral fault motion is calculated downstream; it cannot by
             # itself establish a pre-fault lateral-acceleration exposure.
             if ("ACTION_TURN" in atom_categories and "ACTION_TURN" in consequences

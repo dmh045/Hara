@@ -315,6 +315,38 @@ def test_plan_reuse_resume_and_context_change_are_separate_from_causal_reuse(met
     run(); assert client.calls == 2
 
 
+def test_unknown_driver_explicit_hypothesis_survives_production_resume(method, tmp_path):
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            raw = raw_plan(assessed=True)
+            raw['hypotheses'][0]['driver_positions'] = ['in_driver_seat']
+            return LLMResponse(raw, 'offline')
+
+    parent = make_candidate()
+    for field in ('driver_position', 'driver_in_vehicle'):
+        parent.facts.pop(field, None)
+        parent.fact_provenance.pop(field, None)
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state = HARAState('unknown-driver')
+    out = construct_physical_scenarios(state, {'MF': [parent]}, [mf()],
+        method=method, agent=agent, project_facts=None)
+    assert len(out['MF']) == 1 and client.calls == 1
+    child = out['MF'][0]
+    assert child.facts['driver_position'] == 'in_driver_seat'
+    assert child.fact_provenance['driver_position']['approval'] == 'PENDING'
+    assert child.facts['motion_model_outcome']['status'] == 'CONTACT'
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    replay = construct_physical_scenarios(restored, {'MF': [parent]}, [mf()],
+        method=method, agent=agent, project_facts=None)
+    assert replay == out and client.calls == 1
+
+
 def test_budget_stop_preserves_completed_physical_instances_before_next_plan(method, tmp_path):
     from hara_agent.workflow import HARAState, CheckpointRepository
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios

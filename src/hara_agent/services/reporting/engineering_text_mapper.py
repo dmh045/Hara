@@ -526,6 +526,8 @@ class EngineeringReportTextMapper:
             "in_driver_seat": "在驾驶位",
             "outside_driver_seat": "不在驾驶位",
         }.get(position, "")
+        if label and facts.get("physical_analysis", {}).get("driver_configuration_assumption"):
+            label += "（分析假设）"
         context = trace.get("hazardous_event_risk_context", {})
         context = context if isinstance(context, Mapping) else {}
         vehicle = context.get("driver_in_vehicle", {})
@@ -736,13 +738,14 @@ class EngineeringReportTextMapper:
         if condition := facts.get("selected_source_condition"):
             clauses.append(f"代表运行条件为{condition['value']}")
         if mode:
-            clauses.append(f"AVP处于{mode}状态")
+            clauses.append(f"系统处于{mode}状态")
         driver_position = {
             "in_driver_seat": "驾驶员在驾驶位",
             "outside_driver_seat": "驾驶员不在驾驶位",
         }.get(str(facts.get("driver_position", "")).strip().casefold(), "")
         if driver_position:
-            clauses.append(driver_position)
+            clauses.append(("分析假设为" if facts.get("physical_analysis", {}).get("driver_configuration_assumption")
+                            else "") + driver_position)
         if context_text:
             clauses.append(context_text)
         if action:

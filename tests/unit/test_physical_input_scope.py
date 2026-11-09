@@ -18,6 +18,56 @@ def symbol(raw, field):
     p.pop('value'); p.update(kind='SYMBOLIC', symbol='unknown_parameter')
 
 
+@pytest.mark.parametrize('position', ['in_driver_seat', 'outside_driver_seat'])
+def test_explicit_driver_scope_conditions_unknown_parent_without_source_approval(method, position):
+    parent = make_candidate()
+    for field in ('driver_position', 'driver_in_vehicle'):
+        parent.facts.pop(field, None); parent.fact_provenance.pop(field, None)
+    before = deepcopy(parent)
+    raw = raw_plan(); raw['hypotheses'][0]['driver_positions'] = [position]
+    children, errors = produce(method, raw, parent)
+    assert not errors and len(children) == 1 and parent == before
+    child = children[0]
+    assert child.facts['driver_position'] == position
+    assert child.fact_provenance['driver_position']['approval'] == 'PENDING'
+    assert child.fact_provenance['driver_position']['provenance'] == 'LLM_INFERENCE'
+    assert child.fact_provenance['driver_position']['source_refs'][0]['source_type'] == 'analysis_hypothesis'
+    assert child.status.value == 'PENDING' and child.scenario_id != parent.scenario_id
+    if position == 'in_driver_seat':
+        assert child.facts['driver_in_vehicle'] is True
+    else:
+        assert 'driver_in_vehicle' not in child.facts
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    mapper = EngineeringReportTextMapper()
+    assert '分析假设' in mapper.scenario(child)[0]
+    assert '分析假设' in mapper.driver_branch(child, {})
+
+
+def test_driver_scope_respects_known_position_and_boolean_handoff(method):
+    parent = make_candidate()
+    raw = raw_plan(); raw['hypotheses'][0]['driver_positions'] = ['in_driver_seat']
+    children, errors = produce(method, raw, parent)
+    assert not errors and len(children) == 1
+    assert 'driver_configuration_assumption' not in children[0].facts['physical_analysis']
+    parent.facts.update(driver_position='outside_driver_seat', driver_in_vehicle=False)
+    before = deepcopy(parent)
+    children, errors = produce(method, raw, parent)
+    assert not children and errors[0]['reason'] == 'HYPOTHESIS_DRIVER_SCOPE_NOT_APPLICABLE'
+    assert parent == before
+
+
+@pytest.mark.parametrize('positions', [None, ['in_driver_seat', 'outside_driver_seat']])
+def test_unrestricted_driver_scope_does_not_invent_a_position_or_duplicate_motion(method, positions):
+    parent = make_candidate()
+    parent.facts.pop('driver_in_vehicle'); parent.fact_provenance.pop('driver_in_vehicle', None)
+    raw = raw_plan()
+    if positions:
+        raw['hypotheses'][0]['driver_positions'] = positions
+    children, errors = produce(method, raw, parent)
+    assert not errors and len(children) == 1
+    assert 'driver_position' not in children[0].facts and 'driver_in_vehicle' not in children[0].facts
+
+
 @pytest.mark.parametrize('field', ['longitudinal_acceleration_mps2', 'relative_distance_m'])
 def test_explicit_symbol_cannot_use_parent_number_or_alias(method, field):
     parent = make_candidate()
@@ -68,6 +118,8 @@ def test_method_standing_initial_cannot_silently_change(method):
     ({'min_kph': 6, 'max_kph': None}, True),
     ({'min_kph': None, 'max_kph': 6}, False),
     ({'min_kph': 8, 'max_kph': None}, False),
+    ({'min_kph': None, 'max_kph': 7, 'max_inclusive': False}, False),
+    ({'min_kph': 7, 'max_kph': None, 'min_inclusive': False}, False),
 ])
 def test_nullable_source_speed_bounds_preserve_known_limits(method, constraint, allowed):
     parent = make_candidate(7)

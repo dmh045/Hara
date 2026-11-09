@@ -871,6 +871,67 @@ def test_child_speed_intersection_remains_a_range_without_automatic_point(method
     assert len(metadata["source_refs"]) == 2
 
 
+def test_missing_item_speed_does_not_promote_unrelated_driving_bins(method):
+    service = ConstrainedScenarioSynthesisService(method)
+    parent = replace(_parent(), facts={"ego_speed_constraint": {"min_kph": None, "max_kph": None}})
+    project = {k: v for k, v in _project().items() if not k.startswith("speed_")}
+    inputs = service.build_input(malfunction=_malfunction(), parent=parent,
+        assessment=_assessment(), project_context=project)
+    pool = next(p for p in inputs.dimension_candidate_sets if p.dimension == "EGO_DYNAMICS")
+    ids = {c.atom_id for c in pool.candidates}
+    assert ids & {"FA005", "FA033", "FB040"}
+    assert not ids & {"CN_drive_30_50", "CN_drive_60_120"}
+    assert parent.facts["ego_speed_constraint"] == {"min_kph": None, "max_kph": None}
+
+    # Explicit operating speed permits compatible bins, regardless of the
+    # project name or missing-envelope path used above.
+    known = replace(parent, facts={"ego_speed_constraint": {"min_kph": 35, "max_kph": 45}})
+    known_input = service.build_input(malfunction=_malfunction(), parent=known,
+        assessment=_assessment(), project_context=project)
+    assert "CN_drive_30_50" in {c.atom_id for p in known_input.dimension_candidate_sets
+                               if p.dimension == "EGO_DYNAMICS" for c in p.candidates}
+
+
+def test_method_only_speed_range_preserves_source_role(method):
+    service = ConstrainedScenarioSynthesisService(method)
+    parent = replace(_parent(), facts={"ego_speed_constraint": {"min_kph": None, "max_kph": None}})
+    project = {k: v for k, v in _project().items() if not k.startswith("speed_")}
+    inputs = service.build_input(malfunction=_malfunction(), parent=parent,
+        assessment=_assessment(), project_context=project)
+    selected_ids = _valid_payload(inputs)["variants"][0]["selected_atom_ids"]
+    selected_ids = [a for a in selected_ids if not set(service.by_id[a]["filled_dimensions"])
+                    & {"EGO_ACTION", "EGO_DYNAMICS"}]
+    selected = service.expand_logical_atom_ids(inputs, [*selected_ids, "FA005"])
+    assessment = ScenarioSynthesisAssessment(semantic_group_id=inputs.semantic_group_id,
+        coverage_label=CoverageLabel.TYPICAL, selected_atoms=selected,
+        semantic_rationale="Method-supported slow driving condition, not a project maximum.",
+        context_refs=("METHOD.scenario_atom_catalog",), validation_status=SynthesisValidationStatus.VALIDATED)
+    child, _ = service.materialize(synthesis_input=inputs, assessment=assessment,
+        parent=parent, provider_evidence={})
+    assert child.facts["ego_speed_constraint"] == {"min_kph": 0, "max_kph": 15}
+    assert "ego_speed_kph" not in child.facts
+    metadata = child.fact_provenance["ego_speed_constraint"]
+    assert metadata["selection_basis"] == "METHOD_SPEED_RANGE_ANALYSIS_CONDITION"
+    assert metadata["project_speed_envelope_kph"] == [None, None]
+
+
+def test_speed_intersection_preserves_compiled_open_endpoint(method):
+    service = ConstrainedScenarioSynthesisService(method)
+    parent = replace(_parent(), facts={"ego_speed_constraint": {"min_kph": 35, "max_kph": 50}})
+    inputs = service.build_input(malfunction=_malfunction(), parent=parent,
+        assessment=_assessment(), project_context={})
+    selected_ids = _valid_payload(inputs)["variants"][0]["selected_atom_ids"]
+    selected_ids = [a for a in selected_ids if "EGO_DYNAMICS" not in service.by_id[a]["filled_dimensions"]]
+    selected = service.expand_logical_atom_ids(inputs, [*selected_ids, "CN_drive_30_50"])
+    assessment = ScenarioSynthesisAssessment(semantic_group_id=inputs.semantic_group_id,
+        coverage_label=CoverageLabel.TYPICAL, selected_atoms=selected,
+        semantic_rationale="Preserve compiled open endpoint.", context_refs=("METHOD.scenario_atom_catalog",),
+        validation_status=SynthesisValidationStatus.VALIDATED)
+    child, _ = service.materialize(synthesis_input=inputs, assessment=assessment, parent=parent, provider_evidence={})
+    assert child.facts["ego_speed_constraint"] == {"min_kph": 35, "max_kph": 50, "max_inclusive": False}
+    assert parent.facts["ego_speed_constraint"] == {"min_kph": 35, "max_kph": 50}
+
+
 def test_repeated_child_materialization_keeps_nested_facts_isolated(method):
     service = ConstrainedScenarioSynthesisService(method)
     parent = _parent()

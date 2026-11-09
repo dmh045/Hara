@@ -706,6 +706,15 @@ class ConstrainedScenarioSynthesisService:
         )
         if compatibility is SemanticCompatibility.CONTRADICTED:
             return False, f"CONTRADICTED:{reason}"
+        if (dimension == "EGO_DYNAMICS"
+                and compatibility is SemanticCompatibility.UNKNOWN
+                and self._speed_range(atom)
+                and not any(value is not None for value in self._effective_speed_envelope(parent, query))
+                and query.get("operating_action_categories")):
+            # A catalog speed bin without operational support is not a
+            # substitute for a missing Item envelope. Context-supported slow
+            # driving/reversing atoms remain available as analysis conditions.
+            return False, "UNSUPPORTED_OPERATING_SPEED_RANGE"
         if (
             dimension == "EGO_DYNAMICS"
             and decision.authority is ScenarioBindingAuthority.RANGE_CONTAINMENT
@@ -2424,8 +2433,21 @@ class ConstrainedScenarioSynthesisService:
             parent_constraint = (
                 deepcopy(parent_constraint) if isinstance(parent_constraint, dict) else {}
             )
-            parent_constraint["min_kph"] = speed_intersection[0]
-            parent_constraint["max_kph"] = speed_intersection[1]
+            dynamics = speed_binding.get("method_semantics", {}).get("ego_dynamics", {})
+            atom_range = speed_binding.get("child_speed_range_kph") or [None, None]
+            for index, edge in enumerate(("min", "max")):
+                excluded = (
+                    speed_intersection[index] == parent_constraint.get(edge + "_kph")
+                    and parent_constraint.get(edge + "_inclusive") is False
+                ) or (
+                    speed_intersection[index] == atom_range[index]
+                    and dynamics.get(edge + "_inclusive") is False
+                )
+                parent_constraint[edge + "_kph"] = speed_intersection[index]
+                if excluded:
+                    parent_constraint[edge + "_inclusive"] = False
+                else:
+                    parent_constraint.pop(edge + "_inclusive", None)
             facts["ego_speed_constraint"] = parent_constraint
             speed_candidate = next((
                 candidate for candidate in selected_candidates.values()
@@ -2459,7 +2481,11 @@ class ConstrainedScenarioSynthesisService:
                 }],
                 "applicable_scope": scope,
                 "validation_status": "VALIDATED",
-                "selection_basis": "PROJECT_AND_METHOD_SPEED_RANGE_INTERSECTION",
+                "selection_basis": (
+                    "PROJECT_AND_METHOD_SPEED_RANGE_INTERSECTION"
+                    if any(value is not None for value in speed_binding.get("project_speed_envelope_kph") or [])
+                    else "METHOD_SPEED_RANGE_ANALYSIS_CONDITION"
+                ),
                 "source_atom_ids": [speed_candidate.atom_id] if speed_candidate else [],
                 "project_speed_envelope_kph": speed_binding.get("project_speed_envelope_kph"),
                 "child_speed_range_kph": speed_binding.get("child_speed_range_kph"),
