@@ -554,6 +554,28 @@ class PhysicalScenarioPlan:
             "CONTACT_BEFORE_ESCAPE", "UNSUPPORTED_AVOIDANCE_TRAJECTORY"}
 
     @staticmethod
+    def apply_hypothesis_updates(previous: dict, updates: dict, allowed_ids: set[str]) -> dict:
+        """Replace only diagnosed worlds; validate the merged plan as usual."""
+        from copy import deepcopy
+        _object(updates, {"hypothesis_updates"}, set())
+        rows = updates["hypothesis_updates"]
+        targets = {h["hypothesis_id"] for h in previous["hypotheses"]}
+        if not isinstance(rows, list) or not rows or not allowed_ids <= targets:
+            raise ValueError("hypothesis_updates must address diagnosed existing hypotheses")
+        replacements = {}
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("hypothesis_id"), str):
+                raise ValueError("Each hypothesis update must be a complete identified hypothesis")
+            identity = row["hypothesis_id"]
+            if identity not in allowed_ids or identity in replacements:
+                raise ValueError("hypothesis_updates identity must be diagnosed and unique")
+            replacements[identity] = row
+        result = deepcopy(previous)
+        result["hypotheses"] = [deepcopy(replacements.get(h["hypothesis_id"], h))
+                                for h in previous["hypotheses"]]
+        return result
+
+    @staticmethod
     def apply_response_updates(previous: dict, updates: dict, evidence_ids: set[str]) -> dict:
         """Apply bounded control objects; the accepted motion is read-only.
 

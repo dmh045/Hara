@@ -391,10 +391,15 @@ def test_request_compaction_retains_sources_and_coverage_and_resumes_exact_old_r
     assert context == before
     assert compact.metadata['request_view_version'] == PhysicalScenarioAgent.REQUEST_VIEW_VERSION
 
-    legacy_context, legacy_sources = physical_prompt_view(before)
-    legacy = replace(compact, metadata={k: v for k, v in compact.metadata.items() if k != 'request_view_version'},
-        user_prompt=json.dumps({**body, 'context': legacy_context, 'source_texts': legacy_sources},
-                               ensure_ascii=False, default=str, separators=(',', ':')))
+    # Freeze the actual old order/system text instead of rebuilding an "old"
+    # request from the new prefix layout (which was never sent historically).
+    import gzip
+    from hara_agent.infrastructure.llm import LLMRequest
+    from pathlib import Path
+    frozen_request = json.loads(gzip.decompress((Path(__file__).parents[1]
+        / 'fixtures/physical_request_full_resume.json.gz').read_bytes()))
+    assert frozen_request['context'] == before
+    legacy = LLMRequest(**frozen_request['request'])
     old_client = Client([raw_plan()])
     ResponseCheckpoint(tmp_path).complete(old_client, legacy)
     frozen = {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}

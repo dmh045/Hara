@@ -654,7 +654,9 @@ def test_scoped_existing_dynamics_are_in_request_and_can_be_inherited(method):
     raw = raw_plan(assessed=True); raw['hypotheses'][0]['parameters'].pop()
     client = Client([raw])
     _, result = run(method, PhysicalScenarioAgent(client), candidates={'MF': [parent]})
-    status = json.loads(client.requests[0].user_prompt)['context']['model_input_status']
+    from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+    body = json.loads(client.requests[0].user_prompt)
+    status = expand_physical_prompt_view(body['context'], body['source_texts'])['model_input_status']
     assert status['models'][raw['hypotheses'][0]['model']]['available'][field]['value'] == .7
     assert result['MF'][0].facts[field] == .7
     parent.fact_provenance[field]['analysis_value_semantic'] = 'PRE_FAULT_OPERATING_ACCELERATION'

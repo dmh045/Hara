@@ -167,6 +167,14 @@ def test_diagnostic_grouping_is_lossless_and_keeps_driver_and_raw_numeric_differ
     assert len(groups) == 3 and len(groups[0]["occurrences"]) == 2
     assert expand_physical_prompt_view(compact["context"], compact["source_texts"]) == context
     assert body["context"]["correction_diagnostics"] == diagnostics
+    # Long generated identities may themselves share text/structure references.
+    # The audit reconstruction must expand occurrences as well as diagnostics.
+    for d in diagnostics:
+        d['instance_hypothesis_id'] = 'long-world-identity-' * 8
+    view, texts = physical_prompt_view(context)
+    compact = compact_physical_request({'context': view, 'source_texts': texts},
+        response_only=False, controls_only=False)
+    assert expand_physical_prompt_view(compact['context'], compact['source_texts']) == context
 
 
 def test_disabled_omits_effort_but_explicit_bounded_repair_uses_high():
@@ -211,3 +219,108 @@ def test_bounded_application_resume_context_binds_physics_policy_without_changin
     assert {k: v for k, v in low.items() if k != 'physical_reasoning'} == old
     client.config = config(physics_thinking='disabled')
     assert app.bounded_source_context(method_ref) != low
+
+
+def test_scoped_projection_keeps_direct_authority_and_only_moves_compiler_provenance_to_audit():
+    compiler = {'source_type': 'method_contract', 'source_id': 'active',
+        'location': 'yaml!dimensions.ROAD', 'excerpt': 'complete compiler taxonomy ' * 80}
+    project = {'source_type': 'item_definition', 'source_id': 'item',
+        'location': 'scope', 'excerpt': 'No automatic braking after this fault; downhill is behind ego.'}
+    authority = {'approval': 'PENDING', 'source_refs': [compiler, project,
+        {**compiler, 'source_id': 'different-contract'}, {**compiler, 'location': 'numeric-bound'}]}
+    conditions = {'facts': {'method_scenario_dimensions': {'ROAD': {'atom_id': 'road',
+        'method_semantics': {'slope_percent': [-15, 0], 'reference': 'BODY_FORWARD'}}}},
+        'fact_authority': {'method_scenario_dimensions': authority, 'slope_percent': deepcopy(authority)}}
+    context = {'conditions': conditions, 'evidence': {'SCENARIO.conditions': deepcopy(conditions)},
+        'method_identity': {'method_source_hash': 'active'}}
+    before = deepcopy(context)
+    view, texts = physical_prompt_view(context)
+    payload = compact_physical_request({'context': view, 'source_texts': texts},
+        response_only=False, controls_only=False)
+    actual = expand_physical_prompt_view(payload['context'], payload['source_texts'])
+    expected = deepcopy(before)
+    for c in [expected['conditions'], expected['evidence']['SCENARIO.conditions']]:
+        s = c['fact_authority']['method_scenario_dimensions']['source_refs'][0]
+        s.pop('excerpt'); s['excerpt_in_plan_audit'] = True
+    assert actual == expected and context == before
+    assert actual['conditions']['fact_authority']['slope_percent'] == authority
+
+
+def test_control_task_omits_motion_choices_but_retains_actual_motion_sources_and_diagnostics():
+    context = {'evidence': {'MF.description': 'braking command failed, actuator not proven failed'},
+        'conditions': {'facts': {'ego_speed_kph': 7.000001, 'object_id': 'rear', 'time_role': 'POST_FAULT'}},
+        'previous_plan': raw_plan(), 'correction_diagnostics': [{'reason': 'CONTROL_MISSING', 'value': .154286}],
+        'model_input_status': {'models': {'unused-motion': {}}}, 'operating_atom_options': {'EGO_ACTION': []},
+        'driver_configurations': ['outside_driver_seat'], 'intervention_inputs': ['emergency_braking_available']}
+    view, texts = physical_prompt_view(context)
+    payload = compact_physical_request({'context': view, 'source_texts': texts, 'output_contract': {}},
+        response_only=False, controls_only=True)
+    actual = expand_physical_prompt_view(payload['context'], payload['source_texts'])
+    assert actual == {k: v for k, v in context.items() if k not in {'model_input_status', 'operating_atom_options'}}
+
+
+def test_two_worlds_share_fixed_request_prefix_but_keep_different_evidence():
+    from test_geometry_completion import Client
+    client = Client([raw_plan(), raw_plan()])
+    agent = PhysicalScenarioAgent(client)
+    for key in ('a', 'b'):
+        agent.propose({'plan_key': key, 'evidence': {'MF.description': key, key: 'scoped source'},
+                       'conditions': {'facts': {'object_id': key}}})
+    a, b = [r.user_prompt for r in client.requests]
+    assert a != b and a.split('"basis_ref_ids":')[0] == b.split('"basis_ref_ids":')[0]
+    assert len(a.split('"basis_ref_ids":')[0]) > 7000
+    assert json.loads(a)['context']['conditions']['facts']['object_id'] == 'a'
+    assert json.loads(b)['context']['conditions']['facts']['object_id'] == 'b'
+
+
+def test_v3_paid_response_recovers_without_network_or_rewriting_history(tmp_path):
+    import gzip
+    from pathlib import Path
+    from test_geometry_completion import Client
+    frozen = json.loads(gzip.decompress((Path(__file__).parents[1]
+        / 'fixtures/physical_request_full_resume.json.gz').read_bytes()))
+    old_request = LLMRequest(**frozen['v3_request'])
+    ResponseCheckpoint(tmp_path).complete(Client([raw_plan()]), old_request)
+    before = {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
+    no_calls = Client([])
+    plan, audit = PhysicalScenarioAgent(no_calls, response_checkpoint_dir=tmp_path).propose(frozen['context'])
+    assert plan.to_dict() == raw_plan() and not no_calls.requests
+    assert audit['response_cache_hits'] == 1
+    assert audit['responses'][0]['request']['user_prompt'] == old_request.user_prompt
+    assert before == {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
+
+
+def test_motion_correction_only_replaces_diagnosed_world_then_validates_full_plan(tmp_path):
+    from test_geometry_completion import Client
+    previous = raw_plan()
+    second = deepcopy(previous['hypotheses'][0]); second['hypothesis_id'] = 'h2'
+    second['geometry']['object_id'] = 'second-target'
+    previous['hypotheses'].append(second)
+    corrected = deepcopy(second); corrected['parameters'][1]['value'] = 3.154286
+    client = Client([{'hypothesis_updates': [corrected]}])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'two-worlds', 'evidence': {'MF.description': 'fault'}, 'previous_plan': previous,
+        'correction_diagnostics': [{'hypothesis_id': 'h2', 'reason': 'GEOMETRY_PARAMETER_CONFLICT'}]}
+    original = deepcopy(context)
+    plan, _ = agent.propose(context)
+    body = json.loads(client.requests[0].user_prompt)
+    view = expand_physical_prompt_view(body['context'], body['source_texts'])
+    assert body['hypothesis_update_identities'] == ['h2']
+    assert view['previous_plan']['hypotheses'] == [second]
+    assert plan.hypotheses == (previous['hypotheses'][0], corrected)
+    assert plan.uncovered_conditions == tuple(previous['uncovered_conditions'])
+    assert context == original and agent.propose(context)[0] == plan and len(client.requests) == 1
+
+
+@pytest.mark.parametrize('bad', ['other', 'duplicate', 'partial'])
+def test_local_motion_update_cannot_touch_other_identity_or_bypass_validation(bad):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    original = raw_plan(); second = deepcopy(original['hypotheses'][0]); second['hypothesis_id'] = 'h2'
+    original['hypotheses'].append(second)
+    row = deepcopy(second)
+    if bad == 'other': row['hypothesis_id'] = 'h1'
+    if bad == 'partial': row.pop('parameters')
+    rows = [row, deepcopy(row)] if bad == 'duplicate' else [row]
+    with pytest.raises(ValueError):
+        merged = PhysicalScenarioPlan.apply_hypothesis_updates(original, {'hypothesis_updates': rows}, {'h2'})
+        PhysicalScenarioPlan.from_dict(merged, evidence_ids={'MF.description'})

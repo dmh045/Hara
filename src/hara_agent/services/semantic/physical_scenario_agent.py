@@ -14,7 +14,7 @@ from hara_agent.infrastructure.llm import LLMRequest, LLMResponse, LLMJSONContra
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 
 
-def physical_prompt_view(context: dict) -> tuple[dict, dict]:
+def physical_prompt_view(context: dict, *, compact_text: bool = False) -> tuple[dict, dict]:
     """Lossless request projection; full provenance remains the plan identity.
 
     Only exact repeated context and source excerpts are referenced. No source,
@@ -33,7 +33,8 @@ def physical_prompt_view(context: dict) -> tuple[dict, dict]:
     def count(value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key == "excerpt" and isinstance(item, str) and len(item) > 128:
+                if isinstance(item, str) and ((compact_text and len(item) > 80)
+                                              or (key == "excerpt" and len(item) > 128)):
                     counts[item] += 1
                 else:
                     count(item)
@@ -48,7 +49,7 @@ def physical_prompt_view(context: dict) -> tuple[dict, dict]:
     def intern(value):
         if isinstance(value, dict):
             return {key: {"$source_text": text_ids[item]}
-                    if key == "excerpt" and isinstance(item, str) and counts[item] > 1
+                    if (compact_text or key == "excerpt") and isinstance(item, str) and counts[item] > 1
                     else intern(item) for key, item in value.items()}
         if isinstance(value, list):
             return [intern(item) for item in value]
@@ -63,7 +64,7 @@ def physical_prompt_view(context: dict) -> tuple[dict, dict]:
     def count_structures(value):
         if isinstance(value, (dict, list)):
             key = structured_key(value)
-            if len(key) > 400:
+            if len(key) > (160 if compact_text else 400):
                 structures[key] += 1
             for item in value.values() if isinstance(value, dict) else value:
                 count_structures(item)
@@ -98,9 +99,9 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
         if isinstance(value, dict):
             if set(value) == {"$diagnostic_groups"}:
                 rows = []
-                for group in value["$diagnostic_groups"]:
+                for group in expand(value["$diagnostic_groups"]):
                     for case in group["occurrences"]:
-                        rows.append((case["index"], {**expand(group["diagnostic"]), **case["identity"]}))
+                        rows.append((case["index"], {**group["diagnostic"], **case["identity"]}))
                 return [row for _, row in sorted(rows, key=lambda pair: pair[0])]
             if set(value) == {"$source_text"}:
                 return source_texts[value["$source_text"]]
@@ -115,7 +116,8 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
     return expand({key: value for key, value in view.items() if key != "$context_values"})
 
 
-def compact_physical_request(content: dict, *, response_only: bool, controls_only: bool) -> dict:
+def compact_physical_request(content: dict, *, response_only: bool, controls_only: bool,
+                             efficient: bool = True) -> dict:
     """Project existing task scopes; no change to the complete audit context.
 
     Diagnostic grouping is exact apart from generated instance references.
@@ -150,6 +152,57 @@ def compact_physical_request(content: dict, *, response_only: bool, controls_onl
             "driver_branches": "Different driver responses belong INSIDE that one control_assessment.driver_control_assessments, never in duplicate response_updates rows.",
             "unreachable_response": "Keep the actual response inputs and computed negative evidence; explain the limitation in its control assessment. Do not add placeholder/empty rows or change the world to make avoidance succeed.",
         }
+    if efficient:
+        # Aggregate dimension provenance contains the entire compiler input,
+        # repeated for every dimension. It is not an additional physical fact.
+        # Keep selected Atom semantics, every direct fact's authority and all
+        # Item excerpts; full compiler provenance stays in the unchanged plan.
+        method_hash = context.get("method_identity", {}).get("method_source_hash")
+        for conditions in (context.get("conditions", {}), context.get("evidence", {}).get("SCENARIO.conditions", {})):
+            if not isinstance(conditions, dict):
+                continue  # Evidence can also be a source passage, not a fact bundle.
+            dimensions = conditions.get("facts", {}).get("method_scenario_dimensions", {})
+            authority = conditions.get("fact_authority", {}).get("method_scenario_dimensions", {})
+            for source in authority.get("source_refs", []):
+                if (method_hash and source.get("source_type") == "method_contract"
+                        and source.get("source_id") == method_hash
+                        and source.get("location") in {"yaml!dimensions." + name for name in dimensions}):
+                    source.pop("excerpt", None)
+                    source["excerpt_in_plan_audit"] = True
+        if controls_only or response_only:
+            # Motion is already fixed for these tasks. Keep its actual inputs,
+            # authority, previous plan and diagnostics, not selection options.
+            for field in ("model_input_status", "operating_atom_options", "object_focus_options",
+                          "interaction_coverage_policy", "analysis_strategy", "source_condition_policy",
+                          "source_condition_focus", "road_user_focus", "road_user_focus_basis", "source_routing"):
+                context.pop(field, None)
+        elif context.get("previous_plan") and context.get("correction_diagnostics"):
+            previous = context["previous_plan"]
+            identities = {h["hypothesis_id"] for h in previous.get("hypotheses", [])}
+            reported = {d.get("hypothesis_id") for d in diagnostics}
+            if reported and reported < identities:
+                # Unknown/unscoped diagnostics still receive the complete plan.
+                # Only a proper subset can save retransmission of valid worlds.
+                selected = [h["hypothesis_id"] for h in previous["hypotheses"] if h["hypothesis_id"] in reported]
+                previous["hypotheses"] = [h for h in previous["hypotheses"] if h["hypothesis_id"] in reported]
+                shape = deepcopy(result["output_shape"]["hypotheses"][0])
+                shape["hypothesis_id"] = selected[0]
+                result["output_shape"] = {"hypothesis_updates": [shape]}
+                result["hypothesis_update_identities"] = selected
+        result["context"], result["source_texts"] = physical_prompt_view(context, compact_text=True)
+        # Fixed instructions precede per-world IDs and facts. Prefix caching
+        # can reuse this section without placing different worlds in one cache.
+        dynamic = {"basis_ref_ids", "geometry_values", "driver_positions", "operating_atoms",
+                   "response_update_cardinality"}
+        contract = result.get("output_contract", {})
+        if contract:
+            result["output_contract"] = {
+                **{k: v for k, v in contract.items() if k not in dynamic},
+                **{k: v for k, v in contract.items() if k in dynamic},
+            }
+        prefix = ("contract_version", "model_catalog", "parameter_units", "control_identities", "output_contract")
+        result = {**{k: result[k] for k in prefix if k in result},
+                  **{k: v for k, v in result.items() if k not in prefix}}
     return result
 
 
@@ -184,7 +237,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    REQUEST_VIEW_VERSION = "physical-request-view-v3-scoped-contract-and-diagnostics"
+    REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v26-explicit-driver-scope"
     PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics"
@@ -712,6 +765,8 @@ class PhysicalScenarioAgent:
             ) + self.CONTROL_ANALYSIS_POLICY + self.RESPONSE_TIMING_POLICY
         previous_view_content = deepcopy(content)
         previous_view_system = system
+        v3_content = compact_physical_request(content, response_only=response_only_correction,
+                                             controls_only=controls_only, efficient=False)
         content = compact_physical_request(content, response_only=response_only_correction, controls_only=controls_only)
         if "$diagnostic_groups" in content["context"].get("correction_diagnostics", {}):
             system += ("correction_diagnostics.$diagnostic_groups将完全相同的诊断列一次；occurrences保留所有原始身份与顺序。"
@@ -719,6 +774,17 @@ class PhysicalScenarioAgent:
         if response_only_correction:
             system += ("response_updates内同一个hypothesis_id最多出现一次；多个驾驶员的处置写在这一个control_assessment"
                        "的driver_control_assessments内，不能为每个驾驶员重复该ID。只用response_update_identities列出的身份。")
+        v3_system = system
+        if content.get("hypothesis_update_identities"):
+            system = system.replace("correction_diagnostics只属于输入，输出顶层只能含hypotheses和uncovered_conditions。",
+                                    "correction_diagnostics只属于输入，当前局部纠正只返回hypothesis_updates。")
+            system += ("本次仅修正hypothesis_update_identities列出的运动假设；顶层只返回hypothesis_updates数组，"
+                       "每项是带原hypothesis_id的完整假设，遵守原运动与控制契约，不是零散字段补丁。"
+                       "未返回的假设及全局未覆盖范围由程序保留；不得复制、增删或修改其他身份。"
+                       "保留有效参数，只修改诊断涉及的条件；不重算程序已给出的接触与响应结果。")
+        system += ("source_texts也存放完全相同的长文本，引用不改变事实来源或审批状态。"
+                   "excerpt_in_plan_audit仅标记聚合维度的编译溯源全文保留在审计中；"
+                   "使用所给已编译Atom语义、候选和适用条件，不把未展示的编译原文当成额外事实。")
         attempts = []
         errors = []
         previous_response = None
@@ -752,6 +818,18 @@ class PhysicalScenarioAgent:
                 response_format=self.response_format)
             try:
                 response = self.responses.complete(self.client, request, cache_only=True) if self.responses else None
+                if self.responses and response is None:
+                    # Exact v3 cache only: preserve already-paid replies from
+                    # interrupted runs; never send the older larger payload.
+                    v3_request = replace(request, system_prompt=v3_system,
+                        metadata={**request.metadata,
+                            "request_view_version": "physical-request-view-v3-scoped-contract-and-diagnostics"},
+                        user_prompt=json.dumps({**v3_content, "repair_errors": errors,
+                            **({"previous_invalid_response": previous_response} if repair else {})},
+                            ensure_ascii=False, default=str, separators=(",", ":")))
+                    response = self.responses.complete(self.client, v3_request, cache_only=True)
+                    if response is not None:
+                        request = v3_request
                 if self.responses and response is None:
                     # Interrupted v2 requests retain their exact paid reply.
                     # Never send this older projection or use a different route.
@@ -815,6 +893,11 @@ class PhysicalScenarioAgent:
             on_response(record)  # Persist even a semantically invalid response before repair.
             try:
                 candidate = deepcopy(response.data)
+                if isinstance(candidate, dict) and "hypothesis_updates" in candidate:
+                    if not content.get("hypothesis_update_identities"):
+                        raise ValueError("hypothesis_updates are allowed only for scoped motion correction")
+                    candidate = PhysicalScenarioPlan.apply_hypothesis_updates(
+                        context["previous_plan"], candidate, set(content["hypothesis_update_identities"]))
                 PhysicalScenarioPlan.validate_generated_notes(candidate)
                 envelope_normalization = ""
                 if (not controls_only and isinstance(candidate, dict) and "hypotheses" not in candidate
