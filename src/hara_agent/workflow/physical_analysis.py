@@ -608,6 +608,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     errors.append({"reason": "SAFE_STOP_RESPONSE_UNREACHABLE",
                                         "hypothesis_id": response_hypothesis.get("hypothesis_id", "control_assessment"),
                                         "driver_position": driver,
+                                        **({"existing_unresolved_reason": response_hypothesis["safe_state_unresolved_reason"]}
+                                           if response_hypothesis.get("safe_state_unresolved_reason") else {}),
                                         "evidence": timing.timing_trace,
                                         "resolution": "Preserve the unmitigated world. This proposed response does not avoid its target. Reconcile the safe-state claim with the available controls/model, or explicitly retain the unsupported strategy in safe_state_unresolved_reason. Do not move the target or increase braking just to force a safe result. No extra correction loop."})
                                 elif (timing.timing_trace.get("status") == "CONDITIONAL_BOUNDARY"
@@ -695,12 +697,19 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     entry.update(response_validation_version=validation_version,
                         initial_plan=plan.to_dict(), correction_diagnostics=failures)
                     entry.pop("semantic_correction_completed", None)
-                if (failures or entry.get("status") == "CORRECTION_REQUESTED") and not entry.get("semantic_correction_completed"):
+                # A computed failure is retained even when the proposal already
+                # disclaims a reachable safe state. Repeating that disclaimer
+                # adds no new semantic input; other gaps still get the same
+                # bounded correction. Keep all failures in the child/audit.
+                correction_failures = [failure for failure in failures if not (
+                    failure.get("reason") == "SAFE_STOP_RESPONSE_UNREACHABLE"
+                    and failure.get("existing_unresolved_reason"))]
+                if (correction_failures or entry.get("status") == "CORRECTION_REQUESTED") and not entry.get("semantic_correction_completed"):
                     # One explicit, budgeted semantic correction. Persist the
                     # original response and feedback before transport so resume
                     # uses the identical response-checkpoint key.
                     entry.setdefault("initial_plan", plan.to_dict())
-                    entry.setdefault("correction_diagnostics", failures)
+                    entry.setdefault("correction_diagnostics", correction_failures)
                     # Keep already computed motion recoverable if the shared
                     # budget is exhausted during the capability correction.
                     entry["instantiations"] = {candidate.scenario_id: {

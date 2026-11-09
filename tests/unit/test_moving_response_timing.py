@@ -371,3 +371,30 @@ def test_no_contact_does_not_request_an_unnecessary_automatic_response(method):
     assert result['MF'][0].facts['motion_model_outcome']['status']!='CONTACT'
     assert len(client.requests)==1
     assert not next(iter(state.item_definition['physical_analysis_plans'].values())).get('correction_diagnostics')
+
+
+def test_acknowledged_unreachable_stop_keeps_negative_trace_without_reasking(method, tmp_path):
+    from test_geometry_completion import Client, run
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    raw = proposal()
+    h = raw['hypotheses'][0]
+    h['geometry']['object_longitudinal_direction'] = 'REVERSE'
+    h['safe_state_unresolved_reason'] = 'Stopping and holding does not resolve the oncoming target; this is a response candidate, not a reachable safe state.'
+    original = deepcopy(raw)
+    client = Client([raw])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    state, result = run(method, agent, candidates={'MF': [make_candidate(7.2)]})
+    assert len(client.requests) == 1
+    child = result['MF'][0]
+    failure = next(d for d in child.analysis_instance['physical_plan_diagnostics']
+                   if d['reason'] == 'SAFE_STOP_RESPONSE_UNREACHABLE')
+    assert failure['evidence']['status'] == 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
+    assert child.facts['physical_analysis']['hypothesis'] == original['hypotheses'][0]
+    assert child.facts['motion_model_outcome']['status'] == 'CONTACT'
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s is None
+    assert timing.timing_trace['status'] == 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
+    assert state.item_definition['physical_analysis_metrics']['semantic_corrections'] == 0
+    run(method, agent, state=state, candidates={'MF': [make_candidate(7.2)]})
+    assert len(client.requests) == 1

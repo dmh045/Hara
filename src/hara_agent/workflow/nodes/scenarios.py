@@ -506,11 +506,25 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         # workflow-local progress, so review remains correct after failure.
         review_artifact_writer.write_summary(state)
 
+    empty_batch_ids = []
     for malfunction in malfunctions:
         expected_scenario_ids = [
             item.scenario_id
             for item in contextual_candidates[malfunction.malfunction_id]
         ]
+        if not expected_scenario_ids:
+            # Scope selection can leave most malfunctions without work. Keep
+            # their coverage audit, but do not serialize the whole checkpoint
+            # or rebuild the review index for an empty, reproducible result.
+            identity = malfunction.malfunction_id
+            batch_by_malfunction[identity] = _assess_instantiated_scenarios(
+                agent, malfunction, [], instantiation_audit[identity], project_registry)
+            empty_batch_ids.append(identity)
+            if identity in selection_audits:
+                selection_audits[identity].update(causal_attempted_count=0, causal_assessed_count=0,
+                    causal_retained_count=0, causal_status=("NOT_SELECTED" if selected_generated_scenario_ids
+                                                          else "NO_CANDIDATES"))
+            continue
         cache_key = _scenario_batch_cache_key(
             agent, malfunction, contextual_candidates[malfunction.malfunction_id],
         )
@@ -539,7 +553,12 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         else:
             batch_by_malfunction[malfunction.malfunction_id] = restored
             persist_review_batch(malfunction, restored, cached=True)
-    cached_count = len(batch_by_malfunction)
+    if empty_batch_ids:
+        persist_selection_audit()
+        state.record("scenario_empty_batches_skipped", malfunction_ids=empty_batch_ids,
+                     reason="NO_SELECTED_CANDIDATES", provider_requests=0)
+    active_count = len(malfunctions) - len(empty_batch_ids)
+    cached_count = len(batch_by_malfunction) - len(empty_batch_ids)
     if cached_count:
         print(
             "[HARA] scenario checkpoint restore "
@@ -569,8 +588,8 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
             "scenario_malfunction_batch_checkpointed",
             malfunction_id=malfunction.malfunction_id,
             assessment_count=len(batch_assessments),
-            completed_malfunction_count=len(batch_by_malfunction),
-            total_malfunction_count=len(malfunctions),
+            completed_malfunction_count=len(batch_by_malfunction) - len(empty_batch_ids),
+            total_malfunction_count=active_count,
         )
         if checkpoint is not None:
             checkpoint(state)
@@ -585,7 +604,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         max_workers=max_workers,
         on_progress=(
             lambda done, _total: progress(
-                "scenario", cached_count + done, len(malfunctions)
+                "scenario", cached_count + done, active_count
             )
         ) if progress else None,
         on_result=save_batch,

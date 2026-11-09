@@ -9,6 +9,7 @@ Free-text parsing is deliberately limited to explicit engineering terms.
 from __future__ import annotations
 
 from collections import Counter
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -82,6 +83,7 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+@lru_cache(maxsize=2048)
 def _tokens(value: str) -> tuple[str, ...]:
     return tuple(
         token for token in re.findall(r"[a-z0-9][a-z0-9_-]{1,}", value.casefold())
@@ -90,6 +92,13 @@ def _tokens(value: str) -> tuple[str, ...]:
 
 
 def _explicit_categories(text: str) -> set[str]:
+    # Repeated catalog labels dominate selection work. Cache only immutable
+    # lexical results, never project evidence, ranks or mutable caller sets.
+    return set(_explicit_category_names(text))
+
+
+@lru_cache(maxsize=1024)
+def _explicit_category_names(text: str) -> frozenset[str]:
     folded = text.casefold()
     categories = {
         category for category, markers in _CATEGORY_MARKERS.items()
@@ -99,7 +108,7 @@ def _explicit_categories(text: str) -> set[str]:
     # Do not confuse another vehicle with this vehicle's rear wheel/door/etc.
     if re.search(r"(?:前车|后车)(?!轮|门|轴|厢|灯|盖)", text):
         categories.add("OBJECT_VEHICLE")
-    return categories
+    return frozenset(categories)
 
 
 def _operating_action_categories(text: str) -> set[str]:

@@ -143,3 +143,42 @@ def test_parallel_drain_preserves_original_error_if_checkpoint_callback_fails(mo
     with pytest.raises(ValueError,match='original worker failure') as caught:
         ordered_parallel_map(['bad','good'],worker,max_workers=2,on_result=save)
     assert any('checkpoint not writable' in x for x in caught.value.__notes__)
+
+
+def test_empty_selected_batches_do_not_checkpoint_or_count_as_causal_work(monkeypatch):
+    from types import SimpleNamespace
+    from dataclasses import replace
+    from hara_agent.workflow.nodes import scenarios
+    import pytest
+    source = ScenarioCandidate('base', 'Parking', 'parking', 'active', {'operating_mode':'Active'})
+    class Candidates:
+        def __init__(self, method):pass
+        def generate_for_malfunction(self, malfunction, candidates, **kwargs):
+            return [replace(source, scenario_id=malfunction.malfunction_id)], {
+                'situation_selection': {'malfunction_id': malfunction.malfunction_id}}
+    monkeypatch.setattr(scenarios, 'MethodScenarioCandidateService', Candidates)
+    method = SimpleNamespace(compiler_version='test', contract_version='test', metadata={})
+    malfunctions = [_malfunction(f'MF-{i}') for i in range(5)]
+    state = HARAState('empty-scoped-batches', stage=WorkflowStage.MALFUNCTIONS)
+    saved = [];progress=[]
+    def save(s):
+        saved.append(s.to_dict())
+        raise RuntimeError('interrupt after first nonempty batch')
+    first = _Agent()
+    with pytest.raises(RuntimeError, match='interrupt'):
+        assess_scenarios(state, first, malfunctions, [source], method=method,
+            selected_generated_scenario_ids=['MF-2','MF-4'], checkpoint=save)
+    assert first.calls == ['MF-2'] and len(saved)==1
+    assert set(saved[0]['item_definition']['scenario_assessment_batches']) == {'MF-2'}
+    event = next(e for e in saved[0]['audit_trail'] if e['event']=='scenario_malfunction_batch_checkpointed')
+    assert event['completed_malfunction_count']==1 and event['total_malfunction_count']==2
+    restored = HARAState.from_dict(saved[0]);second = _Agent();saved.clear()
+    assess_scenarios(restored, second, malfunctions, [source], method=method,
+        selected_generated_scenario_ids=['MF-2','MF-4'], checkpoint=lambda s:saved.append(s.to_dict()),
+        progress=lambda *event:progress.append(event))
+    assert second.calls == ['MF-4'] and len(saved)==1
+    assert progress == [('scenario',2,2)]
+    rows=restored.item_definition['malfunction_situation_selection']['per_malfunction']
+    assert {r['malfunction_id'] for r in rows if r['causal_status']=='NOT_SELECTED'} == {'MF-0','MF-1','MF-3'}
+    assert {r['scenario_id'] for r in restored.item_definition['scenario_assessments']} == {'MF-2','MF-4'}
+    assert restored.stage is WorkflowStage.SCORING

@@ -821,3 +821,24 @@ def test_fault_turning_does_not_supply_initial_traffic_or_lateral_exposure():
         result, _ = ScenarioSemanticCompatibilityClassifier.classify(
             dimension=dimension, atom=atom, query=query, fm_template={})
         assert result is SemanticCompatibility.SUPPORTED
+
+
+def test_repeated_lexical_features_do_not_share_mutable_results_or_project_semantics():
+    from hara_agent.services.analysis.scenario_selection_quality import (
+        _explicit_categories, _explicit_category_names, _tokens, ScenarioCandidateRanker,
+    )
+    _explicit_category_names.cache_clear()
+    first = _explicit_categories('parking beside a pedestrian')
+    expected = set(first)
+    first.clear()
+    assert _explicit_categories('parking beside a pedestrian') == expected
+    assert _explicit_category_names.cache_info().hits == 1
+    assert _explicit_categories('motorway') != expected
+    # An identical label in another contract can have different authoritative
+    # physical semantics; only label features, not the final category, are cached.
+    atom = {'label':'parking beside a pedestrian', 'physical_semantics':{'object':{'type':'passenger_car'}}}
+    assert 'OBJECT_VEHICLE' in ScenarioCandidateRanker.atom_categories(atom)
+    atom['physical_semantics']['object']['type'] = 'cyclist'
+    assert 'OBJECT_CYCLIST' in ScenarioCandidateRanker.atom_categories(atom)
+    assert 'OBJECT_VEHICLE' not in ScenarioCandidateRanker.atom_categories(atom)
+    assert _tokens('Parking beside a pedestrian') == ('parking','beside','pedestrian')
