@@ -491,7 +491,9 @@ class PhysicalScenarioPlan:
             if h["model"] == "RECTILINEAR_MOVING_TARGET_CONTACT":
                 if (g.get("object_longitudinal_direction") not in {"FORWARD", "REVERSE", "LEFT", "RIGHT", "STATIONARY"}
                         or g["object_extent"] != "FINITE_CONTACT_ENVELOPE"):
-                    raise ValueError("Moving target requires explicit body-frame direction and finite contact envelope")
+                    raise ValueError("RECTILINEAR_MOVING_TARGET_CONTACT requires geometry.object_extent=FINITE_CONTACT_ENVELOPE "
+                        "and explicit geometry.object_longitudinal_direction: FORWARD, REVERSE, LEFT, RIGHT or STATIONARY. "
+                        "For a zero-speed target declare STATIONARY; do not omit the field. Preserve the actual target speed and trajectory.")
             elif g.get("object_longitudinal_direction", "STATIONARY") != "STATIONARY":
                 raise ValueError("Stationary-target model cannot declare a moving target")
             params = h["parameters"]

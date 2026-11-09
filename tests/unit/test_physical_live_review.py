@@ -456,7 +456,7 @@ def test_physical_request_format_contract_and_cached_repair(tmp_path, controls_o
             if not controls_only:
                 geometry = payload['output_shape']['hypotheses'][0]['geometry']
                 assert 'object_longitudinal_direction' in geometry
-                assert set(payload['output_contract']['moving_target_geometry']['object_longitudinal_direction']) == {'FORWARD', 'REVERSE', 'LEFT', 'RIGHT'}
+                assert set(payload['output_contract']['moving_target_geometry']['object_longitudinal_direction']) == {'FORWARD', 'REVERSE', 'LEFT', 'RIGHT', 'STATIONARY'}
                 assert payload['output_shape']['hypotheses'][0]['grade_frame']['coordinate_frame'] == 'BODY_FORWARD_POSITIVE'
             assert set(contract['optional_keys']) == INTERVENTION_ASSUMPTION_FIELDS
             assert contract['type'] == 'object'

@@ -240,7 +240,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v27-nullable-speed-bounds"
-    PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics-zh-v1"
+    PROMPT_VERSION = "post-fault-physical-scenario-v52-stationary-relative-motion"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics-zh-v1"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
@@ -365,7 +365,7 @@ class PhysicalScenarioAgent:
                 "geometry": {"road_user_type": "from method vocabulary", "collision_type": "from method vocabulary",
                     "object_position": "FRONT|REAR|LEFT|RIGHT", "ego_longitudinal_direction": "FORWARD|REVERSE",
                     "ego_lateral_direction": "LEFT|RIGHT; required for curved/lateral motion, omit for longitudinal-only models",
-                    "object_longitudinal_direction": "FORWARD|REVERSE|LEFT|RIGHT; required for moving target, omit for stationary",
+                    "object_longitudinal_direction": "FORWARD|REVERSE|LEFT|RIGHT|STATIONARY; required for RECTILINEAR_MOVING_TARGET_CONTACT, including STATIONARY for a zero-speed target; optional for stationary-only models",
                     "object_extent": "POINT_ON_TRAVEL_PATH|EXTENDED_ALONG_TRAVEL_PATH|FINITE_CONTACT_ENVELOPE", "object_id": "target1"},
                 "parameters": [{"field": "one parameter_units key", "unit": "exact declared unit",
                     "kind": "POINT", "value": 0, "rationale": "why this conditional representative is useful"}],
@@ -459,7 +459,7 @@ class PhysicalScenarioAgent:
             "使用车体坐标x前、y左的初始中心偏移，接触包络半长/半宽为双方投影半尺寸之和，"
             "偏移从自车中心计量，不得把保险杠外净距直接当作中心偏移；半尺寸求和后不得再除以2，数值须与解释中的尺寸算术一致。"
             "须解释尺寸和有效时段假设。geometry用FINITE_CONTACT_ENVELOPE并给出"
-            "object_longitudinal_direction=FORWARD|REVERSE|LEFT|RIGHT（均相对车体，非道路行驶方向）。"
+            "object_longitudinal_direction=FORWARD|REVERSE|LEFT|RIGHT|STATIONARY（运动方向均相对车体，非道路行驶方向；静止目标也明确写STATIONARY，不省略）。"
             "LEFT使y增加，RIGHT使y减小；例如从自车左侧横穿到右侧应为初始y>0、目标方向RIGHT。"
             "先核对带符号偏移与速度方向，再描述接近/远离/横穿，不能只改文字。自车沿当前行驶方向匀加减速；不支持转弯、反向启动和多阶段限速。"
             "后车接近等机制不能因本车先停车就宣布无接触。若有相容依据假设停车后保持原位置，"
@@ -523,7 +523,7 @@ class PhysicalScenarioAgent:
                 "RANGE": {"lower": "finite number", "value": "representative number", "upper": "finite number"},
                 "SYMBOLIC": {"symbol": "nonempty string; omit value/lower/upper"}},
             "moving_target_geometry": {"object_extent": "FINITE_CONTACT_ENVELOPE",
-                "object_longitudinal_direction": ["FORWARD", "REVERSE", "LEFT", "RIGHT"]},
+                "object_longitudinal_direction": ["FORWARD", "REVERSE", "LEFT", "RIGHT", "STATIONARY"]},
             "unmitigated_post_stop_motion": {"field": "post_stop_motion", "optional": True, "allowed": ["HOLD_POSITION"],
                 "placement": "hypotheses[] sibling of geometry and parameters",
                 "meaning": "Unmitigated fault trajectory ONLY. This does not describe the safety response. Never add/change it to complete braking-response holding."},

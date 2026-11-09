@@ -1,4 +1,5 @@
 """IAV front/rear/side counterexamples through the single production kernel."""
+from copy import deepcopy
 from dataclasses import asdict
 import json
 import math
@@ -106,6 +107,39 @@ def angle_plan():
     h['conditions']=['Fixed velocity heading 40 degrees; stationary side envelope; independent braking remains effective']
     h['uncovered_conditions']=['Changing heading, wheel steering and target evasion are not assumed']
     return raw
+
+
+def test_stationary_target_prompt_and_repair_agree_with_motion_contract(method, tmp_path):
+    # Live IPA failure: zero-speed target with a finite envelope, but the
+    # output example instructed the model to omit its required direction.
+    good = angle_plan()
+    bad = deepcopy(good)
+    bad['hypotheses'][0]['geometry'].pop('object_longitudinal_direction')
+    client = Client([bad, good])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'stationary-relative-motion',
+               'evidence': {'MF.description': 'fault', 'SCENARIO.conditions': 'operating conditions'}}
+    records = []
+    plan, audit = agent.propose(context, on_response=records.append)
+    assert len(client.requests) == 2 and audit['schema_repairs'] == 1
+    body = json.loads(client.requests[0].user_prompt)
+    directions = body['output_contract']['moving_target_geometry']['object_longitudinal_direction']
+    assert 'STATIONARY' in directions
+    instruction = body['output_shape']['hypotheses'][0]['geometry']['object_longitudinal_direction']
+    assert 'STATIONARY' in instruction and 'RECTILINEAR_MOVING_TARGET_CONTACT' in instruction
+    assert 'omit for stationary' not in instruction
+    repair = json.loads(client.requests[1].user_prompt)
+    assert 'STATIONARY' in repair['repair_errors'][0]
+    assert repair['previous_invalid_response'] == bad
+    assert records[0]['response']['data'] == bad
+    assert plan.to_dict() == good  # No automatic filling or parameter rewriting.
+    child = instantiate(method, plan.to_dict(), make_candidate(7))[0]
+    assert child.facts['object_longitudinal_direction'] == 'STATIONARY'
+    assert child.facts['object_speed_kph'] == 0
+    assert child.facts['first_contact_time_s'] == pytest.approx(.1 / (7 / 3.6 * math.sin(math.radians(40))))
+    assert score(method, child)['severity']['severity_score'] == 'S1'
+    assert child.fact_provenance['ego_heading_angle_deg']['approval'] == 'PENDING'
+    assert agent.propose(context)[0] == plan and len(client.requests) == 2
 
 
 def test_side_reference_angle_is_velocity_heading_not_wheel_angle(method):
