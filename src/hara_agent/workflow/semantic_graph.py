@@ -204,7 +204,12 @@ def _assess_guidewords_after_project_context_preflight(
 ) -> HARAState:
     if inputs.project_context_preflight is not None:
         audit = inputs.project_context_preflight(state)
-        state.record("project_context_preflight_passed", **audit)
+        state.record(
+            "project_context_preflight_pending"
+            if audit.get("resolution_status") == "UNRESOLVED_PROJECT_CONTEXT"
+            else "project_context_preflight_passed",
+            **audit,
+        )
     return assess_guidewords(
         state,
         agents.guidewords,

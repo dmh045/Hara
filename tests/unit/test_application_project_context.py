@@ -118,6 +118,36 @@ def test_application_candidate_path_uses_parking_envelope_and_provenance():
     )
 
 
+def test_draft_without_source_speed_produces_unbound_candidates_not_default_speed():
+    facts = _facts(contextual=False, aggregate=False)
+    app = HARAApplication(_config(allow_draft=True), object())
+    candidates, audit = app.prepare_scenario_candidates(_state(facts), _service())
+    assert candidates
+    assert audit["speed_resolution"]["resolved_value"] is None
+    assert audit["speed_resolution"]["resolution_status"] == "UNRESOLVED_PROJECT_CONTEXT"
+    assert audit["speed_resolution"]["fallback_used"] is False
+    assert audit["speed_resolution"]["source_refs"] == ()
+    for candidate in candidates:
+        assert "ego_speed_kph" not in candidate.facts
+        assert candidate.facts["ego_speed_constraint"] == {}
+        assert candidate.fact_provenance["ego_speed_constraint"]["approval"] == "PENDING"
+        assert candidate.facts["method_scenario_dimensions"]["VEHICLE_SPEED"]["unresolved_reason"] == "NO_ITEM_SPEED_ENVELOPE"
+        assert candidate.status is ReviewStatus.PENDING
+    with pytest.raises(UnresolvedProjectContextError):
+        HARAApplication(_config(), object()).prepare_scenario_candidates(_state(facts), _service())
+
+
+def test_draft_missing_speed_support_does_not_swallow_mismatched_or_ambiguous_facts():
+    app = HARAApplication(_config(allow_draft=True), object())
+    for facts in (
+        _facts(contextual=False, aggregate=True),
+        replace(_facts(), speed_envelopes=[SpeedEnvelope("search", 0, 30)]),
+        replace(_facts(), speed_envelopes=[SpeedEnvelope("parking", 0, 5, condition="phase A"), SpeedEnvelope("parking", 0, 7, condition="phase B")]),
+    ):
+        with pytest.raises(UnresolvedProjectContextError):
+            app.prepare_scenario_candidates(_state(facts), _service())
+
+
 def test_method_speed_bands_have_deterministic_template_boundaries():
     service = _service()
     speed_dimension = next(

@@ -388,6 +388,7 @@ class HARAApplication:
             facts,
             operating_mode,
             allow_aggregate_fallback=self.config.allow_aggregate_speed_fallback,
+            allow_missing=self.config.allow_draft,
         )
 
     def prepare_scenario_candidates(

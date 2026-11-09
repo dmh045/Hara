@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import os
 import re
@@ -24,7 +25,7 @@ from hara_agent.models import (
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 from hara_agent.services.analysis.scenario_physics import causal_physics_conflicts
 
-from .parsing import parse_confidence
+from .parsing import REPORT_LANGUAGE_PROMPT, parse_confidence
 from .scenario_contract import RISK_DIMENSION_VALUES
 from .scenario_evidence import (
     SCENARIO_ASSESSMENT_CONTRACT_VERSION,
@@ -68,11 +69,11 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v31-targeted-driver-comparison"
+    PROMPT_VERSION = "scenario-feasibility-v31-targeted-driver-comparison-zh-v1"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
-    SYSTEM_PROMPT = """ROLE AND EVIDENCE
+    SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """ROLE AND EVIDENCE
 你是 HARA 工程因果分类器。独立判断每个明确场景的 physical feasibility、functional relevance、causal relevance。
 只能使用当前场景 causal_evidence_view 的精确 evidence_ref、固定 Malfunction 字段及共享上下文；共享上下文仅表示相同输入，不能复制其他分支的结论。
 不得发明额外故障、道路参与者、恐慌、方向改变、道路条件、干预能力、碰撞参数或概率。场景名称不能替代结构化事实。source_operating_conditions 是来源范围；permitted_road_types 是允许的替代条件，不证明所有几何条件已被覆盖。selected_method_conditions 不得扩大项目 ODD。

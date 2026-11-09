@@ -191,9 +191,15 @@ def test_response_request_targets_only_reported_world_and_preserves_other_world(
     old_request=LLMRequest(**frozen['request'])
     legacy=tmp_path/'legacy'
     ResponseCheckpoint(legacy).complete(Client([update]),old_request)
-    no_calls=Client([])
-    restored,audit=PhysicalScenarioAgent(no_calls,response_checkpoint_dir=legacy).propose(context)
-    assert restored==plan and not no_calls.requests and audit['response_cache_hits']==1
+    # Chinese narrative changes the request contract; old-language responses
+    # stay readable but cannot satisfy a request for the new output language.
+    assert ResponseCheckpoint(legacy).complete(Client([]),old_request,cache_only=True) is not None
+    new_language=Client([update])
+    resumed_agent=PhysicalScenarioAgent(new_language,response_checkpoint_dir=legacy)
+    restored,audit=resumed_agent.propose(context)
+    assert restored==plan and len(new_language.requests)==1 and audit['response_cache_hits']==0
+    assert "简体中文" in new_language.requests[0].system_prompt
+    assert resumed_agent.propose(context)[0]==plan and len(new_language.requests)==1
 
 
 @pytest.mark.parametrize('conflict', [False,True])
@@ -705,7 +711,7 @@ def test_actual_item_control_and_road_user_passages_are_bounded_not_summarized()
     from dataclasses import asdict
     from hara_agent.services.extraction import DocumentReader
     from hara_agent.workflow.physical_analysis import _source_evidence
-    document = DocumentReader().read(Path('input/ItemDef.docx'))
+    document = DocumentReader().read(Path(__file__).resolve().parents[1] / 'fixtures/avp/ItemDef.docx')
     state = HARAState('source-routing', item_definition={
         'source_id': document.source_id, 'blocks': [asdict(b) for b in document.blocks]})
     evidence, routing = _source_evidence(state, {'name': '输出驱动扭矩'})

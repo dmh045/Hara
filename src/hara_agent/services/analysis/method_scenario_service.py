@@ -142,6 +142,8 @@ class MethodScenarioCandidateService:
     def _speed_constraint_binding(
         self, dimension: ScenarioDimension, speed: SpeedResolutionResult,
     ) -> dict[str, Any]:
+        if not speed.matched_envelope:
+            return self._pending_binding(dimension, reason="NO_ITEM_SPEED_ENVELOPE")
         if speed.resolution_source == "ExplicitProjectInput":
             return self._speed_binding(dimension, speed.resolved_value)
         envelope = dict(speed.matched_envelope)
@@ -309,7 +311,8 @@ class MethodScenarioCandidateService:
                 "output": function.output,
                 "speed_constraint": dict(speed.matched_envelope),
                 "speed_constraint_status": (
-                    "EXPLICIT_VALUE" if speed.resolution_source == "ExplicitProjectInput"
+                    "PENDING_NO_SOURCE_ENVELOPE" if not speed.matched_envelope
+                    else "EXPLICIT_VALUE" if speed.resolution_source == "ExplicitProjectInput"
                     else "RANGE_CONSTRAINT"
                 ),
                 "source_refs": [

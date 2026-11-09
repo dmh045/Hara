@@ -361,7 +361,7 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
     assert context == before
 
 
-def test_request_compaction_retains_sources_and_coverage_and_resumes_exact_old_reply(tmp_path):
+def test_request_compaction_retains_sources_and_isolates_new_language_from_old_reply(tmp_path):
     from dataclasses import replace
     from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
     from test_geometry_completion import Client
@@ -403,18 +403,19 @@ def test_request_compaction_retains_sources_and_coverage_and_resumes_exact_old_r
     old_client = Client([raw_plan()])
     ResponseCheckpoint(tmp_path).complete(old_client, legacy)
     frozen = {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
-    no_calls = Client([])
-    plan, audit = PhysicalScenarioAgent(no_calls, response_checkpoint_dir=tmp_path).propose(context)
-    assert not no_calls.requests and audit['response_cache_hits'] == 1
-    assert audit['responses'][0]['request']['user_prompt'] == legacy.user_prompt
-    assert frozen == {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
-    assert plan.to_dict() == raw_plan()
+    assert ResponseCheckpoint(tmp_path).complete(Client([]), legacy, cache_only=True) is not None
+    current_reply = raw_plan()
+    current_reply['hypotheses'][0]['rationale'] = 'Current recorded mechanism explanation'
+    new_language = Client([current_reply])
+    plan, audit = PhysicalScenarioAgent(new_language, response_checkpoint_dir=tmp_path).propose(context)
+    assert len(new_language.requests) == 1 and audit['response_cache_hits'] == 0
+    assert '简体中文' in new_language.requests[0].system_prompt
+    assert all((tmp_path / name).read_bytes() == value for name, value in frozen.items())
+    assert plan.to_dict() == current_reply
 
     # If both formats exist, the current exact reply wins; restoring a legacy
     # response must never roll a completed compact task back to another reply.
-    current_reply = raw_plan()
-    current_reply['hypotheses'][0]['rationale'] = 'Current recorded mechanism explanation'
-    ResponseCheckpoint(tmp_path).complete(Client([current_reply]), compact)
+    no_calls = Client([])
     current, audit = PhysicalScenarioAgent(no_calls, response_checkpoint_dir=tmp_path).propose(context)
     assert current.to_dict() == current_reply and not no_calls.requests
     assert audit['responses'][0]['request']['user_prompt'] == compact.user_prompt

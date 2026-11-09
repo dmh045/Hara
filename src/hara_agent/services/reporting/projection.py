@@ -1054,8 +1054,8 @@ class HARAReportProjectionService:
                 scenario_id=risk.scenario_id,
                 hazardous_event_id=representative["hazardous_event_id"],
                 function_id=str(malfunction.get("function_id", "")),
-                function_name=str(function.get("name", "")),
-                function_output=str(function.get("output", "")),
+                function_name=self.text.engineering_terms(str(function.get("name", ""))),
+                function_output=self.text.engineering_terms(str(function.get("output", ""))),
                 guideword=str(malfunction.get("guideword", "")),
                 malfunction=str(malfunction.get("description", "")),
                 hazard=str(malfunction.get("vehicle_level_hazard", "")),
@@ -1507,14 +1507,15 @@ class HARAReportProjectionService:
             retained, excluded, pending = (sum(getattr(item, field) for item in children_for_function)
                                            for field in ("retained", "excluded", "pending"))
             function_inventory.append(FunctionView(str(function.get("function_id", "")),
-                str(function.get("name", "")), str(function.get("output", "")),
+                self.text.engineering_terms(str(function.get("name", ""))),
+                self.text.engineering_terms(str(function.get("output", ""))),
                 str(function.get("status", "未记录审核状态")), len(children_for_function),
                 retained + excluded + pending, retained, excluded, pending))
         return HARAReportViewModel(
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,
             method_hash, style_template_hash, tuple(details), projection_metrics,
             children, tuple(inventory),
-            tuple((label, "、".join(value) if isinstance(value, list) else str(value))
+            tuple((label, self.text.engineering_terms("、".join(value) if isinstance(value, list) else str(value)))
                   for field, label in (("system_description", "系统"), ("item_boundary", "边界"),
                       ("operating_modes", "运行模式"), ("odd_locations", "允许位置"),
                       ("odd_road_types", "允许道路/车位"), ("odd_weather_conditions", "天气"),

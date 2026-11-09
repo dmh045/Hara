@@ -802,9 +802,10 @@ class PhysicalHypothesisInstantiationService:
         previous_direction = str(parent.facts.get("ego_longitudinal_direction", "")).upper()
         if initial and not new_initial and previous_direction in {"FORWARD", "REVERSE"} and previous_direction != g["ego_longitudinal_direction"]:
             raise ValueError("DIRECTION_REVERSAL_REQUIRES_A_STOP_AND_SEPARATE_PHASE")
-        if initial is not None and speed_range and not (
-            speed_range.get("min_kph", speed_range.get("speed_min_kph", 0)) <= initial <=
-            speed_range.get("max_kph", speed_range.get("speed_max_kph", math.inf))):
+        lower = speed_range.get("min_kph", speed_range.get("speed_min_kph"))
+        upper = speed_range.get("max_kph", speed_range.get("speed_max_kph"))
+        if initial is not None and (
+            lower is not None and initial < lower or upper is not None and initial > upper):
             raise ValueError("INITIAL_SPEED_OUTSIDE_OPERATING_CONSTRAINT")
         slope = values.get("slope_percent")
         from .scenario_synthesis_service import ConstrainedScenarioSynthesisService

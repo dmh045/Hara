@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .parsing import REPORT_LANGUAGE_PROMPT
+
 import os
 import sys
 import time
@@ -136,7 +138,7 @@ class ItemEvidenceRouter:
 
 
 class ItemSupplementAgent:
-    PROMPT_VERSION = "item-supplement-v3"
+    PROMPT_VERSION = "item-supplement-v3-zh-v1"
 
     def __init__(self, client: LLMClient):
         self.client = client
@@ -161,6 +163,7 @@ class ItemSupplementAgent:
             system_prompt=(
                 "你是Item Definition局部证据抽取Agent。只使用给定的带ID文档块，"
                 "不得扩展到常识；没有证据的字段返回空数组或null。"
+                + REPORT_LANGUAGE_PROMPT
             ),
             user_prompt=(
                 f"返回JSON对象，字段为{fields}。每个source_excerpt最多120字符，"

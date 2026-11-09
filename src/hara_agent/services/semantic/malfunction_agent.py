@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import re
 import sys
@@ -15,7 +16,7 @@ from hara_agent.models import (
 )
 
 from . import malfunction_guideword_gate
-from .parsing import CONFIDENCE_PROMPT_CONTRACT, parse_confidence
+from .parsing import REPORT_LANGUAGE_PROMPT, CONFIDENCE_PROMPT_CONTRACT, parse_confidence
 from .traceability import resolve_malfunction_sources
 
 
@@ -32,8 +33,8 @@ class _FailureTypeContractViolation(ValueError):
 class MalfunctionHazardAgent:
     """Generate traceable malfunction and vehicle-level hazard candidates."""
 
-    PROMPT_VERSION = "malfunction-hazard-v7-bounded-classification"
-    SYSTEM_PROMPT = """你是汽车功能安全HARA分析助手。只处理已判定适用的Guideword。Malfunction描述功能相对预期行为的偏差；functional_effect描述功能/车辆行为影响；vehicle_level_hazard描述可能造成伤害的车辆级危险状态，不得直接写人员伤亡。causal_chain必须明确从失效到车辆级危险状态的至少两段因果关系，并且必须是JSON字符串数组，不得返回单个字符串。不得复制无关子系统模板。"""
+    PROMPT_VERSION = "malfunction-hazard-v7-bounded-classification-zh-v1"
+    SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA分析助手。只处理已判定适用的Guideword。Malfunction描述功能相对预期行为的偏差；functional_effect描述功能/车辆行为影响；vehicle_level_hazard描述可能造成伤害的车辆级危险状态，不得直接写人员伤亡。causal_chain必须明确从失效到车辆级危险状态的至少两段因果关系，并且必须是JSON字符串数组，不得返回单个字符串。不得复制无关子系统模板。"""
 
     INJURY_TERMS = ("死亡", "致命伤", "骨折", "窒息", "fatality", "death", "injury")
 

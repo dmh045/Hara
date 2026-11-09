@@ -23,14 +23,14 @@ from .core_item_artifact_contract import (
 from .function_agent import FunctionNormalizer
 from .function_source_guard import validate_function_source_parity
 from .item_definition_agent import ItemDefinitionNormalizer
-from .parsing import CONFIDENCE_PROMPT_CONTRACT
+from .parsing import REPORT_LANGUAGE_PROMPT, CONFIDENCE_PROMPT_CONTRACT
 
 
 class ItemArtifactExtractionAgent:
     """Extract core Item facts and Functions once from the full document."""
 
-    PROMPT_VERSION = "item-artifacts-v7-explicit-function-source-binding"
-    SYSTEM_PROMPT = """你是汽车功能安全HARA的相关项定义抽取Agent。只提取文档明确陈述的事实。
+    PROMPT_VERSION = "item-artifacts-v8-multilingual-function-scope-zh"
+    SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA的相关项定义抽取Agent。只提取文档明确陈述的事实。
 必须综合全文，不得把某个固定章节、标题编号或模板工作流中的章节示例当成唯一来源。
 一次返回核心Item Definition和车辆级Functions。不得把标题、条件、步骤、后果或质量要求识别为Function；
 不得用常识补写ODD、速度或功能。核心输出需保留功能的前置条件、触发、ODD约束、回退行为和后果；
@@ -52,7 +52,13 @@ class ItemArtifactExtractionAgent:
   odd_constraints, fallback_behavior, and consequences of an existing Function,
   but it must not change the Function member set.
 - Only when no unique explicit Function table/list exists may functions[] be
-  extracted from the full document under the existing rules."""
+  extracted from the full document under the existing rules.
+- A profile's singular product/system/function name in a metadata form is not
+  an enumerated vehicle-function list. In that case identify the supported
+  functional actions and their outputs from the body; do not reduce the whole
+  document to its product name, or treat headings/version history as functions.
+- Except for an authoritative list requiring exact names, write the extracted
+  semantic fields in Simplified Chinese; keep source excerpts verbatim."""
 
     def __init__(self, client: LLMClient, validator: FunctionValidator | None = None):
         self.client = client
@@ -500,7 +506,7 @@ class ItemArtifactExtractionAgent:
                 "每项列表最多10条，所有source_excerpt最多120字符，且必须是输入原文中连续、逐字相同的摘录。"
                 "不得省略、改写或使用省略号。不得输出Markdown、解释或额外字段。\n\n"
                 + CONFIDENCE_PROMPT_CONTRACT + "\n"
-                + document_text
+                + document_text + "\n" + REPORT_LANGUAGE_PROMPT
             ),
             schema_name="CoreItemArtifacts",
             prompt_version=self.PROMPT_VERSION,

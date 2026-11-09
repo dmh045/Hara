@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import re
 import sys
@@ -20,17 +21,17 @@ from hara_agent.models import (
     ReviewStatus,
 )
 
-from .parsing import CONFIDENCE_PROMPT_CONTRACT, parse_confidence
+from .parsing import REPORT_LANGUAGE_PROMPT, CONFIDENCE_PROMPT_CONTRACT, parse_confidence
 from .traceability import resolve_guideword_sources
 
 
 class GuidewordApplicabilityAgent:
     """Assess every template guideword without generating a Cartesian product."""
 
-    PROMPT_VERSION = "guideword-applicability-v12-repair-identity-shape"
+    PROMPT_VERSION = "guideword-applicability-v12-repair-identity-shape-zh-v1"
     INITIAL_MAX_TOKENS = 4096
     OUTPUT_LIMIT_RETRY_MAX_TOKENS = 8192
-    SYSTEM_PROMPT = """你是汽车功能安全HAZOP分析助手。针对给定Function/Output逐项判断模板Guideword是否具有明确的功能语义和可形成的偏差。必须覆盖输入中的每个Guideword且只出现一次。不适用不是遗漏，必须给出具体理由；不得为了凑数量判为适用。结论必须区分：DOWNSTREAM_CANDIDATE（语义适用且存在可信的车辆级危害潜力）、NOT_APPLICABLE（偏差维度与该Function/Output语义不适用）、NO_CREDIBLE_HAZARD（偏差语义适用，但依据Item Definition无法形成可信的车辆级危害）。disposition只能是DOWNSTREAM_CANDIDATE、NOT_APPLICABLE、NO_CREDIBLE_HAZARD之一；PENDING不是disposition。证据完整性和ReviewStatus由系统确定，模型不得使用PENDING作为disposition。不确定时不得武断标记NO_CREDIBLE_HAZARD；证据不足时仍须在三种disposition中选择最合理的一个。"""
+    SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HAZOP分析助手。针对给定Function/Output逐项判断模板Guideword是否具有明确的功能语义和可形成的偏差。必须覆盖输入中的每个Guideword且只出现一次。不适用不是遗漏，必须给出具体理由；不得为了凑数量判为适用。结论必须区分：DOWNSTREAM_CANDIDATE（语义适用且存在可信的车辆级危害潜力）、NOT_APPLICABLE（偏差维度与该Function/Output语义不适用）、NO_CREDIBLE_HAZARD（偏差语义适用，但依据Item Definition无法形成可信的车辆级危害）。disposition只能是DOWNSTREAM_CANDIDATE、NOT_APPLICABLE、NO_CREDIBLE_HAZARD之一；PENDING不是disposition。证据完整性和ReviewStatus由系统确定，模型不得使用PENDING作为disposition。不确定时不得武断标记NO_CREDIBLE_HAZARD；证据不足时仍须在三种disposition中选择最合理的一个。"""
     COMPOSITE_OUTPUT_CONTRACT = """
 For a composite Function output, evaluate every canonical_output_components entry.
 Do not decide the Guideword from only an HMI message, duration, or any one partial

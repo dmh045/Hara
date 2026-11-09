@@ -88,7 +88,7 @@ def _payload() -> dict:
 
 
 def _current_item_artifact():
-    return DocumentReader().read(ROOT / "input/ItemDef.docx")
+    return DocumentReader().read(ROOT / "tests/fixtures/avp/ItemDef.docx")
 
 
 def _payload_with_function_names(names: list[str]) -> dict:
@@ -317,8 +317,11 @@ def test_item_agent_accepts_string_consequences_without_second_llm_call() -> Non
     }]
     assert client.requests[0].response_schema == CORE_ITEM_ARTIFACTS_SCHEMA
     assert client.requests[0].prompt_version == (
-        "item-artifacts-v7-explicit-function-source-binding"
+        "item-artifacts-v8-multilingual-function-scope-zh"
     )
+    assert "简体中文" in client.requests[0].system_prompt
+    assert "source_excerpt必须保持原语言原文" in client.requests[0].system_prompt
+    assert "metadata form is not" in client.requests[0].system_prompt
     assert "only membership authority for functions[]" in (
         client.requests[0].system_prompt
     )

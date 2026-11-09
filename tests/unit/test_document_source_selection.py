@@ -75,7 +75,7 @@ def test_docx_body_order_and_unstyled_section_provenance(tmp_path: Path) -> None
 def test_real_item_selection_is_shared_by_core_and_targeted_routes() -> None:
     state = read_item_document(
         HARAState("source-selection-test"),
-        str(ROOT / "input/ItemDef.docx"),
+        str(ROOT / "tests/fixtures/avp/ItemDef.docx"),
         project_analysis_policy=POLICY,
     )
     raw = {block["block_id"]: block for block in state.item_definition["raw_blocks"]}
@@ -111,7 +111,7 @@ def test_real_item_selection_is_shared_by_core_and_targeted_routes() -> None:
 
 
 def test_policy_version_changes_extraction_fingerprint_without_docx_change() -> None:
-    blocks = DocumentReader().read(ROOT / "input/ItemDef.docx").blocks
+    blocks = DocumentReader().read(ROOT / "tests/fixtures/avp/ItemDef.docx").blocks
     old = select_source_blocks(blocks)
     active = select_source_blocks(blocks, POLICY)
     revised = select_source_blocks(blocks, {**POLICY, "version": "2"})

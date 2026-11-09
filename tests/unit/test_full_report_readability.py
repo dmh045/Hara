@@ -55,6 +55,19 @@ def test_mixed_contract_tokens_are_localized_without_rewriting_ids_or_conditions
     assert mapper.engineering_terms('本车向FORWARD方向行驶，目标向REVERSE运动') == '本车向前行驶，目标向后运动'
 
 
+def test_chinese_function_projection_localizes_view_labels_without_mutating_source(active_method):
+    from copy import deepcopy
+    state = _p6_report_state()
+    for function in state.functions:
+        function['output'] = '在Rear-、Front-或TopView中显示车位；记录 ID-TopView-01'
+    before = deepcopy(state.functions)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert view.rows and view.function_inventory
+    assert all('后视、前视或俯视画面' in row.function_output for row in view.rows)
+    assert all('ID-TopView-01' in row.function_output for row in view.rows)
+    assert state.functions == before
+
+
 def test_same_qm_with_missing_c_is_not_described_as_unknown_group_upper_bound(active_method):
     state = _p6_report_state()
     for risk in state.risk_results:

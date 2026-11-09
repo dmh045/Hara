@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 import re
 from pathlib import Path
+from .parsing import REPORT_LANGUAGE_PROMPT
 
 from hara_agent.contracts.physical_scenario_plan import (
     MODEL_CATALOG, PARAMETER_UNITS, PHYSICAL_PLAN_VERSION, PhysicalScenarioPlan, CONTROL_IDENTITIES,
@@ -238,10 +239,10 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v26-explicit-driver-scope"
-    PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics"
-    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v27-nullable-speed-bounds"
+    PROMPT_VERSION = "post-fault-physical-scenario-v51-reference-kinematics-zh-v1"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics-zh-v1"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
@@ -764,6 +765,7 @@ class PhysicalScenarioAgent:
                 "每个rationale限一两句，条件和未覆盖范围用短句；共同依据不要在两个人员分支重复全文。"
             ) + self.CONTROL_ANALYSIS_POLICY + self.RESPONSE_TIMING_POLICY
         previous_view_content = deepcopy(content)
+        system += REPORT_LANGUAGE_PROMPT
         previous_view_system = system
         v3_content = compact_physical_request(content, response_only=response_only_correction,
                                              controls_only=controls_only, efficient=False)

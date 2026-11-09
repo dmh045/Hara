@@ -61,6 +61,27 @@ def test_method_standing_initial_cannot_silently_change(method):
     assert not children and errors[0]['reason_code'] == 'INITIAL_STATE_ATOM_CONFLICT'
 
 
+@pytest.mark.parametrize('constraint,allowed', [
+    ({'min_kph': None, 'max_kph': None}, True),
+    ({'speed_min_kph': None, 'speed_max_kph': None}, True),
+    ({'min_kph': None, 'max_kph': 8}, True),
+    ({'min_kph': 6, 'max_kph': None}, True),
+    ({'min_kph': None, 'max_kph': 6}, False),
+    ({'min_kph': 8, 'max_kph': None}, False),
+])
+def test_nullable_source_speed_bounds_preserve_known_limits(method, constraint, allowed):
+    parent = make_candidate(7)
+    parent.facts['ego_speed_constraint'] = constraint
+    before = deepcopy(parent)
+    children, errors = produce(method, raw_plan(initial=7), parent)
+    assert parent == before
+    if allowed:
+        assert not errors and children[0].facts['ego_speed_kph'] == 7
+        assert children[0].facts['physical_analysis']['calculation_nature'] == 'CONDITIONAL'
+    else:
+        assert not children and errors[0]['reason'] == 'INITIAL_SPEED_OUTSIDE_OPERATING_CONSTRAINT'
+
+
 def test_rollaway_input_view_excludes_moving_parent_without_defaulting_zero(method):
     parent = make_candidate(7)
     before = deepcopy(parent)

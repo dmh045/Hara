@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from hara_agent.models import FunctionDefinition
@@ -28,7 +29,11 @@ class FunctionValidator:
         for item in functions:
             name = item.name.strip()
             lowered = name.lower()
-            if len(name) > 40:
+            # Bound a label by display width: Latin/German labels need more
+            # characters than CJK labels for the same concise function name.
+            name_width = sum(2 if unicodedata.east_asian_width(char) in {"W", "F"}
+                             else 1 for char in name)
+            if name_width > 80:
                 findings.append(self._finding(item, "function_name_too_long", "功能名疑似完整需求段落"))
             if name.startswith(("，", "。", "；", ",", ";")):
                 findings.append(self._finding(item, "function_fragment", "功能名疑似段落残片"))

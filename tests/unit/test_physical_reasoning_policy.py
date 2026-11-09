@@ -273,7 +273,7 @@ def test_two_worlds_share_fixed_request_prefix_but_keep_different_evidence():
     assert json.loads(b)['context']['conditions']['facts']['object_id'] == 'b'
 
 
-def test_v3_paid_response_recovers_without_network_or_rewriting_history(tmp_path):
+def test_v3_response_remains_readable_but_does_not_satisfy_new_language_contract(tmp_path):
     import gzip
     from pathlib import Path
     from test_geometry_completion import Client
@@ -282,12 +282,15 @@ def test_v3_paid_response_recovers_without_network_or_rewriting_history(tmp_path
     old_request = LLMRequest(**frozen['v3_request'])
     ResponseCheckpoint(tmp_path).complete(Client([raw_plan()]), old_request)
     before = {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
-    no_calls = Client([])
-    plan, audit = PhysicalScenarioAgent(no_calls, response_checkpoint_dir=tmp_path).propose(frozen['context'])
-    assert plan.to_dict() == raw_plan() and not no_calls.requests
-    assert audit['response_cache_hits'] == 1
-    assert audit['responses'][0]['request']['user_prompt'] == old_request.user_prompt
-    assert before == {p.name: p.read_bytes() for p in tmp_path.glob('*.json')}
+    assert ResponseCheckpoint(tmp_path).complete(Client([]), old_request, cache_only=True) is not None
+    client = Client([raw_plan()])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    plan, audit = agent.propose(frozen['context'])
+    assert plan.to_dict() == raw_plan() and len(client.requests) == 1
+    assert audit['response_cache_hits'] == 0
+    assert '简体中文' in client.requests[0].system_prompt
+    assert all((tmp_path / name).read_bytes() == value for name, value in before.items())
+    assert agent.propose(frozen['context'])[0] == plan and len(client.requests) == 1
 
 
 def test_motion_correction_only_replaces_diagnosed_world_then_validates_full_plan(tmp_path):

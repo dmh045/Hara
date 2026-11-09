@@ -28,7 +28,7 @@ class ProjectContextResolutionStatus(str, Enum):
 class SpeedResolutionResult:
     operating_mode: str
     requested_fact: str
-    resolved_value: float
+    resolved_value: float | None
     resolution_source: str
     provenance: FactProvenance
     source_refs: tuple[SourceRef, ...]
@@ -155,7 +155,23 @@ class ProjectFactResolver:
         operating_mode: str,
         *,
         allow_aggregate_fallback: bool = False,
+        allow_missing: bool = False,
     ) -> SpeedResolutionResult:
+        # A draft candidate may carry an unknown operational envelope to the
+        # existing hypothesis producer. This is not a numeric fallback and
+        # must not absorb a mismatched, ambiguous or partially specified bound.
+        if (allow_missing and canonical_operating_mode(operating_mode)
+                and not facts.speed_envelopes
+                and facts.speed_min_kph is None and facts.speed_max_kph is None):
+            return SpeedResolutionResult(
+                operating_mode=canonical_operating_mode(operating_mode),
+                requested_fact="ego_speed_kph", resolved_value=None,
+                resolution_source="NoSourceSpeedEnvelope",
+                provenance=FactProvenance.PROJECT_INPUT, source_refs=(),
+                approval=ReviewStatus.PENDING, fallback_used=False,
+                resolution_status=ProjectContextResolutionStatus.UNRESOLVED_PROJECT_CONTEXT,
+                matched_envelope={},
+            )
         envelope = self.resolve_speed_envelope(
             facts,
             operating_mode,
