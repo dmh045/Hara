@@ -240,7 +240,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v27-nullable-speed-bounds"
-    PROMPT_VERSION = "post-fault-physical-scenario-v52-stationary-relative-motion"
+    PROMPT_VERSION = "post-fault-physical-scenario-v53-explicit-unknown-driver-scope"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics-zh-v1"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
@@ -389,6 +389,11 @@ class PhysicalScenarioAgent:
             "每个运动假设默认适用于全部driver_configurations；不要仅因车外不能踩踏板就另造相同运动方案，"
             "独立人工制动通道可用与驾驶员是否在驾驶位由程序分别处理。确有只适用某驾驶员配置的假设，"
             "必须用driver_positions列出适用配置，不能只写在自然语言里后再交叉展开。"
+            "driver_configurations为空表示来源未限定位置，不表示无人或禁止提出位置假设。"
+            "此时结合功能使能、操作界面和控制路径，在当前假设中用driver_positions选择一个有依据的代表位置，"
+            "在rationale、conditions及basis_refs说明这是分析假设；不要机械列出两个位置或复制运动方案。"
+            "只有连条件性代表位置也缺少相容依据时才省略，说明具体障碍；不能仅因没有原文位置字段而省略。"
+            "已给定的位置范围仍须保留；outside_driver_seat仅表示不在驾驶位，不等于人员在车外。"
             "不要用自然语言标签或自行创造对象类别。不能把不支持的障碍物伪称车辆；"
             "若分析另一个合法对象，必须声明condition_changes.target及新object_id，说明新条件和未覆盖对象。"
             "SYMBOLIC使用symbol字符串，不能把符号放进value；POINT只有value；RANGE必须有lower/value/upper。"
@@ -498,8 +503,12 @@ class PhysicalScenarioAgent:
                 "shape_example": ["driver_braking", "braking"],
                 "meaning": "Shape only, not a default capability. Do not nest arrays or output expressions such as [[...]][0]. Put reasons and conditions in the existing rationale/conditions fields.",
             },
-            "driver_positions": {"optional": True, "allowed": context.get("driver_configurations", []),
-                "meaning": "hypothesis applicability; omitted means all supplied configurations"},
+            "driver_positions": {"optional": True,
+                "allowed": context.get("driver_configurations") or ["in_driver_seat", "outside_driver_seat"],
+                "meaning": ("假设适用范围；省略表示适用于全部已给定位置，不改变父位置。"
+                    if context.get("driver_configurations") else
+                    "来源位置未知；选择一个相容代表位置并在rationale/conditions及basis_refs说明分析假设。"
+                    "允许列表是结构枚举，不是项目已知位置；不要据此全部展开。无法合理提出时说明具体障碍。")},
             "driver_control_assessments": {
                 "optional": True, "placement": "inside a hypothesis or control_assessment, never at root",
                 "keys": ["in_driver_seat", "outside_driver_seat"],

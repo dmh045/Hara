@@ -168,6 +168,8 @@ presentation:
       "Halten an Hang > 8% (V1)": 在坡道驻停（坡度>8%）
       "Stopping on mountain > 8% (source HARA usage)": 在坡道停车（坡度>8%）
       "Accel normal a < 2 m/s² (V1)": 正常加速（加速度<2 m/s²）
+      "High delta speed between neighboring lanes": 相邻车道间车速差较大
+      "Driving with trailer (V1)": 牵引挂车行驶（V1）
     potential_harm_translations:
       "No injuries": 无伤害
       "Life-threatening (survival uncertain) or fatal injuries": 危及生命（生存可能性不确定）或致命伤害

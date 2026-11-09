@@ -323,6 +323,9 @@ def test_unknown_driver_explicit_hypothesis_survives_production_resume(method, t
         calls = 0
         def complete_json(self, request):
             self.calls += 1
+            contract = json.loads(request.user_prompt)['output_contract']['driver_positions']
+            assert set(contract['allowed']) == {'in_driver_seat', 'outside_driver_seat'}
+            assert '分析假设' in contract['meaning']
             raw = raw_plan(assessed=True)
             raw['hypotheses'][0]['driver_positions'] = ['in_driver_seat']
             return LLMResponse(raw, 'offline')

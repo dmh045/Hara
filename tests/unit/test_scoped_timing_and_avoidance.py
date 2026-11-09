@@ -398,7 +398,8 @@ def test_absent_timing_hypothesis_is_distinct_from_wrong_world_scope(method):
     assert '尚未形成' in result.reason and '不能继承其他成员' not in result.reason
 
 
-def test_control_only_safe_state_reaches_sg_and_reports_uncovered_driver_members(method):
+@pytest.mark.parametrize('driver_presence', [False, None])
+def test_control_only_safe_state_reaches_sg_and_reports_uncovered_driver_members(method, driver_presence):
     from test_report_review_corrections import mixed_pending_group
     from hara_agent.services.analysis import MethodSafetyGoalService
     from hara_agent.workflow.nodes.safety_goals import aggregate_safety_goals
@@ -412,7 +413,7 @@ def test_control_only_safe_state_reaches_sg_and_reports_uncovered_driver_members
         'control_assessment':assessment}, evidence_ids={'MF.description'})
     assert parsed.control_assessment['safe_state_proposal']
     for i, child in enumerate(state.scenarios):
-        child.facts['driver_in_vehicle'] = i == 0
+        child.facts['driver_in_vehicle'] = True if i == 0 else driver_presence
         child.facts['control_analysis'] = {'plan_key':'control-only', 'hypothesis':deepcopy(assessment)}
     raw_risks = deepcopy(state.risk_results)
     aggregate_safety_goals(state, MethodSafetyGoalService(method))
@@ -423,7 +424,9 @@ def test_control_only_safe_state_reaches_sg_and_reports_uncovered_driver_members
     view = HARAReportProjectionService(load_report_schema()).project(state, method)
     assert '适用1个成员' in view.safety_goals[0].safe_state
     assert '13个成员' in view.safety_goals[0].safe_state
-    assert '驾驶员不在驾驶位，踏板方案不适用' in view.safety_goals[0].safe_state
+    assert '未满足驾驶员在驾驶位操作踏板的条件' in view.safety_goals[0].safe_state
+    if driver_presence is None:
+        assert '驾驶员不在驾驶位' not in view.safety_goals[0].safe_state
     assert any('没有在驾驶位操作踏板的适用条件' in d.analysis_basis for d in view.scenario_details)
     assert all(getattr(a,k)==getattr(b,k) for a,b in zip(raw_risks,state.risk_results)
         for k in ('severity','exposure','controllability','asil'))

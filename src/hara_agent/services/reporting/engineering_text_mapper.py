@@ -110,7 +110,7 @@ class EngineeringReportTextMapper:
     _SAFE_STATE_GAP_LABELS = {
         "RESPONSE_INSUFFICIENT": "即刻制动也无法在接触前停止",
         "RESPONSE_INTERACTION_UNSAFE": "停车或解除减速后仍会与目标接触",
-        "DRIVER_CONTROL_UNAVAILABLE": "驾驶员不在驾驶位，踏板方案不适用",
+        "DRIVER_CONTROL_UNAVAILABLE": "未满足驾驶员在驾驶位操作踏板的条件",
         "DRIVER_POSITION_OUT_OF_SCOPE": "处置方案不适用当前驾驶员位置",
         "NO_ANALYSIS": "尚未建立处置模型",
         "NO_PROPOSAL": "尚未形成适用处置方案",
