@@ -717,6 +717,65 @@ def test_control_envelope_normalization_does_not_invent_or_approve_capability(de
     assert raw == before
 
 
+@pytest.mark.parametrize('conflict', ['personnel', 'missing_failed_command', 'actuator_independence'])
+@pytest.mark.parametrize('controls_only', [False, True])
+def test_conflicting_required_response_is_rejected_without_losing_valid_controls(tmp_path, conflict, controls_only):
+    from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan
+    raw = raw_plan(assessed=True)
+    h = raw['hypotheses'][0]
+    h['failed_controls'] = ['automatic_drive_command']
+    h['remaining_controls'] = ['braking', 'driver_braking']
+    h['unresolved_controls'] = {}
+    h['safe_state_proposal'] = {
+        'description': 'Stop through a proposed independent system request',
+        'required_controls': ['braking', 'driver_braking'] if conflict == 'personnel' else ['braking'],
+        'basis_refs': ['MF.description'], 'conditions': ['Conditional retained actuator'],
+        'required_command_path': {
+            'description': 'Required independent braking request', 'initiator': 'SYSTEM',
+            'implementation_status': 'REQUIRED_NOT_ESTABLISHED',
+            'independent_of': ['braking'] if conflict == 'actuator_independence' else
+                [] if conflict == 'missing_failed_command' else ['automatic_drive_command'],
+            'rationale': 'Proposed independence, not existing capability', 'basis_refs': ['MF.description'],
+        },
+    }
+    if controls_only:
+        h = {key: h[key] for key in ('rationale', 'basis_refs', 'conditions', 'uncovered_conditions',
+                                    'failed_controls', 'remaining_controls', 'safe_state_proposal')}
+        raw = {'hypotheses': [], 'uncovered_conditions': ['Conditional controls'], 'control_assessment': h}
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match='Required system path'):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description'})
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw, 'OFFLINE')
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'scoped-response-rejection', 'evidence': {'MF.description': 'Automatic drive command fault'}}
+    if controls_only:
+        context['task_scope'] = 'CONTROL_INPUTS_ONLY'
+    records = []
+    plan, audit = agent.propose(context, on_response=records.append)
+    proposed = plan.control_assessment if controls_only else plan.hypotheses[0]
+    assert proposed['failed_controls'] == h['failed_controls']
+    assert proposed['remaining_controls'] == h['remaining_controls']
+    assert 'safe_state_proposal' not in proposed and '不采用' in proposed['safe_state_unresolved_reason']
+    if not controls_only:
+        assert proposed['parameters'] == h['parameters'] and proposed['geometry'] == h['geometry']
+    assert audit['deferred_safe_states'][0]['reason'] == 'SAFE_STATE_REQUIRED_SYSTEM_PATH_CONFLICT'
+    assert audit['deferred_safe_states'][0]['proposal'] == h['safe_state_proposal']
+    assert raw == before == records[0]['response']['data']
+    assert audit['schema_repairs'] == 1 and client.calls == 2
+    assert 'Required system path' in audit['validation_errors'][0]
+    restored, resumed = agent.propose(context)
+    assert restored == plan and resumed['response_cache_hits'] == 2 and client.calls == 2
+    # The primary control assessment remains strict after the optional response is rejected.
+    h['remaining_controls'].append('automatic_drive_command')
+    with pytest.raises(ValueError, match='failed control cannot be a remaining'):
+        PhysicalScenarioAgent(client).propose({**context, 'plan_key': 'contradictory-primary-controls'})
+
+
 def test_failed_control_safe_state_is_rejected_locally_without_losing_motion():
     raw = raw_plan(assessed=True)
     h = raw['hypotheses'][0]

@@ -74,6 +74,18 @@ def response_control_dependency_missing(proposal: dict) -> bool:
     return model == "CONSTANT_NET_DECELERATION" and not controls & {"driver_braking", "braking"}
 
 
+def required_command_path_conflicts(controls: list[str], failed: list[str], excluded: list[str]) -> dict:
+    """A required system interface cannot borrow personnel or restore failed commands."""
+    commands = {c for c in CONTROL_IDENTITIES if c.startswith("automatic_")}
+    conflicts = {
+        "non_command_ids": sorted(set(excluded) - commands),
+        "unexcluded_failed_commands": sorted((set(failed) & commands) - set(excluded)),
+        "personnel_or_unsupported_controls": sorted(set(controls) - (
+            {"braking", "drive", "steering", "parking_hold", "speed_limiter"} | commands)),
+    }
+    return {key: values for key, values in conflicts.items() if values}
+
+
 def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
     """Retain shared faults/automatic response and scope personnel-specific paths."""
     assessment = hypothesis.get("driver_control_assessments", {}).get(driver_position)
@@ -277,14 +289,12 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
             for key in ("description", "rationale"):
                 _text(path[key])
             excluded = _texts(path["independent_of"])
-            commands = {c for c in CONTROL_IDENTITIES if c.startswith("automatic_")}
-            if (not set(excluded) <= commands
-                    or not (set(h["failed_controls"]) & commands) <= set(excluded)
-                    or not set(controls) <= {"braking", "drive", "steering", "parking_hold", "speed_limiter"} | commands):
+            conflicts = required_command_path_conflicts(controls, h["failed_controls"], excluded)
+            if conflicts:
                 raise ValueError("Required system path must exclude every failed automatic command and use only retained actuators or retained automatic commands; it cannot restore failed controls or borrow a personnel command. "
-                    f"safe_state_proposal.required_command_path.independent_of non-command IDs={sorted(set(excluded) - commands)}; "
-                    f"failed automatic commands missing from independent_of={sorted((set(h['failed_controls']) & commands) - set(excluded))}; "
-                    f"required_controls personnel/unsupported IDs={sorted(set(controls) - ({'braking', 'drive', 'steering', 'parking_hold', 'speed_limiter'} | commands))}. "
+                    f"safe_state_proposal.required_command_path.independent_of non-command IDs={conflicts.get('non_command_ids', [])}; "
+                    f"failed automatic commands missing from independent_of={conflicts.get('unexcluded_failed_commands', [])}; "
+                    f"required_controls personnel/unsupported IDs={conflicts.get('personnel_or_unsupported_controls', [])}. "
                     "independent_of names bypassed automatic command IDs only; actuator failure cannot be repaired merely by proposing a new command. Preserve the actual fault scope and use only genuinely retained capabilities.")
             refs = _texts(path["basis_refs"], limit=max(16, len(evidence_ids)))
             if not refs or not set(refs) <= evidence_ids:

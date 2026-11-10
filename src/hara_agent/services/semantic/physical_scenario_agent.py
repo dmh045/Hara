@@ -9,7 +9,7 @@ from .parsing import REPORT_LANGUAGE_PROMPT
 
 from hara_agent.contracts.physical_scenario_plan import (
     MODEL_CATALOG, PARAMETER_UNITS, PHYSICAL_PLAN_VERSION, PhysicalScenarioPlan, CONTROL_IDENTITIES,
-    INTERVENTION_ASSUMPTION_FIELDS, response_control_dependency_missing,
+    INTERVENTION_ASSUMPTION_FIELDS, response_control_dependency_missing, required_command_path_conflicts,
 )
 from hara_agent.infrastructure.llm import LLMRequest, LLMResponse, LLMJSONContractError
 from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
@@ -241,7 +241,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v29-identical-control-duplicates"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v30-scoped-response-rejection"
     PROMPT_VERSION = "post-fault-physical-scenario-v57-scoped-structured-policies"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v37-scoped-structured-policies"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
@@ -1100,16 +1100,27 @@ class PhysicalScenarioAgent:
                                 missing_dependency = (isinstance(transition, dict)
                                     and response_control_dependency_missing(proposal))
                                 missing_release = missing_dependency and transition.get("model") == "RELEASE_DECELERATION_TO_CONSTANT_SPEED"
-                                if not set(controls) - set(remaining) and not missing_dependency:
+                                excluded = command_path.get("independent_of") if isinstance(command_path, dict) else None
+                                path_conflicts = (required_command_path_conflicts(controls, failed + shared_failed, excluded)
+                                    if isinstance(excluded, list) and all(isinstance(c, str) for c in excluded)
+                                    else {})
+                                if path_conflicts and not repair:
+                                    # Preserve the existing bounded contract correction first.
+                                    # Only an unresolved optional response is rejected locally.
+                                    continue
+                                if not set(controls) - set(remaining) and not missing_dependency and not path_conflicts:
                                     continue
                                 failed_dependency = bool(set(controls) & set(failed))
                                 deferred_states.append({"hypothesis_id": hypothesis_id,
                                     **({"driver_position": next(k for k, v in hypothesis["driver_control_assessments"].items() if v is controls_view)} if controls_view is not hypothesis else {}),
-                                    "reason": "SAFE_STATE_RELEASE_PATH_INCOMPLETE" if missing_release else
+                                    **({"command_path_conflicts": path_conflicts} if path_conflicts else {}),
+                                    "reason": "SAFE_STATE_REQUIRED_SYSTEM_PATH_CONFLICT" if path_conflicts else
+                                        "SAFE_STATE_RELEASE_PATH_INCOMPLETE" if missing_release else
                                         "SAFE_STATE_MODEL_REQUIRES_BRAKING" if missing_dependency else
                                         "SAFE_STATE_REQUIRES_FAILED_CONTROL" if failed_dependency else "SAFE_STATE_REQUIRES_UNRESOLVED_CONTROL",
                                     "proposal": controls_view.pop("safe_state_proposal")})
                                 controls_view["safe_state_unresolved_reason"] = (
+                                    "所提系统响应混用了人工通道或未正确限定独立性范围，提案不采用；原提案与冲突详情保留在响应审计中。" if path_conflicts else
                                     "解除异常减速响应未完整声明触发、制动释放及驱动保持路径；不能只凭执行器存在推定接管有效。原提案保留在响应审计中。" if missing_release else
                                     "所选减速响应未声明所依赖的制动通道；驻车保持能力不能代替动态减速能力。原提案保留在响应审计中。" if missing_dependency else
                                     "安全状态提案依赖已失效控制，提案不采用；原始提案保留在响应审计中。" if failed_dependency else
