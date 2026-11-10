@@ -6,6 +6,8 @@ from hara_agent.models import (
 )
 from hara_agent.workflow import HARAState, WorkflowStage
 from hara_agent.workflow.nodes.scenarios import assess_scenarios
+from unittest.mock import patch
+import pytest
 
 
 class _Client:
@@ -47,6 +49,31 @@ class _Agent:
             "leaf_items": [len(candidates)],
             "leaf_input_chars": [100],
         }
+
+
+def test_prepared_conditions_use_existing_causal_checkpoint_without_regeneration():
+    state = HARAState(run_id="prepared", stage=WorkflowStage.MALFUNCTIONS)
+    candidate = ScenarioCandidate("SCN-saved", "Parking", "parking", "active parking",
+        {"driver_in_vehicle": True}, semantic_fingerprint="saved-world",
+        analysis_instance={"malfunction_id": "MF-1"})
+    agent = _Agent()
+    saved = {}
+    def interrupt(current):
+        saved.update(current.to_dict())
+        raise RuntimeError("saved interruption")
+    kwargs = dict(malfunctions=[_malfunction("MF-1")], candidates=[],
+        prepared_candidates_by_malfunction={"MF-1": [candidate]})
+    with patch('hara_agent.workflow.nodes.scenarios.MethodScenarioCandidateService') as generator:
+        with pytest.raises(RuntimeError, match='saved interruption'):
+            assess_scenarios(state, agent, checkpoint=interrupt, **kwargs)
+        restored = HARAState.from_dict(saved)
+        assess_scenarios(restored, agent, **kwargs)
+        assert agent.calls == ["MF-1"]
+        generator.assert_not_called()
+    assert restored.item_definition['scenario_assessments'][0]['scenario_id'] == 'SCN-saved'
+    candidate.analysis_instance['malfunction_id'] = 'OTHER'
+    with pytest.raises(ValueError, match='malfunction scope'):
+        assess_scenarios(HARAState('wrong'), _Agent(), **kwargs)
 
 
 def _malfunction(identity):

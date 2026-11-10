@@ -375,6 +375,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                      progress=None,
                      risk_fact_agent: ScenarioRiskFactAgent | None = None,
                      physical_agent=None,
+                     prepared_candidates_by_malfunction: dict[str, list[ScenarioCandidate]] | None = None,
                      selected_generated_scenario_ids=(),
                      required_fact_specs: Sequence[RequiredFactSpec] = (),
                      method: MethodContract | None = None,
@@ -406,7 +407,18 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
     contextual_candidates: dict[str, list[ScenarioCandidate]] = {}
     instantiation_audit: dict[str, dict] = {}
     for malfunction in malfunctions:
-        if template_service is None:
+        if prepared_candidates_by_malfunction is not None:
+            # Targeted replay starts from committed conditions, then uses the
+            # same physical, causal, fact and checkpoint path as ordinary analyze.
+            instantiated = list(prepared_candidates_by_malfunction.get(malfunction.malfunction_id, []))
+            if any(c.analysis_instance.get("malfunction_id") != malfunction.malfunction_id for c in instantiated):
+                raise ValueError("Prepared candidates must retain their malfunction scope")
+            contextual_candidates[malfunction.malfunction_id] = instantiated
+            instantiation_audit[malfunction.malfunction_id] = {
+                "malfunction_id": malfunction.malfunction_id,
+                "selection_mode": "COMMITTED_CONDITIONS_FOR_REVALIDATION",
+                "base_candidate_count": len(instantiated), "instance_count": len(instantiated), "options": []}
+        elif template_service is None:
             contextual_candidates[malfunction.malfunction_id] = list(candidates)
             instantiation_audit[malfunction.malfunction_id] = {
                 "malfunction_id": malfunction.malfunction_id,

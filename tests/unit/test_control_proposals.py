@@ -407,6 +407,17 @@ def test_legacy_motion_with_omitted_driver_gets_one_control_task_not_new_motion(
     assert service.task_scope(child, 'MF') == ''
 
 
+@pytest.mark.parametrize('value', [None, False])
+def test_driver_presence_structure_is_validated_before_scope_consistency(value):
+    raw = control_only_plan()
+    raw['control_assessment']['driver_positions'] = ['in_driver_seat']
+    raw['control_assessment']['intervention_assumptions']['driver_in_vehicle'] = (
+        None if value is None else {'value': False, 'rationale': 'outside',
+            'basis_refs': ['MF.description'], 'conditions': ['outside']})
+    with pytest.raises(ValueError):
+        PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description','SCENARIO.conditions'})
+
+
 @pytest.mark.parametrize('inside,braking,expected', [(True, True, 'C0'), (False, True, 'C3'), (True, False, '')])
 def test_existing_motion_gets_only_missing_controls_then_scores_and_resumes(method, tmp_path, inside, braking, expected):
     from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService

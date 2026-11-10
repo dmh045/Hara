@@ -246,9 +246,6 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
             f"hypothesis={h.get('hypothesis_id', 'control_assessment')}; remaining_controls={h['remaining_controls']}; failed_controls={h['failed_controls']}; unresolved_controls.braking={unresolved['braking']}")
     interventions = h.get("intervention_assumptions", {})
     _object(interventions, set(), INTERVENTION_ASSUMPTION_FIELDS)
-    if (h.get("driver_positions") == ["in_driver_seat"]
-            and interventions.get("driver_in_vehicle", {}).get("value") is False):
-        raise ValueError("Driver in seat conflicts with driver_in_vehicle=false")
     if set(unresolved) & set(interventions):
         raise ValueError("An unresolved intervention cannot also have an explicit assumption: "
             + ", ".join(sorted(set(unresolved) & set(interventions)))
@@ -333,6 +330,9 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         refs = _texts(proposal["basis_refs"], limit=max(16, len(evidence_ids)))
         if not refs or not set(refs) <= evidence_ids or not _texts(proposal["conditions"]):
             raise ValueError("Control proposals require supplied evidence IDs and explicit conditions")
+    if (h.get("driver_positions") == ["in_driver_seat"]
+            and interventions.get("driver_in_vehicle", {}).get("value") is False):
+        raise ValueError("Driver in seat conflicts with driver_in_vehicle=false")
     remote = interventions.get("remote_intervention_available", {})
     if remote.get("value") is True and "remote_control" not in h["remaining_controls"]:
         raise ValueError("Remote intervention requires an explicitly remaining remote control path")
