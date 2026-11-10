@@ -604,6 +604,7 @@ class EngineeringReportTextMapper:
             return "C 分支：干预覆盖；依据已命中的干预条件评分，未使用 TTC 分档"
         if control.get("decision_status") == "REFERENCE_APPLICABILITY_UNRESOLVED":
             labels = {"emergency_braking_available": "独立制动能力", "driver_in_vehicle": "驾驶员位置",
+                "steering_control_available": "转向控制能力",
                 "remote_intervention_available": "远程干预能力", "other_road_user_avoidance_possible": "他方避让条件"}
             missing = dict.fromkeys(key for rule in control.get("unresolved_reference_inputs", [])
                 for key in rule.get("unknown_conditions", {}))
@@ -1208,7 +1209,8 @@ class EngineeringReportTextMapper:
         if not getattr(evidence, "value", None) and trace.get("physical_plan_gap"):
             return self.controllability_branch({"controllability": trace}) + "；C 暂未定。"
         if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED",
-                "PROFILE_APPLICABILITY_UNRESOLVED", "PHYSICAL_INPUT_UNRESOLVED"}:
+                "PROFILE_APPLICABILITY_UNRESOLVED", "REFERENCE_APPLICABILITY_UNRESOLVED",
+                "PHYSICAL_INPUT_UNRESOLVED"}:
             control = {**trace, "pending_reason": trace.get("pending_reason") or getattr(evidence, "review_reason", "")}
             reason = self.controllability_branch({"controllability": control})
             available = self.known_inputs(trace.get("known_physical_inputs", {}))

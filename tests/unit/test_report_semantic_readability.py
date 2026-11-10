@@ -600,3 +600,41 @@ def test_pending_c_summary_keeps_committed_reason_when_trace_is_compact():
     display=EngineeringReportTextMapper().controllability_rationale(evidence,trace)
     assert '后车从本车行进方向的后方接近' in display and '侧向' not in display
     assert trace=={'decision_status':'MODEL_NOT_APPLICABLE'}
+
+
+@pytest.mark.parametrize('field,label', [
+    ('driver_in_vehicle', '驾驶员位置'),
+    ('emergency_braking_available', '独立制动能力'),
+    ('steering_control_available', '转向控制能力'),
+])
+def test_reference_c_input_gap_reaches_main_and_detail_without_changing_scores(
+    active_method, real_sample, field, label,
+):
+    state, trace = real_sample
+    risk, record = state.risk_results[0], trace['assessments'][0]
+    risk.controllability = EvidenceValue(None, ReviewStatus.PENDING)
+    risk.asil = EvidenceValue(None, ReviewStatus.PENDING)
+    risk.branch_evaluations = []
+    risk.branch_summary = {}
+    record['branch_evaluations'] = []
+    record['branch_summary'] = {}
+    record['controllability'] = {
+        'status': 'PENDING_INPUT', 'result': None,
+        'decision_status': 'REFERENCE_APPLICABILITY_UNRESOLVED',
+        'pending_reason': 'CONDITIONAL_C_APPLICABILITY_INPUT_UNRESOLVED',
+        'unresolved_reference_inputs': [{'rule_id': 'existing-method-rule',
+                                         'unknown_conditions': {field: True}}],
+        'input_diagnostic': {'reason': 'MODEL_NOT_APPLICABLE'},
+    }
+    record['asil'] = {'result': None, 'status': 'PENDING_UPSTREAM_RISK_VALUE'}
+    before = deepcopy((state, trace))
+    view = HARAReportProjectionService(load_report_schema()).project(
+        state, active_method, risk_trace=trace,
+    )
+    for text in (view.rows[0].controllability_rationale,
+                 view.scenario_details[0].controllability_branch):
+        assert f'{label}尚未明确' in text
+        assert '已有适用场景类型的条件性 C 规则' in text
+        assert '当前交互不满足现有 TTC 模型条件' not in text
+    assert view.rows[0].controllability == view.rows[0].asil == '待评定'
+    assert (state, trace) == before
