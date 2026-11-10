@@ -242,8 +242,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v28-preserved-response-driver-scope"
-    PROMPT_VERSION = "post-fault-physical-scenario-v56-project-scoped-driver-location"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v36-project-scoped-driver-location"
+    PROMPT_VERSION = "post-fault-physical-scenario-v57-scoped-structured-policies"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v37-scoped-structured-policies"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
@@ -593,6 +593,10 @@ class PhysicalScenarioAgent:
         policy = prompt_inputs.get("method_identity", {}).get("project_analysis_policy", {})
         for downstream in ("controllability", "severity_evaluation"):
             policy.pop(downstream, None)
+        # Narrative decision summaries duplicate the executable constraints
+        # above and can repeat a project convention outside its active scope.
+        # They remain in the original MethodContract and plan audit context.
+        policy.pop("decisions", None)
         # Make the active response capability explicit alongside the motion
         # catalog. Otherwise a proposal can incorrectly reject a supported
         # response just because its deceleration is absent from the unmitigated

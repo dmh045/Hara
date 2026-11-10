@@ -499,6 +499,7 @@ def test_production_physical_request_scopes_project_driver_convention(method, pr
             view = expand_physical_prompt_view(payload['context'], payload['source_texts'])
             policy = view['method_identity']['project_analysis_policy']
             assert ('driver_location_convention' in policy) == (project_scope == before['project_analysis_policy']['project_scope'])
+            assert 'decisions' not in policy
             assert (view.get('task_scope') == 'CONTROL_INPUTS_ONLY') == controls_only
             assert 'outside_driver_seat仅表示不在驾驶位，不等于人员在车外' in request.system_prompt
             assert view['method_identity']['method_source_hash'] == before['method_source_hash']

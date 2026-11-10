@@ -326,6 +326,7 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             'timing_analysis': {'supported_models': ['GRADE_ROLLAWAY_TO_IMPACT_DISTANCE'],
                 'status': 'CONDITIONAL_REFERENCE', 'limitations': 'Selected method scope only'},
             'driver_location_convention': {'outside_driver_seat_is_outside_vehicle': True},
+            'decisions': {'A5': {'scope': 'A narrative copy of the driver convention; not a second authority.'}},
             'engineering_decisions': {'approved_template_id': 'existing-template'}}}}
     before = deepcopy(context)
     class Client:
@@ -335,6 +336,7 @@ def test_proposal_context_retains_physical_constraints_without_downstream_grades
             expected = deepcopy(before)
             policy = expected['method_identity']['project_analysis_policy']
             policy.pop('controllability'); policy.pop('severity_evaluation')
+            policy.pop('decisions')
             timing = policy.pop('timing_analysis')
             assert projected == expected
             assert request.prompt_version == PhysicalScenarioAgent.PROMPT_VERSION
