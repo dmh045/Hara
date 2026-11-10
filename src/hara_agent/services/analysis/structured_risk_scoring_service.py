@@ -301,21 +301,14 @@ class StructuredRiskScoringService:
             unmatched = {key: expected for key, expected in rule["when"].items()
                 if (scenario.get(key) not in expected if isinstance(expected, list)
                     else scenario.get(key) is not expected)}
-            if unmatched:
-                if unresolved_inputs is not None and all(
-                        isinstance(expected, bool) and scenario.get(key) is None
-                        for key, expected in unmatched.items()):
-                    unresolved_inputs.append({"rule_id": rule["rule_id"],
-                        "unknown_conditions": unmatched, "source_ref": rule["source_ref"]})
+            if unmatched and not all(isinstance(expected, bool) and scenario.get(key) is None
+                                     for key, expected in unmatched.items()):
                 continue
-            fields = tuple(key for key, value in rule["when"].items() if isinstance(value, bool))
             limit = rule.get("trajectory_speed_upper_exclusive_kph")
-            if limit is not None:
-                fields += ("trajectory_max_speed_kph",)
-            if not all(source_is_accepted_for(metadata.get(key, {}), **scope) for key in fields):
-                continue
             speed = scenario.get("trajectory_max_speed_kph")
             if limit is not None:
+                if not source_is_accepted_for(metadata.get("trajectory_max_speed_kph", {}), **scope):
+                    continue
                 if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or speed < 0:
                     continue
                 if speed >= limit:
@@ -324,6 +317,18 @@ class StructuredRiskScoringService:
                             "field": "trajectory_max_speed_kph", "actual": speed,
                             "upper_exclusive": limit, "source_ref": rule["source_ref"]})
                     continue
+            # An evidenced scope exclusion cannot be repaired by filling an
+            # unrelated unknown control input.
+            if unmatched:
+                if unresolved_inputs is not None:
+                    unresolved_inputs.append({"rule_id": rule["rule_id"],
+                        "unknown_conditions": unmatched, "source_ref": rule["source_ref"]})
+                continue
+            fields = tuple(key for key, value in rule["when"].items() if isinstance(value, bool))
+            if not all(source_is_accepted_for(metadata.get(key, {}), **scope) for key in fields):
+                continue
+            if limit is not None:
+                fields += ("trajectory_max_speed_kph",)
             if rule.get("requires_contact"):
                 outcome = scenario.get("motion_model_outcome", {}).get("status")
                 contact_field = next((key for key in ("first_contact_time_s", "ttc_s")

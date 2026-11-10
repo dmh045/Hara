@@ -111,3 +111,32 @@ def test_branch_geometry_recomputes_reference_speed_bound(method):
     new = branch_physics_view(view, branch)
     assert new['trajectory_max_speed_kph'] > 15
     assert new['trajectory_max_speed_kph'] != sc.facts['trajectory_max_speed_kph']
+
+
+@pytest.mark.parametrize('peak,expected_reason', [
+    (14., 'CONDITIONAL_C_APPLICABILITY_INPUT_UNRESOLVED'),
+    (15., 'LATERAL_C_METHOD_NOT_AVAILABLE'),
+])
+def test_known_speed_exclusion_precedes_unknown_control_condition(method, peak, expected_reason):
+    from test_curved_steering_physics import curved_plan
+    metadata = deepcopy(method.metadata)
+    metadata['project_analysis_policy']['controllability']['conditional_reference_rules'] = [
+        rule for rule in metadata['project_analysis_policy']['controllability']['conditional_reference_rules']
+        if rule['rule_id'] == 'IAV_LOW_SPEED_STEERING_DEVIATION_BRAKING_REFERENCE']
+    method = replace(method, metadata=metadata)
+    raw = curved_plan(speed=peak)
+    raw['hypotheses'][0].update(failed_controls=['automatic_steering_command'],
+                                remaining_controls=['braking', 'driver_braking'])
+    sc = instantiate(method, raw, make_candidate(peak))[0]
+    sc.facts['operating_mode'] = 'parking_vehicle_control'
+    assert sc.facts.get('steering_control_available') is None
+    before = deepcopy(sc)
+    control = score(method, sc)['controllability']
+    assert not control['controllability_score']
+    assert control['pending_reason'] == expected_reason
+    assert sc == before
+    if peak == 15:
+        assert not control.get('unresolved_reference_inputs')
+        assert control['reference_scope_exclusions'][0]['actual'] == 15
+    else:
+        assert control['unresolved_reference_inputs'][0]['unknown_conditions'] == {'steering_control_available': False}
