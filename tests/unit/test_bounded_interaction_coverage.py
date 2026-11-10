@@ -71,6 +71,31 @@ def test_crossing_pedestrian_does_not_require_vehicle_side_impact_label(method):
     assert 'ttc_s' not in child.facts
 
 
+@pytest.mark.parametrize('ego_direction,sign', [('FORWARD', 1), ('REVERSE', -1)])
+@pytest.mark.parametrize('target_ahead', [True, False])
+def test_lateral_location_label_uses_computed_longitudinal_contact_side(method, ego_direction, sign, target_ahead):
+    raw = moving_plan(target_direction='STATIONARY' if target_ahead else ego_direction,
+        x=3 * sign * (1 if target_ahead else -1), y=-.25, initial=3.6,
+        target_speed=0 if target_ahead else 7.2, position='RIGHT', collision='VEHICLE_TO_ROAD_USER')
+    raw['hypotheses'][0]['geometry'].update(ego_longitudinal_direction=ego_direction,
+        road_user_type='PEDESTRIAN')
+    parent = make_candidate(3.6)
+    parent.facts['road_user_type'] = 'PEDESTRIAN'
+    child = instantiate(method, raw, parent)[0]
+    before = deepcopy(child)
+    outcome = child.facts['motion_model_outcome']
+    assert outcome['longitudinal_contact'] is True
+    assert (outcome['contact_offset_x_m'] * sign > 0) is target_ahead
+    risk = score(method, child)
+    if target_ahead:
+        assert risk['controllability']['controllability_score']
+        assert risk['controllability']['engineering_status'] == 'PENDING'
+    else:
+        assert not risk['controllability']['controllability_score']
+        assert risk['controllability']['pending_reason'] == 'REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED'
+    assert child == before and child.facts['object_position'] == 'RIGHT'
+
+
 def test_explicit_post_stop_world_reaches_contact_and_invalidates_old_phase(method):
     raw = moving_plan(initial=7, target_speed=7, target_direction='FORWARD',
         x=-6, acceleration=-7, position='REAR', collision='REAR_END', horizon=4)

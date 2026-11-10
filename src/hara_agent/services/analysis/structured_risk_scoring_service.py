@@ -225,9 +225,20 @@ class StructuredRiskScoringService:
                     decision_status="REFERENCE_APPLICABILITY_UNRESOLVED",
                     unresolved_reference_inputs=unresolved_reference_inputs,
                     reasoning="A compiled conditional C rule covers this scenario type, but its intervention inputs remain unknown; no C value is inferred from contact time alone.")
-        if (moving and not crossing and not (override_match or reference_match)
-                and (scenario.get("ego_longitudinal_direction"), scenario.get("object_position"))
-                not in {("FORWARD", "FRONT"), ("REVERSE", "REAR")}):
+        contact_ahead = (scenario.get("ego_longitudinal_direction"), scenario.get("object_position")) in {
+            ("FORWARD", "FRONT"), ("REVERSE", "REAR")}
+        outcome = scenario.get("motion_model_outcome", {})
+        contact_x = outcome.get("contact_offset_x_m")
+        travel_sign = {"FORWARD": 1, "REVERSE": -1}.get(scenario.get("ego_longitudinal_direction"))
+        if (moving and outcome.get("status") == "CONTACT" and outcome.get("longitudinal_contact") is True
+                and travel_sign is not None and type(contact_x) in (int, float) and math.isfinite(contact_x)
+                and source_is_accepted_for(scenario.get("_fact_provenance", {}).get("motion_model_outcome", {}),
+                    malfunction_id=str(scenario.get("malfunction_id", "")), scenario_id=str(scenario.get("scenario_id", "")))):
+            # A lateral location label can describe an object ahead of a front
+            # corner. Use the same trajectory's body-coordinate contact, not
+            # that label, to distinguish braking approach from rear approach.
+            contact_ahead = contact_x * travel_sign > 0
+        if moving and not crossing and not (override_match or reference_match) and not contact_ahead:
             control.update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
