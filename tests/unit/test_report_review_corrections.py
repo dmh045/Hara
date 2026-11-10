@@ -690,6 +690,7 @@ def test_ftti_extrema_describe_discrete_contact_samples_only():
 @pytest.mark.parametrize('decision,expected', [
     ('MODEL_NOT_APPLICABLE', '当前方法无适用 C 规则'),
     ('MODEL_DEPENDENCY_UNRESOLVED', 'C 方法依赖尚未成立'),
+    ('PHYSICAL_INPUT_UNRESOLVED', '当前轨迹在模型有效范围内未建立接触'),
 ])
 def test_control_method_gap_is_not_reported_as_missing_geometry(decision, expected):
     trace = {'decision_status': decision, 'input_diagnostic': {'reason': 'MISSING_DISTANCE'},
@@ -698,6 +699,15 @@ def test_control_method_gap_is_not_reported_as_missing_geometry(decision, expect
     text = EngineeringReportTextMapper().controllability_rationale(_pending(), trace)
     assert expected in text and '缺相对距离' not in text
     assert '1.23' in text and trace == before
+
+
+def test_missing_distance_diagnostic_remains_visible_without_a_physical_outcome():
+    trace = {'input_diagnostic': {'reason': 'MISSING_DISTANCE'},
+             'known_physical_inputs': {'ego_speed_kph': 5.0}}
+    before = deepcopy(trace)
+    text = EngineeringReportTextMapper().controllability_rationale(_pending(), trace)
+    assert '缺相对距离' in text and '未建立接触' not in text
+    assert trace == before
 
 
 def test_conditional_numeric_results_are_not_missing_inputs_in_inventory(active_method):

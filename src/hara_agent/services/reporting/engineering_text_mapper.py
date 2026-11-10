@@ -1183,7 +1183,8 @@ class EngineeringReportTextMapper:
                 return "、".join(available) + f"；按适用干预条件评为 {evidence.value}。"
         if _status(evidence) == "FINALIZED":
             return "已按当前方法完成 C 评定。"
-        if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED", "PROFILE_APPLICABILITY_UNRESOLVED"}:
+        if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED",
+                "PROFILE_APPLICABILITY_UNRESOLVED", "PHYSICAL_INPUT_UNRESOLVED"}:
             control = {**trace, "pending_reason": trace.get("pending_reason") or getattr(evidence, "review_reason", "")}
             reason = self.controllability_branch({"controllability": control})
             available = self.known_inputs(trace.get("known_physical_inputs", {}))
