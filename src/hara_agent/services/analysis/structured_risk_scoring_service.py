@@ -240,6 +240,12 @@ class StructuredRiskScoringService:
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED",
                 decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="Contact occurs after the ego is held stationary. A braking-time band alone does not establish an avoidance path for that phase.")
+        if (self._ego_stationary_through_contact(scenario) and not (override_match or reference_match)
+                and control.get("pending_reason") != "REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
+            control.update(controllability_score="", engineering_status="PENDING",
+                calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="STATIONARY_EGO_BRAKING_APPLICABILITY_UNRESOLVED",
+                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                reasoning="The ego remains stationary throughout the contact trajectory. Target contact time cannot establish an ego braking avoidance interval.")
         if (braking_path_unresolved
                 and result["controllability"].get("selected_profile_id") and not (override_match or reference_match)):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
@@ -264,6 +270,14 @@ class StructuredRiskScoringService:
                     path.update(lookup_result=path.get("result", ""), result="",
                         status=control["calculation_status"], reason=control.get("reasoning", ""))
         return result
+
+    @staticmethod
+    def _ego_stationary_through_contact(scenario: dict) -> bool:
+        """Use the whole computed trajectory, not merely initial or impact speed."""
+        outcome = scenario.get("motion_model_outcome", {})
+        speed = outcome.get("trajectory_max_speed_kph")
+        return (outcome.get("status") == "CONTACT"
+                and type(speed) in (int, float) and speed == 0)
 
     def _conditional_reference_control(self, scenario: dict, *, phase="BEFORE_MODEL_GUARDS", unresolved_inputs=None) -> dict | None:
         """Execute the selected reference's bounded scope; retain pending approval."""
@@ -319,7 +333,8 @@ class StructuredRiskScoringService:
             value = rule["result"]
             profile_trace = {}
             if value == "ACTIVE_PROFILE":
-                if scenario.get("motion_model_outcome", {}).get("contact_phase") == "HELD_AFTER_STOP":
+                if (scenario.get("motion_model_outcome", {}).get("contact_phase") == "HELD_AFTER_STOP"
+                        or self._ego_stationary_through_contact(scenario)):
                     continue
                 time_input = rule["profile_time_input"]
                 time_value = scenario.get(time_input)

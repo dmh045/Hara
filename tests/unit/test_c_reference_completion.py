@@ -167,6 +167,34 @@ def crossing_candidate(method, *, offset=4):
         position="LEFT", collision="SIDE"), parent)[0]
 
 
+@pytest.mark.parametrize("acceleration,expected", [(0, ""), (.1, "C1")])
+def test_crossing_braking_time_requires_ego_motion_not_only_target_contact(method, acceleration, expected):
+    from test_bounded_interaction_coverage import moving_plan
+    parent = make_candidate(0)
+    parent.facts.update(operating_mode="parking_vehicle_control")
+    raw = moving_plan(initial=0, acceleration=acceleration, target_direction="RIGHT",
+                      x=1, y=5, position="LEFT", collision="SIDE")
+    sc = instantiate(method, raw, parent)[0]
+    before = deepcopy(sc)
+    result = score(method, sc)
+    c = result["controllability"]
+    assert sc.facts["motion_model_outcome"]["status"] == "CONTACT"
+    assert sc.facts["first_contact_time_s"] == 4.5
+    assert c["controllability_score"] == expected
+    assert sc == before
+    if acceleration == 0:
+        assert c["pending_reason"] == "STATIONARY_EGO_BRAKING_APPLICABILITY_UNRESOLVED"
+        assert all(not row["C"] and not row["ASIL"] for row in result["branch_evaluations"])
+        trace = RiskExecutionTraceService(method)._controllability_trace(sc.facts, c)
+        assert "始终静止" in EngineeringReportTextMapper.controllability_branch({"controllability": trace})
+        # Independently evidenced target evasion still uses its existing rule.
+        sc.facts["other_road_user_avoidance_possible"] = True
+        assert score(method, sc)["controllability"]["decision_status"] == "OVERRIDE_MATCH"
+    else:
+        assert sc.facts["motion_model_outcome"]["trajectory_max_speed_kph"] > 0
+        assert c["engineering_rule_id"] == "IAV_CROSSING_CONTACT_BRAKING_TIME_TRANSFER"
+
+
 def test_unknown_crossing_control_is_an_input_gap_not_an_absent_method(method):
     from test_bounded_interaction_coverage import moving_plan
     parent = make_candidate(3.6)

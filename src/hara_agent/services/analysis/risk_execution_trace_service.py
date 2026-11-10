@@ -270,7 +270,7 @@ class RiskExecutionTraceService:
             )
             else "TTC_MISSING"
         )
-        pending = result.get("reasoning", "") if _status(result) != CalculationStatus.FINALIZED.value else ""
+        pending = (result.get("pending_reason") or result.get("reasoning", "")) if _status(result) != CalculationStatus.FINALIZED.value else ""
         return {
             "executor": "StructuredControllabilityExecutor",
             "calculation_nature": result.get("calculation_nature", "CONFIRMED_INPUTS"),
@@ -329,6 +329,7 @@ class RiskExecutionTraceService:
             "ttc_band": rule_id if decision_status.startswith("TTC") else "",
             "rule_ids": [rule_id] if rule_id else [], "result": result.get("controllability_score", ""),
             "pending_reason": pending or ("PENDING_CONTROLLABILITY_INPUT" if ttc is None and decision_status.startswith("TTC") else ""),
+            "pending_explanation": result.get("reasoning", "") if pending else "",
         }
 
     def _asil_trace(self, risk: Any | None) -> dict[str, Any]:

@@ -593,6 +593,8 @@ class EngineeringReportTextMapper:
                 return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
             if reason.startswith("POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED"):
                 return "本车停止后被移动目标接触；继续制动不是已成立的避险路径，当前方法无适用 C 规则"
+            if reason.startswith("STATIONARY_EGO_BRAKING_APPLICABILITY_UNRESOLVED"):
+                return "本车在所计算轨迹中始终静止；目标接触时间不能作为本车制动避让的时窗，其他避险路径尚未成立"
             return "当前交互不满足所选适用条件；当前方法无适用 C 规则"
         if control.get("decision_status") == "MODEL_DEPENDENCY_UNRESOLVED":
             return "故障影响规避控制；C 方法依赖尚未成立"
