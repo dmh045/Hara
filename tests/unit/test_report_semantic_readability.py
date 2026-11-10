@@ -354,6 +354,34 @@ def test_sg_vehicle_harm_selection_keeps_negative_claims(hazard):
     assert result['text'] == '原安全意图。'
 
 
+def test_shared_contact_hazard_avoids_concatenating_member_failure_wording():
+    hazard = '车辆朝错误方向或实际占用区域运动，与障碍物或其他车辆发生物理接触的风险状态。'
+    members = [dict(scenario_id=str(i), vehicle_hazard=hazard, functional_effect=effect,
+        hazardous_event=event) for i, (effect, event) in enumerate([
+            ('融合车位方位与真实情况相反', '车辆按错误方向倒车'),
+            ('车位占用状态反向', '车辆驶入已占用车位')])]
+    before = deepcopy(members)
+    mapper = EngineeringReportTextMapper()
+    result = mapper.safety_goal_presentation(members, '原安全目标')
+    assert result['text'] == '防止车辆与障碍物或其他车辆发生物理接触。'
+    assert len(result['members']) == 2
+    assert all(r['basis']['vehicle_hazard'] == hazard for r in result['members'])
+    assert result['nature'] == 'DISPLAY_ONLY_NO_ENGINEERING_APPROVAL' and members == before
+    different = {**members[1], 'vehicle_hazard': '车辆停滞在通道中'}
+    mixed = mapper.safety_goal_presentation([members[0], different], '原安全目标')['text']
+    assert '车辆与障碍物或其他车辆发生物理接触' in mixed and '车辆停滞在通道中' in mixed
+
+
+@pytest.mark.parametrize('hazard', [
+    '车辆与行人无物理接触', '车辆没有物理接触', '车辆未发生物理接触',
+    '车辆未与邻车发生物理接触', '车辆与邻车是否发生物理接触尚待确定',
+])
+def test_contact_goal_never_converts_absent_or_unknown_contact_to_harm(hazard):
+    result = EngineeringReportTextMapper().safety_goal_presentation([
+        {'vehicle_hazard': hazard, 'hazardous_event': hazard}], '原安全意图')
+    assert result['text'] == '原安全意图。'
+
+
 def test_v8_member_intents_do_not_select_other_parent_branch_or_parameters():
     fixture = json.loads((Path(__file__).parents[1] / 'fixtures/report_v8_safety_intents.json').read_text())
     mapper = EngineeringReportTextMapper()

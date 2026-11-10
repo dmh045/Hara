@@ -997,7 +997,7 @@ class EngineeringReportTextMapper:
             candidates = []
             for clause in clauses:
                 # Do not turn a negated or uncertain harm claim into an intent.
-                if re.search(r"未发生|未出现|未产生|不会|不导致|不造成|不引发|无碰撞|无接触|不能确认|待确定|未知|可能受伤|存在.*风险|(?:未|没有)(?:发生)?(?:碰撞|相撞|擦碰|刮碰|碾压|驶入|停入|进入)|未与.+(?:接触|碰撞)", clause):
+                if re.search(r"未发生|未出现|未产生|不会|不导致|不造成|不引发|无碰撞|无(?:物理)?接触|不能确认|待确定|未知|可能受伤|存在.*风险|(?:未|没有)(?:发生)?(?:碰撞|相撞|擦碰|刮碰|碾压|物理接触|驶入|停入|进入)|未与.+(?:接触|碰撞)", clause):
                     continue
                 if field == "hazardous_event":
                     # Drop an explicit scene prefix, not arbitrary numbers: a
@@ -1006,7 +1006,7 @@ class EngineeringReportTextMapper:
                     clause = re.sub(r"^.*?因(?=.+(?:失效|失去|无法|卡死|异常))", "", clause)
                 if re.search(r"\d", clause):
                     continue
-                if re.search(r"非预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|碰撞|相撞|擦碰|刮碰|碾压|禁停|禁止停车", clause):
+                if re.search(r"非预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|碰撞|相撞|擦碰|刮碰|碾压|与.*物理接触|禁停|禁止停车", clause):
                     clause = re.sub(r"^(?:发生|出现|产生)", "", clause)
                     clause = re.sub(r"^(?:车辆|本车)(?:发生|出现)", "车辆", clause)
                     # Keep the sentence's explicit subject when a later clause
@@ -1015,7 +1015,7 @@ class EngineeringReportTextMapper:
                         clause = re.match(r"^(车辆|本车|自车)", source).group() + clause
                     vehicle_subject = bool(re.match(r"^(车辆|本车|自车)", clause))
                     if vehicle_subject:
-                        clause = re.sub(r"的车辆级危险状态$", "", clause)
+                        clause = re.sub(r"的(?:车辆级危险|风险)状态$", "", clause)
                         clause = re.sub(r"因[^，；。]*?而", "", clause)
                         # An intent prevents a stated possible event; this is
                         # not an assertion that the event occurred or is certain.
