@@ -91,6 +91,7 @@ class EngineeringReportTextMapper:
         "LEFT": "向车体左侧横穿", "RIGHT": "向车体右侧横穿",
         "STATIONARY": "静止", "LATERAL": "沿车体侧向运动",
     }
+    _PHYSICAL_MODEL_GAP_TEXT = "当前可用物理模型不覆盖所提出的交互条件，该方案未生成碰撞数值"
     _EXPOSURE_DIMENSION_LABELS = {
         "WHERE": "场所",
         "ROAD": "道路条件",
@@ -595,6 +596,8 @@ class EngineeringReportTextMapper:
         control = trace.get("controllability", {})
         if not isinstance(control, Mapping) or not control:
             return ""
+        if control.get("physical_plan_gap"):
+            return control["physical_plan_gap"] + "；对应模型范围与未覆盖条件见物理方案诊断"
         if control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH":
             return control.get("reference_rule", {}).get("rationale", "按参考工况进行条件性 C 评定；适用性待审核")
         if control.get("decision_status") == "OVERRIDE_MATCH":
@@ -653,6 +656,18 @@ class EngineeringReportTextMapper:
         elif not control.get("unknown_policy_action") and control.get("unknown_override_policy") == "UNSPECIFIED":
             parts.append("未知干预条件的处理方法尚未明确")  # Legacy trace without an action field.
         return "；".join(parts)
+
+    @classmethod
+    def physical_model_gap(cls, scenario: Any) -> str:
+        """Current uninstantiated model gap, not a superseded plan diagnostic."""
+        facts = getattr(scenario, "facts", {}) or {}
+        if facts.get("physical_analysis") or facts.get("fault_motion_model"):
+            return ""
+        diagnostics = (getattr(scenario, "analysis_instance", {}) or {}).get("physical_plan_diagnostics", [])
+        return cls._PHYSICAL_MODEL_GAP_TEXT if any(
+            isinstance(item, Mapping) and item.get("reason") == "PHYSICAL_MODEL_NOT_APPLICABLE"
+            for item in diagnostics
+        ) else ""
 
     @classmethod
     def analysis_basis(cls, scenario: Any) -> str:
@@ -716,7 +731,7 @@ class EngineeringReportTextMapper:
         gap_labels = {
             "PHYSICAL_PLAN_INVALID": "物理方案生成或有限纠正未通过，尚未形成有效工况；不能视为危险已排除",
             "PHYSICAL_INSTANTIATION_FAILED": "物理工况实例化未通过；保留来源候选，尚未形成可评定的具体危险事件",
-            "PHYSICAL_MODEL_NOT_APPLICABLE": "当前可用物理模型不覆盖所提出的交互条件，该方案未生成碰撞数值",
+            "PHYSICAL_MODEL_NOT_APPLICABLE": cls._PHYSICAL_MODEL_GAP_TEXT,
             "TARGET_NOT_ON_POST_FAULT_TRAVEL_PATH": "所提目标不在故障后的运动路径上，该方案未生成碰撞数值",
             "FIXED_MOVING_TARGET_OUTSIDE_MODEL_CATALOG": "当前目标已确定处于运动中，现有自主模型仅支持静止目标；保留该危险场景，尚未计算故障轨迹",
             "REQUIRED_MODEL_INPUT_OMITTED": "物理方案遗漏必需输入且有限纠正后仍未补齐，未形成完整数值工况",
@@ -1190,6 +1205,8 @@ class EngineeringReportTextMapper:
                 return "、".join(available) + f"；按适用干预条件评为 {evidence.value}。"
         if _status(evidence) == "FINALIZED":
             return "已按当前方法完成 C 评定。"
+        if not getattr(evidence, "value", None) and trace.get("physical_plan_gap"):
+            return self.controllability_branch({"controllability": trace}) + "；C 暂未定。"
         if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED",
                 "PROFILE_APPLICABILITY_UNRESOLVED", "PHYSICAL_INPUT_UNRESOLVED"}:
             control = {**trace, "pending_reason": trace.get("pending_reason") or getattr(evidence, "review_reason", "")}

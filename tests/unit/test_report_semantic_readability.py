@@ -135,6 +135,58 @@ def test_model_gap_is_concise_and_preserves_original_diagnostics(reason, text):
     assert scenario == before
 
 
+@pytest.mark.parametrize('diagnostic,active_physics,known_c', [
+    (True, False, False), (False, False, False),
+    (True, True, False), (True, False, True),
+])
+def test_projection_explains_current_model_gap_before_missing_controls(
+    active_method, real_sample, diagnostic, active_physics, known_c,
+):
+    state, trace = real_sample
+    scenario, risk = state.scenarios[0], state.risk_results[0]
+    record = trace['assessments'][0]
+    if not active_physics:
+        scenario.facts.pop('physical_analysis', None)
+        scenario.facts.pop('fault_motion_model', None)
+    if diagnostic:
+        scenario.analysis_instance['physical_plan_diagnostics'] = [{
+            'reason': 'PHYSICAL_MODEL_NOT_APPLICABLE',
+            'uncovered_conditions': ['保留完整的静态空间模型范围说明'],
+        }]
+    if not known_c:
+        risk.controllability = EvidenceValue(None, ReviewStatus.PENDING)
+        risk.asil = EvidenceValue(None, ReviewStatus.PENDING)
+        risk.branch_evaluations = []
+        risk.branch_summary = {}
+        record['branch_evaluations'] = []
+        record['branch_summary'] = {}
+        record['controllability'] = {
+            'status': 'PENDING_INPUT', 'result': None,
+            'decision_status': 'PROFILE_APPLICABILITY_UNRESOLVED',
+            'pending_reason': 'driver_in_vehicle,emergency_braking_available',
+        }
+        record['asil'] = {'result': None, 'status': 'PENDING_UPSTREAM_RISK_VALUE'}
+    before, trace_before = deepcopy(state), deepcopy(trace)
+    view = HARAReportProjectionService(load_report_schema()).project(
+        state, active_method, risk_trace=trace,
+    )
+    row, detail = view.rows[0], view.scenario_details[0]
+    if diagnostic and not active_physics and not known_c:
+        for explanation in (row.controllability_rationale, detail.controllability_branch,
+                            detail.pending_reasons):
+            assert '当前可用物理模型不覆盖' in explanation
+            assert '驾驶员可在车内操作' not in explanation
+            assert '保留完整的静态空间模型范围说明' not in explanation
+        assert row.controllability == '待评定' and row.asil == '待评定'
+    else:
+        assert '当前可用物理模型不覆盖' not in row.controllability_rationale
+        if known_c:
+            assert row.controllability == 'C3' and row.asil == 'A'
+        else:
+            assert '驾驶员可在车内操作' in row.controllability_rationale
+    assert state == before and trace == trace_before
+
+
 def test_real_numeric_sample_keeps_scenario_and_explains_actual_scores(active_method, real_sample):
     state, trace = real_sample
     before, trace_before = deepcopy(state), deepcopy(trace)

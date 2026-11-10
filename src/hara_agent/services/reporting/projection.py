@@ -433,6 +433,8 @@ class HARAReportProjectionService:
         if branch:
             result = dict(branch.get("scores", {}).get(field, {}))
             context = branch.get("risk_context", {})
+            if field == "controllability" and not branch.get("C") and trace.get(field, {}).get("physical_plan_gap"):
+                result["physical_plan_gap"] = trace[field]["physical_plan_gap"]
             if field == "exposure":
                 source = trace.get(field, {})
                 source_atoms = source.get("atom_bindings", source.get("atom_details", []))
@@ -859,6 +861,13 @@ class HARAReportProjectionService:
                 scenario = self._report_scenario(
                     scenario, scenario_projection_contexts[context_key]
                 )
+            model_gap = self.text.physical_model_gap(scenario)
+            if model_gap and not _value(risk.controllability):
+                # Display-only context: retain the original calculation trace
+                # and input diagnostics, including superseded missing inputs.
+                trace = {**trace, "controllability": {
+                    **trace.get("controllability", {}), "physical_plan_gap": model_gap,
+                }}
             base_key = self._base_group_key(
                 risk=risk, scenario=scenario, hazardous_event_id=hazardous_event_id,
             )
