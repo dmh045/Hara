@@ -590,6 +590,12 @@ class EngineeringReportTextMapper:
             if reason.startswith("REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
                 return "后车从本车行进方向的后方接近；本车制动不能直接作为避免被追尾的路径，当前避险方法适用性未确定"
             if reason.startswith("LATERAL_C_METHOD_NOT_AVAILABLE"):
+                limits = dict.fromkeys((item["actual"], item["upper_exclusive"])
+                    for item in control.get("reference_scope_exclusions", [])
+                    if item.get("field") == "trajectory_max_speed_kph")
+                if limits:
+                    return "；".join(f"当前轨迹最高速度 {cls._number(speed)} km/h，现有侧向参考规则要求低于 {cls._number(limit)} km/h"
+                        for speed, limit in limits) + "；不满足该适用条件，C 待评定"
                 return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
             if reason.startswith("POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED"):
                 return "本车停止后被移动目标接触；继续制动不是已成立的避险路径，当前方法无适用 C 规则"

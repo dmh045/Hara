@@ -204,8 +204,10 @@ class StructuredRiskScoringService:
                 {**scenario, "remote_intervention_available": None}), self.structured)
             override_match = independent.decision_status == "OVERRIDE_MATCH" and independent.rule_id == control["engineering_rule_id"]
         unresolved_reference_inputs = list(control.get("unresolved_reference_inputs", []))
+        reference_scope_exclusions = []
         if not override_match and not braking_path_unresolved and "collision_branches" not in scenario:
-            reference = self._conditional_reference_control(scenario, unresolved_inputs=unresolved_reference_inputs)
+            reference = self._conditional_reference_control(scenario, unresolved_inputs=unresolved_reference_inputs,
+                scope_exclusions=reference_scope_exclusions)
             if reference is not None:
                 control.update(reference)
         reference_match = control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH"
@@ -256,6 +258,8 @@ class StructuredRiskScoringService:
             reference = self._conditional_reference_control(scenario, phase="AFTER_APPLICABLE_METHODS")
             if reference is not None:
                 control.update(reference)
+        if reference_scope_exclusions:
+            control["reference_scope_exclusions"] = reference_scope_exclusions
         if not control.get("controllability_score"):
             outcome = scenario.get("motion_model_outcome", {})
             if outcome.get("status") in {"NO_CONTACT_WITHIN_MODEL", "MODEL_GEOMETRY_NOT_APPLICABLE"}:
@@ -279,7 +283,8 @@ class StructuredRiskScoringService:
         return (outcome.get("status") == "CONTACT"
                 and type(speed) in (int, float) and speed == 0)
 
-    def _conditional_reference_control(self, scenario: dict, *, phase="BEFORE_MODEL_GUARDS", unresolved_inputs=None) -> dict | None:
+    def _conditional_reference_control(self, scenario: dict, *, phase="BEFORE_MODEL_GUARDS", unresolved_inputs=None,
+                                       scope_exclusions=None) -> dict | None:
         """Execute the selected reference's bounded scope; retain pending approval."""
         from hara_agent.contracts import SourceRef
         rules = self.method.metadata.get("project_analysis_policy", {}).get(
@@ -310,10 +315,15 @@ class StructuredRiskScoringService:
             if not all(source_is_accepted_for(metadata.get(key, {}), **scope) for key in fields):
                 continue
             speed = scenario.get("trajectory_max_speed_kph")
-            if limit is not None and (isinstance(speed, bool) or not isinstance(speed, (int, float))
-                    or not math.isfinite(speed) or speed < 0
-                    or speed >= limit):
-                continue
+            if limit is not None:
+                if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or speed < 0:
+                    continue
+                if speed >= limit:
+                    if scope_exclusions is not None:
+                        scope_exclusions.append({"rule_id": rule["rule_id"],
+                            "field": "trajectory_max_speed_kph", "actual": speed,
+                            "upper_exclusive": limit, "source_ref": rule["source_ref"]})
+                    continue
             if rule.get("requires_contact"):
                 outcome = scenario.get("motion_model_outcome", {}).get("status")
                 contact_field = next((key for key in ("first_contact_time_s", "ttc_s")

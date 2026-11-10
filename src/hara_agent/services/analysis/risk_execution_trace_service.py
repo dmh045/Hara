@@ -287,6 +287,7 @@ class RiskExecutionTraceService:
             "avoidance_paths": result.get("avoidance_paths", {}),
             "reference_rule": result.get("reference_rule", {}),
             "unresolved_reference_inputs": result.get("unresolved_reference_inputs", []),
+            "reference_scope_exclusions": result.get("reference_scope_exclusions", []),
             "profile_id": result.get("selected_profile_id") or (profile.profile_id if profile else ""),
             "profile_applicability": [{"field": c.field, "expected": c.expected,
                 "actual": scenario.get(c.field)} for c in profile.applicability] if profile else [],

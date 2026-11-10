@@ -92,6 +92,15 @@ def test_speed_limit_uses_unrounded_trajectory_not_normal_speed(method, peak, ex
     sc = steering_candidate(method, acceleration=acceleration)
     result = score(method, sc)
     assert result['controllability']['controllability_score'] == expected
+    control = result['controllability']
+    if not expected:
+        exclusions = control['reference_scope_exclusions']
+        assert all(row['actual'] == sc.facts['trajectory_max_speed_kph'] and row['upper_exclusive'] == 15
+                   and row['source_ref'] for row in exclusions)
+        trace = RiskExecutionTraceService(method)._controllability_trace(sc.facts, control)
+        text = EngineeringReportTextMapper.controllability_branch({'controllability': trace})
+        assert '低于 15 km/h' in text and '不满足该适用条件' in text
+        assert '尚未明确' not in text  # A known boundary failure is not a missing input.
 
 
 def test_branch_geometry_recomputes_reference_speed_bound(method):
