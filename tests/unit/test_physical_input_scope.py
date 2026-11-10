@@ -68,6 +68,52 @@ def test_unrestricted_driver_scope_does_not_invent_a_position_or_duplicate_motio
     assert 'driver_position' not in children[0].facts and 'driver_in_vehicle' not in children[0].facts
 
 
+@pytest.mark.parametrize('control_only', [False, True])
+@pytest.mark.parametrize('failed,remaining,expected', [
+    (['automatic_steering_command'], ['steering'], True),
+    (['steering'], ['braking'], False),
+    (['drive'], ['braking'], None),
+])
+def test_declared_steering_capability_reaches_both_production_consumers(method, control_only, failed, remaining, expected):
+    parent = make_candidate()
+    before = deepcopy(parent)
+    raw = raw_plan()
+    h = raw['hypotheses'][0]
+    h.update(failed_controls=failed, remaining_controls=remaining)
+    if control_only:
+        raw = {'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': {
+            k: h[k] for k in ('rationale','basis_refs','conditions','uncovered_conditions','failed_controls','remaining_controls')}}
+    children, errors = produce(method, raw, parent)
+    assert not errors and len(children) == 1 and parent == before
+    child = children[0]
+    assert child.facts.get('steering_control_available') is expected
+    if expected is not None:
+        assert child.fact_provenance['steering_control_available']['approval'] == 'PENDING'
+        assert child.fact_provenance['steering_control_available']['source_refs'][0]['source_type'] == 'analysis_hypothesis'
+        from hara_agent.services.analysis.hazardous_event_risk_context_service import HazardousEventRiskContextService
+        service = HazardousEventRiskContextService(method)
+        view = {**child.facts, '_fact_provenance':child.fact_provenance}
+        context = service.build(malfunction_id='MF',
+            scenario_id=child.scenario_id, hazard_node_id='impact',
+            scenario=view)
+        assert service.scoring_facts(context, view)['steering_control_available'] is expected
+
+
+@pytest.mark.parametrize('control_only', [False, True])
+def test_retained_steering_does_not_overwrite_an_existing_conflicting_condition(method, control_only):
+    parent = make_candidate()
+    parent.facts['steering_control_available'] = False
+    parent.fact_provenance['steering_control_available'] = source()
+    before = deepcopy(parent)
+    raw = raw_plan(); raw['hypotheses'][0]['remaining_controls'] = ['steering']
+    if control_only:
+        raw = {'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': {
+            k: raw['hypotheses'][0][k] for k in ('rationale','basis_refs','conditions','uncovered_conditions','failed_controls','remaining_controls')}}
+    children, errors = produce(method, raw, parent)
+    assert not children and errors[0]['reason_code'] == 'CONFLICT_WITH_SELECTED_CONDITION'
+    assert parent == before
+
+
 @pytest.mark.parametrize('field', ['longitudinal_acceleration_mps2', 'relative_distance_m'])
 def test_explicit_symbol_cannot_use_parent_number_or_alias(method, field):
     parent = make_candidate()

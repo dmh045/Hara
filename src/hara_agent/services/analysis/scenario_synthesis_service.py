@@ -30,7 +30,7 @@ from hara_agent.models import (
 from .scenario_constraint_service import ScenarioConstraintExecutor, ScenarioConstraintStatus
 from .scenario_method_service import ScenarioMethodService
 from .scenario_selection_quality import (
-    explicit_environment, explicit_location_relations, normalize_object_category,
+    explicit_driver_presence, explicit_environment, explicit_location_relations, normalize_object_category,
     ScenarioBindingPolicy, ScenarioCandidateRanker, ScenarioCoveragePlanner,
     ScenarioDimensionApplicabilityService, ScenarioSemanticQueryBuilder,
     ScenarioRefinementEvidencePolicy, ScenarioSemanticCompatibilityClassifier,
@@ -76,7 +76,20 @@ class ConstrainedScenarioSynthesisService:
                                  "location": f"{atom.get('source_asset', '')}:{atom.get('source_rule', '')}",
                                  "excerpt": str(binding.get("method_value", ""))}],
                 "applicable_scope": dict(scope), "selection_basis": "VALIDATED_ANALYTICAL_SCENARIO_ATOM",
+                "validation_status": "VALIDATED", "method_contract_hash": method_hash,
             }
+            presence = explicit_driver_presence(str(facts[fact_key]))
+            if presence is not None:
+                existing = facts.get("driver_in_vehicle")
+                if existing is not None and existing != presence:
+                    raise ScenarioSynthesisValidationError(
+                        "DRIVER_CONDITION_CONFLICT",
+                        "Selected Method condition conflicts with the bound driver presence",
+                        details=(dimension, str(binding.get("atom_id", ""))),
+                    )
+                if existing is None:
+                    facts["driver_in_vehicle"] = presence
+                    provenance["driver_in_vehicle"] = deepcopy(provenance[fact_key])
 
     def __init__(self, method: MethodContract):
         self.method = method

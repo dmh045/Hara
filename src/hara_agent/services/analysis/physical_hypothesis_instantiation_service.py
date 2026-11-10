@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import replace, asdict
 import math
 
-from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability, controls_for_driver
+from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability, steering_capability, controls_for_driver
 from .scenario_equivalence import signature
 from .scenario_physics import CONDITIONAL_ORIGIN, derive_scenario_physics, source_is_accepted_for, physical_semantics, grade_rollaway_acceleration
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
@@ -61,6 +61,19 @@ class PhysicalHypothesisInstantiationService:
         self.method = method
         self.vocabulary = RiskVocabularyAdapter(method)
         self.physics_solve_count = 0
+        structured = method.structured_risk_method
+        self.intervention_inputs = ({condition.field for rule in structured.controllability_overrides
+                                     for condition in (*rule.all_of, *rule.any_of)} |
+                                    {condition.field for condition in structured.controllability_profile.applicability})
+
+    @staticmethod
+    def driver_position(candidate):
+        """Use the same existing driver condition in the prompt and consumer."""
+        position = candidate.facts.get("driver_position", "")
+        if position:
+            return position
+        location = candidate.facts.get("driver_in_vehicle")
+        return "in_driver_seat" if location is True else "outside_driver_seat" if location is False else ""
 
     def _same_input(self, field, old, proposed):
         if field in {"road_user_type", "collision_type"}:
@@ -74,14 +87,14 @@ class PhysicalHypothesisInstantiationService:
     def task_scope(self, candidate, malfunction_id):
         """Retain solved motion; assess its controls and response once."""
         scope = dict(malfunction_id=malfunction_id, scenario_id=candidate.scenario_id)
-        if candidate.facts.get("control_analysis") and source_is_accepted_for(
-                candidate.fact_provenance.get("control_analysis", {}), **scope):
-            return ""  # An assessed limitation is not another request on resume.
-        if candidate.facts.get("physical_analysis") and source_is_accepted_for(
-                candidate.fact_provenance.get("physical_analysis", {}), **scope):
-            # The motion task already requested control capabilities. Do not
-            # fan a saved plan's unresolved assumptions into another paid pass.
-            return ""
+        for key in ("control_analysis", "physical_analysis"):
+            if candidate.facts.get(key) and source_is_accepted_for(candidate.fact_provenance.get(key, {}), **scope):
+                h = candidate.facts[key].get("hypothesis", {})
+                if ("driver_in_vehicle" in self.intervention_inputs
+                        and not self.driver_position(candidate) and len(h.get("driver_positions", [])) != 1
+                        and "driver_in_vehicle" not in h.get("unresolved_controls", {})):
+                    return "CONTROL_INPUTS_ONLY"  # Legacy omission; retain motion, assess the missing condition once.
+                return ""  # An assessed limitation is not another request on resume.
         # A validated symbolic/no-contact world may intentionally have no
         # collision branches. Reuse its assessment rather than proposing the
         # same world again just to manufacture a numeric contact.
@@ -417,16 +430,16 @@ class PhysicalHypothesisInstantiationService:
     def instantiate(self, candidate, malfunction, plan, *, plan_key: str, response_model: str,
                     project_context=None, function=None):
         results, diagnostics = [], []
-        driver_position = candidate.facts.get("driver_position", "")
-        if not driver_position:
-            location = candidate.facts.get("driver_in_vehicle")
-            driver_position = ("in_driver_seat" if location is True else
-                               "outside_driver_seat" if location is False else "")
+        driver_position = self.driver_position(candidate)
         if plan.control_assessment is not None:
+            positions = plan.control_assessment.get("driver_positions", [])
+            if positions and driver_position and driver_position not in positions:
+                return [], [{"reason": "HYPOTHESIS_DRIVER_SCOPE_NOT_APPLICABLE", "driver_position": driver_position}]
+            assumed_driver = positions[0] if not driver_position and len(positions) == 1 else ""
             try:
                 return [self._instantiate_controls(candidate, malfunction, controls_for_driver(plan.control_assessment,
-                    driver_position),
-                    plan_key, response_model)], []
+                    driver_position or assumed_driver),
+                    plan_key, response_model, assumed_driver=assumed_driver)], []
             except PhysicalInputConflict as error:
                 return [], [{"reason": str(error), **error.details}]
         for h in plan.hypotheses:
@@ -484,7 +497,7 @@ class PhysicalHypothesisInstantiationService:
             return [PhysicalHypothesisInstantiationService._rescope(v, old_id, new_id) for v in value]
         return new_id if value == old_id else value
 
-    def _instantiate_controls(self, parent, malfunction, assessment, plan_key, model_name):
+    def _instantiate_controls(self, parent, malfunction, assessment, plan_key, model_name, *, assumed_driver=""):
         """Condition the existing trajectory; never regenerate collision inputs."""
         sid = f"{parent.scenario_id}-CTRL-{signature({'plan': plan_key, 'assessment': assessment})[:16]}"
         facts = self._rescope(deepcopy(parent.facts), parent.scenario_id, sid)
@@ -500,6 +513,10 @@ class PhysicalHypothesisInstantiationService:
                 "location": "control_assessment", "excerpt": assessment["rationale"]}],
             "basis_refs": assessment["basis_refs"], "conditions": assessment["conditions"]}
         supplied = {k: p["value"] for k, p in assessment.get("intervention_assumptions", {}).items()}
+        if assumed_driver:
+            supplied["driver_position"] = assumed_driver
+            if assumed_driver == "in_driver_seat":
+                supplied["driver_in_vehicle"] = True
         capability = braking_capability(assessment)
         old_analysis = parent.facts.get("physical_analysis", {})
         if source_is_accepted_for(parent.fact_provenance.get("physical_analysis", {}),
@@ -514,8 +531,9 @@ class PhysicalHypothesisInstantiationService:
                 raise PhysicalInputConflict("CONFLICT_WITH_SELECTED_CONDITION", "controls", old_hypothesis, assessment)
         if capability is not None:
             supplied["emergency_braking_available"] = capability
-        if "steering" in assessment["failed_controls"]:
-            supplied["steering_control_available"] = False
+        steering = steering_capability(assessment)
+        if steering is not None:
+            supplied["steering_control_available"] = steering
         for field, value in supplied.items():
             for branch in facts.get("collision_branches", []):
                 if (branch.get(field) is not None and branch[field] != value
@@ -857,6 +875,8 @@ class PhysicalHypothesisInstantiationService:
             "object_speed_kph": 0, "object_longitudinal_direction": "STATIONARY"}
         supplied = {**g, **values, **target,
                     "fault_motion_model": h["model"], **grade_mapping}
+        if steering_capability(h) is True:
+            supplied["steering_control_available"] = True
         assumed_driver = sensitivity.get("driver_position_assumption")
         if assumed_driver:
             supplied["driver_position"] = assumed_driver

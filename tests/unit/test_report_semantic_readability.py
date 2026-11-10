@@ -257,6 +257,30 @@ def test_negative_sg_claim_never_becomes_unsupported_collision_or_action():
     assert result['members'][0]['basis']['original_goal'] == '现有安全意图'
 
 
+@pytest.mark.parametrize('hazard,expected', [
+    ('客户因提示泛滥而忽视真实禁停信息，车辆可能停入禁止停车区域。', '防止车辆停入禁止停车区域。'),
+    ('车辆按过期车位位置运动，而实际空间已变化，与新增或已移动障碍物距离不足。', '防止车辆与新增或已移动障碍物距离不足。'),
+    ('车辆在泊车中可能因间隙判断不足而擦碰邻近车辆、障碍物或路缘的车辆级危险状态。',
+     '防止车辆在泊车中擦碰邻近车辆、障碍物或路缘。'),
+    ('人员可能被频繁告警干扰，车辆因过期引导而进入禁停区域。', '防止车辆进入禁停区域。'),
+])
+def test_sg_compression_keeps_vehicle_intent_and_sentence_subject(hazard, expected):
+    member = {'function':'引导显示','malfunction':'提示请求过多', 'vehicle_hazard':hazard,
+        'functional_effect':'客户被过度提示', 'hazardous_event':hazard}
+    before = deepcopy(member)
+    result = EngineeringReportTextMapper().safety_goal_presentation([member], '原目标保留')
+    assert result['text'] == expected
+    assert result['members'][0]['basis']['vehicle_hazard'] == hazard
+    assert result['nature'] == 'DISPLAY_ONLY_NO_ENGINEERING_APPROVAL' and member == before
+
+
+@pytest.mark.parametrize('hazard', ['车辆没有碰撞', '车辆未进入禁止停车区域', '车辆未与邻车发生碰撞'])
+def test_sg_vehicle_harm_selection_keeps_negative_claims(hazard):
+    result = EngineeringReportTextMapper().safety_goal_presentation([
+        {'vehicle_hazard':hazard, 'hazardous_event':hazard}], '原安全意图')
+    assert result['text'] == '原安全意图。'
+
+
 def test_v8_member_intents_do_not_select_other_parent_branch_or_parameters():
     fixture = json.loads((Path(__file__).parents[1] / 'fixtures/report_v8_safety_intents.json').read_text())
     mapper = EngineeringReportTextMapper()

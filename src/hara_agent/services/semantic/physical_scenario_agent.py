@@ -140,9 +140,11 @@ def compact_physical_request(content: dict, *, response_only: bool, controls_onl
     if controls_only or response_only:
         # These are output-only motion selection contracts. Actual trajectories,
         # their provenance and all response/control methods remain in context.
-        for key in ("geometry_values", "driver_positions", "parameter_payloads", "moving_target_geometry",
+        for key in ("geometry_values", "parameter_payloads", "moving_target_geometry",
                     "unmitigated_post_stop_motion", "operating_atoms"):
             result["output_contract"].pop(key, None)
+        if response_only or result["output_contract"].get("driver_positions", {}).get("optional", True):
+            result["output_contract"].pop("driver_positions", None)
     if response_only:
         assessment = result["output_shape"]["response_updates"][0]["control_assessment"]
         result["output_shape"]["response_updates"] = [
@@ -240,8 +242,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v27-nullable-speed-bounds"
-    PROMPT_VERSION = "post-fault-physical-scenario-v53-explicit-unknown-driver-scope"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v33-reference-kinematics-zh-v1"
+    PROMPT_VERSION = "post-fault-physical-scenario-v54-complete-driver-scope"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v34-complete-driver-scope"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
@@ -274,7 +276,8 @@ class PhysicalScenarioAgent:
         "不得同时在unresolved_controls.braking声明未知；尚未验证的独立性和未覆盖共同失效写入conditions和uncovered_conditions。"
         "若连条件性人工路径也不能成立，则保留unresolved_controls.braking并不把driver_braking列为remaining。"
         "同一干预字段不能同时出现在unresolved_controls和intervention_assumptions：有条件性值则把限制写入conditions，否则只声明未知及具体原因。"
-        "driver_positions是可选字段，只能用in_driver_seat或outside_driver_seat；没有位置限定时省略，不写空字符串。"
+        "driver_positions只能用in_driver_seat或outside_driver_seat；已有driver_configurations且假设不再限缩时可以省略。"
+        "来源未限定配置而当前方法需要人员条件时，为已有假设选择一个有依据的位置，不把缺少字段当作分析完成。"
         "空的控制数组不等于已完成分析；不要为通过检查强填可用或不可用。"
     )
     RESPONSE_TIMING_POLICY = (
@@ -355,6 +358,8 @@ class PhysicalScenarioAgent:
             if getattr(config, "scenario_response_format", "none") == "json_object" else None)
 
     def propose(self, context: dict, *, on_response=lambda record: None) -> tuple[PhysicalScenarioPlan, dict]:
+        needs_driver_scope = (not context.get("driver_configurations")
+            and "driver_in_vehicle" in context.get("intervention_inputs", []))
         response_only_correction = bool(context.get("previous_plan") and context.get("correction_diagnostics")
             and all(PhysicalScenarioPlan.response_only_diagnostic(str(d.get("reason", "")))
                     for d in context["correction_diagnostics"]))
@@ -381,6 +386,8 @@ class PhysicalScenarioAgent:
                     "orientation_basis": "SOURCE|ANALYSIS_ASSUMPTION", "rationale": "required for gravity rollaway, including a moving target; omit for non-gravity mechanisms"},
             }], "uncovered_conditions": ["not an exhaustive vehicle capability envelope"],
         }
+        if needs_driver_scope:
+            example["hypotheses"][0]["driver_positions"] = ["<one selected allowed position; justify in conditions>"]
         system = (
             "输入使用无损引用：$context_ref 指向 context 的同名字段，$source_text 指向 source_texts 中的完整原文；"
             "$context_value指向context.$context_values中的完整结构，可递归引用，来源、对象与阶段未省略。"
@@ -392,8 +399,9 @@ class PhysicalScenarioAgent:
             "driver_configurations为空表示来源未限定位置，不表示无人或禁止提出位置假设。"
             "此时结合功能使能、操作界面和控制路径，在当前假设中用driver_positions选择一个有依据的代表位置，"
             "在rationale、conditions及basis_refs说明这是分析假设；不要机械列出两个位置或复制运动方案。"
-            "只有连条件性代表位置也缺少相容依据时才省略，说明具体障碍；不能仅因没有原文位置字段而省略。"
+            "只有连条件性代表位置也缺少相容依据时才省略，必须在unresolved_controls.driver_in_vehicle说明具体障碍；不能仅因没有原文位置字段而省略。"
             "已给定的位置范围仍须保留；outside_driver_seat仅表示不在驾驶位，不等于人员在车外。"
+            "未限定人员位置时，选择outside_driver_seat还须在intervention_assumptions.driver_in_vehicle明确是否在车内及依据；确实无法判断则写具体unresolved_controls原因。"
             "不要用自然语言标签或自行创造对象类别。不能把不支持的障碍物伪称车辆；"
             "若分析另一个合法对象，必须声明condition_changes.target及新object_id，说明新条件和未覆盖对象。"
             "SYMBOLIC使用symbol字符串，不能把符号放进value；POINT只有value；RANGE必须有lower/value/upper。"
@@ -503,8 +511,9 @@ class PhysicalScenarioAgent:
                 "shape_example": ["driver_braking", "braking"],
                 "meaning": "Shape only, not a default capability. Do not nest arrays or output expressions such as [[...]][0]. Put reasons and conditions in the existing rationale/conditions fields.",
             },
-            "driver_positions": {"optional": True,
+            "driver_positions": {"optional": not needs_driver_scope,
                 "allowed": context.get("driver_configurations") or ["in_driver_seat", "outside_driver_seat"],
+                **({"min_items": 1, "max_items": 1} if needs_driver_scope else {}),
                 "meaning": ("假设适用范围；省略表示适用于全部已给定位置，不改变父位置。"
                     if context.get("driver_configurations") else
                     "来源位置未知；选择一个相容代表位置并在rationale/conditions及basis_refs说明分析假设。"
@@ -634,10 +643,10 @@ class PhysicalScenarioAgent:
                 "$context_value指向context.$context_values中的完整结构，可递归引用，来源、对象与阶段未省略。"
                 "根据功能、失效作用范围及现有条件区分各自动命令、执行能力和独立驾驶员制动路径。已有明确控制条件必须保留。"
                 "正常时踩制动能退出功能，不等于故障后独立制动一定有效；允许有依据的条件性能力假设，"
-                "明确写出适用条件，不能声称工程批准。驾驶员位置由各分支提供，本任务不改变它。"
+                "明确写出适用条件，不能声称工程批准。已有驾驶员位置由各分支提供，本任务不改变它；未提供时按output_contract补充条件性位置。"
                 "远程干预和目标规避通过 intervention_assumptions 表达，每项包含 value 布尔值、"
                 "rationale、basis_refs、conditions。仅可用output_contract.intervention_assumptions.optional_keys，"
-                "不是intervention_inputs中的所有字段；driver_in_vehicle由分支提供，"
+                "不是intervention_inputs中的所有字段；已知driver_in_vehicle由分支提供，"
                 "emergency_braking_available由控制清单派生。未知项省略，全部未知用{}，不输出null或数组。"
                 "未知不能当成false，静止目标不等于人员无法逃避，"
                 "有App不等于故障后远程制动有效。remote为true须有remaining_controls中的remote_control"
@@ -655,6 +664,10 @@ class PhysicalScenarioAgent:
                 "unresolved_controls": {}}}
             content["model_catalog"] = {}
             content["parameter_units"] = {}
+            if needs_driver_scope:
+                content["output_shape"]["control_assessment"]["driver_positions"] = [
+                    "<one selected allowed position; justify in conditions>"]
+                system += "已有驾驶员位置未知且当前方法需要该条件时，在control_assessment.driver_positions选择一个有依据的代表配置，说明为条件性假设；不改变已保存运动。"
         system += self.CONTROL_ANALYSIS_POLICY
         system += (
             "车位标线、全框/T字框和车位边界仅提供几何或规划参照，不是墙体、路缘或障碍物。"
@@ -1079,6 +1092,24 @@ class PhysicalScenarioAgent:
                 if response_only_correction and isinstance(candidate, dict) and "response_updates" in candidate:
                     candidate = PhysicalScenarioPlan.apply_response_updates(context["previous_plan"], candidate, set(context["evidence"]))
                 plan = PhysicalScenarioPlan.from_dict(candidate, evidence_ids=set(context["evidence"]))
+                if needs_driver_scope:
+                    scopes = list(plan.hypotheses) + ([dict(plan.control_assessment, hypothesis_id="control_assessment")]
+                        if plan.control_assessment is not None else [])
+                    missing = [h["hypothesis_id"] for h in scopes
+                        if (len(h.get("driver_positions", [])) != 1
+                            and "driver_in_vehicle" not in h.get("unresolved_controls", {}))
+                        or (h.get("driver_positions") == ["outside_driver_seat"]
+                            and "driver_in_vehicle" not in h.get("intervention_assumptions", {})
+                            and "driver_in_vehicle" not in h.get("unresolved_controls", {}))]
+                    if missing:
+                        raise ValueError("DRIVER_SCOPE_REQUIRED: " + ", ".join(missing)
+                            + ". This task has no supplied driver configuration and the active C method needs it. "
+                            "For each existing motion hypothesis select one compatible representative driver_positions entry "
+                            "from the provided enum, justified as an analysis assumption by basis_refs/rationale/conditions. "
+                            "Preserve motion, target, parameters and all other valid hypotheses; do not expand both positions "
+                            "or call the selected position a project fact or engineering approval. "
+                            "Outside the seat is not outside the vehicle: explicitly state driver_in_vehicle in "
+                            "intervention_assumptions with its basis, or a specific unresolved_controls reason.")
                 # These are the active contract's output enums, not new risk rules.
                 # Catch misspellings in the existing bounded contract repair before
                 # a corrected plan reaches deterministic instantiation.

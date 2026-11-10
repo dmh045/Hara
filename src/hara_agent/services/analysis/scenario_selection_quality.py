@@ -133,6 +133,18 @@ def explicit_driver_presence(text: str) -> bool | None:
     return None
 
 
+def explicit_operating_qualifiers(text: str) -> set[str]:
+    """Read additional equipment/traffic conditions, not risk ratings."""
+    folded = text.casefold()
+    result = set()
+    if (re.search(r"\b(?:with|towing) (?:a )?trailer\b|牵引挂车|带挂车", folded)
+            and not re.search(r"\b(?:not|no|without)\b[^.;,]*\btrailer\b|不(?:可|能|允许)?(?:牵引|带)挂车", folded)):
+        result.add("TRAILER_ATTACHED")
+    if re.search(r"high (?:delta|relative) speed|大相对速度|高相对速度|大速度差", folded):
+        result.add("HIGH_RELATIVE_SPEED")
+    return result
+
+
 def explicit_environment(text: str) -> set[str]:
     """Read explicit enclosure qualifiers, not an inferred location alias.
 
@@ -470,6 +482,9 @@ class ScenarioSemanticQueryBuilder:
             "operating_mode": parent.operating_mode,
             "action_categories": sorted(categories & _ACTION_CATEGORIES),
             "operating_action_categories": sorted(operating_actions),
+            "operating_qualifiers": sorted(explicit_operating_qualifiers(
+                _json_text(operating_action_fields))),
+            "driver_in_vehicle": facts.get("driver_in_vehicle"),
             "operating_traffic_relations": sorted(operating_traffic),
             "control_consequence_action_categories": sorted(consequence_actions),
             "state_failure_action_categories": sorted(state_actions),
@@ -754,6 +769,13 @@ class ScenarioSemanticCompatibilityClassifier:
         atom_id = str(atom.get("atom_id", ""))
         if parent_atom_id and atom_id == parent_atom_id:
             return SemanticCompatibility.SUPPORTED, "EXACT_PARENT_BINDING"
+
+        qualifiers = explicit_operating_qualifiers(str(atom.get("label", "")))
+        if qualifiers - set(query.get("operating_qualifiers", [])):
+            return SemanticCompatibility.CONTRADICTED, "OPERATING_QUALIFIER_UNPROVEN"
+        driver = explicit_driver_presence(str(atom.get("label", "")))
+        if driver is not None and query.get("driver_in_vehicle") is not None and driver != query["driver_in_vehicle"]:
+            return SemanticCompatibility.CONTRADICTED, "DRIVER_CONDITION_CONFLICT"
 
         atom_categories = cls._domain_categories(
             dimension, ScenarioCandidateRanker.atom_categories(atom),

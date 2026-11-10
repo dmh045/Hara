@@ -361,6 +361,52 @@ def existing_motion(inside=True):
     return parent
 
 
+def test_unknown_driver_control_completion_preserves_motion_and_resumes(method, tmp_path):
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    parent = existing_motion()
+    parent.facts.pop('driver_in_vehicle')
+    parent.fact_provenance.pop('driver_in_vehicle')
+    raw = control_only_plan()
+    raw['control_assessment']['driver_positions'] = ['in_driver_seat']
+    original = deepcopy(asdict(parent))
+    class Frozen:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            payload = json.loads(request.user_prompt)
+            assert payload['context']['task_scope'] == 'CONTROL_INPUTS_ONLY'
+            assert payload['output_contract']['driver_positions']['optional'] is False
+            return LLMResponse(deepcopy(raw), 'OFFLINE_SYNTHETIC')
+    client = Frozen()
+    state = HARAState('driver-control-repair', malfunctions=[asdict(mf())])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    def run(candidate):
+        return construct_physical_scenarios(state, {'MF': [candidate]}, [mf()], method=method,
+            agent=agent, project_facts=None)['MF'][0]
+    child = run(parent)
+    assert child.scenario_id != parent.scenario_id
+    assert child.facts['driver_in_vehicle'] is True
+    assert child.fact_provenance['driver_in_vehicle']['approval'] == 'PENDING'
+    assert score(method, child)['controllability']['controllability_score']
+    for field in ('ttc_s', 'relative_speed_kph', 'collision_branches'):
+        assert child.facts[field] == parent.facts[field]
+    assert asdict(parent) == original
+    assert run(parent) == child and run(child) == child and client.calls == 1
+    assert PhysicalHypothesisInstantiationService(method).task_scope(child, 'MF') == ''
+
+
+def test_legacy_motion_with_omitted_driver_gets_one_control_task_not_new_motion(method):
+    from test_autonomous_physics import instantiate
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    child = instantiate(method)[0]
+    child.facts.pop('driver_in_vehicle', None)
+    child.facts.pop('driver_position', None)
+    service = PhysicalHypothesisInstantiationService(method)
+    assert service.task_scope(child, 'MF') == 'CONTROL_INPUTS_ONLY'
+    child.facts['physical_analysis']['hypothesis'].setdefault('unresolved_controls', {})['driver_in_vehicle'] = 'No compatible actor configuration for this interface'
+    assert service.task_scope(child, 'MF') == ''
+
+
 @pytest.mark.parametrize('inside,braking,expected', [(True, True, 'C0'), (False, True, 'C3'), (True, False, '')])
 def test_existing_motion_gets_only_missing_controls_then_scores_and_resumes(method, tmp_path, inside, braking, expected):
     from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService

@@ -117,8 +117,8 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
     tasks, kept, configurations, remaining = [], {}, {}, {}
     for mf in malfunctions:
         groups, kept[mf.malfunction_id] = _physical_families(producer, candidates[mf.malfunction_id], mf.malfunction_id)
-        configurations[mf.malfunction_id] = sorted({str(c.facts.get("driver_position", ""))
-            for c in candidates[mf.malfunction_id] if c.facts.get("driver_position")})
+        configurations[mf.malfunction_id] = sorted({producer.driver_position(c)
+            for c in candidates[mf.malfunction_id] if producer.driver_position(c)})
         remaining[mf.malfunction_id] = len(groups)
         for group, family in sorted(groups.items()):
             tasks.append((mf, group, family))
@@ -314,9 +314,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     route.update(physical_reasoning_identity(config))
     for mf in malfunctions:
         source_evidence, source_routing = _source_evidence(state, functions.get(mf.function_id, {}))
-        driver_configurations = _driver_configurations if _driver_configurations is not None else sorted({str(c.facts.get("driver_position", ""))
+        driver_configurations = _driver_configurations if _driver_configurations is not None else sorted({producer.driver_position(c)
                                         for c in candidates[mf.malfunction_id]
-                                        if c.facts.get("driver_position")})
+                                        if producer.driver_position(c)})
         groups, kept = _physical_families(producer, candidates[mf.malfunction_id], mf.malfunction_id)
         metrics["existing_path_skipped"] += len(kept)
         # Distribute source-condition requests over existing motion groups;
@@ -345,9 +345,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                         "remote_intervention_available", "other_road_user_avoidance_possible"}],
                 "method_identity": {k: method.metadata.get(k) for k in ("method_source_hash", "project_analysis_policy")},
                 "method_version": [method.contract_version, method.compiler_version],
-                "intervention_inputs": sorted({condition.field for rule in method.structured_risk_method.controllability_overrides
-                                               for condition in (*rule.all_of, *rule.any_of)} |
-                    {condition.field for condition in method.structured_risk_method.controllability_profile.applicability}),
+                "intervention_inputs": sorted(producer.intervention_inputs),
                 "risk_vocabulary": {"road_user_type": dict(method.structured_risk_method.severity.road_user_groups),
                                     "collision_type": dict(method.structured_risk_method.severity.collision_types)},
                 "analysis_strategy": PhysicalScenarioAgent.ANALYSIS_STRATEGY,

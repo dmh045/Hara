@@ -350,6 +350,60 @@ def test_unknown_driver_explicit_hypothesis_survives_production_resume(method, t
     assert replay == out and client.calls == 1
 
 
+@pytest.mark.parametrize('first_scope', [None, ['in_driver_seat', 'outside_driver_seat']])
+def test_unknown_driver_is_completed_in_existing_contract_repair(method, first_scope):
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            payload = json.loads(request.user_prompt)
+            contract = payload['output_contract']['driver_positions']
+            assert contract['optional'] is False and contract['max_items'] == 1
+            raw = raw_plan(assessed=True)
+            if self.calls == 1:
+                if first_scope:
+                    raw['hypotheses'][0]['driver_positions'] = first_scope
+            else:
+                assert 'DRIVER_SCOPE_REQUIRED' in request.user_prompt
+                raw['hypotheses'][0]['driver_positions'] = ['in_driver_seat']
+            return LLMResponse(raw, 'offline')
+    parent = make_candidate()
+    parent.facts.pop('driver_in_vehicle')
+    client = Client(); state = HARAState('driver-completeness')
+    result = construct_physical_scenarios(state, {'MF':[parent]}, [mf()], method=method,
+        agent=PhysicalScenarioAgent(client), project_facts=None)
+    assert client.calls == 2 and len(result['MF']) == 1
+    child = result['MF'][0]
+    assert child.facts['driver_position'] == 'in_driver_seat'
+    assert child.fact_provenance['driver_position']['approval'] == 'PENDING'
+    entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
+    assert len(entry['responses']) == 2
+    assert entry['responses'][0]['response']['data']['hypotheses'][0].get('driver_positions') == first_scope
+    assert any('DRIVER_SCOPE_REQUIRED' in error for error in entry['audit']['validation_errors'])
+
+
+def test_boolean_driver_condition_reaches_prompt_without_reproposing_it(method):
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            payload = json.loads(request.user_prompt)
+            context = expand_physical_prompt_view(payload['context'],payload['source_texts'])
+            assert context['driver_configurations'] == ['in_driver_seat']
+            assert payload['output_contract']['driver_positions']['optional'] is True
+            return LLMResponse(raw_plan(assessed=True), 'offline')
+    client = Client(); parent = make_candidate()
+    result = construct_physical_scenarios(HARAState('known-driver'), {'MF':[parent]}, [mf()],
+        method=method, agent=PhysicalScenarioAgent(client), project_facts=None)
+    assert client.calls == 1 and len(result['MF']) == 1
+    assert 'driver_configuration_assumption' not in result['MF'][0].facts['physical_analysis']
+
+
 def test_budget_stop_preserves_completed_physical_instances_before_next_plan(method, tmp_path):
     from hara_agent.workflow import HARAState, CheckpointRepository
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios

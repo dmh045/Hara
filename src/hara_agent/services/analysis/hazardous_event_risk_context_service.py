@@ -12,7 +12,7 @@ from hara_agent.contracts import (
     RuleMatchState, UnknownOverridePolicy,
 )
 from hara_agent.models import ReviewStatus, ScenarioCandidate
-from hara_agent.contracts.physical_scenario_plan import braking_capability
+from hara_agent.contracts.physical_scenario_plan import braking_capability, steering_capability
 from hara_agent.services.analysis.scenario_physics import (
     derive_scenario_physics, has_analysis_assumption_lineage,
     source_has_provenance, source_is_accepted_for, source_origin, source_reference,
@@ -162,6 +162,23 @@ class HazardousEventRiskContextService:
             )
             for field in self._FIELDS
         }
+        if scenario.get("driver_in_vehicle") is None:
+            from .scenario_selection_quality import explicit_driver_presence
+            binding = scenario.get("method_scenario_dimensions", {}).get("EGO_ACTION", {})
+            presence = explicit_driver_presence(str(binding.get("atom_label", "")))
+            method_hash = self.method.metadata.get("method_source_hash", "")
+            atom = next((a for a in self.method.metadata.get("scenario_atom_catalog", [])
+                         if a.get("atom_id") == binding.get("atom_id")), {})
+            metadata = scenario.get("_fact_provenance", {}).get("ego_action", {})
+            if (binding.get("resolution_status") == "RESOLVED" and presence is not None
+                    and atom.get("label") == binding.get("atom_label")
+                    and metadata.get("selection_basis") == "VALIDATED_ANALYTICAL_SCENARIO_ATOM"
+                    and any(ref.get("source_type") == "method_contract" and ref.get("source_id") == method_hash
+                            for ref in metadata.get("source_refs", []))):
+                values["driver_in_vehicle"] = self._fact(
+                    "driver_in_vehicle", {"driver_in_vehicle": presence,
+                        "_fact_provenance": {"driver_in_vehicle": {**metadata, "validation_status": "VALIDATED"}}},
+                    malfunction_id=malfunction_id, scenario_id=scenario_id)
         # Older validated plans already declare remaining/failed controls but
         # did not materialize this input. Project that declaration with its
         # original conditional provenance; never overwrite an explicit fact.
@@ -244,8 +261,26 @@ class HazardousEventRiskContextService:
                 if field == "emergency_braking_available" and scenario.get(field) is None:
                     result["_fact_provenance"] = {**scenario.get("_fact_provenance", {}),
                         field: scenario.get("_fact_provenance", {}).get("physical_analysis", {})}
+                if field == "driver_in_vehicle" and scenario.get(field) is None:
+                    result["_fact_provenance"] = {**result.get("_fact_provenance", {}),
+                        field: {**scenario.get("_fact_provenance", {}).get("ego_action", {}), "validation_status": "VALIDATED"}}
             else:
                 result.pop(field, None)
+        if scenario.get("steering_control_available") is None:
+            for key in ("control_analysis", "physical_analysis"):
+                hypothesis = scenario.get(key, {}).get("hypothesis", {})
+                capability = steering_capability(hypothesis)
+                metadata = scenario.get("_fact_provenance", {}).get(key, {})
+                if not source_is_accepted_for(metadata,
+                        malfunction_id=context.malfunction_id, scenario_id=context.scenario_id):
+                    continue
+                if "steering" in hypothesis.get("unresolved_controls", {}):
+                    break
+                if capability is not None:
+                    result["steering_control_available"] = capability
+                    result["_fact_provenance"] = {**result.get("_fact_provenance", {}),
+                        "steering_control_available": metadata}
+                    break
         result["_hazardous_event_risk_context"] = context
         return result
 

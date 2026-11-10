@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
+
+import pytest
 
 from hara_agent.contracts import RiskContextFactStatus
 from hara_agent.method_sources import YamlBaselineCompiler
@@ -12,6 +15,62 @@ from hara_agent.workflow import ReviewArtifactReader
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("corruption", ["", "scope", "label", "method"])
+def test_replayed_method_driver_condition_requires_matching_atom_and_source(corruption):
+    service = _service()
+    atom = next(a for a in service.method.metadata["scenario_atom_catalog"]
+                if "driver in vehicle" in a["label"])
+    scenario = _scenario()
+    scenario.pop("driver_in_vehicle")
+    metadata = {"provenance": "SCENARIO_DEFINED", "approval": "FINALIZED",
+        "selection_basis": "VALIDATED_ANALYTICAL_SCENARIO_ATOM",
+        "applicable_scope": {"malfunction_id": "MF-1", "scenario_id": "SCN-1"},
+        "source_refs": [{"source_type": "method_contract",
+            "source_id": service.method.metadata["method_source_hash"], "location": "selected Atom"}]}
+    scenario["_fact_provenance"]["ego_action"] = metadata
+    scenario["method_scenario_dimensions"] = {"EGO_ACTION": {
+        "resolution_status": "RESOLVED", "atom_id": atom["atom_id"], "atom_label": atom["label"]}}
+    if corruption == "scope":
+        metadata["applicable_scope"]["scenario_id"] = "another-world"
+    if corruption == "label":
+        scenario["method_scenario_dimensions"]["EGO_ACTION"]["atom_label"] += " tampered"
+    if corruption == "method":
+        metadata["source_refs"][0]["source_id"] = "another-method"
+    before = deepcopy(scenario)
+    context = service.build(malfunction_id="MF-1", scenario_id="SCN-1", hazard_node_id="H", scenario=scenario)
+    scoring = service.scoring_facts(context, scenario)
+    assert (scoring.get("driver_in_vehicle") is True) == (not corruption)
+    assert scenario == before
+    if not corruption:
+        assert scoring["_fact_provenance"]["driver_in_vehicle"]["provenance"] == "SCENARIO_DEFINED"
+
+
+def test_replayed_remaining_steering_keeps_conditional_source_and_explicit_override():
+    service = _service()
+    scenario = _scenario()
+    scenario["physical_analysis"] = {"hypothesis": {"remaining_controls": ["steering"],
+        "failed_controls": ["automatic_steering_command"]}}
+    scenario["_fact_provenance"]["physical_analysis"] = {
+        "provenance": "LLM_INFERENCE", "origin": "LLM_ANALYSIS_HYPOTHESIS",
+        "approval": "PENDING", "calculation_scope": "CONDITIONAL", "validation_status": "VALIDATED",
+        "validated_by": "PhysicalHypothesisInstantiationService", "hypothesis_id": "plan:h1",
+        "applicable_scope": {"malfunction_id": "MF-1", "scenario_id": "SCN-1"},
+        "source_refs": [{"source_id": "plan", "source_type": "analysis_hypothesis", "location": "h1"}]}
+    # Use the production origin rather than relying on a prose label.
+    from hara_agent.services.analysis.scenario_physics import CONDITIONAL_ORIGIN
+    scenario["_fact_provenance"]["physical_analysis"]["origin"] = CONDITIONAL_ORIGIN
+    context = service.build(malfunction_id="MF-1", scenario_id="SCN-1", hazard_node_id="H", scenario=scenario)
+    facts = service.scoring_facts(context, scenario)
+    assert facts["steering_control_available"] is True
+    assert facts["_fact_provenance"]["steering_control_available"]["approval"] == "PENDING"
+    scenario["steering_control_available"] = False
+    assert service.scoring_facts(context, scenario)["steering_control_available"] is False
+    scenario.pop("steering_control_available")
+    scenario["control_analysis"] = {"hypothesis": {"unresolved_controls": {"steering": "New control assessment cannot establish the retained actuator"}}}
+    scenario["_fact_provenance"]["control_analysis"] = deepcopy(scenario["_fact_provenance"]["physical_analysis"])
+    assert "steering_control_available" not in service.scoring_facts(context, scenario)
 
 
 def _service() -> HazardousEventRiskContextService:

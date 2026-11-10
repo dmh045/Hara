@@ -28,6 +28,37 @@ from hara_agent.template import TemplateRoleCompiler
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("label,qualifier", [
+    ("Driving with trailer", "TRAILER_ATTACHED"),
+    ("High delta speed to adjacent traffic", "HIGH_RELATIVE_SPEED"),
+])
+def test_extra_operating_qualifier_needs_evidence_not_generic_driving(label, qualifier):
+    classify = ScenarioSemanticCompatibilityClassifier.classify
+    args = dict(dimension="EGO_ACTION", atom={"atom_id": "unseen", "label": label}, fm_template={})
+    status, reason = classify(**args, query={"operating_action_categories": ["ACTION_PARK"]})
+    assert status.value == "CONTRADICTED" and reason == "OPERATING_QUALIFIER_UNPROVEN"
+    status, _ = classify(**args, query={"operating_qualifiers": [qualifier]})
+    assert status.value != "CONTRADICTED"
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_selected_method_driver_condition_is_bound_without_project_approval(inside):
+    label = "Parking with driver in vehicle" if inside else "Parking with driver not in vehicle"
+    binding = {"resolution_status": "RESOLVED", "atom_id": "unseen-driver",
+               "atom_label": label, "method_value": label}
+    facts, provenance = {}, {}
+    kwargs = dict(facts=facts, provenance=provenance, bindings={"EGO_ACTION": binding},
+                  method_hash="method", scope={"scenario_id": "SCN-new"})
+    ConstrainedScenarioSynthesisService.project_validated_atom_facts(**kwargs)
+    assert facts["driver_in_vehicle"] is inside
+    assert "driver_position" not in facts  # Inside vehicle does not assert a seat.
+    assert provenance["driver_in_vehicle"]["provenance"] == "SCENARIO_DEFINED"
+    assert provenance["driver_in_vehicle"]["source_refs"][0]["source_type"] == "method_contract"
+    facts["driver_in_vehicle"] = not inside
+    with pytest.raises(ValueError, match="driver presence"):
+        ConstrainedScenarioSynthesisService.project_validated_atom_facts(**kwargs)
+
+
 def test_dynamics_traffic_atom_requires_actual_operating_interaction():
     atom = {"atom_id": "unseen-cut-in", "label": "Near cut-in", "filled_dimensions": ["EGO_DYNAMICS"]}
     query = {"operating_action_categories": ["ACTION_PARK"], "action_categories": ["ACTION_PARK"],

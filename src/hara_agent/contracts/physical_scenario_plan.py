@@ -134,6 +134,15 @@ def braking_capability(hypothesis: dict) -> bool | None:
     return True if remaining & {"braking", "driver_braking"} else None
 
 
+def steering_capability(hypothesis: dict) -> bool | None:
+    """Project an explicit execution capability, not command availability."""
+    if "steering" in hypothesis.get("failed_controls", []):
+        return False
+    if "steering" in hypothesis.get("unresolved_controls", {}):
+        return None
+    return True if "steering" in hypothesis.get("remaining_controls", []) else None
+
+
 def declared_response_path(hypothesis: dict, driver_position: str) -> bool:
     """Check an explicit command/actuator declaration, without adding capability."""
     remaining = (set(hypothesis.get("remaining_controls", []))
@@ -201,7 +210,7 @@ def _number(value: Any) -> float:
 
 
 INTERVENTION_ASSUMPTION_FIELDS = frozenset({
-    "remote_intervention_available", "other_road_user_avoidance_possible",
+    "remote_intervention_available", "other_road_user_avoidance_possible", "driver_in_vehicle",
 })
 
 
@@ -237,6 +246,9 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
             f"hypothesis={h.get('hypothesis_id', 'control_assessment')}; remaining_controls={h['remaining_controls']}; failed_controls={h['failed_controls']}; unresolved_controls.braking={unresolved['braking']}")
     interventions = h.get("intervention_assumptions", {})
     _object(interventions, set(), INTERVENTION_ASSUMPTION_FIELDS)
+    if (h.get("driver_positions") == ["in_driver_seat"]
+            and interventions.get("driver_in_vehicle", {}).get("value") is False):
+        raise ValueError("Driver in seat conflicts with driver_in_vehicle=false")
     if set(unresolved) & set(interventions):
         raise ValueError("An unresolved intervention cannot also have an explicit assumption: "
             + ", ".join(sorted(set(unresolved) & set(interventions)))
@@ -301,7 +313,9 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
         if not isinstance(proposal, dict):
             raise ValueError("Control proposal must be an object")
         if "value" in proposal:
-            _object(proposal, {"value", "rationale", "basis_refs", "conditions"}, {"avoidance"})
+            field = next(key for key, value in interventions.items() if value is proposal)
+            _object(proposal, {"value", "rationale", "basis_refs", "conditions"}, {"avoidance"},
+                    path=f"intervention_assumptions.{field}")
             if type(proposal["value"]) is not bool:
                 raise ValueError("Intervention assumption requires an explicit boolean")
             _text(proposal["rationale"])
@@ -339,7 +353,11 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
 
 def _validate_control_assessment(control: dict, evidence_ids: set[str], *, scoped=False) -> None:
     _object(control, CONTROL_ASSESSMENT_REQUIRED,
-            CONTROL_ASSESSMENT_OPTIONAL | ({"driver_control_assessments"} if scoped else set()))
+            CONTROL_ASSESSMENT_OPTIONAL | ({"driver_control_assessments", "driver_positions"} if scoped else set()))
+    if "driver_positions" in control:
+        positions = _texts(control["driver_positions"])
+        if not positions or len(set(positions)) != len(positions) or set(positions) - {"in_driver_seat", "outside_driver_seat"}:
+            raise ValueError("Control assessment driver_positions must select unique supported configurations")
     _text(control["rationale"])
     if not _texts(control["basis_refs"], limit=max(16, len(evidence_ids))) or not set(control["basis_refs"]) <= evidence_ids:
         raise ValueError("Control assessment requires supplied evidence IDs; received="
