@@ -55,6 +55,32 @@ def test_mixed_contract_tokens_are_localized_without_rewriting_ids_or_conditions
     assert mapper.engineering_terms('本车向FORWARD方向行驶，目标向REVERSE运动') == '本车向前行驶，目标向后运动'
 
 
+def test_control_scope_terms_and_timing_reason_keep_qualifications_and_ids():
+    mapper = EngineeringReportTextMapper()
+    raw = ('driver_configurations为空；未把required路径加入remaining_controls；'
+           'remaining braking是假设，不是车辆已确认能力；多故事车库内的passenger car；'
+           '记录 ID-driver_configurations-01、remaining_controls_v2。')
+    text = mapper.engineering_terms(raw)
+    assert '驾驶员配置为空' in text and '加入保留的控制能力' in text
+    assert '保留的 制动执行器是假设，不是车辆已确认能力' in text
+    assert '多层车库内的乘用车' in text
+    assert 'ID-driver_configurations-01、remaining_controls_v2' in text
+    timing = [{'reason': 'braking 执行能力失效，未证明独立路径；记录 CTRL-braking-1',
+               'contact_time_s': 1.2, 'contact_time_kind': 'first_contact_time_s'}]
+    before = deepcopy(timing)
+    explanation = mapper.ftti_rationale(timing)
+    assert '制动执行器 执行能力失效，未证明独立路径' in explanation
+    assert 'CTRL-braking-1' in explanation and '接触时间不能作为 FTTI' in explanation
+    assert timing == before
+    boundary = mapper.engineering_terms(
+        '未建立LOSS_OF_BRAKING_AVOIDABILITY；FIRST_CONTACT_BOUND不是FTTI；'
+        'FAULT_ONSET尚未知；不能借PROJECT条件认定CONSTANT_NET_DECELERATION响应有效；'
+        '前方发生FRONTAL接触，ID-FAULT_ONSET-1保持不变。')
+    assert '未建立失去制动避碰能力边界；首次接触边界不是FTTI' in boundary
+    assert '故障发生时刻尚未知' in boundary and '恒定净减速度响应有效' in boundary
+    assert '前方发生正面接触，ID-FAULT_ONSET-1保持不变' in boundary
+
+
 def test_chinese_function_projection_localizes_view_labels_without_mutating_source(active_method):
     from copy import deepcopy
     state = _p6_report_state()
@@ -147,3 +173,18 @@ def test_method_glossary_translates_thresholds_without_changing_trace():
     assert '附着系数差' not in mapper.exposure_rationale(EvidenceValue('E2', ReviewStatus.FINALIZED, rule_version='method'), trace)
     trace['scenario_terms']['ROAD']['atom_id'] = 'split'
     assert trace == before
+
+
+def test_acceleration_and_reverse_glossary_preserve_all_numeric_boundaries():
+    import re
+    glossary = load_report_schema().presentation['language']['scenario_condition_translations']
+    entries = {key: value for key, value in glossary.items()
+               if key.startswith('Longitudinal accel ') or key == 'Reversing (v > 10 kph)'}
+    assert len(entries) == 9
+    for original, translated in entries.items():
+        assert re.findall(r'\d+(?:\.\d+)?|[<>≤≥]', original) == re.findall(r'\d+(?:\.\d+)?|[<>≤≥]', translated)
+        assert 'Longitudinal' not in translated and 'Reversing' not in translated
+        if '(time)' in original:
+            assert '时间口径' in translated
+        if '(freq)' in original:
+            assert '频次口径' in translated

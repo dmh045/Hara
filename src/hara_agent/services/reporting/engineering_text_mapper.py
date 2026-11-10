@@ -263,15 +263,30 @@ class EngineeringReportTextMapper:
             "FRONT": "前方", "REAR": "后方", "STATIONARY": "静止",
             "CONTACT": "发生接触", "REAR_END": "追尾",
             "NO_CONTACT_WITHIN_MODEL": "模型时域内未接触", "HELD_AFTER_STOP": "停止后保持",
-            "HOLD_POSITION": "保持当前位置", "CONSTANT_NET_DECELERATION": "恒定净减速度响应",
+            "HOLD_POSITION": "保持当前位置", "CONSTANT_NET_DECELERATION": "恒定净减速度",
+            "LOSS_OF_BRAKING_AVOIDABILITY": "失去制动避碰能力边界",
+            "FIRST_CONTACT_BOUND": "首次接触边界", "FAULT_ONSET": "故障发生时刻",
+            "FRONTAL": "正面", "PROJECT": "项目",
             "REQUIRED_NOT_ESTABLISHED": "所需通道尚未建立",
             "in_driver_seat": "在驾驶位", "outside_driver_seat": "不在驾驶位",
             "intervention_assumptions": "干预能力假设", "post_stop_motion": "停止后运动",
             "control_assessment": "控制能力分析",
+            "driver_configurations": "驾驶员配置", "driver_positions": "驾驶员位置范围",
+            "remaining_controls": "保留的控制能力", "failed_controls": "失效的控制能力",
+            "unresolved_controls": "未明确的控制能力",
+            "emergency_braking_available": "紧急制动可用性",
+            "other_road_user_avoidance_possible": "他方避让能力",
+            "remote_intervention_available": "远程干预可用性",
+            "output_contract": "输出约束", "transition": "处置过程", "safe_state": "安全状态",
+            "object_speed_kph": "目标速度", "operating_context": "运行上下文",
+            "odd_road_types": "允许道路类型",
             "uncovered_conditions": "未覆盖条件", "driver_control_assessments": "驾驶员控制能力分析",
             "safe_state_proposal": "安全处置方案", "vehicle_control": "泊车控车",
             "pedestrian": "行人", "clearance": "净距", "hold": "保持", "brake": "制动",
-            "µ-split": "左右分离附着", "Splitt / gravel": "碎石或砾石", "gravel": "砾石",
+            "µ-split": "左右分离附着", "Splitt / gravel": "碎石或砾石", "gravel": "砾石", "Splitt": "碎石",
+            "passenger car": "乘用车", "多故事车库": "多层车库",
+            "remaining": "保留的", "failed": "失效", "unresolved": "未明确", "intervention": "干预",
+            "true": "是", "false": "否",
             "kph": "km/h"}
         if cls.has_foreign_prose(text) and not re.search(r"[\u3400-\u9fff]", text):
             return text
@@ -1311,7 +1326,7 @@ class EngineeringReportTextMapper:
                 reason = (reason + "；具体处置依据及原始解释见审计表原始分析说明。"
                           if reason != "待确定" else "")
             if any("\u4e00" <= ch <= "\u9fff" for ch in reason):
-                explanations.append(reason)
+                explanations.append(EngineeringReportTextMapper.engineering_terms(reason))
         reasons = "；".join(dict.fromkeys(explanations))
         required_count = sum(item.get("timing_trace", {}).get("response_path_status") == "REQUIRED_NOT_ESTABLISHED"
                              for item in timing_inputs or [])
