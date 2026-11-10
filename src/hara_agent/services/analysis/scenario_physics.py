@@ -895,14 +895,16 @@ def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any
     claims.extend(str(hop.get("claim", "")) for hop in
                   payload.get("causal_chain", {}).values() if isinstance(hop, dict))
     text = " ".join(claims).casefold()
-    terms = {"FRONT": ("前方", "前车", "in front"),
-             "REAR": ("后方", "后车", "behind"),
+    # Do not split temporal phrases such as “故障后车辆” into a rear-car
+    # assertion. Explicit “后车追尾” and “前方车辆” still name a target.
+    terms = {"FRONT": ("前方", r"前车(?![辆身体头尾轮])", "in front"),
+             "REAR": ("后方", r"后车(?![辆身体头尾轮])", "behind"),
              "LEFT": ("左侧", "left side"), "RIGHT": ("右侧", "right side")}
     opposite = {"FRONT": "REAR", "REAR": "FRONT", "LEFT": "RIGHT", "RIGHT": "LEFT"}
     position = str(facts.get("object_position", "")).upper()
     conflicts = []
-    if position in terms and not any(word in text for word in terms[position]) and any(
-        word in text for word in terms[opposite[position]]
+    if position in terms and not any(re.search(word, text) for word in terms[position]) and any(
+        re.search(word, text) for word in terms[opposite[position]]
     ):
         conflicts.append("OBJECT_POSITION_CONTRADICTS_CAUSAL_CLAIM")
     closing = longitudinal_closing_speed_kph(
@@ -940,7 +942,7 @@ def causal_physics_conflicts(scenario: ScenarioCandidate, payload: dict[str, Any
             # Narrow legacy check for explicit statements about this target in
             # one clause. A generic hazard or an occupant harm is not contact.
             # New assessments provide the structured relation instead.
-            target = "(?:" + "|".join(re.escape(word) for word in terms[position]) + ")"
+            target = "(?:" + "|".join(terms[position]) + ")"
             predicate = r"(?:距离[^，。；;]*缩小|越来越接近|碰撞|相撞)"
             asserts_contact = any(re.search(target + r"[^，。；;!?]*" + predicate, claim)
                                   and not re.search(r"(?:不|未|无)[^，。；;!?]*" + predicate, claim)

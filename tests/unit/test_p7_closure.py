@@ -130,6 +130,29 @@ def test_physical_claim_conflicts_are_semantic_not_display_rewrites():
     assert causal_physics_conflicts(sc, {"hazardous_event": "前方行人距离快速缩小"}) == ["NOT_CLOSING_CONTRADICTS_CAUSAL_CLAIM"]
 
 
+@pytest.mark.parametrize("position,claim", [
+    ("FRONT", "故障后车辆停滞，车头与行人路径重叠并接触。"),
+    ("REAR", "故障前车辆处于静止状态，随后向后溜动。"),
+    ("FRONT", "响应后车身保持静止。"),
+    ("REAR", "响应前车头方向保持不变。"),
+])
+def test_temporal_vehicle_phrases_do_not_claim_an_opposite_target(position, claim):
+    sc = candidate(object_position=position)
+    assert causal_physics_conflicts(sc, {"hazardous_event": claim}) == []
+
+
+@pytest.mark.parametrize("position,claim", [
+    ("FRONT", "本车被后车追尾。"),
+    ("REAR", "本车与前车接触。"),
+    ("FRONT", "故障后车辆停滞，被后车追尾。"),
+    ("REAR", "故障前车辆静止，随后与前方行人接触。"),
+])
+def test_explicit_opposite_target_still_conflicts(position, claim):
+    assert causal_physics_conflicts(candidate(object_position=position), {
+        "hazardous_event": claim,
+    }) == ["OBJECT_POSITION_CONTRADICTS_CAUSAL_CLAIM"]
+
+
 def scoring_view(method):
     return {"scenario_id": "SC", "malfunction_id": "MF", "harm_mechanism_id": "IMPACT",
         "component_category": "sensor_camera", "scenario_atom_ids": ["SO010", "PH005"],
