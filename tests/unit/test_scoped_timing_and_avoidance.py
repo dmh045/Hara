@@ -21,6 +21,49 @@ def timed_plan():
     return raw
 
 
+@pytest.mark.parametrize('model', ['curve', 'stationary_envelope'])
+@pytest.mark.parametrize('bound_outcome', [True, False])
+def test_no_contact_timing_is_not_reported_as_a_symbolic_parameter_gap(method, model, bound_outcome):
+    from test_autonomous_physics import make_candidate
+    from test_curved_steering_physics import curved_plan
+    from test_bounded_interaction_coverage import moving_plan
+    raw = (curved_plan(speed=3.6, radius=1, clearance=2) if model == 'curve' else
+           moving_plan(initial=3.6, target_speed=0, target_direction='FORWARD', x=8, horizon=2))
+    reference = timed_plan()['hypotheses'][0]
+    raw['hypotheses'][0].update({key: deepcopy(reference[key]) for key in ('safe_state_proposal', 'hazard_timing')})
+    child = instantiate(method, raw, make_candidate(3.6))[0]
+    assert child.facts['motion_model_outcome']['status'] == 'NO_CONTACT_WITHIN_MODEL'
+    if not bound_outcome:
+        child.fact_provenance.pop('motion_model_outcome')
+    before = deepcopy((child.facts, child.fact_provenance))
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s is None and timing.status.value == 'PENDING_INPUT'
+    assert (timing.timing_trace.get('pending_reason') == 'NO_CONTACT_WITHIN_MODEL') is bound_outcome
+    text = EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+    if bound_outcome:
+        assert '模型有效范围内未建立接触' in text and '符号参数' not in text and 'v0·t' not in text
+        assert EngineeringReportTextMapper.ftti_value([timing.to_dict()]) == '模型时域内未建立接触边界'
+    assert before == (child.facts, child.fact_provenance)
+
+
+def test_symbolic_radius_keeps_parameter_relationship_without_claiming_no_contact(method):
+    from test_autonomous_physics import make_candidate
+    from test_curved_steering_physics import curved_plan
+    raw = curved_plan(speed=3.6)
+    parameter = next(p for p in raw['hypotheses'][0]['parameters'] if p['field'] == 'turn_radius_m')
+    parameter.pop('value')
+    parameter.update(kind='SYMBOLIC', symbol='R')
+    reference = timed_plan()['hypotheses'][0]
+    raw['hypotheses'][0].update({key: deepcopy(reference[key]) for key in ('safe_state_proposal', 'hazard_timing')})
+    child = instantiate(method, raw, make_candidate(3.6))[0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s is None
+    assert timing.timing_trace.get('pending_reason') != 'NO_CONTACT_WITHIN_MODEL'
+    assert 'v0·t' in EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+
+
 @pytest.mark.parametrize('release', [False, True])
 @pytest.mark.parametrize('command_unknown', [False, True])
 def test_required_system_response_is_calculated_without_crediting_available_control(method, tmp_path, release, command_unknown):

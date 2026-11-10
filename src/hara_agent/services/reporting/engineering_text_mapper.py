@@ -1328,6 +1328,7 @@ class EngineeringReportTextMapper:
             "CONTROL_PATH_UNRESOLVED": "缺少适用控制路径",
             "POST_STOP_MOTION_UNRESOLVED": "停车后保持待建模",
             "FAULT_CLOCK_UNRESOLVED": "故障起点或危险判据待绑定",
+            "NO_CONTACT_WITHIN_MODEL": "模型时域内未建立接触边界",
         }.get(item.get("timing_trace", {}).get("pending_reason"), "待确定")
 
     @staticmethod
@@ -1378,6 +1379,9 @@ class EngineeringReportTextMapper:
         timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]
         available = [item for item in timings if item.get("contact_time_s") is not None]
         if not available:
+            if timing_inputs and all(item.get("timing_trace", {}).get("pending_reason") == "NO_CONTACT_WITHIN_MODEL"
+                                     for item in timing_inputs):
+                return required_note + reasons
             return required_note + "缺少可用的接触时间；" + (reasons or "故障起点、危险判据及安全处置时间预算尚未确定，FTTI待定。")
         kinds = {item.get("contact_time_kind") for item in available}
         label = "首次接触" if kinds == {"first_contact_time_s"} else "轨迹接触"

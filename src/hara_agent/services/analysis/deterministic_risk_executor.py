@@ -122,6 +122,11 @@ class FTTIMethodExecutor:
         offset = timing.get("fault_to_model_start_s")
         numeric_inputs = (v, a, b) if moving else (v, a, d, b)
         if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in numeric_inputs):
+            if (outcome.get("status") == "NO_CONTACT_WITHIN_MODEL"
+                    and source_is_accepted_for(scenario.get("_fact_provenance", {}).get("motion_model_outcome", {}),
+                        malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id)):
+                return pending("当前轨迹在模型有效范围内未建立接触，因而没有该接触判据的响应时间边界；"
+                               "不表示模型范围外无危险。", "NO_CONTACT_WITHIN_MODEL")
             if moving:
                 return pending("移动目标响应仍有符号参数；需在同一包络内关联故障行驶、制动和停车保持三段轨迹。")
             return pending("当前条件仍有符号参数；时间边界关系为 v0·t+a·t²/2+(v0+a·t)²/(2·b净)=可用行程。")
