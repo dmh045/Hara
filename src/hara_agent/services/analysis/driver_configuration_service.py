@@ -26,16 +26,23 @@ class DriverConfigurationBrancher:
         self.policy_id = policy_id
         self.policy = policy or {}
 
-    def apply_location_convention(self, scenario: ScenarioCandidate) -> ScenarioCandidate:
+    def location_convention(self, scenario: ScenarioCandidate) -> dict:
+        """Return a project convention only for an explicitly bound project."""
         rule = self.policy.get("driver_location_convention", {})
         if not (
             rule.get("status") == "CONFIRMED_FOR_CURRENT_PROJECT"
+            and rule.get("project_scope")
             and rule.get("project_scope") == self.policy.get("project_scope")
-            and scenario.facts.get("project_scope", rule.get("project_scope")) == rule.get("project_scope")
+            and scenario.facts.get("project_scope") == rule.get("project_scope")
             and scenario.operating_mode in rule.get("operating_modes", [])
             and rule.get("outside_driver_seat_is_outside_vehicle") is True
-            and scenario.facts.get("driver_position") == "outside_driver_seat"
         ):
+            return {}
+        return rule
+
+    def apply_location_convention(self, scenario: ScenarioCandidate) -> ScenarioCandidate:
+        rule = self.location_convention(scenario)
+        if not rule or scenario.facts.get("driver_position") != "outside_driver_seat":
             return scenario
         source = self.policy.get("source_ref", {})
         original = scenario.fact_provenance.get("driver_position", {})

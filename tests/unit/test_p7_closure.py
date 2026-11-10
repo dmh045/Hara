@@ -103,11 +103,22 @@ def test_same_impact_time_speeds_are_separate_from_normal_speed():
 
 def test_driver_project_convention_does_not_escape_scope(method):
     brancher = DriverConfigurationBrancher(policy_id="P7", policy=method.metadata["project_analysis_policy"])
-    sc = candidate(driver_position="outside_driver_seat")
+    sc = candidate(driver_position="outside_driver_seat", project_scope=method.metadata["project_analysis_policy"]["project_scope"])
     assert brancher.apply_location_convention(sc).facts["driver_in_vehicle"] is False
     other = replace(sc, operating_mode="motorway")
     assert "driver_in_vehicle" not in brancher.apply_location_convention(other).facts
     assert "driver_in_vehicle" not in DriverConfigurationBrancher().apply_location_convention(sc).facts
+
+
+@pytest.mark.parametrize("project_scope", [None, "different_item_definition"])
+def test_unbound_or_different_project_cannot_inherit_old_driver_convention(method, project_scope):
+    brancher = DriverConfigurationBrancher(policy_id="P7", policy=method.metadata["project_analysis_policy"])
+    sc = candidate(driver_position="outside_driver_seat")
+    if project_scope is not None:
+        sc.facts['project_scope'] = project_scope
+    before = deepcopy(sc)
+    assert 'driver_in_vehicle' not in brancher.apply_location_convention(sc).facts
+    assert sc == before
 
 
 @pytest.mark.parametrize("approved", [{"controllability": "C0"}, {"exposure": "E0"}, {"severity": "S0"}])

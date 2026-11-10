@@ -478,6 +478,37 @@ def test_input_metadata_object_change_changes_plan_identity():
     assert signature(scenario_conditions(parent))!=a
 
 
+@pytest.mark.parametrize('project_scope', [None, 'different_item_definition', 'current_avp_item_definition'])
+@pytest.mark.parametrize('controls_only', [False, True])
+def test_production_physical_request_scopes_project_driver_convention(method, project_scope, controls_only):
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.physical_analysis import construct_physical_scenarios
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent, expand_physical_prompt_view
+    parent = instantiate(method)[0] if controls_only else make_candidate()
+    if controls_only:
+        parent.facts.pop('driver_in_vehicle', None)
+        parent.fact_provenance.pop('driver_in_vehicle', None)
+    if project_scope is not None:
+        parent.facts['project_scope'] = project_scope
+    before = deepcopy(method.metadata)
+    class RequestCaptured(Exception):
+        pass
+    class Client:
+        def complete_json(self, request):
+            payload = json.loads(request.user_prompt)
+            view = expand_physical_prompt_view(payload['context'], payload['source_texts'])
+            policy = view['method_identity']['project_analysis_policy']
+            assert ('driver_location_convention' in policy) == (project_scope == before['project_analysis_policy']['project_scope'])
+            assert (view.get('task_scope') == 'CONTROL_INPUTS_ONLY') == controls_only
+            assert 'outside_driver_seat仅表示不在驾驶位，不等于人员在车外' in request.system_prompt
+            assert view['method_identity']['method_source_hash'] == before['method_source_hash']
+            raise RequestCaptured
+    with pytest.raises(RequestCaptured):
+        construct_physical_scenarios(HARAState('scope-check'), {'MF': [parent]}, [mf()],
+            method=method, agent=PhysicalScenarioAgent(Client()), project_facts=None)
+    assert method.metadata == before
+
+
 def test_grade_change_invalidates_old_contact(method):
     from hara_agent.services.analysis.scenario_physics import branch_physics_view
     child=instantiate(method,grade_raw())[0]

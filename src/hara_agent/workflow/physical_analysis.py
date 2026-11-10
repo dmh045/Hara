@@ -10,6 +10,7 @@ from hara_agent.config.llm_config import physical_reasoning_identity
 
 from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability, declared_response_path, automatic_command_unassessed
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+from hara_agent.services.analysis.driver_configuration_service import DriverConfigurationBrancher
 from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
 from hara_agent.services.extraction.evidence_retrieval import (
@@ -327,6 +328,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         coverage_offset = int(signature(asdict(mf))[:8], 16)
         for (task_scope, condition_key), family in sorted(groups.items()):
             first = family[0]
+            project_policy = deepcopy(method.metadata.get("project_analysis_policy", {}))
+            if not DriverConfigurationBrancher(policy=project_policy).location_convention(first):
+                project_policy.pop("driver_location_convention", None)
             focus_identity = signature({
                 "source": first.facts.get("source_operating_conditions", {}),
                 "operating_scenario": first.facts.get("operating_scenario"),
@@ -343,7 +347,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     if f.get("parameter") in {"longitudinal_acceleration_mps2", "slope_percent", "ego_speed_kph",
                         "relative_distance_m", "steering_control_available", "emergency_braking_available",
                         "remote_intervention_available", "other_road_user_avoidance_possible"}],
-                "method_identity": {k: method.metadata.get(k) for k in ("method_source_hash", "project_analysis_policy")},
+                "method_identity": {"method_source_hash": method.metadata.get("method_source_hash"),
+                                    "project_analysis_policy": project_policy},
                 "method_version": [method.contract_version, method.compiler_version],
                 "intervention_inputs": sorted(producer.intervention_inputs),
                 "risk_vocabulary": {"road_user_type": dict(method.structured_risk_method.severity.road_user_groups),
