@@ -47,6 +47,27 @@ def test_physical_child_traffic_uses_trajectory_not_parent_search(direction,spee
     assert '对向交通' in mapper.scenario(parent)[0]
 
 
+@pytest.mark.parametrize('target', ['PEDESTRIAN', 'CYCLIST', 'VEHICLE'])
+@pytest.mark.parametrize('direction,expected', [
+    ('REVERSE', '沿车体后向运动'), ('FORWARD', '沿车体前向运动'),
+])
+def test_target_motion_wording_uses_ego_coordinates_across_report_fields(target, direction, expected):
+    child = SimpleNamespace(facts={'road_user_type': target, 'object_speed_kph': 5,
+        'object_position': 'FRONT', 'object_longitudinal_direction': direction,
+        'ego_longitudinal_direction': 'REVERSE'}, analysis_instance={})
+    before = deepcopy(child)
+    mapper = EngineeringReportTextMapper()
+    scenario = mapper.scenario(child)[0]
+    physical = mapper.physical_inputs(child, {})
+    pending_inputs = mapper.known_inputs(child.facts)
+    assert expected in scenario
+    assert '目标方向：' + expected in physical
+    assert '目标' + expected in pending_inputs
+    assert '目标倒车' not in pending_inputs and '目标方向：倒车' not in physical
+    assert '自车方向：倒车' in physical and '自车倒车' in pending_inputs
+    assert child == before
+
+
 @pytest.fixture
 def real_sample():
     fixture = json.loads((Path(__file__).parents[1] / 'fixtures/report_numeric_physics_e2e_20261019.json').read_text())

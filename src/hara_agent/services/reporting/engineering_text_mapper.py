@@ -86,6 +86,11 @@ class EngineeringReportTextMapper:
         "left": "左侧",
         "right": "右侧",
     }
+    _OBJECT_DIRECTION_TEXT = {
+        "FORWARD": "沿车体前向运动", "REVERSE": "沿车体后向运动",
+        "LEFT": "向车体左侧横穿", "RIGHT": "向车体右侧横穿",
+        "STATIONARY": "静止", "LATERAL": "沿车体侧向运动",
+    }
     _EXPOSURE_DIMENSION_LABELS = {
         "WHERE": "场所",
         "ROAD": "道路条件",
@@ -356,10 +361,10 @@ class EngineeringReportTextMapper:
     def _object_motion(cls, scenario: Any) -> str:
         facts = getattr(scenario, "facts", {}) or {}
         speed = facts.get("object_speed_kph")
-        direction = {"FORWARD": "沿车体前向运动", "REVERSE": "沿车体后向运动",
-                     "LEFT": "向车体左侧横穿", "RIGHT": "向车体右侧横穿"}.get(facts.get("object_longitudinal_direction"))
+        direction = cls._OBJECT_DIRECTION_TEXT.get(facts.get("object_longitudinal_direction"))
         return (f"目标以{quantity(speed, 'km/h')} km/h{direction}"
-                if direction and isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0 else "")
+                if direction and facts.get("object_longitudinal_direction") != "STATIONARY"
+                and isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0 else "")
 
     def object_interaction_summary(self, scenario: Any) -> str:
         """Render only structured object and interaction facts."""
@@ -521,7 +526,8 @@ class EngineeringReportTextMapper:
             ("ego_lateral_direction", "自车侧向位移方向"),
             ("object_longitudinal_direction", "目标方向"),
         ):
-            direction = directions.get(str(facts.get(field, "")).upper(), "")
+            labels = cls._OBJECT_DIRECTION_TEXT if field == "object_longitudinal_direction" else directions
+            direction = labels.get(str(facts.get(field, "")).upper(), "")
             if direction:
                 parts.append(f"{label}：{direction}")
         if not parts:
@@ -881,8 +887,9 @@ class EngineeringReportTextMapper:
             parts.append(position + "目标")
         directions = {"FORWARD": "前进", "REVERSE": "倒车", "STATIONARY": "静止", "LATERAL": "侧向运动"}
         for field, label in (("ego_longitudinal_direction", "自车"), ("object_longitudinal_direction", "目标")):
-            if facts.get(field) in directions:
-                parts.append(label + directions[facts[field]])
+            labels = cls._OBJECT_DIRECTION_TEXT if field == "object_longitudinal_direction" else directions
+            if facts.get(field) in labels:
+                parts.append(label + labels[facts[field]])
         if facts.get("fault_motion_model"):
             parts.append("所选运动模型见场景明细")
         return "、".join(parts)
