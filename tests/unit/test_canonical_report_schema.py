@@ -128,7 +128,8 @@ def test_template_shell_renderer_preserves_grouped_hara_layout():
         assert "Malfunction ID" in [cell.value for cell in workbook["99_Audit"][4]]
         assert workbook["AI-process"].sheet_state == "hidden"
         assert workbook["0_Document Information"].sheet_state == "hidden"
-        assert "Safety Goal generation has not been completed" in workbook["06_Safety Goal"]["A4"].value
+        assert "尚未完成安全目标生成" in workbook["06_Safety Goal"]["A4"].value
+        assert "已有 ASIL 结果不代表已生成安全目标" in workbook["06_Safety Goal"]["A4"].value
         assert "no ASIL assessment has been finalized" not in workbook["06_Safety Goal"]["A4"].value
     finally:
         workbook.close()

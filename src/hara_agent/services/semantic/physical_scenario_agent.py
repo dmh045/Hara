@@ -241,9 +241,9 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v27-nullable-speed-bounds"
-    PROMPT_VERSION = "post-fault-physical-scenario-v54-complete-driver-scope"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v34-complete-driver-scope"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v28-preserved-response-driver-scope"
+    PROMPT_VERSION = "post-fault-physical-scenario-v55-static-target-response-hold"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v35-static-target-response-hold"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
@@ -303,7 +303,8 @@ class PhysicalScenarioAgent:
         "已提出依赖剩余制动的停车安全状态时，应在proposal内给出transition={model:CONSTANT_NET_DECELERATION,"
         "net_deceleration_mps2:正数,rationale:理由,basis_refs:引用数组}。该数值是抵消故障驱动力/坡度后"
         "的净减速度假设，不是车辆实测能力，不得沿用方法示例的默认减速度。停止是否安全仍须考虑目标轨迹。"
-        "移动目标使用该响应时，transition还须包含post_stop_motion:HOLD_POSITION，说明停止后由哪个剩余控制"
+        "已有运动使用RECTILINEAR_MOVING_TARGET_CONTACT时（包括目标速度为0的静止对象），"
+        "该制动响应的transition还须包含post_stop_motion:HOLD_POSITION，说明停止后由哪个剩余控制"
         "持续保持；目标仍按原轨迹运动，不能在本车停车时结束分析。停车后仍被横穿者/后车撞到就不是避碰安全状态。"
         "停车保持不必机械依赖EPB：若本代表可由持续的人工/常规制动维持静止，应清楚声明这一路径及条件；"
         "若确实需要parking_hold，则必须单独分析其可用性，不能把未声明能力藏进safe_state_proposal。"
@@ -549,7 +550,7 @@ class PhysicalScenarioAgent:
                 "placement": "hypothesis, control_assessment or its driver_control_assessments entry",
                 "required": ["description", "required_controls", "basis_refs", "conditions"],
                 "transition": {"model": "CONSTANT_NET_DECELERATION", "net_deceleration_mps2": "positive conditional net value, not a default",
-                    "post_stop_motion": "HOLD_POSITION is required for a moving-target braking response",
+                    "post_stop_motion": "HOLD_POSITION is required for braking responses to RECTILINEAR_MOVING_TARGET_CONTACT, including a stationary target with object_speed_kph=0; state the remaining holding-control basis",
                     "rationale": "response plus holding capability basis", "basis_refs": ["supplied evidence ID"]},
                 "alternative": "Use the active timing policy's fault_release_response model when justified, without braking/holding parameters; otherwise give a concrete timing_unresolved_reason.",
                 "field_ownership": "hazard_timing and uncovered_conditions belong beside safe_state_proposal in the control assessment, never inside the proposal or transition.",

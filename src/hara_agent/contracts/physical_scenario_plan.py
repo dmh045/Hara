@@ -94,6 +94,16 @@ def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
         and control not in assessment.get("unresolved_controls", {})]
     selected["remaining_controls"] = list(dict.fromkeys([
         *shared_capabilities, *assessment["remaining_controls"]]))
+    # The same target/trajectory does not lose its shared evasion evidence
+    # when the ego driver's pedal path is scoped. Local conclusions win;
+    # driver presence and remote access remain personnel-specific.
+    target_evasion = "other_road_user_avoidance_possible"
+    if (target_evasion not in assessment.get("intervention_assumptions", {})
+            and target_evasion not in assessment.get("unresolved_controls", {})):
+        for field in ("intervention_assumptions", "unresolved_controls"):
+            if target_evasion in hypothesis.get(field, {}):
+                selected[field] = {**selected.get(field, {}),
+                    target_evasion: hypothesis[field][target_evasion]}
     shared_response = hypothesis.get("safe_state_proposal", {})
     required = set(shared_response.get("required_controls", []))
     if (("automatic_braking_command" in required or shared_response.get("required_command_path"))
@@ -627,6 +637,13 @@ class PhysicalScenarioPlan:
             _validate_control_assessment(assessment, evidence_ids, scoped=True)
             current = destination[identity]
             assessment = deepcopy(assessment)
+            if current.get("driver_positions"):
+                if ("driver_positions" in assessment
+                        and set(assessment["driver_positions"]) != set(current["driver_positions"])):
+                    raise ValueError("CORRECTION_CHANGED_UNREPORTED_WORLD: response update changed driver scope")
+                # Personnel scope is an existing condition, not a response
+                # optional field. An omitted scope must not become unknown.
+                assessment["driver_positions"] = deepcopy(current["driver_positions"])
             scoped = {**current.get("driver_control_assessments", {}),
                       **assessment.get("driver_control_assessments", {})}
             if scoped:

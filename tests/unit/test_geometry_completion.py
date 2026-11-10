@@ -276,6 +276,32 @@ def test_response_composition_preserves_motion_evidence_and_replaces_control_onl
 
 
 @pytest.mark.parametrize('controls_only', [True, False])
+def test_response_update_preserves_existing_personnel_scope_without_inventing_one(controls_only):
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED
+    previous = raw_plan(assessed=True)
+    h = previous['hypotheses'][0]
+    assessment = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    if controls_only:
+        previous = {'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': deepcopy(assessment)}
+        h = previous['control_assessment']
+    identity = 'control_assessment' if controls_only else h['hypothesis_id']
+    update = {'response_updates': [{'hypothesis_id': identity, 'control_assessment': assessment}]}
+    h.pop('driver_positions', None)
+    result = PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+    actual = result['control_assessment'] if controls_only else result['hypotheses'][0]
+    assert 'driver_positions' not in actual
+    h['driver_positions'] = ['in_driver_seat']
+    before = deepcopy(previous)
+    result = PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+    actual = result['control_assessment'] if controls_only else result['hypotheses'][0]
+    assert actual['driver_positions'] == ['in_driver_seat']
+    assert previous == before
+    assessment['driver_positions'] = ['outside_driver_seat']
+    with pytest.raises(ValueError, match='changed driver scope'):
+        PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+
+
+@pytest.mark.parametrize('controls_only', [True, False])
 def test_response_update_preserves_unmodified_driver_but_replaces_returned_branch(controls_only):
     from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, controls_for_driver
     from test_moving_response_timing import proposal

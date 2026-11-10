@@ -418,6 +418,29 @@ def test_driver_presence_structure_is_validated_before_scope_consistency(value):
         PhysicalScenarioPlan.from_dict(raw, evidence_ids={'MF.description','SCENARIO.conditions'})
 
 
+@pytest.mark.parametrize('unknown', [False, True])
+def test_driver_delta_preserves_shared_target_evasion_and_explicit_local_override(unknown):
+    from hara_agent.contracts.physical_scenario_plan import controls_for_driver, CONTROL_ASSESSMENT_REQUIRED
+    from copy import deepcopy
+    h = control_only_plan()['control_assessment']
+    field = 'other_road_user_avoidance_possible'
+    proposal = {'value': False, 'rationale': 'Same target has no escape path in this representative geometry',
+                'basis_refs': ['SCENARIO.conditions'], 'conditions': ['same target and trajectory']}
+    h['intervention_assumptions'] = {} if unknown else {field: proposal}
+    h['unresolved_controls'] = {field: 'Target escape corridor remains unresolved'} if unknown else {}
+    local = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    h['driver_control_assessments'] = {'in_driver_seat': local}
+    before = deepcopy(h)
+    effective = controls_for_driver(h, 'in_driver_seat')
+    slot = 'unresolved_controls' if unknown else 'intervention_assumptions'
+    assert effective[slot][field] == h[slot][field]
+    assert h == before
+    local['unresolved_controls'] = {field: 'This driver-specific interaction requires separate target evidence'}
+    effective = controls_for_driver(h, 'in_driver_seat')
+    assert effective['unresolved_controls'][field] == local['unresolved_controls'][field]
+    assert field not in effective.get('intervention_assumptions', {})
+
+
 @pytest.mark.parametrize('inside,braking,expected', [(True, True, 'C0'), (False, True, 'C3'), (True, False, '')])
 def test_existing_motion_gets_only_missing_controls_then_scores_and_resumes(method, tmp_path, inside, braking, expected):
     from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService

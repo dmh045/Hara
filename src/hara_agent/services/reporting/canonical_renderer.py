@@ -699,10 +699,10 @@ class HARAReportWorkbookRenderer:
                 sheet.row_dimensions[row_number].height = self._estimated_height(values, (14, 36, 14, 44, 32, 12, 22), registry)
         else:
             completed = (view_model.projection_metrics or {}).get("safety_goal_stage_completed")
-            reason = ("Safety Goal stage completed without producing a Safety Goal." if completed else
-                      "Safety Goal generation has not been completed in this run; existing ASIL results do not imply generated Safety Goals.")
+            reason = ("安全目标生成阶段已完成，本次未生成安全目标；适用性见关联风险结果。" if completed else
+                      "本次尚未完成安全目标生成；已有 ASIL 结果不代表已生成安全目标。")
             self._set_title(sheet, "A4:F4", "A4", reason, registry, "safety_goal_data")
-            self._set_title(sheet, "A5:F5", "A5", "Pending / Not available — DRAFT — NOT FOR RELEASE", registry, "data_pending_warning")
+            self._set_title(sheet, "A5:F5", "A5", "本页暂无安全目标条目；报告为草稿，未经工程审核不得正式发布。", registry, "data_pending_warning")
             sheet.row_dimensions[4].height = self._estimated_height((sheet["A4"].value,), (120,), registry)
             sheet.row_dimensions[5].height = self._estimated_height((sheet["A5"].value,), (120,), registry)
         last_row = max(5, 3 + len(view_model.safety_goals))
