@@ -241,7 +241,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v28-preserved-response-driver-scope"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v29-identical-control-duplicates"
     PROMPT_VERSION = "post-fault-physical-scenario-v57-scoped-structured-policies"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v37-scoped-structured-policies"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
@@ -954,6 +954,16 @@ class PhysicalScenarioAgent:
                             and "uncovered_conditions" in candidate["control_assessment"]):
                         candidate["uncovered_conditions"] = deepcopy(candidate["control_assessment"]["uncovered_conditions"])
                         envelope_normalization = "PROJECTED_CONTROL_LIMITS"
+                    # An identical outer copy adds no second personnel world.
+                    # Keep the owning slot; conflicts and missing owners still
+                    # reach strict validation, and the raw reply is untouched.
+                    positions = candidate.get("driver_positions")
+                    if (isinstance(positions, list) and positions
+                            and all(isinstance(v, str) for v in positions)
+                            and isinstance(candidate.get("control_assessment"), dict)
+                            and positions == candidate["control_assessment"].get("driver_positions")):
+                        candidate.pop("driver_positions")
+                        envelope_normalization = "REMOVED_IDENTICAL_OUTER_DRIVER_SCOPE"
                 if (isinstance(candidate, dict) and "uncovered_conditions" not in candidate
                         and isinstance(candidate.get("hypotheses"), list) and candidate["hypotheses"]
                         and all(isinstance(h, dict) and isinstance(h.get("uncovered_conditions"), list)
@@ -1050,6 +1060,16 @@ class PhysicalScenarioAgent:
                                         "field": field, "normalization": "UNWRAPPED_SINGLE_CONTROL_ARRAY"})
                             proposal = controls_view.get("safe_state_proposal")
                             controls = proposal.get("required_controls") if isinstance(proposal, dict) else None
+                            command_path = proposal.get("required_command_path") if isinstance(proposal, dict) else None
+                            if (isinstance(command_path, dict) and isinstance(controls, list) and controls
+                                    and all(isinstance(c, str) for c in controls)
+                                    and command_path.get("required_controls") == controls):
+                                # Dependencies belong to the proposal. Accept
+                                # only an exact duplicate in its command path;
+                                # this cannot add or restore a control capability.
+                                command_path.pop("required_controls")
+                                control_scope_normalizations.append({"hypothesis_id": hypothesis_id,
+                                    "controls": list(controls), "normalization": "REMOVED_IDENTICAL_COMMAND_PATH_CONTROLS"})
                             remaining = controls_view.get("remaining_controls")
                             failed = controls_view.get("failed_controls")
                             if (isinstance(controls, list) and controls

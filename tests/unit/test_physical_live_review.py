@@ -610,6 +610,54 @@ def test_control_envelope_normalization_preserves_reply_and_reuses_response(tmp_
     assert restored == plan and resumed['response_cache_hits'] == 1 and client.calls == 1
 
 
+@pytest.mark.parametrize('duplicate', ['driver_scope', 'response_controls', 'both'])
+@pytest.mark.parametrize('conflicting', [False, True])
+def test_control_duplicate_fields_preserve_exact_values_and_reject_conflicts(tmp_path, duplicate, conflicting):
+    control = dict(rationale='Conditional retained brake actuator', basis_refs=['MF.description'],
+        conditions=['Independent system response is a design requirement'],
+        uncovered_conditions=['Independence is not established'],
+        failed_controls=['automatic_drive_command'], remaining_controls=['braking'],
+        driver_positions=['in_driver_seat'], safe_state_proposal={
+            'description': 'Stop and hold through a required independent system path',
+            'required_controls': ['braking'], 'basis_refs': ['MF.description'],
+            'conditions': ['The retained brake actuator is assumed independent'],
+            'required_command_path': {'description': 'Independent braking request', 'initiator': 'SYSTEM',
+                'implementation_status': 'REQUIRED_NOT_ESTABLISHED',
+                'independent_of': ['automatic_drive_command'], 'rationale': 'Bypass the failed command',
+                'basis_refs': ['MF.description']}})
+    expected = {'hypotheses': [], 'uncovered_conditions': ['Conditional response'], 'control_assessment': control}
+    raw = deepcopy(expected)
+    if duplicate in {'driver_scope', 'both'}:
+        raw['driver_positions'] = ['outside_driver_seat'] if conflicting else ['in_driver_seat']
+    if duplicate in {'response_controls', 'both'}:
+        raw['control_assessment']['safe_state_proposal']['required_command_path']['required_controls'] = (
+            ['driver_braking'] if conflicting else ['braking'])
+    before = deepcopy(raw)
+    records = []
+
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(deepcopy(raw), 'OFFLINE')
+
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'duplicate-control-fields', 'task_scope': 'CONTROL_INPUTS_ONLY',
+               'evidence': {'MF.description': 'Automatic drive command fault'}}
+    if conflicting:
+        with pytest.raises(ValueError, match='schema repair exhausted'):
+            agent.propose(context, on_response=records.append)
+        assert client.calls == 2
+    else:
+        plan, audit = agent.propose(context, on_response=records.append)
+        assert plan.to_dict() == expected and audit['schema_repairs'] == 0
+        assert audit['control_envelope_normalization'] or audit['control_scope_normalizations']
+        restored, resumed = agent.propose(context)
+        assert restored == plan and resumed['response_cache_hits'] == 1 and client.calls == 1
+    assert raw == before == records[0]['response']['data']
+
+
 @pytest.mark.parametrize('explicit_zero', [True, False])
 def test_constant_speed_notation_reuses_same_motion_solver_and_retains_raw_reply(method, tmp_path, explicit_zero):
     from test_geometry_completion import Client
