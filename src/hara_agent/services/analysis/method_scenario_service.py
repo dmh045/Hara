@@ -18,7 +18,7 @@ from hara_agent.models import (
     ScenarioCandidate,
     SourceRef,
 )
-from hara_agent.services.analysis.project_fact_resolver import SpeedResolutionResult
+from hara_agent.services.analysis.project_fact_resolver import SpeedResolutionResult, effective_project_policy
 from hara_agent.services.analysis.scenario_constraint_service import (
     ScenarioConstraintExecutor, ScenarioConstraintStatus,
 )
@@ -538,8 +538,16 @@ class MethodScenarioCandidateService:
         # input ordering must not accidentally narrow it to indoor/outdoor.
         boundary_parent_id = min(parents, key=lambda p: (
             p.operating_scenario not in project_facts.odd_locations,
-            bool(explicit_environment(p.operating_scenario)), p.scenario_id)).scenario_id if parents else ""
-        for option in sorted(options, key=lambda c: c.scenario_id):
+            bool(explicit_environment(p.operating_scenario)), p.operating_scenario,
+            json.dumps(p.facts.get("source_operating_conditions", {}), sort_keys=True),
+            p.scenario_id)).scenario_id if parents else ""
+        # Earlier options influence the remaining environment coverage. Sort on
+        # actual conditions before trace IDs, otherwise an unrelated method-hash
+        # change reshuffles the representatives and the amount of paid work.
+        for option in sorted(options, key=lambda c: (
+            c.operating_scenario, str(c.analysis_instance.get("source_option_id", "")),
+            json.dumps(c.facts.get("source_operating_conditions", {}), sort_keys=True),
+            json.dumps(c.analysis_instance.get("source_option_values", {}), sort_keys=True), c.scenario_id)):
             physical = scenario_conditions(option)
             physical["facts"].pop("operating_scenario", None)
             physical["fact_authority"].pop("operating_scenario", None)
@@ -577,7 +585,7 @@ class MethodScenarioCandidateService:
                 result["scenario_ids"] = [sid for a in result["source_contexts"] for sid in a["scenario_ids"]]
         representatives, mapping = coalesce_candidates(generated)
         audit["atom_generation"] = {
-            "version": "ordinary-analyze-atoms-v4-joint-source-coverage", "provider_calls": 0,
+            "version": "ordinary-analyze-atoms-v5-stable-source-order", "provider_calls": 0,
             "raw_candidate_count": len(generated),
             "unique_condition_count": len(representatives),
             "coalesced_candidate_count": len(generated) - len(representatives),
@@ -911,6 +919,10 @@ class MethodScenarioCandidateService:
                 json.dumps(material, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()
             scenario_id = f"SCN-METHOD-{fingerprint[:16].upper()}"
+            policy = effective_project_policy(self.method.metadata.get("project_analysis_policy", {}),
+                                              self.method.metadata.get("project_input_sha256", ""))
+            if policy.get("project_scope"):
+                facts["project_scope"] = policy["project_scope"]
             risk_binding = self.risk_facts.bind(project_facts, {
                 **facts,
                 "scenario_id": scenario_id,

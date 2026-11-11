@@ -7,6 +7,7 @@ import re
 from threading import Lock
 from time import perf_counter
 from hara_agent.config.llm_config import physical_reasoning_identity
+from hara_agent.services.analysis.project_fact_resolver import effective_project_policy
 
 from hara_agent.contracts.physical_scenario_plan import PhysicalScenarioPlan, PHYSICAL_PLAN_VERSION, MODEL_CATALOG, braking_capability, declared_response_path, automatic_command_unassessed
 from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
@@ -204,6 +205,7 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
             # Read-only source passages are shared; workers never change them.
             "blocks": state.item_definition.get("blocks", []),
             "source_id": state.item_definition.get("source_id", ""),
+            "item_sha256": state.item_definition.get("item_sha256", ""),
         })
         try:
             result = construct_physical_scenarios(local,
@@ -328,7 +330,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         coverage_offset = int(signature(asdict(mf))[:8], 16)
         for (task_scope, condition_key), family in sorted(groups.items()):
             first = family[0]
-            project_policy = deepcopy(method.metadata.get("project_analysis_policy", {}))
+            project_policy = effective_project_policy(method.metadata.get("project_analysis_policy", {}),
+                state.item_definition.get("item_sha256", ""))
             if not DriverConfigurationBrancher(policy=project_policy).location_convention(first):
                 project_policy.pop("driver_location_convention", None)
             focus_identity = signature({
@@ -416,6 +419,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                         "SCENARIO.conditions": inputs["conditions"], **source_evidence}
             inputs["source_routing"] = source_routing
             inputs["evidence"] = evidence
+            if state.item_definition.get("item_sha256"):
+                inputs["project_input_sha256"] = state.item_definition["item_sha256"]
             key = signature(inputs)
             context = {**inputs, "plan_key": key}
             saved = cache.get(key, {})

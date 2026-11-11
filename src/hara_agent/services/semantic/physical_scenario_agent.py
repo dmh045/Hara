@@ -582,6 +582,7 @@ class PhysicalScenarioAgent:
         # send all physical/source/engineering constraints and the already
         # explicit intervention_inputs, without downstream S/C classifications.
         prompt_inputs = deepcopy(context)
+        prompt_inputs.pop("project_input_sha256", None)
         if response_only_correction:
             # The selected world is immutable. Selection alternatives and
             # retrieval-ranking diagnostics are not response inputs; preserve
@@ -597,6 +598,7 @@ class PhysicalScenarioAgent:
         # above and can repeat a project convention outside its active scope.
         # They remain in the original MethodContract and plan audit context.
         policy.pop("decisions", None)
+        policy.pop("bound_item_sha256", None)  # Identity is audit/cache context, not reasoning input.
         # Make the active response capability explicit alongside the motion
         # catalog. Otherwise a proposal can incorrectly reject a supported
         # response just because its deceleration is absent from the unmitigated

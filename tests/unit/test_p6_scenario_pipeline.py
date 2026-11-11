@@ -275,7 +275,10 @@ def test_source_road_axis_is_bounded_without_crossing_every_location(method):
     scopes = [c.facts["source_operating_conditions"] for c in children]
     assert {s["operating_scenario"] for s in scopes} == {p.operating_scenario for p in parents}
     assert {s.get("source_slope_direction") for s in scopes if s.get("source_slope_pct")} == {"上坡", "下坡"}
-    assert {s["operating_scenario"] for s in scopes if s.get("source_slope_pct")} == {"室外停车场"}
+    # The original outside anchor was an incidental lowest-ID choice. The
+    # contract is one source-compatible anchor, unchanged by identity renaming.
+    anchor = next(c for c in parents if c.scenario_id == audit["atom_generation"]["source_boundary_parent_id"])
+    assert {s["operating_scenario"] for s in scopes if s.get("source_slope_pct")} == {anchor.operating_scenario}
     assert audit["atom_generation"]["source_boundary_policy"] == "ONE_SOURCE_ANCHOR_PER_PHYSICAL_OPTION"
     from hara_agent.services.semantic.scenario_batching import _scenario_json
     import json
@@ -547,3 +550,24 @@ def test_joint_source_coverage_is_order_independent_and_retains_grade_directions
     assert {c['operating_scenario'] for c in contexts} == {'停车场', '室内停车场', '室外停车场'}
     assert {c.get('source_slope_direction') for c in contexts} >= {'上坡', '下坡'}
     assert audit['atom_generation']['coverage_policy'] == 'JOINT_PRIMARY_SOURCE_AND_ROAD_COVERAGE'
+
+
+def test_parent_identity_renaming_does_not_change_source_representatives(method):
+    """Method/trace hashes may rename IDs; they do not change operating coverage."""
+    import json
+    from collections import Counter
+    p = replace(project(), odd_road_surfaces=['上坡15%', '下坡15%', '干燥路面', '湿滑路面'])
+    parents = [replace(parent(identity), operating_scenario=place,
+        facts={**parent().facts, 'operating_scenario': place})
+        for identity, place in [('aaa', '停车场'), ('bbb', '室内停车场'), ('ccc', '室外停车场')]]
+    changed = [replace(c, scenario_id=new) for c, new in zip(parents, ['zzz', 'yyy', 'xxx'])]
+    service = MethodScenarioCandidateService(method)
+    failure = replace(malfunction(), failure_type='excessive', guideword='More',
+        description='驱动扭矩过大', functional_effect='车辆非预期加速')
+    def conditions(items):
+        return Counter(json.dumps({'atoms': sorted(c.facts.get('scenario_atom_ids', [])),
+            'source': c.facts.get('source_operating_conditions'),
+            'option': c.analysis_instance.get('source_option_values')}, sort_keys=True) for c in items)
+    a, _ = service.generate_for_malfunction(failure, parents, project_facts=p, function=function())
+    b, _ = service.generate_for_malfunction(failure, changed, project_facts=p, function=function())
+    assert conditions(a) == conditions(b)

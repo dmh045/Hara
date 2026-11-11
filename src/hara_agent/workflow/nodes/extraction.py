@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+import hashlib
 
 from hara_agent.services.extraction import DocumentReader, select_source_blocks
 from hara_agent.workflow.state import HARAState, WorkflowStage
@@ -27,6 +28,7 @@ def read_item_document(state: HARAState, path: str,
     state.item_definition = {
         "source_id": artifact.source_id,
         "source_path": str(artifact.source_path),
+        "item_sha256": hashlib.sha256(artifact.source_path.read_bytes()).hexdigest(),
         "raw_blocks": [serialize(block) for block in artifact.blocks],
         "blocks": [serialize(block) for block in selection.selected_blocks],
         "text": "\n".join(block.text for block in selection.selected_blocks if block.text),

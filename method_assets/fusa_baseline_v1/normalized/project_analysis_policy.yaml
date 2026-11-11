@@ -2,6 +2,10 @@ policy_id: AVP_SEC_2026_10_P7R
 version: "2.1"
 supersedes: AVP_SEC_2026_10_P7
 project_scope: current_avp_item_definition
+# Original AVP input retained in Git and historical runs; this binds the
+# existing project decisions, not the transferable numerical methods below.
+bound_item_sha256:
+  - c8448397033587957e27130dff7414980d4581b10c4dced76a0f1b6e73d69981
 source_kind: USER_RELAYED_HARA_ENGINEERING_OPINION
 source_note: >-
   A1-A5 were relayed by the user from HARA engineering discussion. This record

@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 import re
 from typing import Any
+from copy import deepcopy
 
 from hara_agent.models import (
     FactProvenance,
@@ -12,6 +13,23 @@ from hara_agent.models import (
     SpeedEnvelope,
     SourceRef,
 )
+
+
+def effective_project_policy(policy: dict, item_sha256: str = "") -> dict:
+    """Scope project decisions to their recorded input, without changing methods.
+
+    Missing historical identity is not evidence of membership. Numerical and
+    conditional reference methods remain available; only project-only decisions
+    and location conventions are filtered. The compiled authority stays intact.
+    """
+    effective = deepcopy(policy)
+    bound = bool(item_sha256 and item_sha256 in policy.get("bound_item_sha256", ()))
+    if not bound:
+        effective["project_scope"] = ""
+        effective["engineering_decisions"] = {}
+        effective.pop("driver_location_convention", None)
+    effective.pop("decisions", None)  # Historical narrative, not executable policy.
+    return effective
 
 
 class ProjectFactResolutionError(ValueError):

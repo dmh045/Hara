@@ -139,6 +139,29 @@ class HazardousEventRiskContextService:
             reason="SOURCE_GROUNDED_STRUCTURED_FACT",
         )
 
+    @staticmethod
+    def _declared_capability(scenario, field, *, malfunction_id, scenario_id):
+        """Read the latest scoped assessment with the production plan projection.
+
+        Explicit uncertainty blocks older declarations; an omitted field may
+        still use an applicable retained motion assessment. Never edit history.
+        """
+        resolver, controls = ({
+            "emergency_braking_available": (braking_capability, {"braking", "driver_braking", "emergency_braking_available"}),
+            "steering_control_available": (steering_capability, {"steering", "steering_control_available"}),
+        })[field]
+        for key in ("control_analysis", "physical_analysis"):
+            hypothesis = scenario.get(key, {}).get("hypothesis", {})
+            metadata = scenario.get("_fact_provenance", {}).get(key, {})
+            if not source_is_accepted_for(metadata, malfunction_id=malfunction_id, scenario_id=scenario_id):
+                continue
+            if controls & set(hypothesis.get("unresolved_controls", {})):
+                return None, metadata
+            value = resolver(hypothesis)
+            if value is not None:
+                return value, metadata
+        return None, {}
+
     def build(
         self, *, malfunction_id: str, scenario_id: str, hazard_node_id: str,
         scenario: dict[str, Any],
@@ -183,11 +206,9 @@ class HazardousEventRiskContextService:
         # did not materialize this input. Project that declaration with its
         # original conditional provenance; never overwrite an explicit fact.
         if scenario.get("emergency_braking_available") is None:
-            physical = scenario.get("physical_analysis", {})
-            metadata = scenario.get("_fact_provenance", {}).get("physical_analysis", {})
-            capability = braking_capability(physical.get("hypothesis", {}))
-            if capability is not None and source_is_accepted_for(metadata,
-                    malfunction_id=malfunction_id, scenario_id=scenario_id):
+            capability, metadata = self._declared_capability(scenario, "emergency_braking_available",
+                malfunction_id=malfunction_id, scenario_id=scenario_id)
+            if capability is not None:
                 values["emergency_braking_available"] = self._fact(
                     "emergency_braking_available", {"emergency_braking_available": capability,
                         "_fact_provenance": {"emergency_braking_available": metadata}},
@@ -260,27 +281,20 @@ class HazardousEventRiskContextService:
                 result[field] = fact.value
                 if field == "emergency_braking_available" and scenario.get(field) is None:
                     result["_fact_provenance"] = {**scenario.get("_fact_provenance", {}),
-                        field: scenario.get("_fact_provenance", {}).get("physical_analysis", {})}
+                        field: self._declared_capability(scenario, field,
+                            malfunction_id=context.malfunction_id, scenario_id=context.scenario_id)[1]}
                 if field == "driver_in_vehicle" and scenario.get(field) is None:
                     result["_fact_provenance"] = {**result.get("_fact_provenance", {}),
                         field: {**scenario.get("_fact_provenance", {}).get("ego_action", {}), "validation_status": "VALIDATED"}}
             else:
                 result.pop(field, None)
         if scenario.get("steering_control_available") is None:
-            for key in ("control_analysis", "physical_analysis"):
-                hypothesis = scenario.get(key, {}).get("hypothesis", {})
-                capability = steering_capability(hypothesis)
-                metadata = scenario.get("_fact_provenance", {}).get(key, {})
-                if not source_is_accepted_for(metadata,
-                        malfunction_id=context.malfunction_id, scenario_id=context.scenario_id):
-                    continue
-                if "steering" in hypothesis.get("unresolved_controls", {}):
-                    break
-                if capability is not None:
-                    result["steering_control_available"] = capability
-                    result["_fact_provenance"] = {**result.get("_fact_provenance", {}),
-                        "steering_control_available": metadata}
-                    break
+            capability, metadata = self._declared_capability(scenario, "steering_control_available",
+                malfunction_id=context.malfunction_id, scenario_id=context.scenario_id)
+            if capability is not None:
+                result["steering_control_available"] = capability
+                result["_fact_provenance"] = {**result.get("_fact_provenance", {}),
+                    "steering_control_available": metadata}
         result["_hazardous_event_risk_context"] = context
         return result
 

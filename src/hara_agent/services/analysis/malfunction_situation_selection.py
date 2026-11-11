@@ -9,6 +9,7 @@ from hara_agent.models import (
 )
 
 from .failure_mode_selector_resolver import FailureModeSelectorResolver
+from .project_fact_resolver import effective_project_policy
 
 
 def selection_function(value) -> FunctionDefinition | None:
@@ -29,12 +30,14 @@ def selection_function(value) -> FunctionDefinition | None:
 class MalfunctionSituationSelectionService:
     def __init__(self, method: MethodContract):
         self.method = method
+        self.policy = effective_project_policy(method.metadata.get("project_analysis_policy", {}),
+                                               method.metadata.get("project_input_sha256", ""))
         self.rules = method.situation_selection
         self.selector = FailureModeSelectorResolver(method)
 
     def _facts(self, malfunction, function, project_facts):
         """Accept exact approved bindings; never classify descriptions/guidewords."""
-        scope = self.method.metadata.get("project_analysis_policy", {}).get("project_scope", "")
+        scope = self.policy.get("project_scope", "")
         if not scope or function is None or function.function_id != malfunction.function_id or not function.sources:
             return {}, "FUNCTION_OR_PROJECT_SCOPE_NOT_PROVEN"
         accepted = {}
@@ -108,7 +111,7 @@ class MalfunctionSituationSelectionService:
         output = self._value(facts, "FUNCTIONAL_OUTPUT")
         scope = self._value(facts, "FUNCTION_OPERATING_SCOPE")
         failure = self.selector.resolve(malfunction).canonical_failure_type
-        project_scope = self.method.metadata.get("project_analysis_policy", {}).get("project_scope", "")
+        project_scope = self.policy.get("project_scope", "")
         context_error = context_error or (
             "FUNCTION_OUTPUT_OR_OPERATING_SCOPE_NOT_PROVEN"
             if output is None or scope not in {"WITHIN_FUNCTION", "OUTSIDE_FUNCTION"} else ""

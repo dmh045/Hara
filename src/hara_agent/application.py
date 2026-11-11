@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import os
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 from hara_agent.config import LLMConfig, RunConfig
@@ -102,6 +103,10 @@ class HARAApplication:
             ),
         )
         method = resolution.method
+        # One input identity for ordinary and bounded runs. Keep the compiled
+        # method untouched; callers receive the same input-scoped policy view.
+        item_sha256 = hashlib.sha256(self.config.item_path.read_bytes()).hexdigest()
+        method = replace(method, metadata={**method.metadata, "project_input_sha256": item_sha256})
         method_ref = {
             "template_hash": method.metadata["template_hash"],
             "contract_version": method.contract_version,
@@ -173,13 +178,16 @@ class HARAApplication:
                 if (
                     not saved_fingerprint
                     or saved_fingerprint != current_selection.fingerprint
-                    or str(Path(state.item_definition.get("source_path", "")).resolve())
-                    != str(self.config.item_path.resolve())
+                    or (state.item_definition.get("item_sha256") != item_sha256
+                        if state.item_definition.get("item_sha256") else
+                        str(Path(state.item_definition.get("source_path", "")).resolve())
+                        != str(self.config.item_path.resolve()))
                 ):
                     raise ValueError(
                         "Checkpoint Item Definition or source-selection policy changed; "
                         "start a new run instead of reusing derived facts"
                     )
+                state.item_definition["item_sha256"] = item_sha256
             configured_event = next((
                 event for event in state.audit_trail
                 if event.get("event") == "bounded_sample_configured"
@@ -403,6 +411,11 @@ class HARAApplication:
                 "typed ProjectFacts are unavailable",
             )
         facts = ItemDefinitionFacts.from_dict(typed)
+        # Scope also applies when samples enter through this production method.
+        candidate_service.method = replace(candidate_service.method, metadata={
+            **candidate_service.method.metadata,
+            "project_input_sha256": state.item_definition.get("item_sha256", ""),
+        })
         resolution = self.resolve_project_speed_context(state)
         functions = []
         for value in state.functions:

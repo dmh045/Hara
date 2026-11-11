@@ -27,11 +27,16 @@ SOURCE = SourceRef("item_document", "synthetic-project", "test:scope", "Explicit
 
 @pytest.fixture(scope="module")
 def method():
-    return MethodSourceResolver().resolve(
+    method = MethodSourceResolver().resolve(
         template_path=None,
         baseline_manifest_path=ROOT / "method_assets/fusa_baseline_v1/manifest.yaml",
         report_template_path=ROOT / "references/HARA_Template_AI_20260327.xlsx",
     ).method
+    # These fixtures exercise explicitly approved project facts. Bind the input
+    # separately from its display name; unbound inputs are covered below.
+    method.metadata["project_input_sha256"] = "a" * 64
+    method.metadata["project_analysis_policy"]["bound_item_sha256"] = ["a" * 64]
+    return method
 
 
 @pytest.fixture(autouse=True)

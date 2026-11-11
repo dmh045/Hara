@@ -505,7 +505,8 @@ def test_production_physical_request_scopes_project_driver_convention(method, pr
             assert view['method_identity']['method_source_hash'] == before['method_source_hash']
             raise RequestCaptured
     with pytest.raises(RequestCaptured):
-        construct_physical_scenarios(HARAState('scope-check'), {'MF': [parent]}, [mf()],
+        construct_physical_scenarios(HARAState('scope-check', item_definition={
+            'item_sha256': before['project_analysis_policy']['bound_item_sha256'][0]}), {'MF': [parent]}, [mf()],
             method=method, agent=PhysicalScenarioAgent(Client()), project_facts=None)
     assert method.metadata == before
 

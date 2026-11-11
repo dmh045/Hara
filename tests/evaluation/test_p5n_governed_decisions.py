@@ -17,6 +17,7 @@ def _current():
         baseline_manifest_path=ROOT / "method_assets/fusa_baseline_v1/manifest.yaml",
         report_template_path=ROOT / "references/HARA_Template_AI_20260327.xlsx",
     ).method
+    method.metadata["project_input_sha256"] = method.metadata["project_analysis_policy"]["bound_item_sha256"][0]
     malfunction = MalfunctionCandidate(
         malfunction_id="MF-F01-002", function_id="F01", guideword="More",
         guideword_id="GW-MORE",

@@ -23,6 +23,7 @@ from .failure_mode_selector_resolver import (
     FailureModeSelectorResolver, TemplateSelectorResolution,
 )
 from .driver_configuration_service import DriverConfigurationBrancher
+from .project_fact_resolver import effective_project_policy
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
 from .malfunction_situation_selection import MalfunctionSituationSelectionService
 
@@ -54,19 +55,12 @@ class ScenarioMethodService:
         self.selector_resolver = FailureModeSelectorResolver(method)
         self.template_selector_resolver = FMTemplateSelectorAdapterResolver(method)
         self.risk_vocabulary = RiskVocabularyAdapter(method)
-        policy = method.metadata.get("project_analysis_policy", {})
+        policy = effective_project_policy(method.metadata.get("project_analysis_policy", {}),
+                                          method.metadata.get("project_input_sha256", ""))
         policy = policy if isinstance(policy, dict) else {}
-        decisions = policy.get("decisions", {})
-        decisions = decisions if isinstance(decisions, dict) else {}
-        a5 = decisions.get("A5", {})
         self.driver_brancher = DriverConfigurationBrancher(
             policy=policy,
-            policy_id=(
-                str(policy.get("policy_id", ""))
-                if isinstance(a5, dict)
-                and a5.get("status") == "CONFIRMED_FOR_CURRENT_PROJECT"
-                else ""
-            ),
+            policy_id=str(policy.get("policy_id", "")),
         )
 
     def _with_driver_configurations(
@@ -205,7 +199,8 @@ class ScenarioMethodService:
                 "NO_MATCH", None, (), "", "NO_TEMPLATE_CATALOG",
                 selector_resolution=selector_resolution,
             )
-        policy = self.method.metadata.get("project_analysis_policy", {})
+        policy = effective_project_policy(self.method.metadata.get("project_analysis_policy", {}),
+                                          self.method.metadata.get("project_input_sha256", ""))
         policy = policy if isinstance(policy, dict) else {}
         governed = policy.get("engineering_decisions", {})
         governed = governed if isinstance(governed, dict) else {}

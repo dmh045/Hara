@@ -554,7 +554,9 @@ class YamlBaselineCompiler:
                 or speed.get("require_source_and_scope") is not True
                 or not str(speed.get("rule_id", "")).strip()
                 or not isinstance(decisions, dict)
-                or set(decisions) != {"A1", "A2", "A3", "A4", "A5"}
+                or not isinstance(project_policy.get("bound_item_sha256", []), list)
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for value in project_policy.get("bound_item_sha256", []))
                 or not isinstance(engineering_decisions, dict)
                 or any(
                     not isinstance(value, dict)
@@ -619,6 +621,7 @@ class YamlBaselineCompiler:
                 "policy_id": str(project_policy["policy_id"]),
                 "version": str(project_policy["version"]),
                 "project_scope": str(project_policy.get("project_scope", "")),
+                "bound_item_sha256": list(project_policy.get("bound_item_sha256", [])),
                 "source_kind": str(project_policy.get("source_kind", "")),
                 "source_note": str(project_policy.get("source_note", "")),
                 "input_selection": dict(selection),

@@ -386,6 +386,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
         "compiler_version": method.compiler_version,
         "contract_version": method.contract_version,
         "method_hash": method.metadata.get("method_source_hash"),
+        "project_input_sha256": state.item_definition.get("item_sha256", ""),
         "policy": method.metadata.get("project_analysis_policy", {}),
     } if method is not None else {})
     typed = state.item_definition.get("typed", {})
