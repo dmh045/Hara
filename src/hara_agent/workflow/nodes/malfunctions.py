@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 import sys
 
 from hara_agent.models import (
@@ -103,6 +102,12 @@ def derive_malfunctions(state: HARAState, agent: MalfunctionHazardAgent,
         candidates.extend(items)
         audits.append(audit)
         state.record("malfunction_hazard_candidates_generated", **audit)
+        for issue in audit.get("unresolved_candidate_issues", []):
+            state.pending_reviews.append({
+                "field": "malfunction_derivation",
+                "function_id": audit.get("function_id", ""),
+                **issue,
+            })
     _validate_malfunction_guideword_gate(state, candidates, assessments)
     normalized = []
     seen_ids = set()
@@ -118,7 +123,7 @@ def derive_malfunctions(state: HARAState, agent: MalfunctionHazardAgent,
         item.model_local_id = model_local_id
         if selector_resolver is not None:
             item.selector_resolution = selector_resolver.resolve(item).to_dict()
-        value = asdict(item)
+        value = item.to_dict()
         normalized.append(value)
         if review_artifact_writer is not None:
             review_artifact_writer.record_malfunction(item)

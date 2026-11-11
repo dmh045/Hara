@@ -327,7 +327,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         source_conditions = [{"source_field": field, "value": value}
             for field in ("odd_road_types", "odd_weather_conditions")
             for value in dict.fromkeys(project.get(field, []))]
-        coverage_offset = int(signature(asdict(mf))[:8], 16)
+        coverage_offset = int(signature(mf.to_dict())[:8], 16)
         for (task_scope, condition_key), family in sorted(groups.items()):
             first = family[0]
             project_policy = effective_project_policy(method.metadata.get("project_analysis_policy", {}),
@@ -344,7 +344,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             inputs = {"conditions": scenario_conditions(first, without_driver=True),
                 "driver_policy": "Calculate the unmitigated trajectory, without subtracting a driver's action. Separately assess remaining control CAPABILITY and its conditional assumptions for the listed driver configurations; lack of intervention in the motion model does not mean lack of an available independent control path. Causality and controllability are assessed per instance.",
                 "driver_configurations": driver_configurations,
-                "malfunction": asdict(mf), "function": functions.get(mf.function_id, {}),
+                "malfunction": mf.to_dict(), "function": functions.get(mf.function_id, {}),
                 "project_context": {k: v for k, v in project.items() if k not in {"risk_facts", "method_risk_fact_bindings", "sources"}},
                 "project_physical_facts": [f for f in project.get("risk_facts", [])
                     if f.get("parameter") in {"longitudinal_acceleration_mps2", "slope_percent", "ego_speed_kph",

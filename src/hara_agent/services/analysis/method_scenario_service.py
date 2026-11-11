@@ -555,7 +555,7 @@ class MethodScenarioCandidateService:
             coverage_key = signature({"conditions": physical,
                                       "option": option.analysis_instance.get("source_option_id")})
             children, result = synthesis.generate_candidates(
-                malfunction=asdict(malfunction), parent=option,
+                malfunction=malfunction.to_dict(), parent=option,
                 project_context=project, function=asdict(function) if function else None,
                 include_source_boundaries=(
                     option.scenario_id == boundary_parent_id or option.source_scenario_id == boundary_parent_id
@@ -600,7 +600,7 @@ class MethodScenarioCandidateService:
         )
         from .analytical_physics_instantiation_service import AnalyticalPhysicsInstantiationService
         physics = AnalyticalPhysicsInstantiationService(self.method)
-        children = [physics.produce_inputs(child, asdict(malfunction), project_facts=project_facts) for child in children]
+        children = [physics.produce_inputs(child, malfunction.to_dict(), project_facts=project_facts) for child in children]
         audit["physical_input_production"] = {
             "candidate_count": len(children),
             "with_collision_branches": sum(bool(child.facts.get("collision_branches")) for child in children),

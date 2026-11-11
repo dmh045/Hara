@@ -571,7 +571,7 @@ class PhysicalHypothesisInstantiationService:
         query = replace(parent, facts={**parent.facts, "method_scenario_dimensions": bindings})
         synthesis = ConstrainedScenarioSynthesisService(self.method)
         inputs = synthesis.build_input(
-            malfunction=asdict(malfunction), parent=query, assessment={},
+            malfunction=malfunction.to_dict(), parent=query, assessment={},
             project_context=project_context or {}, function=function)
         unbound_object = (not parent.facts.get("road_user_type") and not parent.facts.get("object_type")
                           and not bindings.get("OBJECT", {}).get("atom_id"))
@@ -586,7 +586,7 @@ class PhysicalHypothesisInstantiationService:
             choices = sorted("OBJECT_" + name for name, _ in self.method.structured_risk_method.severity.road_user_groups
                              if "OBJECT_" + name in categories)
             object_query = {**inputs.structured_semantic_query, "object_categories": choices}
-            object_pools = synthesis.candidate_sets(malfunction=asdict(malfunction), parent=query,
+            object_pools = synthesis.candidate_sets(malfunction=malfunction.to_dict(), parent=query,
                 assessment={}, project_context=project_context or {}, query=object_query,
                 fm_template=inputs.fm_scenario_template)
             pools = tuple(p for p in pools if p.dimension != "OBJECT") + tuple(
@@ -641,7 +641,7 @@ class PhysicalHypothesisInstantiationService:
             "road_user_type": geometry["road_user_type"], "object_type": geometry["road_user_type"].lower(),
             **({"ego_speed_kph": initial, "ego_speed_constraint": {"min_kph": initial, "max_kph": initial}}
                if "EGO_DYNAMICS" in dimensions else {})})
-        inputs = synthesis.build_input(malfunction=asdict(malfunction), parent=query_parent,
+        inputs = synthesis.build_input(malfunction=malfunction.to_dict(), parent=query_parent,
             assessment={}, project_context=project_context or {}, function=function)
         # A local rebind must not re-rank unrelated, already materialized
         # conditions. Preserve their selected identity/applicability, while the

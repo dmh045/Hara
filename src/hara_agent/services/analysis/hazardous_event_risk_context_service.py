@@ -11,7 +11,7 @@ from hara_agent.contracts import (
     MethodContract, RiskContextFactAuthority, RiskContextFactStatus,
     RuleMatchState, UnknownOverridePolicy,
 )
-from hara_agent.models import ReviewStatus, ScenarioCandidate
+from hara_agent.models import ReviewStatus, ScenarioCandidate, evaluate_risk_eligibility_payload
 from hara_agent.contracts.physical_scenario_plan import braking_capability, steering_capability
 from hara_agent.services.analysis.scenario_physics import (
     derive_scenario_physics, has_analysis_assumption_lineage,
@@ -457,7 +457,10 @@ class HazardousEventRiskContextService:
         contexts = []
         rows = []
         for assessment in records.get("scenario_feasibility", []):
-            if not isinstance(assessment, dict) or assessment.get("status") != "FINALIZED":
+            if not isinstance(assessment, dict):
+                continue
+            if (assessment.get("status") != "FINALIZED"
+                    and not evaluate_risk_eligibility_payload(assessment).eligible):
                 continue
             if not all(assessment.get(flag) is True for flag in (
                 "physically_feasible", "functionally_relevant", "causally_relevant",

@@ -18,6 +18,7 @@ from hara_agent.models import (
 from . import malfunction_guideword_gate
 from .parsing import REPORT_LANGUAGE_PROMPT, CONFIDENCE_PROMPT_CONTRACT, parse_confidence
 from .traceability import resolve_malfunction_sources
+from hara_agent.services.extraction import normalize_source_text
 
 
 # Preserve the established import surface for callers of this module.
@@ -33,8 +34,12 @@ class _FailureTypeContractViolation(ValueError):
 class MalfunctionHazardAgent:
     """Generate traceable malfunction and vehicle-level hazard candidates."""
 
-    PROMPT_VERSION = "malfunction-hazard-v7-bounded-classification-zh-v1"
-    SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA分析助手。只处理已判定适用的Guideword。Malfunction描述功能相对预期行为的偏差；functional_effect描述功能/车辆行为影响；vehicle_level_hazard描述可能造成伤害的车辆级危险状态，不得直接写人员伤亡。causal_chain必须明确从失效到车辆级危险状态的至少两段因果关系，并且必须是JSON字符串数组，不得返回单个字符串。不得复制无关子系统模板。"""
+    PROMPT_VERSION = "malfunction-hazard-v8-source-linked-single-deviation"
+    SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA分析助手。只处理已适用的Guideword，从给定功能的正常行为推导失效假设，不声称Item原文已定义这些故障。
+每条候选只针对一个可区分的偏差量；转角与转向速率、制动力与驱动扭矩等不同量不能用“或/”合成一条。泊入/泊出等操作范围可以共享同一失效定义，但不证明各操作场景已覆盖，不机械展开操作×偏差的笛卡尔积。
+derivation.subject须逐字来自所引用FunctionContext字段，description须使用该主体和quantity。仅有功能输出时分析输出偏差，不升级为执行器硬件损坏或独立控制通道故障；只有原文明确组件时才能引用它。分类枚举不是项目硬件证据。
+derivation.basis说明功能与Guideword如何支持该偏差；原文未说明的实现、触发或能力放assumptions，不添加与来源否定/限制冲突的假设。没有可信车辆危险链时不得为凑Guideword数量编造危险。
+functional_effect写行为影响；vehicle_level_hazard写车辆级危险状态，不写人员伤亡、评分或工程批准。保留前置条件、触发和限制。"""
 
     INJURY_TERMS = ("死亡", "致命伤", "骨折", "窒息", "fatality", "death", "injury")
 
@@ -61,11 +66,23 @@ class MalfunctionHazardAgent:
             "vehicle_level_hazard": {"type": "string"},
             "causal_chain": {"type": "array", "items": {"type": "string"}, "minItems": 2},
             "confidence": {"type": "number"},
-            "status": {"type": "string"},
+            "status": {"type": "string", "enum": ["PENDING"]},
+            "derivation": {
+                "type": "object",
+                "properties": {
+                    "function_refs": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "subject": {"type": "string"},
+                    "quantity": {"type": "string"},
+                    "basis": {"type": "string"},
+                    "assumptions": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["function_refs", "subject", "quantity", "basis", "assumptions"],
+                "additionalProperties": False,
+            },
         }
         required = [
             "malfunction_id", "guideword", "description", "functional_effect",
-            "vehicle_level_hazard", "causal_chain", "confidence", "status",
+            "vehicle_level_hazard", "causal_chain", "confidence", "status", "derivation",
         ]
         if self.component_categories:
             properties["component_category"] = {
@@ -144,13 +161,16 @@ class MalfunctionHazardAgent:
             }
         request = self._request(function, applicable)
         response = self.client.complete_json(request)
+        rejected = []
         candidates = self._parse_candidates(
-            function, response.data, assessments, applicable,
+            function, response.data, assessments, applicable, rejected=rejected,
         )
         self._validate(candidates, applicable, require_coverage=False)
         missing = self._missing_guidewords(candidates, applicable)
         repair_responses = []
-        if missing:
+        repair_rejected = []
+        repair_words = sorted(set(missing) | {row["guideword"] for row in rejected})
+        if repair_words:
             print(
                 "[HARA] malfunction coverage repair "
                 f"function={function.function_id} missing={missing} attempt=1/1",
@@ -159,9 +179,10 @@ class MalfunctionHazardAgent:
             )
             repair_request = self._request(
                 function,
-                [item for item in applicable if item.guideword in set(missing)],
+                [item for item in applicable if item.guideword in set(repair_words)],
                 coverage_repair=True,
                 existing=candidates,
+                rejected=rejected,
             )
             repair_response = self.client.complete_json(repair_request)
             repair_responses.append(repair_response)
@@ -169,16 +190,19 @@ class MalfunctionHazardAgent:
                 function,
                 repair_response.data,
                 assessments,
-                [item for item in applicable if item.guideword in set(missing)],
+                [item for item in applicable if item.guideword in set(repair_words)],
+                rejected=repair_rejected,
             )
             self._validate(
                 repaired,
-                [item for item in applicable if item.guideword in set(missing)],
+                [item for item in applicable if item.guideword in set(repair_words)],
                 require_coverage=False,
             )
             self._merge_candidates(function, candidates, repaired)
 
-        remaining = self._missing_guidewords(candidates, applicable)
+        remaining = sorted(set(self._missing_guidewords(candidates, applicable))
+                           | {row["guideword"] for row in repair_rejected})
+        unresolved_issues = []
         for guideword in remaining:
             target = [item for item in applicable if item.guideword == guideword]
             print(
@@ -192,11 +216,12 @@ class MalfunctionHazardAgent:
                 target,
                 coverage_repair=True,
                 existing=candidates,
+                rejected=[row for row in repair_rejected if row["guideword"] == guideword],
             )
             targeted_response = self.client.complete_json(targeted_request)
             repair_responses.append(targeted_response)
             targeted = self._parse_candidates(
-                function, targeted_response.data, assessments, target,
+                function, targeted_response.data, assessments, target, rejected=unresolved_issues,
             )
             self._validate(targeted, target, require_coverage=False)
             self._merge_candidates(function, candidates, targeted)
@@ -208,8 +233,6 @@ class MalfunctionHazardAgent:
                 "grouped and targeted coverage repair produced no valid candidate"
             )
         self._validate(candidates, applicable)
-        for candidate in candidates:
-            candidate.status = ReviewStatus.FINALIZED
         return candidates, {
             "task": request.task,
             "function_id": function.function_id,
@@ -228,7 +251,55 @@ class MalfunctionHazardAgent:
             "coverage_missing_before_repair": missing,
             "coverage_missing_after_grouped_repair": remaining,
             "llm_call_count": 1 + len(repair_responses),
+            "rejected_candidates": rejected + repair_rejected + unresolved_issues,
+            "unresolved_candidate_issues": unresolved_issues,
+            "candidate_nature": "SOURCE_LINKED_ANALYSIS_PREMISE_NOT_ENGINEERING_APPROVAL",
         }
+
+    @staticmethod
+    def _function_context(function: FunctionDefinition) -> dict[str, Any]:
+        context = {key: getattr(function, key) for key in (
+            "name", "output", "description", "preconditions", "triggers",
+            "odd_constraints", "fallback_behavior", "consequences",
+        )}
+        # The original source identity stays on FunctionDefinition/in audit.
+        # The model needs the unabridged excerpt, not repeated file metadata.
+        context.update({f"source[{index}]": source.excerpt
+                        for index, source in enumerate(function.sources)})
+        return {key: value for key, value in context.items() if value}
+
+    @classmethod
+    def _derivation(cls, function: FunctionDefinition, item: dict) -> dict:
+        value = item.get("derivation")
+        required = {"function_refs", "subject", "quantity", "basis", "assumptions"}
+        if not isinstance(value, dict) or set(value) != required:
+            raise ValueError("derivation requires function_refs, subject, quantity, basis, assumptions")
+        context = cls._function_context(function)
+        refs = value["function_refs"]
+        if (not isinstance(refs, list) or not refs or
+                any(not isinstance(ref, str) or ref not in context or not context[ref] for ref in refs)):
+            raise ValueError("derivation.function_refs must reference nonempty FunctionContext fields")
+        if any(not isinstance(value[key], str) or not value[key].strip()
+               for key in ("subject", "quantity", "basis")):
+            raise ValueError("derivation subject, quantity and basis must be nonempty strings")
+        assumptions = value["assumptions"]
+        if not isinstance(assumptions, list) or any(not isinstance(v, str) or not v.strip() for v in assumptions):
+            raise ValueError("derivation.assumptions must be an array of explicit assumptions")
+        # Validate anchors, not free-form semantic plausibility. A source ID or
+        # a classification label cannot establish a component in this project.
+        values = [context[ref] for ref in refs]
+        subject = normalize_source_text(value["subject"])
+        if not any(subject in normalize_source_text(v if isinstance(v, str) else " ".join(v)) for v in values):
+            raise ValueError("derivation.subject is absent from the referenced function/source text")
+        quantity = value["quantity"].strip()
+        if re.search(r"或|以及|、|[/／;；]|\b(?:or|and)\b", quantity, re.I):
+            raise ValueError("derivation.quantity must name one deviation quantity; split distinct deviations")
+        description = str(item.get("description", ""))
+        if subject not in normalize_source_text(description) or normalize_source_text(quantity) not in normalize_source_text(description):
+            raise ValueError("description must retain derivation.subject and quantity")
+        if re.search(re.escape(quantity) + r"\s*(?:或|[/／]|\bor\b)", description, re.I):
+            raise ValueError("description combines alternative deviation quantities")
+        return {**value, "validation_status": "SOURCE_LINKED_ANALYSIS_PREMISE"}
 
     def _request(
         self,
@@ -237,6 +308,7 @@ class MalfunctionHazardAgent:
         *,
         coverage_repair: bool = False,
         existing: list[MalfunctionCandidate] | None = None,
+        rejected: list[dict] | None = None,
     ) -> LLMRequest:
         guidewords = [item.guideword for item in applicable]
         classification_contract = ""
@@ -263,29 +335,27 @@ class MalfunctionHazardAgent:
                 "不得重复ExistingCandidates，不得返回其他Guideword。"
                 f"\nMissingGuidewords={guidewords}"
                 f"\nExistingCandidates={[(item.malfunction_id, item.guideword, item.description) for item in (existing or [])]}\n"
+                f"\nRejectedCandidates={json.dumps(rejected or [], ensure_ascii=False)}\n"
             )
         return LLMRequest(
             task="derive_malfunctions_and_hazards",
             system_prompt=self.SYSTEM_PROMPT,
             user_prompt=(
-                f"Function={function.name}\nOutput={function.output}\nDescription={function.description}\n"
+                f"FunctionContext={json.dumps(self._function_context(function), ensure_ascii=False, separators=(',', ':'))}\n"
                 f"ApplicableGuidewords={guidewords}\n"
+                f"GuidewordBasis={json.dumps({a.guideword: a.rationale for a in applicable}, ensure_ascii=False, separators=(',', ':'))}\n"
                 "必须为ApplicableGuidewords中的每一个Guideword至少返回一个Malfunction候选；"
                 "不得遗漏，不得增加列表外Guideword。"
                 + repair_instruction +
-                "必须返回一个JSON object，顶层必须包含candidates字段，且candidates必须为JSON array。"
-                "当前任务不需要额外顶层字段。不得使用malfunctions、results、items、candidate_list或hazards"
-                "替代candidates；不得直接返回JSON array；不得在JSON前后添加说明文字。"
-                "candidates每项包含malfunction_id、guideword、description、functional_effect、"
-                "vehicle_level_hazard、causal_chain、confidence、status"
+                "按响应schema返回candidates数组；derivation.function_refs引用FunctionContext的键，"
+                "subject逐字引用对应功能主体，quantity为单个偏差量名称（不含单位），basis说明推导，assumptions单列补充假设。"
+                "status只能为PENDING。"
                 + ("、component_category。" if self.component_categories else "。")
                 + (" failure_type is also required." if self.failure_types else "")
                 + classification_contract +
                 failure_type_contract +
-                "causal_chain必须是至少包含两个非空字符串的JSON array，例如"
-                "[\"功能偏差\",\"车辆行为异常\",\"车辆级危险状态\"]；"
-                "即使因果关系可写成一句话，也禁止把causal_chain写成string。"
-                "source由系统从Function/Guideword证据确定性传播，禁止生成source字段。"
+                "causal_chain是至少两个非空字符串的数组，从功能偏差到车辆行为及危险状态。"
+                "source由系统绑定；这只追溯功能依据，不表示故障或假设是原文事实。"
                 + CONFIDENCE_PROMPT_CONTRACT
             ),
             schema_name="MalfunctionHazardCandidateList",
@@ -305,6 +375,8 @@ class MalfunctionHazardAgent:
         data: dict[str, Any],
         assessments: list[GuidewordAssessment],
         allowed_assessments: list[GuidewordAssessment],
+        *,
+        rejected: list[dict] | None = None,
     ) -> list[MalfunctionCandidate]:
         raw = data.get("candidates")
         if not isinstance(raw, list):
@@ -361,6 +433,12 @@ class MalfunctionHazardAgent:
                     scheduled_guideword_ids=allowed_guideword_ids,
                 )
                 candidate = self._parse(function, normalized_item, assessment)
+                try:
+                    candidate.derivation = self._derivation(function, normalized_item)
+                except ValueError as error:
+                    if rejected is not None:
+                        rejected.append({"guideword": guideword, "description": candidate.description, "reason": str(error)})
+                    raise
                 self._validate_failure_type(candidate)
                 if (
                     self.component_categories

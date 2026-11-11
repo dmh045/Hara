@@ -88,7 +88,7 @@ def exact_task_key(agent, malfunction, scenario, project_registry=None) -> str:
     """Task identity includes all effective versions and raw, unrounded inputs."""
     config = getattr(getattr(agent, "client", None), "config", None)
     return signature({
-        "version": "exact-scenario-task-v1", "malfunction": asdict(malfunction),
+        "version": "exact-scenario-task-v1", "malfunction": malfunction.to_dict(),
         "conditions": scenario_conditions(scenario),
         "sources": sorted((asdict(ref) for ref in scenario.sources), key=signature),
         "scenario_contract": scenario.scenario_contract_version,

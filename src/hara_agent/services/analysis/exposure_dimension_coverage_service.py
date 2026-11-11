@@ -12,7 +12,7 @@ from hara_agent.contracts import (
     ExposureDimensionRequirementStatus,
     MethodContract,
 )
-from hara_agent.models import FunctionDefinition, ReviewStatus
+from hara_agent.models import FunctionDefinition, ReviewStatus, evaluate_risk_eligibility_payload
 
 from .scenario_coverage_service import ScenarioCoverageRuleService
 
@@ -236,7 +236,9 @@ class ExposureDimensionCoverageAuditService:
         }
         assessments = []
         for item in records.get("scenario_feasibility", []):
-            if not isinstance(item, dict) or item.get("status") != "FINALIZED":
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") != "FINALIZED" and not evaluate_risk_eligibility_payload(item).eligible:
                 continue
             if not all(item.get(flag) is True for flag in (
                 "physically_feasible", "functionally_relevant", "causally_relevant",

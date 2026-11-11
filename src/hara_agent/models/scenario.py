@@ -190,6 +190,17 @@ def evaluate_risk_eligibility(
         and "H_TO_HARM" in bindings and bindings["H_TO_HARM"].status is ReviewStatus.PENDING
         and all(key in bindings and bindings[key].status is ReviewStatus.FINALIZED
                 for key in ("M_TO_B", "B_TO_I", "I_TO_H")))
+    # A validated conditional proof may posit a source-linked malfunction.
+    # Its engineering approval stays PENDING; arbitrary pending project facts
+    # or incomplete causal hops do not acquire this eligibility.
+    conditional_malfunction = bool(assessment.status is ReviewStatus.PENDING
+        and causal and causal.is_validated
+        and causal.review_status is ReviewStatus.PENDING
+        and all(key in bindings and bindings[key].status is ReviewStatus.FINALIZED
+                for key in ("M_TO_B", "B_TO_I", "I_TO_H"))
+        and any(ref.source_type == "malfunction_hypothesis"
+                and ref.source_id == assessment.malfunction_id
+                for ref in bindings["M_TO_B"].source_refs))
     inputs = {
         "assessment_status": assessment.status.value,
         "physically_feasible": assessment.physically_feasible,
@@ -199,14 +210,16 @@ def evaluate_risk_eligibility(
         "causal_review_status": causal.review_status.value if causal else "MISSING",
         "causal_validation_status": causal.status.value if causal else "MISSING",
         "committed_to_state": committed,
+        "conditional_malfunction": conditional_malfunction,
     }
     status = RiskEligibilityStatus.ELIGIBLE
     reasons: tuple[str, ...] = ()
     if causal is None:
         status = RiskEligibilityStatus.PENDING_FEASIBILITY
         reasons = ("PENDING_LEGACY_ELIGIBILITY", "MISSING_CAUSAL_ASSESSMENT")
-    elif assessment.status is not ReviewStatus.FINALIZED or (
-            causal.review_status is not ReviewStatus.FINALIZED and not pending_harm_only):
+    elif (assessment.status is not ReviewStatus.FINALIZED and not conditional_malfunction) or (
+            causal.review_status is not ReviewStatus.FINALIZED
+            and not (pending_harm_only or conditional_malfunction)):
         status = RiskEligibilityStatus.NOT_FINALIZED
         reasons = ("ASSESSMENT_OR_CAUSAL_REVIEW_NOT_FINALIZED",)
     elif causal.status.value in {"PENDING_CAUSAL_EVIDENCE", "PENDING_BREAKPOINT"}:

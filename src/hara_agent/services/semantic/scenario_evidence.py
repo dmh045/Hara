@@ -335,12 +335,13 @@ class CausalEvidenceSelector:
 
     @staticmethod
     def _mandatory_records(registry: FactRegistry) -> list[EvidenceRecord]:
-        """Return finalized malfunction definition anchors in stable order."""
+        """Retain reviewed definitions or explicit source-linked fault premises."""
 
         records = []
         for ref in ("MF.description", "MF.functional_effect"):
             record = registry.resolve_record(ref)
-            if record is not None and record.approval_status is ReviewStatus.FINALIZED:
+            if record is not None and (record.approval_status is ReviewStatus.FINALIZED
+                    or record.metadata.get("evidence_role") == "MALFUNCTION_PREMISE"):
                 records.append(record)
         return records
 
@@ -387,7 +388,10 @@ class CausalEvidenceSelector:
         selected_context_refs = tuple(item[1] for item in selected)
         selected_refs = tuple(dict.fromkeys(mandatory_refs + selected_context_refs))
         compact_view = "\n".join(
-            f"{record.evidence_ref} [kind={record.kind.value}] = {self._compact_value(record.value)}"
+            f"{record.evidence_ref} [kind={record.kind.value}]"
+            + (" [analysis_premise; approval=PENDING; not_item_fact]"
+               if record.metadata.get("evidence_role") == "MALFUNCTION_PREMISE" else "")
+            + f" = {self._compact_value(record.value)}"
             for record in mandatory
         )
         if compact_view and selected:
@@ -403,7 +407,7 @@ class CausalEvidenceSelector:
         for _, _, _, reason in selected:
             reason_counts[reason] = reason_counts.get(reason, 0) + 1
         if mandatory:
-            reason_counts["mandatory finalized malfunction anchors"] = len(mandatory)
+            reason_counts["mandatory malfunction definition anchors"] = len(mandatory)
         reason = "; ".join(
             f"{name}: {count}"
             for name, count in sorted(reason_counts.items())
@@ -454,10 +458,14 @@ def build_fact_registry(
             record for record in project_registry.records
             if applies_to_current_pair(record)
         )
-    malfunction_provenance = (
+    malfunction_provenance = FactProvenance.LLM_INFERENCE if malfunction.is_analysis_premise else (
         FactProvenance.DERIVED
         if malfunction.sources else FactProvenance.LLM_INFERENCE
     )
+    premise_sources = tuple(malfunction.sources)
+    if malfunction.is_analysis_premise:
+        premise_sources += (SourceRef("malfunction_hypothesis", malfunction.malfunction_id,
+            "derivation", json.dumps(malfunction.derivation, ensure_ascii=False)),)
     for name, value in (
         ("description", malfunction.description),
         ("functional_effect", malfunction.functional_effect),
@@ -465,9 +473,10 @@ def build_fact_registry(
     ):
         registry.register(EvidenceRecord(
             f"MF.{name}", value, EvidenceKind.DIRECT_FACT,
-            malfunction_provenance, malfunction.status, tuple(malfunction.sources),
+            malfunction_provenance, malfunction.status, premise_sources,
             {
                 "extracted_by": "LLM",
+                **({"evidence_role": "MALFUNCTION_PREMISE"} if malfunction.is_analysis_premise else {}),
                 **(
                     {"evidence_role": "UPSTREAM_CAUSAL_CLAIM"}
                     if name == "vehicle_level_hazard" else {}
@@ -693,10 +702,11 @@ def validate_evidence_contract(
                     "a positive causal hop"
                 ),
             )
-        if causal and hop_name in ({"i_to_h", "h_to_harm"} if legacy_harm else {"i_to_h"}) and refs and all(
-            fact.get("evidence_role") == "UPSTREAM_CAUSAL_CLAIM"
-            for fact in resolved
-        ):
+        upstream_only = refs and all(fact.get("evidence_role") == "UPSTREAM_CAUSAL_CLAIM" for fact in resolved)
+        premise_only = refs and all(fact.get("evidence_role") in {
+            "MALFUNCTION_PREMISE", "UPSTREAM_CAUSAL_CLAIM"} for fact in resolved)
+        if causal and ((hop_name != "m_to_b" and premise_only)
+                or (hop_name in ({"i_to_h", "h_to_harm"} if legacy_harm else {"i_to_h"}) and upstream_only)):
             raise _error(
                 malfunction, scenario, prompt_version, batch, split_path,
                 split_depth,
@@ -704,8 +714,8 @@ def validate_evidence_contract(
                 hop=hop_name, claim=claim, basis_type=basis.value,
                 invalid_refs=refs,
                 reason=(
-                    "an upstream hazard claim cannot be the sole evidence for "
-                    "a downstream hazard or harm transition"
+                    "a fault premise or upstream hazard claim cannot be the sole evidence "
+                    "for a downstream interaction, hazard or harm transition"
                 ),
             )
         if basis is EvidenceBasisType.DIRECT_FACT and any(
@@ -895,6 +905,7 @@ def compile_causal_assessment(
                     and len(resolved_records) == len(refs)
                     and all(
                         (record.approval_status is ReviewStatus.FINALIZED
+                         or (name == "m_to_b" and record.metadata.get("evidence_role") == "MALFUNCTION_PREMISE")
                          or (scenario.analysis_instance.get("physical_hypothesis") and
                              _conditional_evidence(record, malfunction.malfunction_id, scenario.scenario_id)))
                         and bool(record.source_refs)

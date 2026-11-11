@@ -69,7 +69,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v31-targeted-driver-comparison-zh-v1"
+    PROMPT_VERSION = "scenario-feasibility-v32-source-linked-fault-premise"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -81,7 +81,7 @@ class ScenarioFeasibilityAgent:
 CAUSAL CHAIN AND STAGE BOUNDARY
 只分析 M→B→I→H，到 Hazardous Event 结束，不输出 Potential Harm、S/E/C、ASIL、FTTI 或安全目标。
 Hazardous Event 是危险车辆状态与运行场景的组合，事故无须已经发生；缺少具体碰撞对象本身不能作为B_TO_I或I_TO_H断裂的唯一理由。已有运行条件下失去横纵向控制可构成危险状态，但不得写成与特定行人、车辆或设施必然碰撞。
-M_TO_B 用 FINALIZED MF.description 和 MF.functional_effect 的 DIRECT_FACT 说明已有失效的直接行为。缺少当前场景触发条件应在 B_TO_I 检查，不得改写失效定义或将其改成 M_TO_B 缺口。
+M_TO_B 用给定MF定义说明该失效的直接行为。标有analysis_premise的MF是待审分析前提，DIRECT_FACT仅表示对给定失效定义的引用，不是Item原文事实或工程批准；检查功能关联，不扩展故障部件或控制失效范围。缺少当前场景触发条件在B_TO_I检查。具体操作须由当前工况支持，不能把“泊入/泊出”统称当作两种操作已分别覆盖。
 MF.vehicle_level_hazard 是上游因果主张，不能单独证明 I_TO_H。每个 claim 必须解释所引证据怎样支持这一跳。
 DIRECT_FACT 只能引用 [kind=DIRECT_FACT]；DERIVED_PHYSICS 只能引用 [kind=DERIVED_PHYSICS] 的已有计算，不能把速度/距离原始事实伪装成已计算物理结论；APPROVED_RULE 只能引用 [kind=APPROVED_RULE]。一跳中不要混用不同 kind。
 已验证且限于当前场景的分析事实可引用；未验证 SCENARIO_DEFINED 假设不能支持正向因果链。
@@ -647,7 +647,7 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
             "Every returned hop object through the breakpoint must have a non-empty claim; an "
             "ASSUMPTION claim must name the unsupported condition. Omit hops after the breakpoint "
             "rather than returning blank objects.\n"
-            "M_TO_B boundary: if finalized MF.description and MF.functional_effect anchors are "
+            "M_TO_B boundary: if reviewed or source-linked analysis-premise MF.description and MF.functional_effect anchors are "
             "shown, preserve m_to_b and cite those exact DIRECT_FACT refs. Do not change a valid "
             "m_to_b into an M_TO_B breakpoint because Scenario trigger/applicability context is "
             "absent. A downstream evidence gap must remain at B_TO_I. Do not use "
@@ -1779,6 +1779,8 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
                     and registry.resolve_record(ref) is not None
                     and ((registry.resolve_record(ref).approval_status.value == "FINALIZED"
                           and not has_conditional_lineage(registry.resolve_record(ref).metadata))
+                         or (ref in {"MF.description", "MF.functional_effect"}
+                             and registry.resolve_record(ref).metadata.get("evidence_role") == "MALFUNCTION_PREMISE")
                          or (malfunction_id and scenario.analysis_instance.get("physical_hypothesis")
                              and _conditional_evidence(registry.resolve_record(ref),
                                  malfunction_id, scenario.scenario_id))) for ref in refs)

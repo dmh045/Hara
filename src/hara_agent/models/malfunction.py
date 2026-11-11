@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 
 from .common import ReviewStatus, SourceRef
@@ -89,6 +89,24 @@ class MalfunctionCandidate:
     selector_resolution: dict[str, object] = field(default_factory=dict)
     # Copied from the accepted GuidewordAssessment; never model-authored.
     guideword_id: str = ""
+    # Source-linked analysis premise; not an assertion that the Item specifies
+    # this fault or an engineering approval. Empty in historical checkpoints.
+    derivation: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        """Keep legacy task identities stable when no derivation was recorded."""
+        value = asdict(self)
+        if not self.derivation:
+            value.pop("derivation")
+        return value
+
+    @property
+    def is_analysis_premise(self) -> bool:
+        return (
+            self.status is ReviewStatus.PENDING
+            and self.derivation.get("validation_status") == "SOURCE_LINKED_ANALYSIS_PREMISE"
+            and bool(self.sources)
+        )
 
     def __post_init__(self):
         self.guideword_id = str(self.guideword_id or self.guideword).strip()

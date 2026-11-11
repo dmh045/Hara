@@ -511,6 +511,7 @@ def score_structured_scenarios(
             causal_chain=[str(item) for item in malfunction.get("causal_chain", ("M", "B"))],
             sources=method_sources,
             status=ReviewStatus(malfunction.get("status", ReviewStatus.PENDING.value)),
+            derivation=dict(malfunction.get("derivation", {})),
         )
         evidence_registry = build_fact_registry(
             malfunction_candidate, candidate,
@@ -593,6 +594,21 @@ def score_structured_scenarios(
                 else "ASIL lookup requires complete, approved S/E/C values."
             ),
         )
+        if malfunction_candidate.is_analysis_premise:
+            for value in (severity, exposure, controllability, asil):
+                value.status = ReviewStatus.PENDING
+                value.review_reason = (value.review_reason + "；" if value.review_reason else "") + (
+                    "条件性分析：以来源关联的失效定义为分析前提，未获工程批准。")
+            # Preserve the actual tuples while propagating their review nature.
+            for branch in scored.get("branch_evaluations", []):
+                branch["status"] = "PENDING"
+            for scores in [scored, *(branch["scores"] for branch in scored.get("branch_evaluations", []))]:
+                for field in ("severity", "exposure", "controllability"):
+                    scores[field]["engineering_status"] = "PENDING"
+                    scores[field]["calculation_nature"] = "CONDITIONAL"
+                    scores[field]["malfunction_premise"] = malfunction_candidate.derivation
+            if branch_summary:
+                branch_summary["status"] = "PENDING"
         risk = RiskAssessment(
             assessment_id=f"RA-{index:04d}-{malfunction_id}-{scenario_id}",
             scenario_id=scenario_id,

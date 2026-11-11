@@ -15,12 +15,14 @@ def _candidate(identifier: str, guideword: str) -> dict:
     return {
         "malfunction_id": identifier,
         "guideword": guideword,
-        "description": f"{guideword} deviation",
+        "description": f"function evidence output {guideword} deviation",
         "functional_effect": f"{guideword} effect",
         "vehicle_level_hazard": f"{guideword} hazardous vehicle state",
         "causal_chain": [f"{guideword} deviation", f"{guideword} vehicle effect"],
         "confidence": 0.8,
         "status": "PENDING",
+        "derivation": {"function_refs": ["source[0]"], "subject": "function evidence",
+            "quantity": "output", "basis": "Deviation of the source-defined functional output", "assumptions": []},
     }
 
 
@@ -122,7 +124,7 @@ def test_missing_guideword_is_repaired_once_and_then_strictly_validated():
     assert audit["coverage_repair_count"] == 1
     assert audit["coverage_missing_before_repair"] == ["too late"]
     assert audit["llm_call_count"] == 2
-    assert all(item.status is ReviewStatus.FINALIZED for item in candidates)
+    assert all(item.status is ReviewStatus.PENDING and item.is_analysis_premise for item in candidates)
 
 
 def test_coverage_repair_fails_closed_when_missing_identity_remains_missing():
@@ -229,7 +231,7 @@ def test_f01_style_batch_normalizes_format_only_variations_without_repair_call()
             candidates = []
             for index, guideword in enumerate(guidewords):
                 item = _candidate("" if index == 0 else "M", guideword.upper())
-                item["description"] = f"{guideword} deviation"
+                item["description"] = f"function evidence output {guideword} deviation"
                 item["causal_chain"] = (
                     f"{guideword} function deviation → {guideword} vehicle hazard"
                 )

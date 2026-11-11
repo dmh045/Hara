@@ -1499,6 +1499,13 @@ class HARAReportProjectionService:
                                 for entry in members} - {""})
             if locations:
                 coverage.append("位置：" + " / ".join(locations))
+            derivation = item.get("derivation", {})
+            if derivation:
+                coverage.extend([
+                    "失效推导依据：" + str(derivation.get("basis", "")),
+                    "补充假设：" + ("；".join(derivation.get("assumptions", [])) or "未另列"),
+                    "上述失效为基于功能的分析推导，不是 Item 原文事实；功能依据及原文保留在来源记录。",
+                ])
             inventory.append(MalfunctionView(
                 identity, str(item.get("function_id", "")), str(item.get("guideword", "")),
                 str(item.get("description", "")), str(item.get("vehicle_level_hazard", "")),

@@ -475,7 +475,7 @@ class ScenarioRiskFactAgent:
                     if key not in {"candidate", "malfunction_candidate"}
                 },
                 "candidate": asdict(pair["candidate"]),
-                "malfunction_candidate": asdict(pair["malfunction_candidate"]),
+                "malfunction_candidate": pair["malfunction_candidate"].to_dict(),
             } for pair in pairs],
             "specs": [asdict(item) for item in specs],
         }

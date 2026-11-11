@@ -89,12 +89,14 @@ def test_agent_and_workflow_call_the_same_shared_gate_helper(monkeypatch):
             return LLMResponse(data={"candidates": [{
                 "malfunction_id": "M1",
                 "guideword": "loss",
-                "description": "loss deviation",
+                "description": "vehicle pose output loss deviation",
                 "functional_effect": "loss effect",
                 "vehicle_level_hazard": "loss hazardous vehicle state",
                 "causal_chain": ["loss deviation", "loss vehicle effect"],
                 "confidence": 0.8,
                 "status": "PENDING",
+                "derivation": {"function_refs": ["output"], "subject": "vehicle pose",
+                    "quantity": "output", "basis": "Loss of the stated output", "assumptions": []},
             }]}, model="fake")
 
     MalfunctionHazardAgent(Client()).generate(function, [assessment])
