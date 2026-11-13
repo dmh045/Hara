@@ -161,14 +161,19 @@ def conditional_world(method):
     return function, malfunction, children[0]
 
 
-def test_conditional_fault_reaches_physics_causality_scoring_and_report(method, tmp_path):
+@pytest.mark.parametrize("include_premise_context", [False, True])
+def test_conditional_fault_reaches_physics_causality_scoring_and_report(method, tmp_path, include_premise_context):
     from hara_agent.workflow import HARAState
     from hara_agent.workflow.nodes.scoring import score_structured_scenarios
     from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
     from hara_agent.services.analysis.risk_services import RiskScoringServices
     from hara_agent.services.reporting import HARAReportProjectionService, load_report_schema
     function, malfunction, scenario = conditional_world(method)
-    assessment = ScenarioFeasibilityAgent._parse(malfunction, causal_payload(scenario), scenario=scenario)
+    payload = causal_payload(scenario)
+    if include_premise_context:
+        payload["causal_chain"]["b_to_i"].update(basis_type="DIRECT_FACT",
+            evidence_refs=["MF.functional_effect", "SCN.fault_motion_model"])
+    assessment = ScenarioFeasibilityAgent._parse(malfunction, payload, scenario=scenario)
     assert assessment.retain and assessment.status is ReviewStatus.PENDING
     selected = CausalEvidenceSelector().select(build_fact_registry(malfunction, scenario))
     assert "analysis_premise; approval=PENDING; not_item_fact" in selected.compact_view
@@ -191,6 +196,21 @@ def test_conditional_fault_reaches_physics_causality_scoring_and_report(method, 
     restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
     assert restored.malfunctions == state.malfunctions
     assert restored.risk_results == state.risk_results
+
+
+def test_fault_premise_does_not_approve_an_unconfirmed_project_condition(method):
+    _, malfunction, scenario = conditional_world(method)
+    scenario.facts["unreviewed_condition"] = "product capability not yet confirmed"
+    scenario.fact_provenance["unreviewed_condition"] = {
+        "provenance": "PROJECT_INPUT", "approval": "PENDING", "sources": [
+            asdict(SourceRef("item_definition", "different-input.pdf", "p2", "capability TBD"))]}
+    payload = causal_payload(scenario)
+    payload["causal_chain"]["b_to_i"].update(basis_type="DIRECT_FACT",
+        evidence_refs=["MF.functional_effect", "SCN.unreviewed_condition"])
+    assessment = ScenarioFeasibilityAgent._parse(malfunction, payload, scenario=scenario)
+    assert not evaluate_risk_eligibility(assessment).eligible
+    assert next(b for b in assessment.causal_assessment.evidence_bindings if b.edge_id == "B_TO_I").status is ReviewStatus.PENDING
+    assert malfunction.status is ReviewStatus.PENDING
 
 
 def test_fault_premise_cannot_prove_downstream_interaction_by_itself(method):

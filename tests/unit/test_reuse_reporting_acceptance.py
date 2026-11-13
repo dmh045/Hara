@@ -347,6 +347,20 @@ def test_T15_T16_resume_and_display_changes_retain_request_identity(tmp_path):
     assert resumed['causal_reuse']['exact_task_checkpoint_hits']==1
 
 
+def test_old_canonical_batch_revalidates_exact_claims_without_new_request(tmp_path):
+    a=parent('versioned-world')
+    first,results,audit=run_candidates([a],'exact',tmp_path)
+    assert len(first.calls)==1
+    prior={'cache_version':'scenario-malfunction-batch-v12-invalid-motion-deferrals',
+        'assessments':[r.to_dict() for r in results],'audit':audit}
+    client=CountingClient([a]);agent=ScenarioFeasibilityAgent(client,batch_max_items=1,
+        response_checkpoint_dir=tmp_path)
+    restored,replayed=_assess_instantiated_scenarios(agent,malfunction(),[a],{},None,prior_batch=prior)
+    assert not client.calls and restored[0].scenario_id==a.scenario_id
+    assert replayed['causal_reuse']['exact_task_checkpoint_hits']==1
+    assert restored[0].causal_assessment==results[0].causal_assessment
+
+
 @pytest.mark.parametrize('value,unit,expected', [(10.182338,'km/h','10.2'),(.154286,'s','.15'),(1.454723,'m/s²','1.45'),
     (0,'s','0'),(.0001,'s','< 0.01'),(-.0001,'m/s²','−0.01 < 值 < 0'),(None,'s','待确定'),(float('inf'),'s','无有限值')])
 def test_T23_T24_quantity_display(value,unit,expected):

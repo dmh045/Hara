@@ -896,6 +896,17 @@ def compile_causal_assessment(
                 for source_ref in record.source_refs:
                     if source_ref not in source_refs:
                         source_refs.append(source_ref)
+        # A source-linked fault remains a conditional premise throughout its
+        # chain. Downstream use also needs independently accepted world/physics
+        # evidence; this never approves the fault or an unknown project fact.
+        independent_context = any(
+            record.metadata.get("evidence_role") not in {"MALFUNCTION_PREMISE", "UPSTREAM_CAUSAL_CLAIM"}
+            and bool(record.source_refs)
+            and (record.approval_status is ReviewStatus.FINALIZED
+                 or (scenario.analysis_instance.get("physical_hypothesis")
+                     and _conditional_evidence(record, malfunction.malfunction_id, scenario.scenario_id)))
+            for record in resolved_records
+        )
         binding_status = (
             ReviewStatus.FINALIZED
             if (
@@ -905,7 +916,8 @@ def compile_causal_assessment(
                     and len(resolved_records) == len(refs)
                     and all(
                         (record.approval_status is ReviewStatus.FINALIZED
-                         or (name == "m_to_b" and record.metadata.get("evidence_role") == "MALFUNCTION_PREMISE")
+                         or (record.metadata.get("evidence_role") == "MALFUNCTION_PREMISE"
+                             and (name == "m_to_b" or independent_context))
                          or (scenario.analysis_instance.get("physical_hypothesis") and
                              _conditional_evidence(record, malfunction.malfunction_id, scenario.scenario_id)))
                         and bool(record.source_refs)

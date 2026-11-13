@@ -30,7 +30,7 @@ from hara_agent.services.analysis.scenario_equivalence import (
 )
 
 
-SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v12-invalid-motion-deferrals"
+SCENARIO_BATCH_CHECKPOINT_VERSION = "scenario-malfunction-batch-v13-supported-premise-context"
 
 
 def _scenario_batch_cache_key(
