@@ -259,6 +259,121 @@ def test_control_task_omits_motion_choices_but_retains_actual_motion_sources_and
     assert actual == {k: v for k, v in context.items() if k not in {'model_input_status', 'operating_atom_options'}}
 
 
+def test_control_prompt_omits_scored_sensitivity_and_upstream_selection_without_losing_motion():
+    source = {'source_type': 'item_definition', 'source_id': 'item',
+        'location': 'page[3]', 'excerpt': 'Braking remains available only during the active parking stage.'}
+    physical = {'hypothesis': {'model': 'CONSTANT_ACCELERATION_TO_IMPACT',
+        'parameters': [{'field': 'longitudinal_acceleration_mps2', 'kind': 'POINT', 'value': 1.5},
+            {'field': 'relative_distance_m', 'kind': 'RANGE', 'lower': 4.0, 'value': 5.0, 'upper': 6.0},
+            {'field': 'object_speed_kph', 'kind': 'SYMBOLIC', 'symbol': 'v_target'}],
+        'remaining_controls': ['driver_braking'], 'failed_controls': ['automatic_braking_command'],
+        'conditions': ['Only after this fault and with the driver in the seat'], 'basis_refs': ['ITEM.PAGE-0003']},
+        'sensitivity': {'method_boundaries': [{'parameter': 'relative_distance_m',
+            'method_rule_id': 'C-TTC-1', 'condition': 'Deterministic downstream grade threshold'}] * 12,
+            'uncovered_conditions': ['Driver visibility after the communication fault is unresolved'],
+            'parameter_relations': ['T(d) remains conditional on target speed']},
+        'physics': {'status': 'CONTACT', 'first_contact_time_s': .154286}}
+    conditions = {'facts': {'physical_analysis': physical, 'object_id': 'pedestrian-1',
+        'object_position': 'FRONT', 'ego_longitudinal_direction': 'FORWARD',
+        'relative_distance_m': 5.0, 'motion_model_outcome': {'status': 'CONTACT', 'first_contact_time_s': .154286}},
+        'fact_authority': {'relative_distance_m': {'provenance': 'ANALYSIS_HYPOTHESIS',
+            'source_refs': [source]}, 'physical_analysis': {'approval': 'PENDING'}}}
+    context = {'conditions': conditions, 'evidence': {'SCENARIO.conditions': deepcopy(conditions),
+        'ITEM.PAGE-0003': {'value': source['excerpt'], 'sources': [source]}},
+        'method_identity': {'project_analysis_policy': {'input_selection': {'section': 'performance'},
+            'representative_motion_rules': [{'model': 'CONSTANT_ACCELERATION_TO_IMPACT'}],
+            'template_context_exclusions': {'braking': ['parking']},
+            'timing_analysis': {'supported_models': ['CONSTANT_ACCELERATION_TO_IMPACT']},
+            'engineering_decisions': {'control_dependency': 'Retain when applicable'}}},
+        'risk_vocabulary': {'road_user_type': {'pedestrian': 'PEDESTRIAN'}},
+        'driver_configurations': ['in_driver_seat']}
+    original = deepcopy(context)
+    view, texts = physical_prompt_view(context)
+    content = {'context': view, 'source_texts': texts, 'output_contract': {}}
+    prior = compact_physical_request(content, response_only=False, controls_only=True,
+        scoped_control_context=False)
+    current = compact_physical_request(content, response_only=False, controls_only=True)
+    before = expand_physical_prompt_view(prior['context'], prior['source_texts'])
+    after = expand_physical_prompt_view(current['context'], current['source_texts'])
+    expected = deepcopy(before)
+    for value in (expected['conditions'], expected['evidence']['SCENARIO.conditions']):
+        value['facts']['physical_analysis']['sensitivity'].pop('method_boundaries')
+    policy = expected['method_identity']['project_analysis_policy']
+    for field in ('input_selection', 'representative_motion_rules', 'template_context_exclusions'):
+        policy.pop(field)
+    expected.pop('risk_vocabulary')
+    assert after == expected and context == original
+    assert after['conditions']['facts']['physical_analysis']['hypothesis']['parameters'] == physical['hypothesis']['parameters']
+    assert after['conditions']['facts']['physical_analysis']['sensitivity']['uncovered_conditions'] == (
+        physical['sensitivity']['uncovered_conditions'])
+    assert after['conditions']['facts']['physical_analysis']['sensitivity']['parameter_relations'] == (
+        physical['sensitivity']['parameter_relations'])
+    assert after['conditions']['fact_authority']['relative_distance_m']['source_refs'] == [source]
+    assert after['method_identity']['project_analysis_policy']['timing_analysis'] == policy['timing_analysis']
+    assert len(json.dumps(current, ensure_ascii=False)) < len(json.dumps(prior, ensure_ascii=False))
+    # A complete motion request is unchanged by the control-only projection.
+    assert compact_physical_request(content, response_only=False, controls_only=False) == (
+        compact_physical_request(content, response_only=False, controls_only=False,
+            scoped_control_context=False))
+
+
+def test_older_control_request_cache_is_probed_exactly_and_never_resent(monkeypatch, tmp_path):
+    import hara_agent.services.semantic.physical_scenario_agent as module
+    from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget
+    from test_geometry_completion import Client
+    control = {'rationale': 'Conditional independent braking response', 'basis_refs': ['MF.description'],
+        'conditions': ['Driver remains in the seat'], 'uncovered_conditions': [],
+        'failed_controls': ['automatic_braking_command'], 'remaining_controls': ['driver_braking']}
+    reply = {'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': control}
+    context = {'plan_key': 'same-control-world', 'task_scope': 'CONTROL_INPUTS_ONLY',
+        'conditions': {'facts': {'object_id': 'vehicle-1', 'physical_analysis': {
+            'sensitivity': {'method_boundaries': [{'method_rule_id': 'C-TTC-1'}]},
+            'hypothesis': {'remaining_controls': ['driver_braking']}}}},
+        'method_identity': {'project_analysis_policy': {'input_selection': {'old': 'upstream'},
+            'timing_analysis': {'supported_models': ['CONSTANT_ACCELERATION_TO_IMPACT']}}},
+        'evidence': {'MF.description': 'Automatic command fault'}}
+    prior_compact = module.compact_physical_request
+    with monkeypatch.context() as old_view:
+        old_view.setattr(PhysicalScenarioAgent, 'CONTROL_REQUEST_VIEW_VERSION',
+            PhysicalScenarioAgent.REQUEST_VIEW_VERSION)
+        def compact_v4(*args, **kwargs):
+            kwargs['scoped_control_context'] = False
+            return prior_compact(*args, **kwargs)
+        old_view.setattr(module, 'compact_physical_request', compact_v4)
+        prior_client = Client([reply])
+        prior_plan, _ = PhysicalScenarioAgent(prior_client, response_checkpoint_dir=tmp_path).propose(context)
+    assert prior_client.requests[0].metadata['request_view_version'] == PhysicalScenarioAgent.REQUEST_VIEW_VERSION
+    frozen = {path.name: path.read_bytes() for path in tmp_path.glob('*.json')}
+    resumed_client = Client([])
+    resumed_client.attempt_budget = ProviderAttemptBudget(tmp_path / 'attempts.jsonl',
+        run_id='frozen-control-recovery', limit=1)
+    resumed, audit = PhysicalScenarioAgent(resumed_client, response_checkpoint_dir=tmp_path).propose(context)
+    assert resumed.to_dict() == prior_plan.to_dict()
+    assert audit['response_cache_hits'] == 1 and resumed_client.requests == []
+    assert resumed_client.attempt_budget.session_attempts == 0
+    assert {path.name: path.read_bytes() for path in tmp_path.glob('*.json')} == frozen
+
+
+def test_physical_source_routing_uses_pdf_page_spans_without_replacing_page_identity():
+    from types import SimpleNamespace
+    from hara_agent.workflow.physical_analysis import _source_evidence
+    page = ('Training:\nThe training run has an unrelated maximum of 40 km/h.\n'
+        + ('unrelated calibration detail ' * 120) + '\n'
+        + 'Operation:\nThe driver may press the brake pedal during active parking; '
+          'after a communication fault, automatic stopping is unavailable.\n'
+        + ('unrelated navigation detail ' * 120))
+    original = {'block_id': 'PAGE-0003', 'kind': 'page', 'location': 'page[3]',
+        'text': page, 'section_path': []}
+    state = SimpleNamespace(item_definition={'source_id': 'item.pdf', 'blocks': [original]})
+    evidence, routing = _source_evidence(state, {'name': 'parking', 'output': 'steering angle'})
+    selected = [row for key, row in evidence.items() if key.startswith('ITEM.PAGE-0003-S')]
+    assert selected and any('brake pedal during active parking' in row['value'] for row in selected)
+    assert all(row['value'] in page and row['value'] != page for row in selected)
+    assert all(row['sources'][0]['location'] == 'page[3]' for row in selected)
+    assert original == state.item_definition['blocks'][0]
+    assert any(key.startswith('PAGE-0003-S') for key in routing['selected_block_ids'])
+
+
 def test_two_worlds_share_fixed_request_prefix_but_keep_different_evidence():
     from test_geometry_completion import Client
     client = Client([raw_plan(), raw_plan()])

@@ -175,7 +175,12 @@ def extract_item_artifacts(
         "targeted_prompt_version": (
             targeted_agent.PROMPT_VERSION if targeted_agent else "disabled"
         ),
-        "router_version": "item-evidence-router-v2-schema-guided",
+        "router_version": (
+            "item-evidence-router-v3-pdf-passages"
+            if any((block.get("kind") if isinstance(block, dict) else getattr(block, "kind", "")) == "page"
+                   for block in blocks)
+            else "item-evidence-router-v2-schema-guided"
+        ),
         "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
         "provider": getattr(client_config, "provider", "custom-client"),
         "base_url": getattr(client_config, "base_url", ""),

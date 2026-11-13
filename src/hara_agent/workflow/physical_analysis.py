@@ -16,6 +16,7 @@ from hara_agent.services.analysis.scenario_equivalence import scenario_condition
 from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
 from hara_agent.services.extraction.evidence_retrieval import (
     CoverageFirstContextAssembler, DeterministicEvidenceRetriever, FactRetrievalSpec,
+    retrieval_blocks,
 )
 from hara_agent.infrastructure.llm import LLMOutputLimitError
 
@@ -62,7 +63,10 @@ def _source_evidence(state, function):
     terms = tuple(str(function[k]) for k in ("name", "output") if function.get(k))
     if terms:
         specs.append(FactRetrievalSpec("function", terms))
-    blocks = state.item_definition.get("blocks", [])
+    # PDF pages remain the stored source identity; only the retrieval view is
+    # split into exact page substrings so unrelated page text does not crowd
+    # out the control and phase evidence needed by this task.
+    blocks = retrieval_blocks(state.item_definition.get("blocks", []))
     context = CoverageFirstContextAssembler().assemble(blocks, specs,
         DeterministicEvidenceRetriever().rank(blocks, specs), task="physical_analysis", max_characters=4000)
     evidence = {"ITEM." + block["block_id"]: {"value": block["text"], "sources": [{

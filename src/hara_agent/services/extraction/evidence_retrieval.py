@@ -8,6 +8,116 @@ from .targeted_verification import block_value, normalize_source_text
 
 
 DEFAULT_CONTEXT_CHARACTER_BUDGET = 5000
+_PDF_SPAN_CHARACTERS = 600
+_TRAINING_HEADINGS = {"training", "trainingsphase", "训练", "训练阶段"}
+
+
+def is_training_mode(mode: str) -> bool:
+    words = set(re.split(r"[^\w\u4e00-\u9fff]+|_", mode.casefold()))
+    return bool(words.intersection({"train", "training", "trainingsphase", "训练", "训练阶段"}))
+
+
+def source_phase(block: Any) -> str:
+    """Return only an explicit source phase, never infer a vehicle state."""
+    if isinstance(block, dict) and block.get("source_phase") == "TRAINING":
+        return "TRAINING"
+    path = (block.get("section_path") if isinstance(block, dict)
+            else getattr(block, "section_path", ())) or ()
+    for heading in path:
+        label = normalize_source_text(heading).strip("►•:： ")
+        if label in _TRAINING_HEADINGS:
+            return "TRAINING"
+    return ""
+
+
+def retrieval_blocks(blocks: Sequence[Any]) -> list[dict[str, Any]]:
+    """Use short PDF passages for routing while retaining the original page.
+
+    The Item artifact and its PAGE block IDs are unchanged. A routed passage
+    has a distinct ID for exact excerpt validation, but keeps the parent page
+    location so a SourceRef can be checked against the original PDF text.
+    """
+    result: list[dict[str, Any]] = []
+    for block in blocks:
+        value = dict(block) if isinstance(block, dict) else {
+            "block_id": block_value(block, "block_id"),
+            "kind": block_value(block, "kind"),
+            "location": block_value(block, "location"),
+            "text": block_value(block, "text"),
+            "section_path": list(getattr(block, "section_path", ())),
+        }
+        source = str(value.get("text", ""))
+        has_phase_heading = any(
+            _pdf_short_heading(line).casefold() in _TRAINING_HEADINGS
+            for line in source.splitlines(keepends=True)
+        )
+        if value.get("kind") != "page" or (
+            len(source) <= _PDF_SPAN_CHARACTERS and not has_phase_heading
+        ):
+            result.append(value)
+            continue
+        parent_id = str(value.get("block_id", ""))
+        source_phase = ""
+        for number, (start, end) in enumerate(_pdf_page_spans(source), start=1):
+            passage = source[start:end]
+            if not passage.strip():
+                continue
+            heading = _pdf_short_heading(passage)
+            if heading:
+                source_phase = "TRAINING" if heading.casefold() in _TRAINING_HEADINGS else ""
+            result.append({
+                **value,
+                "block_id": f"{parent_id}-S{number:04d}",
+                "parent_block_id": parent_id,
+                "text": passage,
+                "span_start": start,
+                "span_end": end,
+                "span_location": f"{value.get('location', '')}.chars[{start}:{end}]",
+                **({"source_phase": source_phase} if source_phase else {}),
+            })
+    return result
+
+
+def _pdf_short_heading(passage: str) -> str:
+    match = re.match(r"\s*[►•]?\s*([^\n:：]{1,40})[:：]\s*(?:\n|$)", passage)
+    return match.group(1).strip() if match else ""
+
+
+def _pdf_page_spans(text: str) -> list[tuple[int, int]]:
+    """Split only at extracted line/bullet boundaries; never rewrite text."""
+    cuts = {0, len(text)}
+    for match in re.finditer(r"\n|[►•]", text):
+        cuts.add(match.end() if match.group() == "\n" else match.start())
+    positions = sorted(cuts)
+    units = [(start, end) for start, end in zip(positions, positions[1:]) if start < end]
+    spans: list[tuple[int, int]] = []
+    start = end = 0
+    for unit_start, unit_end in units:
+        starts_bullet = text[unit_start:unit_end].lstrip().startswith(("►", "•"))
+        prior_is_heading = start < end and bool(re.fullmatch(
+            r"\s*[►•]?\s*[^\n:：]{1,40}[:：]\s*", text[start:end],
+        ))
+        if start < end and (unit_end - start > _PDF_SPAN_CHARACTERS
+                            or (starts_bullet and not prior_is_heading)):
+            spans.append((start, end))
+            start = end = unit_start
+        if start == end:
+            start = unit_start
+        # A single PDF-extracted line can contain several sentences or table
+        # cells. Keep its original bytes and make bounded cuts at whitespace.
+        while unit_end - start > _PDF_SPAN_CHARACTERS:
+            limit = start + _PDF_SPAN_CHARACTERS
+            boundary = max(text.rfind(" ", start + 1, limit), text.rfind("\t", start + 1, limit))
+            if boundary <= start:
+                boundary = limit
+            else:
+                boundary += 1
+            spans.append((start, boundary))
+            start = boundary
+        end = unit_end
+    if start < end:
+        spans.append((start, end))
+    return spans
 
 
 @dataclass(frozen=True)
@@ -226,9 +336,11 @@ class CoverageFirstContextAssembler:
 
         def line_for(index: int) -> str:
             block = blocks[index]
+            phase = source_phase(block)
+            phase_label = f" source_phase={phase}" if phase else ""
             return (
                 f"[{block_value(block, 'block_id')}] "
-                f"{block_value(block, 'location')}: {block_value(block, 'text')}"
+                f"{block_value(block, 'location')}{phase_label}: {block_value(block, 'text')}"
             )
 
         def add(index: int) -> bool:
@@ -284,6 +396,9 @@ class CoverageFirstContextAssembler:
                 if isinstance(blocks[index], dict)
                 else list(getattr(blocks[index], "section_path", ()))
             ),
+            **({key: blocks[index][key] for key in (
+                "parent_block_id", "span_start", "span_end", "span_location", "source_phase",
+            ) if key in blocks[index]} if isinstance(blocks[index], dict) else {}),
         } for index in ordered_indices)
 
         fact_diagnostics = []
@@ -328,6 +443,10 @@ class CoverageFirstContextAssembler:
 
     def _support_indices(self, blocks: Sequence[Any], index: int) -> list[int]:
         result: list[int] = []
+        parent_id = (
+            str(blocks[index].get("parent_block_id", ""))
+            if isinstance(blocks[index], dict) else ""
+        )
         location = block_value(blocks[index], "location")
         table = self._TABLE_LOCATION.fullmatch(location)
         if table:
@@ -342,8 +461,14 @@ class CoverageFirstContextAssembler:
             )
             if header is not None:
                 result.append(header)
-        if index > 0:
+        if index > 0 and (not parent_id or (
+            isinstance(blocks[index - 1], dict)
+            and blocks[index - 1].get("parent_block_id") == parent_id
+        )):
             result.append(index - 1)
-        if index + 1 < len(blocks):
+        if index + 1 < len(blocks) and (not parent_id or (
+            isinstance(blocks[index + 1], dict)
+            and blocks[index + 1].get("parent_block_id") == parent_id
+        )):
             result.append(index + 1)
         return result

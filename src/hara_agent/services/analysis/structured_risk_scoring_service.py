@@ -217,7 +217,7 @@ class StructuredRiskScoringService:
         if (scenario.get("fault_motion_model") in {"CONSTANT_LATERAL_ACCELERATION_TO_CONTACT", "CONSTANT_SPEED_CURVATURE_TO_CONTACT"} or crossing) and not (override_match or reference_match):
             result["controllability"].update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="LATERAL_C_METHOD_NOT_AVAILABLE",
-                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                decision_status="METHOD_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="Lateral first-contact time is not a longitudinal TTC; no applicable lateral C method is compiled.")
             if unresolved_reference_inputs:
                 control.update(calculation_status="PENDING_INPUT",
@@ -241,7 +241,7 @@ class StructuredRiskScoringService:
         if moving and not crossing and not (override_match or reference_match) and not contact_ahead:
             control.update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED",
-                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                decision_status="METHOD_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="The target approaches from behind the ego travel direction; ego braking alone cannot establish an avoidance path. The computed contact time is retained, but not used by the braking TTC profile.")
         if scenario.get("physical_object_exposure_unresolved"):
             result["exposure"].update(exposure_score="", engineering_status="PENDING",
@@ -251,13 +251,13 @@ class StructuredRiskScoringService:
                 and control.get("pending_reason") != "REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
             control.update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED",
-                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                decision_status="METHOD_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="Contact occurs after the ego is held stationary. A braking-time band alone does not establish an avoidance path for that phase.")
         if (self._ego_stationary_through_contact(scenario) and not (override_match or reference_match)
                 and control.get("pending_reason") != "REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
             control.update(controllability_score="", engineering_status="PENDING",
                 calculation_status="PENDING_METHOD_SEMANTICS", pending_reason="STATIONARY_EGO_BRAKING_APPLICABILITY_UNRESOLVED",
-                decision_status="MODEL_NOT_APPLICABLE", engineering_rule_id="",
+                decision_status="METHOD_NOT_APPLICABLE", engineering_rule_id="",
                 reasoning="The ego remains stationary throughout the contact trajectory. Target contact time cannot establish an ego braking avoidance interval.")
         if (braking_path_unresolved
                 and result["controllability"].get("selected_profile_id") and not (override_match or reference_match)):

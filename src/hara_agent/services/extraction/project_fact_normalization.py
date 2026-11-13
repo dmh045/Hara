@@ -12,6 +12,7 @@ from hara_agent.models import (
 )
 
 from .project_fact_specs import RequiredProjectFactSpec
+from .evidence_retrieval import is_training_mode, source_phase
 from hara_agent.models.project_facts import PHYSICAL_QUANTITY_UNITS, validated_physical_semantics
 
 
@@ -374,6 +375,10 @@ class ProjectFactNormalizer:
             raise ValueError("UNKNOWN_SOURCE_REF: source_block_id was not routed")
         if allowed_block_ids is not None and block_id not in allowed_block_ids:
             raise ValueError("UNKNOWN_SOURCE_REF: source_block_id is support-only for this spec")
+        if spec.output_type is ProjectFactOutputType.SPEED_ENVELOPE and source_phase(block) == "TRAINING":
+            requested_mode = spec.context_hints[0] if spec.context_hints else str(candidate.get("operating_mode", ""))
+            if not is_training_mode(requested_mode):
+                raise ValueError("SOURCE_PHASE_MISMATCH: training speed is not an execution speed")
         excerpt = str(candidate.get("source_excerpt", ""))
         source_text = str(block.get("text", ""))
         has_exact_alias = any(

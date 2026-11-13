@@ -579,13 +579,14 @@ def test_event_prose_translates_contact_labels_without_rewriting_identities():
 
 @pytest.mark.parametrize('reason,expected', [
     ('REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED','后车从本车行进方向的后方接近'),
-    ('LATERAL_C_METHOD_NOT_AVAILABLE','侧向接触模型'),
+    ('LATERAL_C_METHOD_NOT_AVAILABLE','侧向接触已建模'),
     ('UNSUPPORTED_INTERACTION','当前方法无适用 C 规则'),
     ('POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED','本车停止后被移动目标接触'),
 ])
-def test_pending_c_model_label_uses_the_actual_interaction_reason(reason,expected):
+@pytest.mark.parametrize('decision', ['METHOD_NOT_APPLICABLE', 'MODEL_NOT_APPLICABLE'])
+def test_pending_c_model_label_uses_the_actual_interaction_reason(reason,expected,decision):
     evidence=EvidenceValue('',ReviewStatus.PENDING)
-    trace={'decision_status':'MODEL_NOT_APPLICABLE','pending_reason':reason}
+    trace={'decision_status':decision,'pending_reason':reason}
     before=deepcopy(trace)
     text=EngineeringReportTextMapper().controllability_rationale(evidence,trace)
     assert expected in text and 'C 暂未定' in text

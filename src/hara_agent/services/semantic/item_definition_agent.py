@@ -4,7 +4,7 @@ import math
 import re
 from copy import deepcopy
 from dataclasses import replace
-from typing import Any
+from typing import Any, Sequence
 
 from hara_agent.models import (
     FactProvenance,
@@ -13,6 +13,10 @@ from hara_agent.models import (
     SourceRef,
     SpeedEnvelope,
 )
+from hara_agent.services.extraction.evidence_retrieval import (
+    is_training_mode, retrieval_blocks, source_phase,
+)
+from hara_agent.services.extraction.targeted_verification import block_value, normalize_source_text
 
 from .parsing import parse_confidence
 
@@ -79,7 +83,7 @@ class ItemDefinitionNormalizer:
 
     @staticmethod
     def _parse_with_warnings(
-        raw: dict[str, Any], source_id: str,
+        raw: dict[str, Any], source_id: str, source_blocks: Sequence[Any] = (),
     ) -> tuple[ItemDefinitionFacts, list[str]]:
         odd = raw.get("odd", {})
         if not isinstance(odd, dict):
@@ -94,7 +98,7 @@ class ItemDefinitionNormalizer:
             else ReviewStatus.PENDING
         )
         speed_envelopes, envelope_warnings = ItemDefinitionNormalizer._speed_envelopes(
-            raw.get("speed_envelopes"), source_id
+            raw.get("speed_envelopes"), source_id, source_blocks
         )
         normalization_warnings.extend(envelope_warnings)
         if envelope_warnings:
@@ -124,12 +128,13 @@ class ItemDefinitionNormalizer:
 
     @staticmethod
     def _speed_envelopes(
-        value: Any, source_id: str,
+        value: Any, source_id: str, source_blocks: Sequence[Any] = (),
     ) -> tuple[list[SpeedEnvelope], list[str]]:
         """Normalize optional typed envelopes without changing the LLM prompt contract."""
         items = ItemDefinitionNormalizer._list(value, "speed_envelopes")
         envelopes: list[SpeedEnvelope] = []
         warnings: list[str] = []
+        passages = retrieval_blocks(source_blocks) if items and source_blocks else []
         for index, item in enumerate(items, start=1):
             if not isinstance(item, dict):
                 warnings.append(f"speed_envelopes[{index}] is not an object and was ignored")
@@ -149,8 +154,14 @@ class ItemDefinitionNormalizer:
                         str(item.get("source_location", "")),
                         str(item.get("source_excerpt", "")),
                     )]
+                mode = str(item.get("operating_mode", item.get("mode", "")))
+                if not is_training_mode(mode) and ItemDefinitionNormalizer._training_speed_source(
+                    sources, source_blocks, passages,
+                ):
+                    warnings.append(f"speed_envelopes[{index}] SOURCE_PHASE_MISMATCH: training speed is not an execution speed")
+                    continue
                 envelopes.append(SpeedEnvelope(
-                    operating_mode=str(item.get("operating_mode", item.get("mode", ""))),
+                    operating_mode=mode,
                     speed_min_kph=(
                         None if item.get("speed_min_kph", item.get("min_kph")) is None
                         else float(item.get("speed_min_kph", item.get("min_kph")))
@@ -168,6 +179,48 @@ class ItemDefinitionNormalizer:
             except (TypeError, ValueError) as error:
                 warnings.append(f"speed_envelopes[{index}] invalid: {error}")
         return envelopes, warnings
+
+    @staticmethod
+    def _training_speed_source(sources, source_blocks, passages) -> bool:
+        for source in sources:
+            excerpt = source.excerpt.strip()
+            if not excerpt:
+                continue
+            for block in source_blocks:
+                if block_value(block, "location") != source.location:
+                    continue
+                original = block_value(block, "text")
+                if block_value(block, "kind") != "page":
+                    if source_phase(block) == "TRAINING" and normalize_source_text(excerpt) in normalize_source_text(original):
+                        return True
+                    continue
+                training_spans = [
+                    (part["span_start"], part["span_end"])
+                    for part in passages
+                    if part.get("parent_block_id") == block_value(block, "block_id")
+                    and source_phase(part) == "TRAINING"
+                ]
+                if not training_spans:
+                    continue
+                # An exact citation may cross passage boundaries. Locate it in
+                # the canonical page before checking whether it touches a
+                # training-phase passage.
+                matches = list(re.finditer(re.escape(excerpt), original))
+                if not matches:
+                    spaced = r"\s+".join(re.escape(word) for word in excerpt.split())
+                    matches = list(re.finditer(spaced, original, re.IGNORECASE)) if spaced else []
+                if matches and any(
+                    start < match.end() and match.start() < end
+                    for match in matches for start, end in training_spans
+                ):
+                    return True
+                if not matches and normalize_source_text(excerpt) in normalize_source_text(original):
+                    # Whitespace-normalized citations cannot be located exactly
+                    # within the page. Do not turn an ambiguous training page
+                    # into an execution speed when targeted extraction can
+                    # resolve the specific source span.
+                    return True
+        return False
 
     @staticmethod
     def _speed_range(value: Any) -> tuple[float | None, float | None, str]:

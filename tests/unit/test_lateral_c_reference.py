@@ -94,6 +94,8 @@ def test_speed_limit_uses_unrounded_trajectory_not_normal_speed(method, peak, ex
     assert result['controllability']['controllability_score'] == expected
     control = result['controllability']
     if not expected:
+        assert control['decision_status'] == 'METHOD_NOT_APPLICABLE'
+        assert control['calculation_status'] == 'PENDING_METHOD_SEMANTICS'
         exclusions = control['reference_scope_exclusions']
         assert all(row['actual'] == sc.facts['trajectory_max_speed_kph'] and row['upper_exclusive'] == 15
                    and row['source_ref'] for row in exclusions)

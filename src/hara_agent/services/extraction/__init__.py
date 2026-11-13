@@ -19,6 +19,8 @@ from .evidence_retrieval import (
     FactRetrievalSpec,
     RoutingDiagnostics,
     ScoredEvidenceBlock,
+    retrieval_blocks,
+    source_phase,
 )
 
 __all__ = [
@@ -31,6 +33,8 @@ __all__ = [
     "ContextAssemblyResult", "CoverageFirstContextAssembler",
     "DeterministicEvidenceRetriever", "FactRetrievalSpec", "RoutingDiagnostics",
     "ScoredEvidenceBlock", "ProjectFactNormalizationFailure",
+    "retrieval_blocks",
+    "source_phase",
     "ProjectFactNormalizationResult", "ProjectFactNormalizer",
     "RequiredProjectFactSpec", "build_project_fact_spec_batches",
 ]

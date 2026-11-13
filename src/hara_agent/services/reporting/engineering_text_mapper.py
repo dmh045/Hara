@@ -610,7 +610,8 @@ class EngineeringReportTextMapper:
                 for key in rule.get("unknown_conditions", {}))
             detail = "、".join(labels.get(key, "干预条件") for key in missing)
             return f"已有适用场景类型的条件性 C 规则，但{detail or '必要干预条件'}尚未明确；不能仅凭接触时间给出等级"
-        if control.get("decision_status") == "MODEL_NOT_APPLICABLE":
+        # Old checkpoints used MODEL_NOT_APPLICABLE for a C-method scope gap.
+        if control.get("decision_status") in {"METHOD_NOT_APPLICABLE", "MODEL_NOT_APPLICABLE"}:
             reason = str(control.get("pending_reason", ""))
             if reason.startswith("REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
                 return "后车从本车行进方向的后方接近；本车制动不能直接作为避免被追尾的路径，当前避险方法适用性未确定"
@@ -621,7 +622,7 @@ class EngineeringReportTextMapper:
                 if limits:
                     return "；".join(f"当前轨迹最高速度 {cls._number(speed)} km/h，现有侧向参考规则要求低于 {cls._number(limit)} km/h"
                         for speed, limit in limits) + "；不满足该适用条件，C 待评定"
-                return "侧向接触模型；当前方法无适用 C 规则，局部待评定"
+                return "侧向接触已建模；当前方法无适用 C 规则，局部待评定"
             if reason.startswith("POST_STOP_BRAKING_APPLICABILITY_UNRESOLVED"):
                 return "本车停止后被移动目标接触；继续制动不是已成立的避险路径，当前方法无适用 C 规则"
             if reason.startswith("STATIONARY_EGO_BRAKING_APPLICABILITY_UNRESOLVED"):
@@ -1208,7 +1209,8 @@ class EngineeringReportTextMapper:
             return "已按当前方法完成 C 评定。"
         if not getattr(evidence, "value", None) and trace.get("physical_plan_gap"):
             return self.controllability_branch({"controllability": trace}) + "；C 暂未定。"
-        if trace.get("decision_status") in {"MODEL_NOT_APPLICABLE", "MODEL_DEPENDENCY_UNRESOLVED",
+        if trace.get("decision_status") in {"METHOD_NOT_APPLICABLE", "MODEL_NOT_APPLICABLE",
+                "MODEL_DEPENDENCY_UNRESOLVED",
                 "PROFILE_APPLICABILITY_UNRESOLVED", "REFERENCE_APPLICABILITY_UNRESOLVED",
                 "PHYSICAL_INPUT_UNRESOLVED"}:
             control = {**trace, "pending_reason": trace.get("pending_reason") or getattr(evidence, "review_reason", "")}

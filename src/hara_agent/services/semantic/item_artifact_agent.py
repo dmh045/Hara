@@ -639,7 +639,7 @@ class ItemArtifactExtractionAgent:
 
         def parse_entities(payload: dict[str, Any]):
             facts_value, warnings_value = ItemDefinitionNormalizer._parse_with_warnings(
-                payload["item_definition"], source_id
+                payload["item_definition"], source_id, source_blocks
             )
             functions_value = [
                 FunctionNormalizer._parse(item, source_id)

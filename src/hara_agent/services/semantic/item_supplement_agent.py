@@ -15,6 +15,8 @@ from hara_agent.services.extraction import (
     DeterministicEvidenceRetriever,
     FactRetrievalSpec,
     RoutingDiagnostics,
+    retrieval_blocks,
+    source_phase,
 )
 
 
@@ -64,6 +66,9 @@ class ItemEvidenceRouter:
         max_characters: int = DEFAULT_CONTEXT_CHARACTER_BUDGET,
         required_specs: tuple[FactRetrievalSpec, ...] | None = None,
     ) -> EvidenceRoutingResult:
+        # PDF pages remain the canonical source blocks. Only the routing view
+        # is split into small passages, so old page IDs/checkpoints still read.
+        blocks = retrieval_blocks(blocks)
         if task == "project_evidence":
             if not required_specs:
                 raise ValueError(
@@ -105,7 +110,9 @@ class ItemEvidenceRouter:
         selected, total = [], 0
         for index in sorted(matched):
             block = blocks[index]
-            line = f"[{block.get('block_id')}] {block.get('location')}: {block.get('text')}"
+            phase = source_phase(block)
+            phase_label = f" source_phase={phase}" if phase else ""
+            line = f"[{block.get('block_id')}] {block.get('location')}{phase_label}: {block.get('text')}"
             cost = len(line) + (1 if selected else 0)
             if total + cost > max_characters:
                 break
@@ -117,6 +124,9 @@ class ItemEvidenceRouter:
             "location": str(blocks[index].get("location", "")),
             "text": str(blocks[index].get("text", "")),
             "section_path": list(blocks[index].get("section_path", [])),
+            **{key: blocks[index][key] for key in (
+                "parent_block_id", "span_start", "span_end", "span_location", "source_phase",
+            ) if key in blocks[index]},
         } for index in sorted(matched) if str(blocks[index].get("block_id", "")) in {
             item[0] for item in selected
         }]

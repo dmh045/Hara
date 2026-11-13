@@ -688,6 +688,7 @@ def test_ftti_extrema_describe_discrete_contact_samples_only():
 
 
 @pytest.mark.parametrize('decision,expected', [
+    ('METHOD_NOT_APPLICABLE', '当前方法无适用 C 规则'),
     ('MODEL_NOT_APPLICABLE', '当前方法无适用 C 规则'),
     ('MODEL_DEPENDENCY_UNRESOLVED', 'C 方法依赖尚未成立'),
     ('PHYSICAL_INPUT_UNRESOLVED', '当前轨迹在模型有效范围内未建立接触'),

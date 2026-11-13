@@ -651,7 +651,7 @@ def test_workflow_proposals_reach_existing_c_and_sg_with_resume(method, tmp_path
     # The raw proposal has not received the workflow's operating-mode projection.
     # The production scoring node below must bind it before selecting the reference.
     assert result['controllability']['controllability_score'] == ('' if inside else expected_c)
-    assert result['controllability']['decision_status'] == ('MODEL_NOT_APPLICABLE' if inside else 'OVERRIDE_MATCH')
+    assert result['controllability']['decision_status'] == ('METHOD_NOT_APPLICABLE' if inside else 'OVERRIDE_MATCH')
     assert result['controllability']['engineering_status'] == 'PENDING'
     assert 'ttc_s' not in child.facts  # lateral first contact never becomes longitudinal TTC
     assert child.fact_provenance['remote_intervention_available']['approval'] == 'PENDING'

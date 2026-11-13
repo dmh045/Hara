@@ -118,7 +118,7 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 def compact_physical_request(content: dict, *, response_only: bool, controls_only: bool,
-                             efficient: bool = True) -> dict:
+                             efficient: bool = True, scoped_control_context: bool = True) -> dict:
     """Project existing task scopes; no change to the complete audit context.
 
     Diagnostic grouping is exact apart from generated instance references.
@@ -179,6 +179,25 @@ def compact_physical_request(content: dict, *, response_only: bool, controls_onl
                           "interaction_coverage_policy", "analysis_strategy", "source_condition_policy",
                           "source_condition_focus", "road_user_focus", "road_user_focus_basis", "source_routing"):
                 context.pop(field, None)
+            if scoped_control_context:
+                # Upstream selection rules and deterministic S/C grade
+                # boundaries are not response inputs for this fixed world.
+                # Keep sensitivity scope limits, symbolic relations, original
+                # inputs, sources and prior control claims in the prompt.
+                policy = context.get("method_identity", {}).get("project_analysis_policy", {})
+                for field in ("input_selection", "ego_speed_point_selection",
+                              "representative_motion_rules", "template_semantic_aliases",
+                              "template_context_exclusions", "candidate_defaults", "supersedes"):
+                    policy.pop(field, None)
+                context.pop("risk_vocabulary", None)  # No new object or collision selection.
+                for conditions in (context.get("conditions", {}),
+                                   context.get("evidence", {}).get("SCENARIO.conditions", {})):
+                    if isinstance(conditions, dict):
+                        analysis = conditions.get("facts", {}).get("physical_analysis")
+                        if isinstance(analysis, dict):
+                            sensitivity = analysis.get("sensitivity")
+                            if isinstance(sensitivity, dict):
+                                sensitivity.pop("method_boundaries", None)
         elif context.get("previous_plan") and context.get("correction_diagnostics"):
             previous = context["previous_plan"]
             identities = {h["hypothesis_id"] for h in previous.get("hypotheses", [])}
@@ -241,6 +260,7 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
+    CONTROL_REQUEST_VIEW_VERSION = "physical-request-view-v5-scoped-control-context"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v30-scoped-response-rejection"
     PROMPT_VERSION = "post-fault-physical-scenario-v57-scoped-structured-policies"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v37-scoped-structured-policies"
@@ -799,6 +819,8 @@ class PhysicalScenarioAgent:
         previous_view_system = system
         v3_content = compact_physical_request(content, response_only=response_only_correction,
                                              controls_only=controls_only, efficient=False)
+        v4_content = compact_physical_request(content, response_only=response_only_correction,
+            controls_only=controls_only, scoped_control_context=False) if (controls_only or response_only_correction) else None
         content = compact_physical_request(content, response_only=response_only_correction, controls_only=controls_only)
         if "$diagnostic_groups" in content["context"].get("correction_diagnostics", {}):
             system += ("correction_diagnostics.$diagnostic_groups将完全相同的诊断列一次；occurrences保留所有原始身份与顺序。"
@@ -843,13 +865,25 @@ class PhysicalScenarioAgent:
                     **({"physical_semantic_correction": True} if context.get("previous_plan") is not None
                        and (getattr(getattr(self.client, "config", None), "physics_thinking", "")
                             or getattr(getattr(self.client, "config", None), "physics_reasoning_effort", "")) else {}),
-                    "request_view_version": self.REQUEST_VIEW_VERSION,
+                    "request_view_version": (self.CONTROL_REQUEST_VIEW_VERSION if
+                        controls_only or response_only_correction else self.REQUEST_VIEW_VERSION),
                     **({"response_update_scope": response_ids} if response_only_correction else {}),
                     **({"strict_no_format_retry": True} if repair else {})},
                 max_tokens=self.max_tokens,
                 response_format=self.response_format)
             try:
                 response = self.responses.complete(self.client, request, cache_only=True) if self.responses else None
+                if self.responses and response is None and v4_content is not None:
+                    # The same control task may already have an exact paid v4
+                    # reply from an interrupted run. Probe it without sending.
+                    v4_request = replace(request,
+                        metadata={**request.metadata, "request_view_version": self.REQUEST_VIEW_VERSION},
+                        user_prompt=json.dumps({**v4_content, "repair_errors": errors,
+                            **({"previous_invalid_response": previous_response} if repair else {})},
+                            ensure_ascii=False, default=str, separators=(",", ":")))
+                    response = self.responses.complete(self.client, v4_request, cache_only=True)
+                    if response is not None:
+                        request = v4_request
                 if self.responses and response is None:
                     # Exact v3 cache only: preserve already-paid replies from
                     # interrupted runs; never send the older larger payload.
