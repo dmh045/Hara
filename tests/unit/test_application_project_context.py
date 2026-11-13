@@ -42,6 +42,18 @@ def _config(**changes) -> RunConfig:
     return replace(base, **changes)
 
 
+def test_analyze_and_embedded_workflow_share_worker_default_and_allow_override():
+    from hara_agent.cli import build_parser
+    from hara_agent.workflow.semantic_graph import SemanticWorkflowInputs
+
+    parser = build_parser()
+    args = ["analyze", "--item", "input.pdf", "--output", "report.xlsx"]
+    assert parser.parse_args(args).max_workers == _config().max_workers == 8
+    assert SemanticWorkflowInputs("input.pdf", []).max_workers == 8
+    assert parser.parse_args(args + ["--max-workers", "4"]).max_workers == 4
+    assert _config(max_workers=4).max_workers == 4
+
+
 def _facts(*, contextual: bool = True, aggregate: bool = True) -> ItemDefinitionFacts:
     source = SourceRef("item_definition", "ItemDef.docx", "table[14]", "mode speeds")
     return ItemDefinitionFacts(

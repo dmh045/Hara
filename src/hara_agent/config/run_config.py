@@ -20,7 +20,7 @@ class RunConfig:
     ego_speed_source: str = ""
     operating_mode: Optional[str] = None
     allow_aggregate_speed_fallback: bool = False
-    max_workers: int = 4
+    max_workers: int = 8
     sample_function_limit: int | None = None
     sample_malfunction_limit: int | None = None
     sample_parent_scenario_limit: int | None = None

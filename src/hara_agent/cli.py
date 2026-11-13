@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--ego-speed-source", default="")
     analyze.add_argument("--operating-mode")
     analyze.add_argument("--allow-aggregate-speed-fallback", action="store_true")
-    analyze.add_argument("--max-workers", type=int, default=4)
+    analyze.add_argument("--max-workers", type=int, default=RunConfig.max_workers)
     analyze.add_argument("--sample-function-limit", type=int)
     analyze.add_argument("--sample-function-id", action="append", default=[])
     analyze.add_argument("--sample-malfunction-limit", type=int)

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from hara_agent.config import RunConfig
 from hara_agent.contracts import Guideword, MethodContract, RequiredFactSpec
 from hara_agent.infrastructure.llm import LLMClient
 from hara_agent.models import (
@@ -60,7 +61,7 @@ class SemanticWorkflowInputs:
     scenario_candidates: list[ScenarioCandidate] = field(default_factory=list)
     scenario_candidate_factory: Callable[[HARAState], tuple[list[ScenarioCandidate], dict]] | None = None
     project_context_preflight: Callable[[HARAState], dict] | None = None
-    max_workers: int = 4
+    max_workers: int = RunConfig.max_workers
     progress: Callable[[str, int, int], None] | None = None
     stage_progress: Callable[[str, str, float], None] | None = None
     artifact_cache: ValidatedArtifactCache | None = None
