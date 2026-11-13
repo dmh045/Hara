@@ -537,19 +537,20 @@ def test_parallel_physical_plans_equal_serial_and_resume_without_requests(method
     assert restored.item_definition['physical_analysis_metrics']['plan_cache_hits'] == 2
 
 
-def test_one_malfunction_parallelizes_families_and_batches_durable_snapshots(method, tmp_path):
+@pytest.mark.parametrize('workers', [4, 8])
+def test_one_malfunction_parallelizes_families_and_batches_durable_snapshots(method, tmp_path, workers):
     from threading import Barrier, Lock
     from hara_agent.workflow import HARAState, CheckpointRepository
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios
     class Client:
         def __init__(self, parallel=False):
-            self.requests=[]; self.lock=Lock(); self.barrier=Barrier(4) if parallel else None
+            self.requests=[]; self.lock=Lock(); self.barrier=Barrier(workers) if parallel else None
         def complete_json(self, request):
             with self.lock: self.requests.append(request)
             if self.barrier: self.barrier.wait(timeout=5)
             return LLMResponse(raw_plan(assessed=True), 'offline')
     parents=[]
-    for i in range(4):
+    for i in range(workers):
         sc=make_candidate(); sc.scenario_id=f'family-{i}'
         sc.facts.update(weather_conditions=f'explicit source weather {i}',
                         driver_position='in_driver_seat' if i%2 else 'outside_driver_seat')
@@ -562,14 +563,19 @@ def test_one_malfunction_parallelizes_families_and_batches_durable_snapshots(met
     writes=[]; progress=[]
     def save(s): writes.append(repo.save(s))
     result=construct_physical_scenarios(state,deepcopy(inputs),[mf()],method=method,agent=agent,
-        project_facts=None,max_workers=4,checkpoint=save,progress=lambda *p:progress.append(p))
-    assert result==serial and len(client.requests)==4 and len(writes)==1
+        project_facts=None,max_workers=workers,checkpoint=save,progress=lambda *p:progress.append(p))
+    assert result==serial and len(client.requests)==workers and len(writes)==1
     # Includes the full driver scope, source focus, plan keys and constraints.
     assert sorted(r.user_prompt for r in old_client.requests)==sorted(r.user_prompt for r in client.requests)
     assert progress==[(1,1)]
-    assert len(repo.load(state.run_id).item_definition['physical_analysis_plans'])==4
-    assert state.item_definition['physical_analysis_metrics']['generated_instances']==4
-    assert len(list((tmp_path/'responses').glob('*.json')))==4
+    assert len(repo.load(state.run_id).item_definition['physical_analysis_plans'])==workers
+    assert state.item_definition['physical_analysis_metrics']['generated_instances']==workers
+    assert len(list((tmp_path/'responses').glob('*.json')))==workers
+    restored=repo.load(state.run_id)
+    resumed=construct_physical_scenarios(restored,deepcopy(inputs),[mf()],method=method,agent=agent,
+        project_facts=None,max_workers=workers,checkpoint=save)
+    assert resumed==serial and len(client.requests)==workers
+    assert restored.item_definition['physical_analysis_metrics']['plan_cache_hits']==workers
 
 
 def test_raw_responses_recover_after_batched_snapshot_write_failure(method, tmp_path):
@@ -650,25 +656,26 @@ def test_physical_resume_skips_unchanged_writes_but_persists_recomputed_values(m
     assert actual['generated_scenarios'][0]['facts']['ego_impact_speed_kph'] == original['MF'][0].facts['ego_impact_speed_kph']
 
 
-def test_parallel_physical_plans_share_one_hard_budget_and_keep_responses(method, tmp_path):
+@pytest.mark.parametrize('workers', [2, 8])
+def test_parallel_physical_plans_share_one_hard_budget_and_keep_responses(method, tmp_path, workers):
     from threading import Barrier
     from hara_agent.workflow import HARAState, CheckpointRepository
     from hara_agent.workflow.physical_analysis import construct_physical_scenarios
     from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudget, ProviderAttemptBudgetExceeded
     class Client:
         attempt_budget = ProviderAttemptBudget(tmp_path/'ledger', run_id='budget-parallel', limit=1)
-        barrier = Barrier(2)
+        barrier = Barrier(workers)
         def complete_json(self, request):
             self.barrier.wait(timeout=5)
             self.attempt_budget.begin(request, model='offline')
             return LLMResponse(raw_plan(assessed=True), 'offline')
     state = HARAState('budget-parallel')
     repo = CheckpointRepository(tmp_path/'state')
-    malfunctions = [mf(), replace(mf(), malfunction_id='MF2')]
+    malfunctions = [mf()] + [replace(mf(), malfunction_id=f'MF{i}') for i in range(2, workers + 1)]
     with pytest.raises(ProviderAttemptBudgetExceeded):
         construct_physical_scenarios(state, {m.malfunction_id:[make_candidate()] for m in malfunctions},
             malfunctions, method=method, agent=PhysicalScenarioAgent(Client()), project_facts=None,
-            max_workers=2, checkpoint=repo.save)
+            max_workers=workers, checkpoint=repo.save)
     restored = repo.load(state.run_id)
     assert Client.attempt_budget.attempts == 1
     assert sum(bool(p.get('instantiations')) for p in restored.item_definition['physical_analysis_plans'].values()) == 1

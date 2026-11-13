@@ -118,7 +118,8 @@ def expand_physical_prompt_view(view: dict, source_texts: dict) -> dict:
 
 
 def compact_physical_request(content: dict, *, response_only: bool, controls_only: bool,
-                             efficient: bool = True, scoped_control_context: bool = True) -> dict:
+                             efficient: bool = True, scoped_control_context: bool = True,
+                             dedup_model_scope: bool = True) -> dict:
     """Project existing task scopes; no change to the complete audit context.
 
     Diagnostic grouping is exact apart from generated instance references.
@@ -156,6 +157,15 @@ def compact_physical_request(content: dict, *, response_only: bool, controls_onl
             "unreachable_response": "Keep the actual response inputs and computed negative evidence; explain the limitation in its control assessment. Do not add placeholder/empty rows or change the world to make avoidance succeed.",
         }
     if efficient:
+        if dedup_model_scope and not (controls_only or response_only):
+            # The model catalog already carries each model's exact scope. Keep
+            # per-world availability and missing-input diagnostics, but do not
+            # send the same scope paragraph twice in every motion request.
+            catalog = result.get("model_catalog", {})
+            for name, status in context.get("model_input_status", {}).get("models", {}).items():
+                if (isinstance(status, dict) and isinstance(catalog.get(name), dict)
+                        and status.get("scope") == catalog[name].get("scope")):
+                    status.pop("scope", None)
         # Aggregate dimension provenance contains the entire compiler input,
         # repeated for every dimension. It is not an additional physical fact.
         # Keep selected Atom semantics, every direct fact's authority and all
@@ -259,7 +269,8 @@ def normalize_item_basis_refs(candidate: dict, evidence_ids: set[str]) -> list[d
 
 
 class PhysicalScenarioAgent:
-    REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
+    PREVIOUS_REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
+    REQUEST_VIEW_VERSION = "physical-request-view-v6-dedup-model-scope"
     CONTROL_REQUEST_VIEW_VERSION = "physical-request-view-v5-scoped-control-context"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v30-scoped-response-rejection"
     PROMPT_VERSION = "post-fault-physical-scenario-v57-scoped-structured-policies"
@@ -819,8 +830,6 @@ class PhysicalScenarioAgent:
         previous_view_system = system
         v3_content = compact_physical_request(content, response_only=response_only_correction,
                                              controls_only=controls_only, efficient=False)
-        v4_content = compact_physical_request(content, response_only=response_only_correction,
-            controls_only=controls_only, scoped_control_context=False) if (controls_only or response_only_correction) else None
         content = compact_physical_request(content, response_only=response_only_correction, controls_only=controls_only)
         if "$diagnostic_groups" in content["context"].get("correction_diagnostics", {}):
             system += ("correction_diagnostics.$diagnostic_groups将完全相同的诊断列一次；occurrences保留所有原始身份与顺序。"
@@ -873,11 +882,14 @@ class PhysicalScenarioAgent:
                 response_format=self.response_format)
             try:
                 response = self.responses.complete(self.client, request, cache_only=True) if self.responses else None
-                if self.responses and response is None and v4_content is not None:
-                    # The same control task may already have an exact paid v4
-                    # reply from an interrupted run. Probe it without sending.
+                if self.responses and response is None:
+                    # Old paid v4 replies remain readable when only the request
+                    # projection changed. Build this larger view only on a miss.
+                    v4_content = compact_physical_request(previous_view_content,
+                        response_only=response_only_correction, controls_only=controls_only,
+                        scoped_control_context=False, dedup_model_scope=False)
                     v4_request = replace(request,
-                        metadata={**request.metadata, "request_view_version": self.REQUEST_VIEW_VERSION},
+                        metadata={**request.metadata, "request_view_version": self.PREVIOUS_REQUEST_VIEW_VERSION},
                         user_prompt=json.dumps({**v4_content, "repair_errors": errors,
                             **({"previous_invalid_response": previous_response} if repair else {})},
                             ensure_ascii=False, default=str, separators=(",", ":")))
@@ -1010,8 +1022,27 @@ class PhysicalScenarioAgent:
                     envelope_normalization = "PROJECTED_HYPOTHESIS_LIMITS"
                 normalized_refs = normalize_item_basis_refs(candidate, set(context["evidence"]))
                 motion_model_normalizations = []
+                geometry_normalizations = []
                 for h in candidate.get("hypotheses", []) if isinstance(candidate, dict) else []:
-                    if not isinstance(h, dict) or h.get("model") != "CONSTANT_SPEED_REPRESENTATIVE":
+                    if not isinstance(h, dict):
+                        continue
+                    if h.get("model") == "RECTILINEAR_MOVING_TARGET_CONTACT" and isinstance(h.get("geometry"), dict):
+                        geometry = h["geometry"]
+                        speeds = [p for p in h.get("parameters", []) if isinstance(p, dict)
+                                  and p.get("field") == "object_speed_kph"] if isinstance(h.get("parameters"), list) else []
+                        if ("object_longitudinal_direction" not in geometry and len(speeds) == 1
+                                and speeds[0].get("kind") == "POINT"
+                                and speeds[0].get("unit") == "km/h"
+                                and type(speeds[0].get("value")) in (int, float)
+                                and speeds[0]["value"] == 0):
+                            # Zero target velocity defines a stationary trajectory
+                            # in this model. No source fact or measured capability
+                            # is inferred; preserve the raw reply in the audit.
+                            geometry["object_longitudinal_direction"] = "STATIONARY"
+                            geometry_normalizations.append({"hypothesis_id": h.get("hypothesis_id"),
+                                "field": "object_longitudinal_direction", "value": "STATIONARY",
+                                "basis": "object_speed_kph POINT 0"})
+                    if h.get("model") != "CONSTANT_SPEED_REPRESENTATIVE":
                         continue
                     parameters = h.get("parameters")
                     if not isinstance(parameters, list) or not all(isinstance(p, dict) for p in parameters):
@@ -1230,6 +1261,7 @@ class PhysicalScenarioAgent:
                     "schema_repairs": int(repair), "model": response.model,
                     "control_envelope_normalization": envelope_normalization,
                     "motion_model_normalizations": motion_model_normalizations,
+                    "geometry_normalizations": geometry_normalizations,
                     "control_array_normalizations": control_array_normalizations,
                     "control_scope_normalizations": control_scope_normalizations,
                     "deferred_safe_states": deferred_states, "normalized_basis_refs": normalized_refs}

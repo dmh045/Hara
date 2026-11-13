@@ -110,36 +110,96 @@ def angle_plan():
 
 
 def test_stationary_target_prompt_and_repair_agree_with_motion_contract(method, tmp_path):
-    # Live IPA failure: zero-speed target with a finite envelope, but the
-    # output example instructed the model to omit its required direction.
+    # Frozen IPA failure: the target speed is explicitly zero, but the model
+    # omitted its direction. The same stationary trajectory needs no new call.
     good = angle_plan()
     bad = deepcopy(good)
     bad['hypotheses'][0]['geometry'].pop('object_longitudinal_direction')
-    client = Client([bad, good])
+    client = Client([bad])
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
     context = {'plan_key': 'stationary-relative-motion',
                'evidence': {'MF.description': 'fault', 'SCENARIO.conditions': 'operating conditions'}}
     records = []
     plan, audit = agent.propose(context, on_response=records.append)
-    assert len(client.requests) == 2 and audit['schema_repairs'] == 1
+    assert len(client.requests) == 1 and audit['schema_repairs'] == 0
     body = json.loads(client.requests[0].user_prompt)
     directions = body['output_contract']['moving_target_geometry']['object_longitudinal_direction']
     assert 'STATIONARY' in directions
     instruction = body['output_shape']['hypotheses'][0]['geometry']['object_longitudinal_direction']
     assert 'STATIONARY' in instruction and 'RECTILINEAR_MOVING_TARGET_CONTACT' in instruction
     assert 'omit for stationary' not in instruction
-    repair = json.loads(client.requests[1].user_prompt)
-    assert 'STATIONARY' in repair['repair_errors'][0]
-    assert repair['previous_invalid_response'] == bad
     assert records[0]['response']['data'] == bad
-    assert plan.to_dict() == good  # No automatic filling or parameter rewriting.
+    assert plan.to_dict() == good
+    assert audit['geometry_normalizations'] == [{
+        'hypothesis_id': 'h1', 'field': 'object_longitudinal_direction',
+        'value': 'STATIONARY', 'basis': 'object_speed_kph POINT 0'}]
     child = instantiate(method, plan.to_dict(), make_candidate(7))[0]
     assert child.facts['object_longitudinal_direction'] == 'STATIONARY'
+    assert child.fact_provenance['object_longitudinal_direction']['approval'] == 'PENDING'
+    assert child.fact_provenance['object_longitudinal_direction']['provenance'] == 'LLM_INFERENCE'
     assert child.facts['object_speed_kph'] == 0
     assert child.facts['first_contact_time_s'] == pytest.approx(.1 / (7 / 3.6 * math.sin(math.radians(40))))
     assert score(method, child)['severity']['severity_score'] == 'S1'
     assert child.fact_provenance['ego_heading_angle_deg']['approval'] == 'PENDING'
-    assert agent.propose(context)[0] == plan and len(client.requests) == 2
+    assert agent.propose(context)[0] == plan and len(client.requests) == 1
+
+
+@pytest.mark.parametrize('kind,value,unit', [
+    ('POINT', 1, 'km/h'), ('RANGE', 0, 'km/h'),
+    ('SYMBOLIC', None, 'km/h'), ('POINT', 0, 'm/s'),
+])
+def test_stationary_direction_normalization_does_not_fill_other_target_speeds(
+        tmp_path, kind, value, unit):
+    good = angle_plan()
+    bad = deepcopy(good)
+    bad['hypotheses'][0]['geometry'].pop('object_longitudinal_direction')
+    speed = next(p for p in bad['hypotheses'][0]['parameters'] if p['field'] == 'object_speed_kph')
+    speed.update(kind=kind, unit=unit)
+    if kind == 'RANGE':
+        speed.update(lower=0, value=value, upper=1)
+    elif kind == 'SYMBOLIC':
+        speed.pop('value'); speed['symbol'] = 'v_target'
+    else:
+        speed['value'] = value
+    repaired = deepcopy(bad)
+    repaired['hypotheses'][0]['geometry']['object_longitudinal_direction'] = (
+        'STATIONARY' if unit != 'km/h' else 'FORWARD')
+    client = Client([bad, repaired])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': f'other-speed-{kind}-{value}-{unit}', 'evidence': {'MF.description': 'fault'}}
+    if unit == 'm/s':
+        with pytest.raises(ValueError):
+            agent.propose(context)
+        assert len(client.requests) == 2
+        return
+    plan, audit = agent.propose(context)
+    assert len(client.requests) == 2 and audit['schema_repairs'] == 1
+    assert not audit['geometry_normalizations']
+    assert plan.to_dict() == repaired
+
+
+def test_explicit_target_direction_is_not_rewritten(tmp_path):
+    raw = angle_plan()
+    raw['hypotheses'][0]['geometry']['object_longitudinal_direction'] = 'LEFT'
+    client = Client([raw])
+    plan, audit = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(
+        {'plan_key': 'explicit-direction', 'evidence': {'MF.description': 'fault'}})
+    assert len(client.requests) == 1 and audit['geometry_normalizations'] == []
+    assert plan.to_dict() == raw
+
+
+def test_duplicate_zero_target_speed_is_not_normalized(tmp_path):
+    good = angle_plan()
+    bad = deepcopy(good)
+    bad['hypotheses'][0]['geometry'].pop('object_longitudinal_direction')
+    speed = next(p for p in bad['hypotheses'][0]['parameters'] if p['field'] == 'object_speed_kph')
+    bad['hypotheses'][0]['parameters'].append(deepcopy(speed))
+    client = Client([bad, good])
+    plan, audit = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(
+        {'plan_key': 'duplicate-zero-speed', 'evidence': {'MF.description': 'fault'}})
+    assert len(client.requests) == 2 and audit['schema_repairs'] == 1
+    assert not audit['geometry_normalizations']
+    assert plan.to_dict() == good
 
 
 def test_side_reference_angle_is_velocity_heading_not_wheel_angle(method):

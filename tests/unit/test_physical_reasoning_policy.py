@@ -14,6 +14,7 @@ from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
 from hara_agent.services.semantic.physical_scenario_agent import (
     PhysicalScenarioAgent, compact_physical_request, expand_physical_prompt_view, physical_prompt_view,
 )
+from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG
 from test_autonomous_physics import raw_plan
 from test_p7_closure import method
 
@@ -183,6 +184,61 @@ def test_disabled_omits_effort_but_explicit_bounded_repair_uses_high():
     assert physical_reasoning_options(cfg, repair=True) == {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
 
 
+def test_motion_view_omits_only_exact_duplicate_model_scope():
+    model = "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"
+    scope = MODEL_CATALOG[model]["scope"]
+    context = {"model_input_status": {"models": {
+        model: {"scope": scope, "needs_hypothesis": ["relative_distance_m"],
+                "available": {"ego_speed_kph": {"value": 7, "origin": "PROJECT_INPUT"}}},
+        "different_model": {"scope": scope + "; source-specific limit", "needs_hypothesis": []}}},
+        "evidence": {"MF.description": "Acceleration fault"}}
+    view, texts = physical_prompt_view(context)
+    body = {"model_catalog": {model: deepcopy(MODEL_CATALOG[model])},
+        "context": view, "source_texts": texts, "output_contract": {}}
+    before = deepcopy(body)
+    compact = compact_physical_request(body, response_only=False, controls_only=False)
+    status = expand_physical_prompt_view(compact["context"], compact["source_texts"])["model_input_status"]["models"]
+    assert "scope" not in status[model]
+    assert status[model]["needs_hypothesis"] == ["relative_distance_m"]
+    assert status[model]["available"]["ego_speed_kph"]["origin"] == "PROJECT_INPUT"
+    assert status["different_model"]["scope"] == scope + "; source-specific limit"
+    assert compact["model_catalog"][model]["scope"] == scope
+    assert body == before
+    prior = compact_physical_request(body, response_only=False, controls_only=False,
+        dedup_model_scope=False)
+    assert expand_physical_prompt_view(prior["context"], prior["source_texts"]) == context
+    assert len(json.dumps(compact, ensure_ascii=False)) < len(json.dumps(prior, ensure_ascii=False))
+
+
+def test_older_motion_request_cache_is_probed_exactly_and_never_resent(monkeypatch, tmp_path):
+    import hara_agent.services.semantic.physical_scenario_agent as module
+    from test_geometry_completion import Client
+    model = "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE"
+    context = {"plan_key": "same-motion-world", "evidence": {"MF.description": "Acceleration fault"},
+        "model_input_status": {"models": {model: {"scope": MODEL_CATALOG[model]["scope"],
+            "needs_hypothesis": ["relative_distance_m"]}}}}
+    before = deepcopy(context)
+    prior_compact = module.compact_physical_request
+    with monkeypatch.context() as old_view:
+        old_view.setattr(PhysicalScenarioAgent, "REQUEST_VIEW_VERSION",
+            PhysicalScenarioAgent.PREVIOUS_REQUEST_VIEW_VERSION)
+        def compact_v4(*args, **kwargs):
+            kwargs["dedup_model_scope"] = False
+            return prior_compact(*args, **kwargs)
+        old_view.setattr(module, "compact_physical_request", compact_v4)
+        prior_client = Client([raw_plan()])
+        prior_plan, _ = PhysicalScenarioAgent(prior_client, response_checkpoint_dir=tmp_path).propose(context)
+    assert prior_client.requests[0].metadata["request_view_version"] == (
+        PhysicalScenarioAgent.PREVIOUS_REQUEST_VIEW_VERSION)
+    frozen = {path.name: path.read_bytes() for path in tmp_path.glob("*.json")}
+    resumed_client = Client([])
+    resumed, audit = PhysicalScenarioAgent(resumed_client, response_checkpoint_dir=tmp_path).propose(context)
+    assert resumed.to_dict() == prior_plan.to_dict()
+    assert audit["response_cache_hits"] == 1 and resumed_client.requests == []
+    assert {path.name: path.read_bytes() for path in tmp_path.glob("*.json")} == frozen
+    assert context == before
+
+
 def test_workflow_plan_cache_isolated_by_physical_policy_and_old_entry_survives(method, tmp_path):
     from test_geometry_completion import Client, run
     reply = {"hypotheses": [], "uncovered_conditions": ["No applicable model for this frozen boundary case"]}
@@ -335,14 +391,15 @@ def test_older_control_request_cache_is_probed_exactly_and_never_resent(monkeypa
     prior_compact = module.compact_physical_request
     with monkeypatch.context() as old_view:
         old_view.setattr(PhysicalScenarioAgent, 'CONTROL_REQUEST_VIEW_VERSION',
-            PhysicalScenarioAgent.REQUEST_VIEW_VERSION)
+            PhysicalScenarioAgent.PREVIOUS_REQUEST_VIEW_VERSION)
         def compact_v4(*args, **kwargs):
             kwargs['scoped_control_context'] = False
             return prior_compact(*args, **kwargs)
         old_view.setattr(module, 'compact_physical_request', compact_v4)
         prior_client = Client([reply])
         prior_plan, _ = PhysicalScenarioAgent(prior_client, response_checkpoint_dir=tmp_path).propose(context)
-    assert prior_client.requests[0].metadata['request_view_version'] == PhysicalScenarioAgent.REQUEST_VIEW_VERSION
+    assert prior_client.requests[0].metadata['request_view_version'] == (
+        PhysicalScenarioAgent.PREVIOUS_REQUEST_VIEW_VERSION)
     frozen = {path.name: path.read_bytes() for path in tmp_path.glob('*.json')}
     resumed_client = Client([])
     resumed_client.attempt_budget = ProviderAttemptBudget(tmp_path / 'attempts.jsonl',
