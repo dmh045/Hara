@@ -271,6 +271,7 @@ class EngineeringReportTextMapper:
             "NO_CONTACT_WITHIN_MODEL": "模型时域内未接触", "HELD_AFTER_STOP": "停止后保持",
             "HOLD_POSITION": "保持当前位置", "CONSTANT_NET_DECELERATION": "恒定净减速度",
             "LOSS_OF_BRAKING_AVOIDABILITY": "失去制动避碰能力边界",
+            "fault_release": "故障作用解除", "exposure": "暴露",
             "FIRST_CONTACT_BOUND": "首次接触边界", "FAULT_ONSET": "故障发生时刻",
             "FRONTAL": "正面", "PROJECT": "项目",
             "REQUIRED_NOT_ESTABLISHED": "所需通道尚未建立",
@@ -750,9 +751,17 @@ class EngineeringReportTextMapper:
         facts = getattr(scenario, "facts", {}) or {}
         categories = self._categories(scenario)
         source_conditions = facts.get("source_operating_conditions", {})
-        location = self._chinese_source(self._dimensions(scenario).get("WHERE", {}).get("project_value")) or self._chinese_source(source_conditions.get("operating_scenario", "")) or self._chinese_source(
-            getattr(scenario, "operating_scenario", "")
-        ) or self._first_category(categories, (
+        condition = facts.get("selected_source_condition")
+        location_candidates = [self._dimensions(scenario).get("WHERE", {}).get("project_value"),
+            source_conditions.get("operating_scenario", ""), getattr(scenario, "operating_scenario", "")]
+        source_selection = condition or source_conditions.get("selected_condition", {})
+        if source_selection.get("source_field") == "odd_road_types":
+            # A parent candidate may use a road/bay type as its context label.
+            # The instantiated child selects its own allowed type below; that
+            # inherited label is neither its location nor a second condition.
+            road_types = source_conditions.get("permitted_road_types", facts.get("source_road_type_scope", []))
+            location_candidates = [value for value in location_candidates if value not in road_types]
+        location = next((text for value in location_candidates if (text := self._chinese_source(value))), "") or self._first_category(categories, (
             "LOCATION_PARKING", "LOCATION_CITY", "LOCATION_EXPRESSWAY",
             "LOCATION_MOTORWAY", "LOCATION_RURAL",
         ))
@@ -781,7 +790,7 @@ class EngineeringReportTextMapper:
         position = self._object_position(scenario)
 
         clauses = [location]
-        if condition := facts.get("selected_source_condition"):
+        if condition:
             clauses.append(f"代表运行条件为{condition['value']}")
         if mode:
             clauses.append(f"系统处于{mode}状态")
@@ -1008,7 +1017,7 @@ class EngineeringReportTextMapper:
                     clause = re.sub(r"^.*?因(?=.+(?:失效|失去|无法|卡死|异常))", "", clause)
                 if re.search(r"\d", clause):
                     continue
-                if re.search(r"非预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|碰撞|相撞|擦碰|刮碰|碾压|与.*物理接触|禁停|禁止停车", clause):
+                if re.search(r"非预期|(?:高于|低于)预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|碰撞|相撞|擦碰|刮碰|碾压|与.*物理接触|禁停|禁止停车", clause):
                     clause = re.sub(r"^(?:发生|出现|产生)", "", clause)
                     clause = re.sub(r"^(?:车辆|本车)(?:发生|出现)", "车辆", clause)
                     # Keep the sentence's explicit subject when a later clause

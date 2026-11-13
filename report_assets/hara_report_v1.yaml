@@ -120,6 +120,7 @@ presentation:
           vehicle_hazard: 泊车过程中车辆无法按预期减速，存在与周边障碍物碰撞的风险
         text: 防止泊车制动能力丧失导致碰撞。
     scenario_condition_translations:
+      "Traffic-induced halt on road": "因交通状况在道路上停车"
       "Parking in a multi-story car park/garage": 多层停车场/车库
       "Parkplatz / Parkhaus / Garage (V1 usage)": 停车场/停车楼/车库
       "Reduced friction (µ < 0.8)": 低附着路面（µ < 0.8）

@@ -309,6 +309,8 @@ def test_multiple_members_keep_only_shared_raw_conditions_and_all_ratings(active
     ('车辆出现非预期横摆，向相邻车道偏移', '防止车辆非预期横摆。'),
     ('车辆丧失减速能力，无法按请求停车', '防止车辆丧失减速能力。'),
     ('车辆无法保持静止，沿道路坡向移动', '防止车辆无法保持静止。'),
+    ('在泊车路径附近存在障碍物或行人时，车辆以高于预期的速度运动，可能发生碰撞。',
+     '防止车辆以高于预期的速度运动。'),
 ])
 def test_unseen_sg_wording_uses_supported_behavior_and_retains_original(behavior,expected):
     mapper=EngineeringReportTextMapper()  # no exact-match catalog

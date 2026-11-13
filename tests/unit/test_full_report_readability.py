@@ -79,6 +79,8 @@ def test_control_scope_terms_and_timing_reason_keep_qualifications_and_ids():
     assert '未建立失去制动避碰能力边界；首次接触边界不是FTTI' in boundary
     assert '故障发生时刻尚未知' in boundary and '恒定净减速度响应有效' in boundary
     assert '前方发生正面接触，ID-FAULT_ONSET-1保持不变' in boundary
+    assert mapper.engineering_terms('缺少 fault_release 响应；暴露 exposure；ID-fault_release-1保留') == (
+        '缺少 故障作用解除 响应；暴露 暴露；ID-fault_release-1保留')
 
 
 def test_chinese_function_projection_localizes_view_labels_without_mutating_source(active_method):
@@ -92,6 +94,44 @@ def test_chinese_function_projection_localizes_view_labels_without_mutating_sour
     assert all('后视、前视或俯视画面' in row.function_output for row in view.rows)
     assert all('ID-TopView-01' in row.function_output for row in view.rows)
     assert state.functions == before
+
+
+@pytest.mark.parametrize("parent_type,selected_type", [
+    ("平行停车位", "垂直停车位"), ("分流车道", "汇入车道"),
+])
+@pytest.mark.parametrize("location", [None, "室外试验场"])
+def test_selected_road_condition_does_not_keep_parent_type_as_location(parent_type, selected_type, location):
+    scenario = SimpleNamespace(operating_scenario="parking area", operating_mode="parking_vehicle_control",
+        facts={"method_scenario_dimensions": {"WHERE": {"project_value": location or parent_type}},
+            "source_operating_conditions": {"operating_scenario": location or parent_type,
+                "permitted_road_types": [parent_type, selected_type]},
+            "selected_source_condition": {"source_field": "odd_road_types", "value": selected_type,
+                "physical_effect": "所选运行条件决定目标相对位置"}}, analysis_instance={})
+    before = deepcopy(scenario)
+    description, details = EngineeringReportTextMapper().scenario(scenario)
+    assert selected_type in description and parent_type not in description
+    assert "所选运行条件决定目标相对位置" in details
+    if location:
+        assert location in description
+    assert scenario == before
+
+
+def test_group_with_different_selected_types_does_not_revive_parent_type_as_location():
+    base = SimpleNamespace(operating_scenario="parking area", operating_mode="parking_vehicle_control",
+        atomic_variant="typical", context_resolution={}, analysis_instance={}, facts={
+            "method_scenario_dimensions": {"WHERE": {"project_value": "旧车位类型"}},
+            "source_operating_conditions": {"operating_scenario": "旧车位类型",
+                "permitted_road_types": ["旧车位类型", "新类型甲", "新类型乙"]}})
+    scenarios = [deepcopy(base), deepcopy(base)]
+    for scenario, choice in zip(scenarios, ["新类型甲", "新类型乙"]):
+        condition = {"source_field": "odd_road_types", "value": choice, "physical_effect": choice + "的几何影响"}
+        scenario.facts['selected_source_condition'] = condition
+        scenario.facts['source_operating_conditions']['selected_condition'] = deepcopy(condition)
+    before = deepcopy(scenarios)
+    text, _ = HARAReportProjectionService(load_report_schema())._group_scenario(
+        [{'scenario': scenario} for scenario in scenarios])
+    assert all(value not in text for value in ["旧车位类型", "新类型甲", "新类型乙"])
+    assert scenarios == before
 
 
 def test_same_qm_with_missing_c_is_not_described_as_unknown_group_upper_bound(active_method):
