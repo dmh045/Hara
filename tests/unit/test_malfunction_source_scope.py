@@ -60,6 +60,9 @@ def test_malfunction_request_honors_configured_output_allowance(limit):
     candidates, audit = MalfunctionHazardAgent(client).generate(function, [assessment])
     assert len(candidates) == 1 and audit["llm_call_count"] == 1
     assert client.requests[0].max_tokens == limit
+    schema = client.requests[0].response_schema["properties"]["candidates"]["items"]
+    assert ','.join(schema['required']) in client.requests[0].user_prompt
+    assert ','.join(schema['properties']['derivation']['required']) in client.requests[0].user_prompt
 
 
 def test_source_bound_single_quantity_uses_one_request_and_preserves_limits():

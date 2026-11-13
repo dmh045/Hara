@@ -92,6 +92,9 @@ def test_explicit_parking_types_reach_supplement_without_inventing_profile_speed
     assert facts.speed_min_kph is None and facts.speed_max_kph is None
     assert facts.odd_locations == [] and warnings == []
     assert "明确支持的车位类型" in client.request.system_prompt
+    with pytest.raises(ValueError, match="cannot stringify an ODD object"):
+        _merge_supplements(facts, {"odd_repair": {"odd": {"locations": [{
+            "type": "室外停车场", "source_excerpt": "outside parking"}]}}})
 
 
 def test_training_speed_cannot_become_execution_speed_but_training_mode_can_use_it():

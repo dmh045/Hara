@@ -114,7 +114,10 @@ def _merge_supplements(
     )
     for field, candidate in list_mappings:
         if not values[field] and candidate is not None:
-            values[field] = [str(item) for item in ItemDefinitionNormalizer._list(candidate, field)]
+            items = ItemDefinitionNormalizer._list(candidate, field)
+            if any(not isinstance(item, str) for item in items):
+                raise ValueError(f"{field} must contain strings; cannot stringify an ODD object")
+            values[field] = items
     if values["speed_min_kph"] is None and "speed_range_kph" in odd:
         speed_min, speed_max, warning = ItemDefinitionNormalizer._speed_range(
             odd.get("speed_range_kph")

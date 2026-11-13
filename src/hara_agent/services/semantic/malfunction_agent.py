@@ -34,7 +34,7 @@ class _FailureTypeContractViolation(ValueError):
 class MalfunctionHazardAgent:
     """Generate traceable malfunction and vehicle-level hazard candidates."""
 
-    PROMPT_VERSION = "malfunction-hazard-v8-source-linked-single-deviation"
+    PROMPT_VERSION = "malfunction-hazard-v9-explicit-candidate-fields"
     SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA分析助手。只处理已适用的Guideword，从给定功能的正常行为推导失效假设，不声称Item原文已定义这些故障。
 每条候选只针对一个可区分的偏差量；转角与转向速率、制动力与驱动扭矩等不同量不能用“或/”合成一条。泊入/泊出等操作范围可以共享同一失效定义，但不证明各操作场景已覆盖，不机械展开操作×偏差的笛卡尔积。
 derivation.subject须逐字来自所引用FunctionContext字段，description须使用该主体和quantity。仅有功能输出时分析输出偏差，不升级为执行器硬件损坏或独立控制通道故障；只有原文明确组件时才能引用它。分类枚举不是项目硬件证据。
@@ -337,6 +337,8 @@ functional_effect写行为影响；vehicle_level_hazard写车辆级危险状态�
                 f"\nExistingCandidates={[(item.malfunction_id, item.guideword, item.description) for item in (existing or [])]}\n"
                 f"\nRejectedCandidates={json.dumps(rejected or [], ensure_ascii=False)}\n"
             )
+        schema = self._response_schema()
+        candidate_schema = schema["properties"]["candidates"]["items"]
         return LLMRequest(
             task="derive_malfunctions_and_hazards",
             system_prompt=self.SYSTEM_PROMPT,
@@ -347,7 +349,10 @@ functional_effect写行为影响；vehicle_level_hazard写车辆级危险状态�
                 "必须为ApplicableGuidewords中的每一个Guideword至少返回一个Malfunction候选；"
                 "不得遗漏，不得增加列表外Guideword。"
                 + repair_instruction +
-                "按响应schema返回candidates数组；derivation.function_refs引用FunctionContext的键，"
+                f"返回candidates数组；每项必须含{','.join(candidate_schema['required'])}。"
+                "description、functional_effect、vehicle_level_hazard位于候选顶层；"
+                f"derivation仅含{','.join(candidate_schema['properties']['derivation']['required'])}。"
+                "derivation.function_refs引用FunctionContext的键，"
                 "subject逐字引用对应功能主体，quantity为单个偏差量名称（不含单位），basis说明推导，assumptions单列补充假设。"
                 "status只能为PENDING。"
                 + ("、component_category。" if self.component_categories else "。")
@@ -368,7 +373,7 @@ functional_effect写行为影响；vehicle_level_hazard写车辆级危险状态�
             # Reasoning and the final candidate JSON share the Provider cap.
             # Respect its configured allowance rather than truncating at 8k.
             max_tokens=int(getattr(getattr(self.client, "config", None), "max_tokens", 8192)),
-            response_schema=self._response_schema(),
+            response_schema=schema,
         )
 
     def _parse_candidates(
