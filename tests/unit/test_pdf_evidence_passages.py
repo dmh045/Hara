@@ -64,6 +64,36 @@ def test_pdf_negative_condition_stays_with_selected_passage():
     assert "Other feature.\n" * 45 not in result.text
 
 
+def test_explicit_parking_types_reach_supplement_without_inventing_profile_speeds():
+    from hara_agent.infrastructure.llm import LLMResponse
+    from hara_agent.models import ItemDefinitionFacts
+    from hara_agent.services.semantic import ItemSupplementAgent
+    from hara_agent.workflow.nodes.item_artifacts import _merge_supplements
+
+    page = _page("The function supports perpendicular, inclined and parallel parking spaces.\n"
+                 "The driver selects speed from predefined profiles; no numeric limit is specified.")
+    route = ItemEvidenceRouter().route([vars(page)], "odd_repair")
+    assert route is not None and "perpendicular, inclined and parallel" in route.text
+
+    class Client:
+        def complete_json(self, request):
+            self.request = request
+            return LLMResponse({"operating_modes": ["泊车"], "odd": {
+                "locations": [], "road_types": ["垂直车位", "斜向车位", "平行车位"],
+                "weather_conditions": [], "road_surfaces": [], "speed_range_kph": None}}, "offline")
+
+    client = Client()
+    patch, _ = ItemSupplementAgent(client).extract(route, "another-project.pdf")
+    facts, warnings = _merge_supplements(
+        ItemDefinitionFacts("Parking assistance", "Vehicle guidance", sources=[
+            SourceRef("item_definition", "another-project.pdf", page.location, page.text)]),
+        {"odd_repair": patch})
+    assert facts.odd_road_types == ["垂直车位", "斜向车位", "平行车位"]
+    assert facts.speed_min_kph is None and facts.speed_max_kph is None
+    assert facts.odd_locations == [] and warnings == []
+    assert "明确支持的车位类型" in client.request.system_prompt
+
+
 def test_training_speed_cannot_become_execution_speed_but_training_mode_can_use_it():
     original = _page(
         ("Background.\n" * 60)

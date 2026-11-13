@@ -148,7 +148,7 @@ class ItemEvidenceRouter:
 
 
 class ItemSupplementAgent:
-    PROMPT_VERSION = "item-supplement-v3-zh-v1"
+    PROMPT_VERSION = "item-supplement-v4-explicit-parking-types"
 
     def __init__(self, client: LLMClient):
         self.client = client
@@ -173,6 +173,8 @@ class ItemSupplementAgent:
             system_prompt=(
                 "你是Item Definition局部证据抽取Agent。只使用给定的带ID文档块，"
                 "不得扩展到常识；没有证据的字段返回空数组或null。"
+                "road_types也包含功能说明中明确支持的车位类型；保留否定和适用前提。"
+                "仅声明预设速度档而无数值时，speed_range_kph返回null。"
                 + REPORT_LANGUAGE_PROMPT
             ),
             user_prompt=(

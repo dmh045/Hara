@@ -365,7 +365,9 @@ functional_effect写行为影响；vehicle_level_hazard写车辆级危险状态�
                 "coverage_repair": coverage_repair,
                 "guideword_count": len(guidewords),
             },
-            max_tokens=8192,
+            # Reasoning and the final candidate JSON share the Provider cap.
+            # Respect its configured allowance rather than truncating at 8k.
+            max_tokens=int(getattr(getattr(self.client, "config", None), "max_tokens", 8192)),
             response_schema=self._response_schema(),
         )
 

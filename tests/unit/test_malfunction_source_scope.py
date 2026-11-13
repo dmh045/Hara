@@ -3,6 +3,7 @@ from copy import deepcopy
 from dataclasses import asdict, replace
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -49,6 +50,16 @@ class Scripted:
         self.requests.append(request)
         assert self.batches, "unexpected extra semantic request"
         return LLMResponse({"candidates": self.batches.pop(0)}, "offline-scripted")
+
+
+@pytest.mark.parametrize("limit", [4096, 16384, 65536])
+def test_malfunction_request_honors_configured_output_allowance(limit):
+    function, assessment = inputs()
+    client = Scripted([proposal()])
+    client.config = SimpleNamespace(max_tokens=limit)
+    candidates, audit = MalfunctionHazardAgent(client).generate(function, [assessment])
+    assert len(candidates) == 1 and audit["llm_call_count"] == 1
+    assert client.requests[0].max_tokens == limit
 
 
 def test_source_bound_single_quantity_uses_one_request_and_preserves_limits():
