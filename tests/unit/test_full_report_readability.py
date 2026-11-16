@@ -83,6 +83,21 @@ def test_control_scope_terms_and_timing_reason_keep_qualifications_and_ids():
         '缺少 故障作用解除 响应；暴露 暴露；ID-fault_release-1保留')
 
 
+@pytest.mark.parametrize('model', list(EngineeringReportTextMapper._PHYSICAL_MODEL_TEXT))
+def test_model_names_and_vehicle_alias_are_localized_in_prose_but_not_ids(model):
+    mapper = EngineeringReportTextMapper()
+    raw = f'静止passenger_car；本工况采用{model}，不证明处置有效；记录 ID-{model}-1、passenger_car_01。'
+    text = mapper.hazardous_event(raw)
+    assert '静止乘用车' in text and mapper._PHYSICAL_MODEL_TEXT[model] in text
+    assert '不证明处置有效' in text
+    assert f'ID-{model}-1、passenger_car_01' in text
+    timing = [{'reason': raw, 'contact_time_s': None}]
+    before = deepcopy(timing)
+    rationale = mapper.ftti_rationale(timing)
+    assert mapper._PHYSICAL_MODEL_TEXT[model] in rationale and '静止乘用车' in rationale
+    assert timing == before
+
+
 def test_chinese_function_projection_localizes_view_labels_without_mutating_source(active_method):
     from copy import deepcopy
     state = _p6_report_state()

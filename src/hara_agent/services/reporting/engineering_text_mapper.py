@@ -25,6 +25,13 @@ class EngineeringReportTextMapper:
         "FRONTAL": "正面碰撞", "REAR_END": "追尾碰撞",
         "SIDE": "侧向碰撞", "LATERAL": "侧向碰撞",
     }
+    _PHYSICAL_MODEL_TEXT = {
+        "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": "坡道溜车（重力减残余阻力）",
+        "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": "恒加速度至首次接触",
+        "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "独立横向加速至接触（不等同于等速转向）",
+        "CONSTANT_SPEED_CURVATURE_TO_CONTACT": "等速圆弧至侧向首次接触（无侧滑假设）",
+        "RECTILINEAR_MOVING_TARGET_CONTACT": "移动目标相对轨迹与有限包络首次接触",
+    }
 
     def __init__(self, language: Mapping[str, Any] | None = None):
         self.language = language or {}
@@ -260,7 +267,7 @@ class EngineeringReportTextMapper:
     @classmethod
     def engineering_terms(cls, text: str) -> str:
         """Localize known contract tokens in prose, never inside identifiers."""
-        labels = {**cls._MODE_TEXT, **cls._CONTROL_TEXT,
+        labels = {**cls._MODE_TEXT, **cls._CONTROL_TEXT, **cls._PHYSICAL_MODEL_TEXT,
             "Rear-、Front-或TopView": "后视、前视或俯视画面",
             "Rear-, Front-或TopView": "后视、前视或俯视画面",
             "RearView": "后视画面", "FrontView": "前视画面", "TopView": "俯视画面",
@@ -291,7 +298,7 @@ class EngineeringReportTextMapper:
             "safe_state_proposal": "安全处置方案", "vehicle_control": "泊车控车",
             "pedestrian": "行人", "clearance": "净距", "hold": "保持", "brake": "制动",
             "µ-split": "左右分离附着", "Splitt / gravel": "碎石或砾石", "gravel": "砾石", "Splitt": "碎石",
-            "passenger car": "乘用车", "多故事车库": "多层车库",
+            "passenger car": "乘用车", "passenger_car": "乘用车", "多故事车库": "多层车库",
             "remaining": "保留的", "failed": "失效", "unresolved": "未明确", "intervention": "干预",
             "true": "是", "false": "否",
             "kph": "km/h"}
@@ -509,12 +516,7 @@ class EngineeringReportTextMapper:
         if model == "CONSTANT_SPEED_REPRESENTATIVE":
             parts.append("恒速代表工况；用于所列碰撞条件，不是故障最大速度包络")
         elif model:
-            names = {"GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": "坡道溜车（重力减残余阻力）",
-                "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": "恒加速度至首次接触",
-                "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "独立横向加速至接触（不等同于等速转向）",
-                "CONSTANT_SPEED_CURVATURE_TO_CONTACT": "等速圆弧至侧向首次接触（无侧滑假设）",
-                "RECTILINEAR_MOVING_TARGET_CONTACT": "移动目标相对轨迹与有限包络首次接触"}
-            parts.append(f"运动模型：{names.get(model, model)}")
+            parts.append(f"运动模型：{cls._PHYSICAL_MODEL_TEXT.get(model, model)}")
         if not any(part.startswith("TTC：") for part in parts) and (
             str(derived.get("closing_speed_status", "")) == "TTC_NOT_CLOSING"
         ):
