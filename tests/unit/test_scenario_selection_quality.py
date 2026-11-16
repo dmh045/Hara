@@ -181,6 +181,53 @@ def _sets(synthesis_input):
     return {item.dimension: item for item in synthesis_input.dimension_candidate_sets}
 
 
+@pytest.mark.parametrize("mode,label,expected", [
+    ("parking_vehicle_control", "Parking garage", "SUPPORTED"),
+    ("parking_vehicle_control", "Expressway", "CONTRADICTED"),
+    ("motorway driving", "Motorway", "SUPPORTED"),
+    ("motorway driving", "Parking garage", "CONTRADICTED"),
+])
+def test_operating_location_context_scopes_selection_without_inventing_project_odd(mode, label, expected):
+    parent = _parent(operating_scenario="项目运行区域", description="")
+    parent.operating_mode = mode
+    query = ScenarioSemanticQueryBuilder.build(malfunction=_malfunction("vehicle collision"),
+        parent=parent, assessment={}, project_context={}, fm_template={})
+    assert query["project_location_categories"] == []
+    result, _ = ScenarioSemanticCompatibilityClassifier.classify(
+        dimension="WHERE", atom={"atom_id": "unseen-place", "label": label}, query=query, fm_template={})
+    assert result.value == expected
+
+
+def test_explicit_project_location_remains_authoritative_and_compound_atoms_keep_place_qualifiers():
+    query = {"project_location_categories": ["LOCATION_CITY"],
+             "parent_location_categories": ["LOCATION_PARKING"], "object_categories": ["OBJECT_PEDESTRIAN"]}
+    classify = ScenarioSemanticCompatibilityClassifier.classify
+    assert classify(dimension="WHERE", atom={"atom_id": "city", "label": "City road"},
+        query=query, fm_template={})[0].value == "SUPPORTED"
+    compound = {"atom_id": "renamed-compound", "label": "Pedestrians across expressway",
+                "filled_dimensions": ["WHERE", "OBJECT"]}
+    for dimension in ("WHERE", "OBJECT"):
+        status, reason = classify(dimension=dimension, atom=compound, query=query,
+            fm_template={"active_option": {"obj_type": "pedestrian"}})
+        assert status.value == "CONTRADICTED" and reason == "LOCATION_SCOPE_CONTRADICTION"
+    assert classify(dimension="WHERE", atom=compound, query=query, fm_template={},
+        parent_atom_id=compound["atom_id"])[1] == "EXACT_PARENT_BINDING"
+
+
+def test_known_operation_without_declared_odd_selects_supported_places_not_generic_ranked_places(method):
+    service = ConstrainedScenarioSynthesisService(method)
+    parent = _parent(object_type="", operating_scenario="项目运行区域", description="")
+    parent.operating_mode = "parking_vehicle_control"
+    synthesis = service.build_input(malfunction=_malfunction("vehicle collision"), parent=parent,
+        assessment={}, project_context={}, function={})
+    places = _sets(synthesis)["WHERE"]
+    assert places.candidates
+    assert all(c.semantic_compatibility.value == "SUPPORTED" for c in places.candidates)
+    assert all("LOCATION_PARKING" in ScenarioCandidateRanker.atom_categories({
+        "label": c.label, "physical_semantics": c.method_semantics}) for c in places.candidates)
+    assert len(places.candidates) > 1  # Scope repair retains supported alternatives.
+
+
 @pytest.mark.parametrize("signature_count", [1, 2, 3])
 def test_coverage_variant_count_uses_distinct_engineering_support(signature_count):
     candidates = []

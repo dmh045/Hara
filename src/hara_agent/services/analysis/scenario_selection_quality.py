@@ -461,6 +461,7 @@ class ScenarioSemanticQueryBuilder:
             "odd_road_types": project_context.get("odd_road_types", []),
         })
         parent_location_text = _json_text({
+            "parent_operating_mode": parent.operating_mode,
             "parent_operating_scenario": parent.operating_scenario,
             "parent_operating_scenario_fact": facts.get("operating_scenario", ""),
         })
@@ -496,7 +497,9 @@ class ScenarioSemanticQueryBuilder:
             "traffic_relations": sorted(categories & _TRAFFIC_CATEGORIES),
             "road_relations": sorted(categories & _ROAD_CATEGORIES),
             # Project ODD is hard legality authority.  Parent location is kept
-            # separately as ranking context and must never widen that authority.
+            # separately as context and must never widen that authority. When
+            # no project location is declared, the known operation still scopes
+            # analytical selections; it does not become a project ODD fact.
             "project_location_categories": sorted(project_location_categories),
             "parent_location_categories": sorted(parent_location_categories),
             "parent_environment": sorted(explicit_environment(parent_location_text)),
@@ -756,7 +759,9 @@ class ScenarioSemanticCompatibilityClassifier:
         if dimension == "EGO_DYNAMICS":
             return set(map(str, query.get("action_categories", [])))
         if dimension == "WHERE":
-            return set(map(str, query.get("project_location_categories", [])))
+            return set(map(str, query.get("project_location_categories", []))) or set(
+                map(str, query.get("parent_location_categories", []))
+            )
         if dimension in {"ROAD", "EGO_X_ROAD"}:
             return set(map(str, query.get("road_relations", [])))
         return set()
@@ -779,9 +784,14 @@ class ScenarioSemanticCompatibilityClassifier:
         if driver is not None and query.get("driver_in_vehicle") is not None and driver != query["driver_in_vehicle"]:
             return SemanticCompatibility.CONTRADICTED, "DRIVER_CONDITION_CONFLICT"
 
-        atom_categories = cls._domain_categories(
-            dimension, ScenarioCandidateRanker.atom_categories(atom),
-        )
+        all_categories = ScenarioCandidateRanker.atom_categories(atom)
+        location_categories = cls._domain_categories("WHERE", all_categories)
+        location_scope = cls._query_categories("WHERE", query)
+        # A compound Object/Traffic Atom may also prescribe a place. Checking
+        # only its requested dimension silently drops that operating condition.
+        if location_categories and location_scope and not location_categories & location_scope:
+            return SemanticCompatibility.CONTRADICTED, "LOCATION_SCOPE_CONTRADICTION"
+        atom_categories = cls._domain_categories(dimension, all_categories)
         query_categories = cls._query_categories(dimension, query)
 
         # A shared traffic relation does not prove a different ego maneuver.
@@ -960,6 +970,15 @@ class ScenarioShortlistPolicy:
             return (), 0, "NOT_APPLICABLE"
         if exact:
             return ordered[:1], 1, "EXACT_FIXED"
+        if (dimension == "WHERE"
+                and ScenarioSemanticCompatibilityClassifier._query_categories(dimension, query)
+                and any(item.semantic_compatibility is SemanticCompatibility.SUPPORTED for item in ordered)):
+            # An unqualified place is not an additional covered environment
+            # when supported places are available. Keep authoritative bindings;
+            # the full ranked pool remains in the selection audit.
+            ordered = tuple(item for item in ordered
+                if item.semantic_compatibility is SemanticCompatibility.SUPPORTED
+                or item.binding_authority != ScenarioBindingAuthority.ANALYTICAL_SELECTION.value)
         primary = dimension in set(primary_dimensions)
         secondary = dimension in set(secondary_dimensions)
         base = (
