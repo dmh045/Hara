@@ -118,14 +118,20 @@ def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
                     target_evasion: hypothesis[field][target_evasion]}
     shared_response = hypothesis.get("safe_state_proposal", {})
     required = set(shared_response.get("required_controls", []))
-    if (("automatic_braking_command" in required or shared_response.get("required_command_path"))
-            and not required & {"driver_braking", "remote_control"}
+    personnel = required & {"driver_braking", "remote_control"}
+    automatic_response = ("automatic_braking_command" in required or shared_response.get("required_command_path")) and not personnel
+    # A shared response inside an explicitly singleton personnel world is
+    # already scoped. Preserve it only when this local assessment actually
+    # declares every required control; never borrow a pedal/remote path across
+    # drivers or infer access from an unspecified/multi-driver world.
+    personnel_scope = shared_response.get("driver_positions") or hypothesis.get("driver_positions", [])
+    scoped_personnel_response = (bool(personnel) and set(personnel_scope) == {driver_position}
+        and required <= set(selected["remaining_controls"]))
+    if ((automatic_response or scoped_personnel_response)
             and not required & (set(selected["failed_controls"]) | set(assessment.get("unresolved_controls", {})))
             and (not shared_response.get("driver_positions") or driver_position in shared_response["driver_positions"])
             and "safe_state_proposal" not in assessment and "safe_state_unresolved_reason" not in assessment):
-        # A driver-only delta does not cancel a shared automatic response.
-        # Explicit local proposals/gaps take precedence; manual/remote paths
-        # never acquire an extra personnel scope through inheritance.
+        # Explicit local proposals/gaps take precedence in either case.
         selected["safe_state_proposal"] = shared_response
         selected["remaining_controls"] = list(dict.fromkeys([
             *selected["remaining_controls"], *shared_response["required_controls"]]))

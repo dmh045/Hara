@@ -291,6 +291,59 @@ def test_shared_automatic_response_survives_driver_only_deltas(method, tmp_path)
         assert 'safe_state_proposal' not in controls_for_driver(variant,'outside_driver_seat'),change
 
 
+@pytest.mark.parametrize('position,command', [
+    ('outside_driver_seat', 'remote_control'), ('in_driver_seat', 'driver_braking'),
+])
+def test_singleton_personnel_response_survives_scoping_and_cached_production_resume(method, tmp_path, position, command):
+    from test_scoped_timing_and_avoidance import timed_plan
+    from hara_agent.contracts.physical_scenario_plan import controls_for_driver
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    raw = timed_plan(); h = raw['hypotheses'][0]
+    h['driver_positions'] = [position]
+    h['remaining_controls'] = [command, 'braking']
+    h.pop('unresolved_controls', None)
+    h['safe_state_proposal'].update(required_controls=[command, 'braking'])
+    h['safe_state_proposal'].pop('driver_positions')
+    h['driver_control_assessments'] = {position: {
+        'rationale': 'Explicitly available path within this singleton world',
+        'basis_refs': ['MF.description'], 'conditions': ['Conditional independence'],
+        'uncovered_conditions': ['Not a measured capability'], 'failed_controls': [],
+        'remaining_controls': [command, 'braking']}}
+    original = deepcopy(raw)
+    class Client:
+        calls = 0
+        def complete_json(self, request):
+            self.calls += 1
+            return LLMResponse(raw, 'OFFLINE')
+    client = Client(); parent = make_candidate(3.6)
+    parent.facts.update(driver_position=position, driver_in_vehicle=position=='in_driver_seat')
+    state = HARAState('singleton-response', malfunctions=[asdict(mf())])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    def run(st):
+        return construct_physical_scenarios(st, {'MF': [parent]}, [mf()], method=method,
+            agent=agent, project_facts=None)['MF']
+    children = run(state)
+    assert len(children)==1 and client.calls==1 and raw==original
+    effective = children[0].facts['physical_analysis']['hypothesis']
+    assert effective['safe_state_proposal']==h['safe_state_proposal']
+    assert effective['hazard_timing']==h['hazard_timing']
+    timing = RiskCalculationInputService().ftti('MF', children[0].scenario_id, '',
+        {**children[0].facts, '_fact_provenance': children[0].fact_provenance}, method=method)
+    assert timing.hazard_time_limit_s>0
+    assert run(HARAState.read_committed(json.loads(json.dumps(state.to_dict()))))==children
+    assert client.calls==1
+    for case in ('no_scope', 'multiple_drivers', 'other_driver', 'missing_command', 'failed', 'unknown', 'local_gap'):
+        variant=deepcopy(h); local=variant['driver_control_assessments'][position]
+        if case=='no_scope':variant.pop('driver_positions')
+        if case=='multiple_drivers':variant['driver_positions']=['in_driver_seat','outside_driver_seat']
+        if case=='other_driver':variant['driver_positions']=['in_driver_seat' if position=='outside_driver_seat' else 'outside_driver_seat']
+        if case=='missing_command':local['remaining_controls']=['braking']
+        if case=='failed':local['failed_controls']=[command]
+        if case=='unknown':local['unresolved_controls']={command:'Unavailable until established'}
+        if case=='local_gap':local['safe_state_unresolved_reason']='This world cannot use that response'
+        assert 'safe_state_proposal' not in controls_for_driver(variant, position), case
+
+
 def test_shared_actuator_does_not_disappear_or_invent_an_outside_command():
     from hara_agent.contracts.physical_scenario_plan import controls_for_driver, declared_response_path, automatic_command_unassessed
     raw = raw_plan(); h = raw['hypotheses'][0]

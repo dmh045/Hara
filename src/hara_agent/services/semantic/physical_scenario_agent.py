@@ -272,7 +272,7 @@ class PhysicalScenarioAgent:
     PREVIOUS_REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     REQUEST_VIEW_VERSION = "physical-request-view-v6-dedup-model-scope"
     CONTROL_REQUEST_VIEW_VERSION = "physical-request-view-v5-scoped-control-context"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v31-preserved-driver-presence"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v32-singleton-personnel-response"
     PROMPT_VERSION = "post-fault-physical-scenario-v57-scoped-structured-policies"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v37-scoped-structured-policies"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
