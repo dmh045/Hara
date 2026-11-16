@@ -894,7 +894,7 @@ class PhysicalHypothesisInstantiationService:
         # replace a method representative within its range, never a measurement.
         for field, value in supplied.items():
             old = parent.fact_provenance.get(field, {})
-            if field == "ego_speed_kph" and new_initial or new_target and field in {"object_id", "object_position", "road_user_type", "collision_type", "object_speed_kph", "object_longitudinal_direction", "relative_distance_m", "lateral_clearance_m", "other_road_user_avoidance_possible"}:
+            if new_initial and field in {"ego_speed_kph", "ego_longitudinal_direction"} or new_target and field in {"object_id", "object_position", "road_user_type", "collision_type", "object_speed_kph", "object_longitudinal_direction", "relative_distance_m", "lateral_clearance_m", "other_road_user_avoidance_possible"}:
                 continue
             if field in PARAMETER_UNITS and field != "ego_speed_kph" and not self._inheritance_reason(parent, h, field, malfunction.malfunction_id)[0]:
                 continue

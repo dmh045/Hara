@@ -195,6 +195,34 @@ def test_method_standing_initial_cannot_silently_change(method):
     assert not children and errors[0]['reason_code'] == 'INITIAL_STATE_ATOM_CONFLICT'
 
 
+def test_explicit_new_stopped_phase_can_reverse_direction_without_rewriting_parent(method):
+    parent = make_candidate(0)
+    parent.facts['ego_longitudinal_direction'] = 'REVERSE'
+    parent.fact_provenance['ego_longitudinal_direction'] = source()
+    parent.facts['ttc_s'] = 99
+    parent.fact_provenance['ttc_s'] = source()
+    before = deepcopy(parent)
+    raw = raw_plan(initial=0)
+    children, errors = produce(method, raw, parent)
+    assert not children and errors[0]['reason'] == 'CONFLICT_WITH_SELECTED_CONDITION:ego_longitudinal_direction'
+    raw['hypotheses'][0]['condition_changes'] = {
+        'initial_state': True, 'target': False,
+        'rationale': 'Separate stopped phase after reversal; the preceding stop is not modeled'}
+    children, errors = produce(method, raw, parent)
+    assert not errors and len(children) == 1 and parent == before
+    child = children[0]
+    assert child.facts['ego_longitudinal_direction'] == 'FORWARD'
+    assert child.facts['ego_speed_kph'] == 0 and child.facts['ttc_s'] != 99
+    assert child.fact_provenance['ego_longitudinal_direction']['approval'] == 'PENDING'
+    assert child.fact_provenance['ego_longitudinal_direction']['provenance'] == 'LLM_INFERENCE'
+    assert child.scenario_id != parent.scenario_id and child.status.value == 'PENDING'
+    # A moving world cannot reverse instantaneously without a separate phase.
+    parent.facts['ego_speed_kph'] = 3.6
+    moving = raw_plan(initial=3.6)
+    children, errors = produce(method, moving, parent)
+    assert not children and errors[0]['reason'] == 'DIRECTION_REVERSAL_REQUIRES_A_STOP_AND_SEPARATE_PHASE'
+
+
 @pytest.mark.parametrize('constraint,allowed', [
     ({'min_kph': None, 'max_kph': None}, True),
     ({'speed_min_kph': None, 'speed_max_kph': None}, True),
