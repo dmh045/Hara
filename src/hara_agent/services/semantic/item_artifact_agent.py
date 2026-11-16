@@ -29,7 +29,7 @@ from .parsing import REPORT_LANGUAGE_PROMPT, CONFIDENCE_PROMPT_CONTRACT
 class ItemArtifactExtractionAgent:
     """Extract core Item facts and Functions once from the full document."""
 
-    PROMPT_VERSION = "item-artifacts-v9-ego-odd-actor-scope"
+    PROMPT_VERSION = "item-artifacts-v10-independent-system-outputs"
     SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA的相关项定义抽取Agent。只提取文档明确陈述的事实。
 必须综合全文，不得把某个固定章节、标题编号或模板工作流中的章节示例当成唯一来源。
 一次返回核心Item Definition和车辆级Functions。不得把标题、条件、步骤、后果或质量要求识别为Function；
@@ -48,7 +48,7 @@ odd.locations描述车辆运行环境；操作者相对车辆的位置、距离�
   source table row/list item. The excerpt must be one continuous verbatim
   substring and must not concatenate evidence from other sections.
 - Operating states, workflow steps, preconditions, parking-in/parking-out phases,
-  and HMI interaction flows are not Functions.
+  and a customer's HMI input actions are not Functions by themselves.
 - Other document content may enrich description, preconditions, triggers,
   odd_constraints, fallback_behavior, and consequences of an existing Function,
   but it must not change the Function member set.
@@ -58,6 +58,16 @@ odd.locations描述车辆运行环境；操作者相对车辆的位置、距离�
   an enumerated vehicle-function list. In that case identify the supported
   functional actions and their outputs from the body; do not reduce the whole
   document to its product name, or treat headings/version history as functions.
+- Only in this full-document fallback, cover every independently observable
+  system-owned output, including non-motion outputs. Each needs an extracted
+  Function or a supported sub-capability of a Function whose output actually
+  covers it; a mention only in item_boundary is not Function coverage.
+- Do not list a product/system umbrella alongside overlapping subfunctions.
+  Combine actions only when they deliver the same observable output; different
+  conditions, phases or parameter settings alone do not create more Functions.
+- Keep the customer's monitoring, pressing or choosing actions as conditions
+  or triggers unless the source declares an Item-owned response/output. System
+  monitoring and information outputs are not excluded merely as HMI workflows.
 - Except for an authoritative list requiring exact names, write the extracted
   semantic fields in Simplified Chinese; keep source excerpts verbatim."""
 
