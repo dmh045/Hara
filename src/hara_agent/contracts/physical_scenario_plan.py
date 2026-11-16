@@ -9,7 +9,7 @@ import math
 from typing import Any
 
 
-PHYSICAL_PLAN_VERSION = "physical-plan-v5-scoped-timing"
+PHYSICAL_PLAN_VERSION = "physical-plan-v6-explicit-seat-scope"
 PARAMETER_UNITS = {
     "ego_speed_kph": "km/h", "relative_distance_m": "m",
     "longitudinal_acceleration_mps2": "m/s2", "slope_percent": "%",

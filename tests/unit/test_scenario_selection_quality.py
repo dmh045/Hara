@@ -59,6 +59,21 @@ def test_selected_method_driver_condition_is_bound_without_project_approval(insi
         ConstrainedScenarioSynthesisService.project_validated_atom_facts(**kwargs)
 
 
+@pytest.mark.parametrize("inside", [True, False])
+def test_implicit_driver_atom_cannot_choose_an_unknown_project_configuration(inside):
+    atom = {"atom_id": "unseen-presence", "label": (
+        "Parking with driver in vehicle" if inside else "Parking with driver not in vehicle")}
+    classify = ScenarioSemanticCompatibilityClassifier.classify
+    common = dict(dimension="EGO_ACTION", atom=atom, fm_template={})
+    status, reason = classify(**common, query={"operating_action_categories": ["ACTION_PARK"]})
+    assert status.value == "CONTRADICTED" and reason == "DRIVER_QUALIFIER_UNPROVEN"
+    status, reason = classify(**common, query={"driver_in_vehicle": inside,
+        "operating_action_categories": ["ACTION_PARK"]})
+    assert status.value != "CONTRADICTED"
+    status, reason = classify(**common, query={"driver_in_vehicle": not inside})
+    assert status.value == "CONTRADICTED" and reason == "DRIVER_CONDITION_CONFLICT"
+
+
 def test_dynamics_traffic_atom_requires_actual_operating_interaction():
     atom = {"atom_id": "unseen-cut-in", "label": "Near cut-in", "filled_dimensions": ["EGO_DYNAMICS"]}
     query = {"operating_action_categories": ["ACTION_PARK"], "action_categories": ["ACTION_PARK"],

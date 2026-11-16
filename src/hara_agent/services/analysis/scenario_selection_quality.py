@@ -774,6 +774,8 @@ class ScenarioSemanticCompatibilityClassifier:
         if qualifiers - set(query.get("operating_qualifiers", [])):
             return SemanticCompatibility.CONTRADICTED, "OPERATING_QUALIFIER_UNPROVEN"
         driver = explicit_driver_presence(str(atom.get("label", "")))
+        if driver is not None and query.get("driver_in_vehicle") is None:
+            return SemanticCompatibility.CONTRADICTED, "DRIVER_QUALIFIER_UNPROVEN"
         if driver is not None and query.get("driver_in_vehicle") is not None and driver != query["driver_in_vehicle"]:
             return SemanticCompatibility.CONTRADICTED, "DRIVER_CONDITION_CONFLICT"
 

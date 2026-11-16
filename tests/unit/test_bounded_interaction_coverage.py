@@ -102,6 +102,7 @@ def test_explicit_post_stop_world_reaches_contact_and_invalidates_old_phase(meth
     h = raw['hypotheses'][0]
     next(p for p in h['parameters'] if p['field'] == 'contact_half_length_m')['value'] = 4.3
     parent = make_candidate(7)
+    parent.facts['driver_position'] = 'in_driver_seat'
     before = deepcopy(parent)
     original = instantiate(method, raw, parent)[0]
     assert original.facts['motion_model_outcome']['limiting_condition'] == 'EGO_STOP'
@@ -278,11 +279,13 @@ def test_noncontact_does_not_invent_impact_or_ttc(method, kwargs, status):
 def test_moving_target_response_shared_between_drivers_and_recovered(method, tmp_path):
     from test_moving_response_timing import proposal
     parent = make_candidate(3.6)
+    parent.facts['driver_position'] = 'in_driver_seat'
     parent.facts.update(object_speed_kph=3.6, object_id="object1")
     parent.fact_provenance["object_speed_kph"] = source()
     other = deepcopy(parent)
     other.scenario_id = "outside"
     other.facts["driver_in_vehicle"] = False
+    other.facts['driver_position'] = 'outside_driver_seat'
     complete = moving_plan(); h = complete['hypotheses'][0]
     h['remaining_controls'] = ['automatic_braking_command', 'braking']
     for field in ('safe_state_proposal', 'hazard_timing'):

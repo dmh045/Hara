@@ -394,7 +394,8 @@ def test_boolean_driver_condition_reaches_prompt_without_reproposing_it(method):
             self.calls += 1
             payload = json.loads(request.user_prompt)
             context = expand_physical_prompt_view(payload['context'],payload['source_texts'])
-            assert context['driver_configurations'] == ['in_driver_seat']
+            assert context['driver_configurations'] == []
+            assert context['conditions']['facts']['driver_in_vehicle'] is True
             assert payload['output_contract']['driver_positions']['optional'] is True
             return LLMResponse(raw_plan(assessed=True), 'offline')
     client = Client(); parent = make_candidate()
@@ -423,7 +424,9 @@ def test_budget_stop_preserves_completed_physical_instances_before_next_plan(met
             agent=PhysicalScenarioAgent(Client()), project_facts=None, checkpoint=repo.save)
     restored = repo.load(state.run_id)
     done = next(e for e in restored.item_definition['physical_analysis_plans'].values() if e.get('instantiations'))
-    record = done['instantiations'][a.scenario_id]
+    assert len(done['instantiations']) == 1
+    completed_id, record = next(iter(done['instantiations'].items()))
+    assert completed_id in {a.scenario_id, b.scenario_id}
     child = record['generated_scenarios'][0]
     assert record['generated_ids'] == [child['scenario_id']]
     assert child['facts']['motion_model_outcome']['status'] == 'CONTACT'

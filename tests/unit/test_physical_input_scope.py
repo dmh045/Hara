@@ -45,6 +45,7 @@ def test_explicit_driver_scope_conditions_unknown_parent_without_source_approval
 
 def test_driver_scope_respects_known_position_and_boolean_handoff(method):
     parent = make_candidate()
+    parent.facts['driver_position'] = 'in_driver_seat'
     raw = raw_plan(); raw['hypotheses'][0]['driver_positions'] = ['in_driver_seat']
     children, errors = produce(method, raw, parent)
     assert not errors and len(children) == 1
@@ -54,6 +55,43 @@ def test_driver_scope_respects_known_position_and_boolean_handoff(method):
     children, errors = produce(method, raw, parent)
     assert not children and errors[0]['reason'] == 'HYPOTHESIS_DRIVER_SCOPE_NOT_APPLICABLE'
     assert parent == before
+
+
+def test_vehicle_presence_alone_does_not_establish_pedal_access(method):
+    parent = make_candidate()
+    parent.facts.pop('driver_position', None)
+    assert parent.facts['driver_in_vehicle'] is True
+    assert PhysicalHypothesisInstantiationService.driver_position(parent) == ''
+    assert PhysicalHypothesisInstantiationService.driver_position(parent.facts) == ''
+    raw = raw_plan(); raw['hypotheses'][0]['driver_positions'] = ['in_driver_seat']
+    children, errors = produce(method, raw, parent)
+    assert not errors and len(children) == 1
+    assert children[0].facts['physical_analysis']['driver_configuration_assumption']['status'] == 'PENDING'
+    assert children[0].fact_provenance['driver_position']['approval'] == 'PENDING'
+    assert PhysicalHypothesisInstantiationService.driver_position({'driver_in_vehicle':False}) == 'outside_driver_seat'
+    assert PhysicalHypothesisInstantiationService.driver_position({'driver_position':'outside_driver_seat',
+        'driver_in_vehicle':True}) == 'outside_driver_seat'
+
+
+def test_physical_families_preserve_unseated_presence_and_share_explicit_seat_variants(method):
+    from hara_agent.workflow.physical_analysis import _physical_families, _physical_conditions
+    from hara_agent.services.analysis.scenario_equivalence import signature
+    producer = PhysicalHypothesisInstantiationService(method)
+    inside = make_candidate()
+    inside.facts.pop('driver_position', None)
+    outside = deepcopy(inside)
+    outside.scenario_id = 'outside'
+    outside.facts['driver_in_vehicle'] = False
+    original = deepcopy([inside, outside])
+    groups, _ = _physical_families(producer, [inside, outside], 'MF')
+    assert len(groups) == 2
+    assert _physical_conditions(inside)['facts']['driver_in_vehicle'] is True
+    assert [inside, outside] == original
+    inside.facts['driver_position'] = 'in_driver_seat'
+    outside.facts['driver_position'] = 'outside_driver_seat'
+    assert signature(_physical_conditions(inside)) == signature(_physical_conditions(outside))
+    groups, _ = _physical_families(producer, [inside, outside], 'MF')
+    assert len(groups) == 1
 
 
 @pytest.mark.parametrize('positions', [None, ['in_driver_seat', 'outside_driver_seat']])

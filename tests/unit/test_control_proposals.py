@@ -526,6 +526,8 @@ def test_existing_motion_two_drivers_share_controls_without_reusing_causal_ident
             return LLMResponse(control_only_plan(), 'OFFLINE_SYNTHETIC')
     parents = [existing_motion(True), existing_motion(False)]
     parents[1].scenario_id = 'SC-OUTSIDE'
+    parents[0].facts['driver_position'] = 'in_driver_seat'
+    parents[1].facts['driver_position'] = 'outside_driver_seat'
     for parent in parents:
         for field in ('remote_intervention_available', 'other_road_user_avoidance_possible'):
             parent.facts.pop(field); parent.fact_provenance.pop(field)

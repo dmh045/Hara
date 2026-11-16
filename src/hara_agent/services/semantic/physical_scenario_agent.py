@@ -393,6 +393,7 @@ class PhysicalScenarioAgent:
 
     def propose(self, context: dict, *, on_response=lambda record: None) -> tuple[PhysicalScenarioPlan, dict]:
         needs_driver_scope = (not context.get("driver_configurations")
+            and context.get("conditions", {}).get("facts", {}).get("driver_in_vehicle") is None
             and "driver_in_vehicle" in context.get("intervention_inputs", []))
         response_only_correction = bool(context.get("previous_plan") and context.get("correction_diagnostics")
             and all(PhysicalScenarioPlan.response_only_diagnostic(str(d.get("reason", "")))

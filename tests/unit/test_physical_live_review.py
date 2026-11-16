@@ -980,8 +980,10 @@ def test_explicit_local_response_binds_shared_controls_and_reaches_both_driver_t
     h['driver_control_assessments'] = {'in_driver_seat': local, 'outside_driver_seat': outside}
     original = deepcopy(raw)
     inside_parent = make_candidate(3.6)
+    inside_parent.facts['driver_position'] = 'in_driver_seat'
     outside_parent = deepcopy(inside_parent)
     outside_parent.scenario_id += '-outside'
+    outside_parent.facts['driver_position'] = 'outside_driver_seat'
     outside_parent.facts['driver_in_vehicle'] = False
     client = Client([raw]); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
     state, generated = run(method, agent, candidates={'MF': [inside_parent, outside_parent]})

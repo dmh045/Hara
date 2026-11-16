@@ -26,7 +26,7 @@ def _unmodeled_declared_response(candidate, method):
     facts = candidate.facts
     h = (facts.get("control_analysis") or facts.get("physical_analysis", {})).get("hypothesis", {})
     outcome = facts.get("motion_model_outcome", {})
-    driver = "in_driver_seat" if facts.get("driver_in_vehicle") is True else "outside_driver_seat" if facts.get("driver_in_vehicle") is False else ""
+    driver = PhysicalHypothesisInstantiationService.driver_position(candidate)
     contact = outcome.get("status") == "CONTACT" or not outcome and bool(facts.get("collision_branches"))
     supported = method.metadata.get("project_analysis_policy", {}).get("timing_analysis", {}).get("supported_models", [])
     if (not contact or h.get("safe_state_proposal") or facts.get("fault_motion_model") not in supported):
@@ -96,12 +96,24 @@ def _update_response_totals(metrics, responses, sign=1):
             tokens[name] = tokens.get(name, 0) + sign * usage.get(name, 0)
 
 
+def _physical_conditions(candidate):
+    """Share seat variants, preserving a presence fact that does not name a seat."""
+    common = scenario_conditions(candidate, without_driver=True)
+    if (not PhysicalHypothesisInstantiationService.driver_position(candidate)
+            and candidate.facts.get("driver_in_vehicle") is not None):
+        full = scenario_conditions(candidate)
+        for section in ("facts", "fact_authority"):
+            if "driver_in_vehicle" in full[section]:
+                common[section]["driver_in_vehicle"] = full[section]["driver_in_vehicle"]
+    return common
+
+
 def _physical_families(producer, candidates, malfunction_id):
     groups, kept = defaultdict(list), []
     for candidate in candidates:
         scope = producer.task_scope(candidate, malfunction_id)
         if scope:
-            groups[(scope, signature(scenario_conditions(candidate, without_driver=True)))].append(candidate)
+            groups[(scope, signature(_physical_conditions(candidate)))].append(candidate)
         else:
             kept.append(candidate)
     return groups, kept
@@ -123,8 +135,8 @@ def _construct_parallel(state, candidates, malfunctions, *, method, agent, proje
     tasks, kept, configurations, remaining = [], {}, {}, {}
     for mf in malfunctions:
         groups, kept[mf.malfunction_id] = _physical_families(producer, candidates[mf.malfunction_id], mf.malfunction_id)
-        configurations[mf.malfunction_id] = sorted({producer.driver_position(c)
-            for c in candidates[mf.malfunction_id] if producer.driver_position(c)})
+        positions = [producer.driver_position(c) for c in candidates[mf.malfunction_id]]
+        configurations[mf.malfunction_id] = sorted(set(positions)) if all(positions) else None
         remaining[mf.malfunction_id] = len(groups)
         for group, family in sorted(groups.items()):
             tasks.append((mf, group, family))
@@ -321,9 +333,9 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
     route.update(physical_reasoning_identity(config))
     for mf in malfunctions:
         source_evidence, source_routing = _source_evidence(state, functions.get(mf.function_id, {}))
-        driver_configurations = _driver_configurations if _driver_configurations is not None else sorted({producer.driver_position(c)
-                                        for c in candidates[mf.malfunction_id]
-                                        if producer.driver_position(c)})
+        positions = [producer.driver_position(c) for c in candidates[mf.malfunction_id]]
+        shared_configurations = (_driver_configurations if _driver_configurations is not None else
+            sorted(set(positions)) if all(positions) else None)
         groups, kept = _physical_families(producer, candidates[mf.malfunction_id], mf.malfunction_id)
         metrics["existing_path_skipped"] += len(kept)
         # Distribute source-condition requests over existing motion groups;
@@ -334,6 +346,8 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         coverage_offset = int(signature(mf.to_dict())[:8], 16)
         for (task_scope, condition_key), family in sorted(groups.items()):
             first = family[0]
+            driver_configurations = (shared_configurations if shared_configurations is not None else
+                sorted({producer.driver_position(c) for c in family if producer.driver_position(c)}))
             project_policy = effective_project_policy(method.metadata.get("project_analysis_policy", {}),
                 state.item_definition.get("item_sha256", ""))
             if not DriverConfigurationBrancher(policy=project_policy).location_convention(first):
@@ -345,7 +359,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             })
             # The same motion plan can be instantiated for multiple driver
             # configurations. Causality and risk are still evaluated per world.
-            inputs = {"conditions": scenario_conditions(first, without_driver=True),
+            inputs = {"conditions": _physical_conditions(first),
                 "driver_policy": "Calculate the unmitigated trajectory, without subtracting a driver's action. Separately assess remaining control CAPABILITY and its conditional assumptions for the listed driver configurations; lack of intervention in the motion model does not mean lack of an available independent control path. Causality and controllability are assessed per instance.",
                 "driver_configurations": driver_configurations,
                 "malfunction": mf.to_dict(), "function": functions.get(mf.function_id, {}),
@@ -574,8 +588,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     # is a proposal error, not a new no-contact mechanism. Feed
                     # the existing bounded correction; retain the original child.
                     for parent, children, errors in rows:
-                        driver = ("in_driver_seat" if parent.facts.get("driver_in_vehicle") is True else
-                                  "outside_driver_seat" if parent.facts.get("driver_in_vehicle") is False else None)
+                        driver = producer.driver_position(parent) or None
                         for hypothesis in current_plan.hypotheses or ([current_plan.control_assessment] if current_plan.control_assessment else []):
                             if driver is None or driver not in hypothesis.get("driver_positions", [driver]):
                                 continue

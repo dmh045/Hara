@@ -29,11 +29,12 @@ from .parsing import REPORT_LANGUAGE_PROMPT, CONFIDENCE_PROMPT_CONTRACT
 class ItemArtifactExtractionAgent:
     """Extract core Item facts and Functions once from the full document."""
 
-    PROMPT_VERSION = "item-artifacts-v8-multilingual-function-scope-zh"
+    PROMPT_VERSION = "item-artifacts-v9-ego-odd-actor-scope"
     SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA的相关项定义抽取Agent。只提取文档明确陈述的事实。
 必须综合全文，不得把某个固定章节、标题编号或模板工作流中的章节示例当成唯一来源。
 一次返回核心Item Definition和车辆级Functions。不得把标题、条件、步骤、后果或质量要求识别为Function；
 不得用常识补写ODD、速度或功能。核心输出需保留功能的前置条件、触发、ODD约束、回退行为和后果；
+odd.locations描述车辆运行环境；操作者相对车辆的位置、距离和交接阶段保留在功能条件中，不作为车辆场所。
 复杂数值性能、驾驶员位置/控制通道及Exposure证据由MethodContract驱动的后续有界抽取处理，不得丢弃、猜测或从模板示例补写。
 所有结论必须有可定位来源；证据不足时返回null或空数组并标记PENDING。"""
 

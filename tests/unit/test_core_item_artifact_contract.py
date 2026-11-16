@@ -317,7 +317,7 @@ def test_item_agent_accepts_string_consequences_without_second_llm_call() -> Non
     }]
     assert client.requests[0].response_schema == CORE_ITEM_ARTIFACTS_SCHEMA
     assert client.requests[0].prompt_version == (
-        "item-artifacts-v8-multilingual-function-scope-zh"
+        "item-artifacts-v9-ego-odd-actor-scope"
     )
     assert "简体中文" in client.requests[0].system_prompt
     assert "source_excerpt必须保持原语言原文" in client.requests[0].system_prompt

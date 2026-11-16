@@ -56,6 +56,7 @@ def test_declared_response_path_gets_complete_timing_and_resumes_without_request
     missing['hypotheses'][0].pop('safe_state_proposal')
     missing['hypotheses'][0]['timing_unresolved_reason'] = 'Measured latency and engineering approval are not available.'
     parent = make_candidate(3.6); parent.facts['driver_in_vehicle'] = path == 'manual'
+    parent.facts['driver_position'] = driver
     client = Client([missing, complete]); agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
     state, generated = run(method, agent, candidates={'MF': [parent]})
     entry = next(iter(state.item_definition['physical_analysis_plans'].values()))
@@ -653,8 +654,10 @@ def test_missing_geometry_is_one_shared_correction_not_silent_symbol(method, tmp
     client = Client([bad, good])
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
     parent = make_candidate(initial)
+    parent.facts['driver_position'] = 'in_driver_seat'
     other = replace(deepcopy(parent), scenario_id='SC-outside')
     other.facts['driver_in_vehicle'] = False
+    other.facts['driver_position'] = 'outside_driver_seat'
     state, result = run(method, agent, candidates={'MF': [parent, other]})
     assert len(client.requests) == 2 and len(result['MF']) == 2
     entry = next(iter(state.item_definition['physical_analysis_plans'].values()))

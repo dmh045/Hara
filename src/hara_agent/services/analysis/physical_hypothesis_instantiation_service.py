@@ -69,11 +69,13 @@ class PhysicalHypothesisInstantiationService:
     @staticmethod
     def driver_position(candidate):
         """Use the same existing driver condition in the prompt and consumer."""
-        position = candidate.facts.get("driver_position", "")
+        facts = candidate if isinstance(candidate, dict) else candidate.facts
+        position = facts.get("driver_position", "")
         if position:
             return position
-        location = candidate.facts.get("driver_in_vehicle")
-        return "in_driver_seat" if location is True else "outside_driver_seat" if location is False else ""
+        # Being inside the vehicle does not establish the occupied seat or
+        # access to its pedals. Being outside does exclude the driver seat.
+        return "outside_driver_seat" if facts.get("driver_in_vehicle") is False else ""
 
     def _same_input(self, field, old, proposed):
         if field in {"road_user_type", "collision_type"}:
@@ -91,6 +93,7 @@ class PhysicalHypothesisInstantiationService:
             if candidate.facts.get(key) and source_is_accepted_for(candidate.fact_provenance.get(key, {}), **scope):
                 h = candidate.facts[key].get("hypothesis", {})
                 if ("driver_in_vehicle" in self.intervention_inputs
+                        and candidate.facts.get("driver_in_vehicle") is None
                         and not self.driver_position(candidate) and len(h.get("driver_positions", [])) != 1
                         and "driver_in_vehicle" not in h.get("unresolved_controls", {})):
                     return "CONTROL_INPUTS_ONLY"  # Legacy omission; retain motion, assess the missing condition once.
@@ -995,9 +998,7 @@ class PhysicalHypothesisInstantiationService:
             dimensions.append("EGO_DYNAMICS")
         if assumed_driver:
             dimensions.append("EGO_ACTION")
-        location = facts.get("driver_in_vehicle")
-        driver_position = facts.get("driver_position") or (
-            "in_driver_seat" if location is True else "outside_driver_seat" if location is False else "")
+        driver_position = self.driver_position(facts)
         explicit_atoms = {**h.get("operating_atoms", {}), **h.get("driver_operating_atoms", {}).get(driver_position, {})}
         dimensions = list(dict.fromkeys([*dimensions, *explicit_atoms]))
         if dimensions:
