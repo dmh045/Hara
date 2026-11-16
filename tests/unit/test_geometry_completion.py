@@ -303,6 +303,76 @@ def test_response_update_preserves_existing_personnel_scope_without_inventing_on
 
 
 @pytest.mark.parametrize('controls_only', [True, False])
+@pytest.mark.parametrize('scoped', [True, False])
+@pytest.mark.parametrize('presence', [True, False])
+def test_response_update_keeps_personnel_presence_but_replaces_response_assumptions(controls_only, scoped, presence):
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, controls_for_driver
+    previous = raw_plan(assessed=True)
+    h = previous['hypotheses'][0]
+    h['driver_positions'] = ['outside_driver_seat']
+    bound = {'value': presence, 'rationale': 'Same person and phase',
+             'basis_refs': ['MF.description'], 'conditions': ['Fixed personnel world']}
+    h['intervention_assumptions'] = {
+        'driver_in_vehicle': deepcopy(bound),
+        'remote_intervention_available': {**deepcopy(bound), 'value': False}}
+    common = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    if scoped:
+        h['driver_control_assessments'] = {'outside_driver_seat': {
+            **deepcopy(common), 'intervention_assumptions': deepcopy(h.pop('intervention_assumptions'))}}
+    assessment = deepcopy(common)
+    if scoped:
+        assessment['driver_control_assessments'] = {'outside_driver_seat': deepcopy(common)}
+    if controls_only:
+        previous = {'hypotheses': [], 'uncovered_conditions': [], 'control_assessment': {
+            **deepcopy(common), 'driver_positions': h['driver_positions'],
+            **{k: deepcopy(h[k]) for k in ('intervention_assumptions', 'driver_control_assessments') if k in h}}}
+    update = {'response_updates': [{'hypothesis_id': 'control_assessment' if controls_only else h['hypothesis_id'],
+                                   'control_assessment': assessment}]}
+    before, raw = deepcopy(previous), deepcopy(update)
+    result = PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+    parsed = PhysicalScenarioPlan.from_dict(result, evidence_ids={'MF.description'})
+    actual = parsed.control_assessment if controls_only else parsed.hypotheses[0]
+    effective = controls_for_driver(actual, 'outside_driver_seat')
+    assert effective['intervention_assumptions'] == {'driver_in_vehicle': bound}
+    assert previous == before and update == raw
+    local = assessment['driver_control_assessments']['outside_driver_seat'] if scoped else assessment
+    local['intervention_assumptions'] = {'driver_in_vehicle': {**bound, 'value': not presence}}
+    with pytest.raises(ValueError, match='changed driver presence'):
+        PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+    local.pop('intervention_assumptions')
+    local['unresolved_controls'] = {'driver_in_vehicle': 'Cannot move an existing person in a response patch'}
+    with pytest.raises(ValueError, match='changed driver presence'):
+        PhysicalScenarioPlan.apply_response_updates(previous, update, {'MF.description'})
+
+
+def test_response_only_agent_keeps_existing_presence_and_reuses_raw_response(tmp_path):
+    from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, controls_for_driver
+    previous = raw_plan(assessed=True)
+    h = previous['hypotheses'][0]
+    h['driver_positions'] = ['outside_driver_seat']
+    h['intervention_assumptions'] = {'driver_in_vehicle': {
+        'value': False, 'rationale': 'Remote operation phase', 'basis_refs': ['MF.description'],
+        'conditions': ['Person remains outside the vehicle during this response']}}
+    common = {k: deepcopy(h[k]) for k in CONTROL_ASSESSMENT_REQUIRED}
+    update = {'response_updates': [{'hypothesis_id': h['hypothesis_id'], 'control_assessment': {
+        **deepcopy(common), 'driver_control_assessments': {'outside_driver_seat': deepcopy(common)}}}]}
+    before = deepcopy(update)
+    client = Client([update])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    context = {'plan_key': 'unchanged-remote-person', 'evidence': {'MF.description': 'Remote function'},
+        'intervention_inputs': ['driver_in_vehicle'], 'previous_plan': previous,
+        'correction_diagnostics': [{'hypothesis_id': 'h1', 'reason': 'SAFE_STATE_CONTROL_DEPENDENCY_UNRESOLVED'}]}
+    plan, audit = agent.propose(context)
+    effective = controls_for_driver(plan.hypotheses[0], 'outside_driver_seat')
+    assert effective['intervention_assumptions']['driver_in_vehicle'] == h['intervention_assumptions']['driver_in_vehicle']
+    assert plan.hypotheses[0]['geometry'] == h['geometry'] and plan.hypotheses[0]['parameters'] == h['parameters']
+    assert update == before and audit['responses'][0]['response']['data'] == before
+    assert len(client.requests) == 1 and audit['schema_repairs'] == 0
+    restored, restored_audit = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path).propose(context)
+    assert restored == plan and len(client.requests) == 1 and restored_audit['response_cache_hits'] == 1
+
+
+@pytest.mark.parametrize('controls_only', [True, False])
 def test_response_update_preserves_unmodified_driver_but_replaces_returned_branch(controls_only):
     from hara_agent.contracts.physical_scenario_plan import CONTROL_ASSESSMENT_REQUIRED, controls_for_driver
     from test_moving_response_timing import proposal

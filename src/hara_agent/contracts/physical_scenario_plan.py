@@ -623,6 +623,21 @@ class PhysicalScenarioPlan:
         response-only requests need not reproduce geometry or numeric inputs.
         """
         from copy import deepcopy
+
+        def retain_presence(prior: dict, revised: dict) -> None:
+            # A response patch revises control capability, not the existing
+            # person's location. Keep its complete basis when omitted, just
+            # as the driver_positions scope below; never inherit other controls.
+            bound = prior.get("intervention_assumptions", {}).get("driver_in_vehicle")
+            if bound is None:
+                return
+            supplied = revised.get("intervention_assumptions", {}).get("driver_in_vehicle")
+            if (supplied is not None and supplied["value"] != bound["value"]
+                    or "driver_in_vehicle" in revised.get("unresolved_controls", {})):
+                raise ValueError("CORRECTION_CHANGED_UNREPORTED_WORLD: response update changed driver presence")
+            revised.setdefault("intervention_assumptions", {}).setdefault(
+                "driver_in_vehicle", deepcopy(bound))
+
         _object(updates, {"response_updates"}, set())
         rows = updates["response_updates"]
         targets = {h["hypothesis_id"]: h for h in previous.get("hypotheses", [])}
@@ -647,6 +662,9 @@ class PhysicalScenarioPlan:
             _validate_control_assessment(assessment, evidence_ids, scoped=True)
             current = destination[identity]
             assessment = deepcopy(assessment)
+            retain_presence(current, assessment)
+            for driver, scoped_assessment in assessment.get("driver_control_assessments", {}).items():
+                retain_presence(controls_for_driver(current, driver), scoped_assessment)
             if current.get("driver_positions"):
                 if ("driver_positions" in assessment
                         and set(assessment["driver_positions"]) != set(current["driver_positions"])):
