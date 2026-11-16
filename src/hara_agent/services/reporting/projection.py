@@ -1066,8 +1066,8 @@ class HARAReportProjectionService:
                 function_name=self.text.engineering_terms(str(function.get("name", ""))),
                 function_output=self.text.engineering_terms(str(function.get("output", ""))),
                 guideword=str(malfunction.get("guideword", "")),
-                malfunction=str(malfunction.get("description", "")),
-                hazard=str(malfunction.get("vehicle_level_hazard", "")),
+                malfunction=self.text.engineering_terms(str(malfunction.get("description", ""))),
+                hazard=self.text.engineering_terms(str(malfunction.get("vehicle_level_hazard", ""))),
                 operational_scenario=operational,
                 scenario_detail=detail,
                 hazardous_event=("代表成员：" if len(siblings) > 1 else "")
@@ -1508,12 +1508,13 @@ class HARAReportProjectionService:
                 ])
             inventory.append(MalfunctionView(
                 identity, str(item.get("function_id", "")), str(item.get("guideword", "")),
-                str(item.get("description", "")), str(item.get("vehicle_level_hazard", "")),
+                self.text.engineering_terms(str(item.get("description", ""))),
+                self.text.engineering_terms(str(item.get("vehicle_level_hazard", ""))),
                 retained, excluded, pending,
                 "RETAINED_FOR_RISK" if retained else "PENDING_CAUSAL" if pending
                 else "EXCLUDED_FROM_RISK" if excluded else "NOT_ASSESSED",
                 review_group="按失效/危险声明展示；不表示风险等价，各子结果独立",
-                coverage_summary="\n".join(coverage),
+                coverage_summary=self.text.engineering_terms("\n".join(coverage)),
                 risk_distribution="\n".join(distributions),
                 pending_summary="\n".join(f"{reason or '待因果/方法证据'}: {count}" for reason, count in pending_reasons.items()),
             ))

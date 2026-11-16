@@ -111,6 +111,26 @@ def test_chinese_function_projection_localizes_view_labels_without_mutating_sour
     assert state.functions == before
 
 
+def test_operation_and_configuration_terms_use_one_projection_for_function_and_failure(active_method):
+    state = _p6_report_state()
+    for function in state.functions:
+        function['name'] = '速度 profile 选择'
+        function['output'] = '执行泊车 maneuver；保留记录 ID-profile-1'
+    for malfunction in state.malfunctions:
+        malfunction['description'] = '所选 profile 错误，泊车 maneuver 偏离要求'
+        malfunction['vehicle_level_hazard'] = 'maneuver 使车辆侵入相邻车位；ID-maneuver-2'
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert view.rows and view.function_inventory and view.malfunction_inventory
+    for row in view.rows:
+        assert row.function_name == '速度 配置方案 选择'
+        assert '泊车 操作' in row.function_output and 'ID-profile-1' in row.function_output
+        assert row.malfunction.startswith('所选 配置方案 错误')
+        assert row.hazard.startswith('操作 使车辆侵入') and 'ID-maneuver-2' in row.hazard
+    assert all(r.malfunction.startswith('所选 配置方案 错误') for r in view.malfunction_inventory)
+    assert state == before
+
+
 @pytest.mark.parametrize("parent_type,selected_type", [
     ("平行停车位", "垂直停车位"), ("分流车道", "汇入车道"),
 ])

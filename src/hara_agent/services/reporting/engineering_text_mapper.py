@@ -271,6 +271,7 @@ class EngineeringReportTextMapper:
             "Rear-、Front-或TopView": "后视、前视或俯视画面",
             "Rear-, Front-或TopView": "后视、前视或俯视画面",
             "RearView": "后视画面", "FrontView": "前视画面", "TopView": "俯视画面",
+            "profile": "配置方案", "maneuver": "操作",
             "activation in motion": "行驶中激活",
             "FORWARD": "前向", "REVERSE": "后向", "LEFT": "左", "RIGHT": "右",
             "FRONT": "前方", "REAR": "后方", "STATIONARY": "静止",
