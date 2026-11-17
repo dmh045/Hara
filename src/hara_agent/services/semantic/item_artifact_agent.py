@@ -29,12 +29,13 @@ from .parsing import REPORT_LANGUAGE_PROMPT, CONFIDENCE_PROMPT_CONTRACT
 class ItemArtifactExtractionAgent:
     """Extract core Item facts and Functions once from the full document."""
 
-    PROMPT_VERSION = "item-artifacts-v10-independent-system-outputs"
+    PROMPT_VERSION = "item-artifacts-v11-qualified-odd-scope"
     SYSTEM_PROMPT = REPORT_LANGUAGE_PROMPT + """你是汽车功能安全HARA的相关项定义抽取Agent。只提取文档明确陈述的事实。
 必须综合全文，不得把某个固定章节、标题编号或模板工作流中的章节示例当成唯一来源。
 一次返回核心Item Definition和车辆级Functions。不得把标题、条件、步骤、后果或质量要求识别为Function；
 不得用常识补写ODD、速度或功能。核心输出需保留功能的前置条件、触发、ODD约束、回退行为和后果；
 odd.locations描述车辆运行环境；操作者相对车辆的位置、距离和交接阶段保留在功能条件中，不作为车辆场所。
+ODD列表是允许条件的并集，不是各功能共同约束。仅某功能/阶段适用的条件在odd.scope_evidence逐项保留field、values、function_ids、operating_modes及source_location/source_excerpt；无该限定时两种作用域列表为空。不得将子功能条件推广为全项目限制。
 复杂数值性能、驾驶员位置/控制通道及Exposure证据由MethodContract驱动的后续有界抽取处理，不得丢弃、猜测或从模板示例补写。
 所有结论必须有可定位来源；证据不足时返回null或空数组并标记PENDING。"""
 
@@ -509,7 +510,7 @@ odd.locations描述车辆运行环境；操作者相对车辆的位置、距离�
                 "只返回JSON对象，顶层必须包含item_definition和functions。"
                 "item_definition仅包含system_description、item_boundary、operating_modes、odd、"
                 "source_location、source_excerpt、confidence、status；odd包含locations、road_types、"
-                "weather_conditions、road_surfaces、speed_range_kph。functions每项包含function_id、name、"
+                "weather_conditions、road_surfaces、speed_range_kph，可选scope_evidence保留条件的功能/阶段范围。functions每项包含function_id、name、"
                 "output、description、preconditions、triggers、odd_constraints、fallback_behavior、"
                 "consequences、source_location、source_excerpt、confidence、status。最多20个Function；"
                 "operating_modes、preconditions、triggers、odd_constraints、consequences必须是JSON array"
@@ -657,6 +658,10 @@ odd.locations描述车辆运行环境；操作者相对车辆的位置、距离�
                 for item in payload["functions"]
             ]
             FunctionNormalizer._validate_unique(functions_value)
+            known_function_ids = {item.function_id for item in functions_value}
+            if any(set(record.get("function_ids", [])) - known_function_ids
+                   for record in facts_value.odd_scope_evidence):
+                raise ValueError("odd.scope_evidence references an unknown Function")
             self.validator.ensure_valid(functions_value)
             function_source_guard = validate_function_source_parity(
                 functions_value, source_blocks, source_id=source_id,

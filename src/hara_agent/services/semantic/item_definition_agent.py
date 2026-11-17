@@ -25,6 +25,30 @@ class ItemDefinitionNormalizer:
     """Normalize the canonical item-artifact payload into typed project facts."""
 
     @staticmethod
+    def scope_evidence(value: Any, source_id: str, source_blocks: Sequence[Any] = ()) -> list[dict]:
+        """Retain bounded, source-linked function/mode qualifiers from extraction."""
+        records = []
+        for item in ItemDefinitionNormalizer._list(value, "odd.scope_evidence"):
+            if not isinstance(item, dict) or item.get("field") not in {
+                    "odd_locations", "odd_road_types", "odd_weather_conditions", "odd_road_surfaces"}:
+                raise ValueError("odd.scope_evidence contains an invalid field")
+            record = {key: ItemDefinitionNormalizer._list(item.get(key), "odd.scope_evidence." + key)
+                      for key in ("values", "function_ids", "operating_modes")}
+            if not record["values"] or any(not isinstance(v, str) or not v.strip()
+                    for values in record.values() for v in values):
+                raise ValueError("odd.scope_evidence lists require nonempty strings")
+            excerpt = str(item.get("source_excerpt", "")).strip()
+            location = str(item.get("source_location", "")).strip()
+            if not excerpt or not location:
+                raise ValueError("odd.scope_evidence requires a source clause and location")
+            if source_blocks and not any(normalize_source_text(excerpt) in
+                    normalize_source_text(block_value(block, "text")) for block in source_blocks):
+                raise ValueError("odd.scope_evidence source clause is not present in Item Definition")
+            records.append({"field": item["field"], **record, "sources": [dict(
+                source_type="item_definition", source_id=source_id, location=location, excerpt=excerpt)]})
+        return records
+
+    @staticmethod
     def normalize_source_scope(facts: ItemDefinitionFacts, blocks: list, source_id: str) -> ItemDefinitionFacts:
         """Recover explicit structured environmental rows, without inventing facts.
 
@@ -103,6 +127,12 @@ class ItemDefinitionNormalizer:
         normalization_warnings.extend(envelope_warnings)
         if envelope_warnings:
             status = ReviewStatus.PENDING
+        scope_records = ItemDefinitionNormalizer.scope_evidence(
+            odd.get("scope_evidence"), source_id, source_blocks)
+        for record in scope_records:
+            name = record["field"].removeprefix("odd_")
+            odd = {**odd, name: list(dict.fromkeys([
+                *ItemDefinitionNormalizer._list(odd.get(name), "odd." + name), *record["values"]]))}
         facts = ItemDefinitionFacts(
             system_description=str(raw.get("system_description", "")).strip(),
             item_boundary=str(raw.get("item_boundary", "")).strip(),
@@ -114,6 +144,7 @@ class ItemDefinitionNormalizer:
             speed_min_kph=speed_min,
             speed_max_kph=speed_max,
             speed_envelopes=speed_envelopes,
+            odd_scope_evidence=scope_records,
              sources=[SourceRef(
                  "item_definition", source_id,
                  str(raw.get("source_location", "")),

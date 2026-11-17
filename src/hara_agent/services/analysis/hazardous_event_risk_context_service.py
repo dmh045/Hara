@@ -185,6 +185,13 @@ class HazardousEventRiskContextService:
             )
             for field in self._FIELDS
         }
+        from .risk_calculation_input_service import RiskCalculationInputService
+        remote_check = RiskCalculationInputService().remote_intervention_applicability(scenario,
+            malfunction_id=malfunction_id, scenario_id=scenario_id, method=self.method)
+        if (values["remote_intervention_available"].status is RiskContextFactStatus.AVAILABLE
+                and remote_check and remote_check["status"] != "CONDITIONAL_REMOTE_RESPONSE_VALIDATED"):
+            values["remote_intervention_available"] = HazardousEventRiskFact(
+                status=RiskContextFactStatus.UNAVAILABLE, reason=remote_check["status"])
         if scenario.get("driver_in_vehicle") is None:
             from .scenario_selection_quality import explicit_driver_presence
             binding = scenario.get("method_scenario_dimensions", {}).get("EGO_ACTION", {})
@@ -296,6 +303,9 @@ class HazardousEventRiskContextService:
                 result["_fact_provenance"] = {**result.get("_fact_provenance", {}),
                     "steering_control_available": metadata}
         result["_hazardous_event_risk_context"] = context
+        remote_reason = context.remote_intervention_available.reason
+        if remote_reason.startswith("REMOTE_RESPONSE_"):
+            result["_intervention_applicability"] = {"remote": {"status": remote_reason}}
         return result
 
     def severity_readiness(self, context: HazardousEventRiskContext) -> dict[str, Any]:

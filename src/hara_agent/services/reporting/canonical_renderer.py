@@ -242,7 +242,8 @@ class HARAReportWorkbookRenderer:
                 ("Malfunction ID", "Function ID", "Guideword", "Malfunction", "Hazard",
                  "Retained", "Excluded", "Pending", "Risk Disposition", "Review Group Basis",
                  "Covered Conditions", "Independent Risk Distribution", "Pending Causes"),
-                [tuple(item.to_dict().values()) for item in view_model.malfunction_inventory],
+                [tuple(EngineeringReportTextMapper.engineering_terms(value) if isinstance(value, str) else value
+                       for value in item.to_dict().values()) for item in view_model.malfunction_inventory],
                 width_source_columns=(1, 2, 3, 7, 8, 13, 13, 13, 16, 7, 7, 7, 7),
             )
             layout = self._render_main_hara(sheets[MAIN_SHEET], view_model, schema, registry)
@@ -390,6 +391,10 @@ class HARAReportWorkbookRenderer:
             sheet.row_dimensions[row_number].height = self._estimated_height((label, value), (28, 70), registry)
         self._finish_support_sheet(sheet, 2, max(5, 4 + len(values)), registry)
         self._clean_new_sheet(sheet)
+        # These canonical two-column summaries are sized above as 28/70.
+        # The template's narrow HARA identifier columns are not their widths.
+        sheet.column_dimensions["B"].width = 28
+        sheet.column_dimensions["C"].width = 70
 
     def _render_records(
         self,
@@ -680,23 +685,23 @@ class HARAReportWorkbookRenderer:
     def _render_safety_goals(self, sheet: Any, view_model: HARAReportViewModel, registry: TemplateStyleRegistry) -> None:
         self._clear_sheet(sheet)
         registry.apply_page_setup(sheet, registry.safety_goals)
-        self._set_title(sheet, "A1:G1", "A1", "Hazards and Safety Goals", registry, "safety_goal_title")
+        self._set_title(sheet, "A1:H1", "A1", "Hazards and Safety Goals", registry, "safety_goal_title")
         note = (view_model.projection_metrics or {}).get("safety_goal_scope_note", "最高 ASIL 仅覆盖已计算成员。")
-        self._set_title(sheet, "A2:G2", "A2", note, registry, "safety_goal_data")
+        self._set_title(sheet, "A2:H2", "A2", note, registry, "safety_goal_data")
         sheet.row_dimensions[2].height = 54
-        headers = ("HZ-ID", "Hazard", "SG-ID", "Safety Goal", "Safety State", "最高已计算 ASIL", "结果性质")
-        width_sources = (1, 6, 18, 19, 20, 17, 16)
+        headers = ("HZ-ID", "Hazard", "SG-ID", "Safety Goal", "Safety State", "最高已计算 ASIL", "结果性质", "最严条件性时间边界及范围")
+        width_sources = (1, 6, 18, 19, 20, 17, 16, 20)
         for column, header in enumerate(headers, start=1):
             self._write_cell(sheet, 3, column, header, registry, "safety_goal_header", wrap=True)
             registry.apply_width(sheet, column, width_sources[column - 1])
         if view_model.safety_goals:
             for row_number, goal in enumerate(view_model.safety_goals, start=4):
-                values = (f"HZ-{row_number - 3:03d}", goal.hazard, goal.sg_id, goal.safety_goal, goal.safe_state, goal.max_asil, goal.status)
+                values = (f"HZ-{row_number - 3:03d}", goal.hazard, goal.sg_id, goal.safety_goal, goal.safe_state, goal.max_asil, goal.status, goal.timing_boundary)
                 for column, value in enumerate(values, start=1):
                     self._write_cell(sheet, row_number, column, value, registry, "safety_goal_data", wrap=True)
                 from openpyxl.comments import Comment
                 sheet.cell(row_number, 4).comment = Comment("原始目标：" + goal.original_text + "\n整理依据：全部关联失效的已有安全意图；无新增工程批准。", "HARA")
-                sheet.row_dimensions[row_number].height = self._estimated_height(values, (14, 36, 14, 44, 32, 12, 22), registry)
+                sheet.row_dimensions[row_number].height = self._estimated_height(values, (14, 36, 14, 44, 32, 12, 22, 32), registry)
         else:
             completed = (view_model.projection_metrics or {}).get("safety_goal_stage_completed")
             reason = ("安全目标生成阶段已完成，本次未生成安全目标；适用性见关联风险结果。" if completed else
@@ -707,9 +712,9 @@ class HARAReportWorkbookRenderer:
             sheet.row_dimensions[5].height = self._estimated_height((sheet["A5"].value,), (120,), registry)
         last_row = max(5, 3 + len(view_model.safety_goals))
         sheet.freeze_panes = registry.safety_goals.freeze_panes or "A4"
-        sheet.auto_filter.ref = f"A3:G{last_row}"
+        sheet.auto_filter.ref = f"A3:H{last_row}"
         sheet.print_title_rows = "1:3"
-        sheet.print_area = f"A1:G{last_row}"
+        sheet.print_area = f"A1:H{last_row}"
 
     def _render_audit(self, sheet: Any, view_model: HARAReportViewModel, registry: TemplateStyleRegistry) -> None:
         rows_by_hara_id = {item.hara_id: item for item in view_model.rows}

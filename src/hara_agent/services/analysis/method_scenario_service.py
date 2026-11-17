@@ -223,6 +223,7 @@ class MethodScenarioCandidateService:
                 # outdoor alternatives, while retaining unrelated locations.
                 parent_labels = {record["parent_label"] for record in facts.odd_scope_evidence
                                  if record.get("field") == "odd_locations"
+                                 and record.get("parent_label")
                                  and set(record.get("values", [])) <= set(values)}
                 values = [v for v in values if v not in parent_labels]
             elif name == "ROAD":
@@ -520,6 +521,23 @@ class MethodScenarioCandidateService:
         from .scenario_equivalence import coalesce_candidates, scenario_conditions, signature
         from .scenario_selection_quality import explicit_environment
 
+        scoped_facts = ({mode: project_facts.for_scope(malfunction.function_id, mode)
+                         for mode in {p.operating_mode for p in parents}}
+                        if project_facts is not None else {})
+        if project_facts is not None:
+            if len(scoped_facts) == 1:
+                project_facts = next(iter(scoped_facts.values()))
+            # Parents are prepared before a malfunction/function is selected.
+            # Replace their union-valued permission view, retaining the original
+            # source evidence and concrete parent world.
+            parents = [replace(p, facts={**p.facts,
+                "source_road_type_scope": list(scoped_facts[p.operating_mode].odd_road_types),
+                "source_weather_scope": list(scoped_facts[p.operating_mode].odd_weather_conditions),
+                **({"source_operating_conditions": {**p.facts["source_operating_conditions"],
+                    "permitted_road_types": list(scoped_facts[p.operating_mode].odd_road_types)}}
+                   if "permitted_road_types" in p.facts.get("source_operating_conditions", {}) else {})})
+                for p in parents] if any(r.get("function_ids") or r.get("operating_modes")
+                    for r in project_facts.odd_scope_evidence) else parents
         templates = ScenarioMethodService(self.method)
         if not self.atom_resolver.catalog or project_facts is None:
             return templates.instantiate_analytical_candidates(
@@ -530,7 +548,6 @@ class MethodScenarioCandidateService:
             expand_driver_configurations=False,
         )
         synthesis = ConstrainedScenarioSynthesisService(self.method)
-        project = asdict(project_facts)
         generated, generation_audit, coverage_pools = [], [], {}
         # Select across source contexts, not first-parent-wins. Keep distinct
         # physical options separate; the pool is already bounded by synthesis.
@@ -541,6 +558,13 @@ class MethodScenarioCandidateService:
             bool(explicit_environment(p.operating_scenario)), p.operating_scenario,
             json.dumps(p.facts.get("source_operating_conditions", {}), sort_keys=True),
             p.scenario_id)).scenario_id if parents else ""
+        mode_boundaries = {}
+        if len(scoped_facts) > 1 and any(r.get("operating_modes") for r in project_facts.odd_scope_evidence):
+            mode_boundaries = {mode: min((p for p in parents if p.operating_mode == mode), key=lambda p: (
+                p.operating_scenario not in scoped_facts[mode].odd_locations,
+                bool(explicit_environment(p.operating_scenario)), p.operating_scenario,
+                json.dumps(p.facts.get("source_operating_conditions", {}), sort_keys=True),
+                p.scenario_id)).scenario_id for mode in scoped_facts}
         # Earlier options influence the remaining environment coverage. Sort on
         # actual conditions before trace IDs, otherwise an unrelated method-hash
         # change reshuffles the representatives and the amount of paid work.
@@ -556,9 +580,11 @@ class MethodScenarioCandidateService:
                                       "option": option.analysis_instance.get("source_option_id")})
             children, result = synthesis.generate_candidates(
                 malfunction=malfunction.to_dict(), parent=option,
-                project_context=project, function=asdict(function) if function else None,
+                project_context=asdict(scoped_facts.get(option.operating_mode, project_facts)),
+                function=asdict(function) if function else None,
                 include_source_boundaries=(
-                    option.scenario_id == boundary_parent_id or option.source_scenario_id == boundary_parent_id
+                    option.scenario_id == mode_boundaries.get(option.operating_mode, boundary_parent_id)
+                    or option.source_scenario_id == mode_boundaries.get(option.operating_mode, boundary_parent_id)
                 ),
                 covered_environment={(dimension, binding.get("atom_id"))
                     for child, _ in coverage_pools.get(coverage_key, [])
@@ -592,6 +618,7 @@ class MethodScenarioCandidateService:
             "equivalence_mapping": mapping, "parents": generation_audit,
             "source_boundary_policy": "ONE_SOURCE_ANCHOR_PER_PHYSICAL_OPTION",
             "source_boundary_parent_id": boundary_parent_id,
+            **({"source_boundary_parent_ids_by_mode": mode_boundaries} if mode_boundaries else {}),
             "coverage_policy": "JOINT_PRIMARY_SOURCE_AND_ROAD_COVERAGE",
             "coverage_limit": "Unselected context/variant combinations are not evaluated or proven equivalent.",
         }
@@ -600,7 +627,8 @@ class MethodScenarioCandidateService:
         )
         from .analytical_physics_instantiation_service import AnalyticalPhysicsInstantiationService
         physics = AnalyticalPhysicsInstantiationService(self.method)
-        children = [physics.produce_inputs(child, malfunction.to_dict(), project_facts=project_facts) for child in children]
+        children = [physics.produce_inputs(child, malfunction.to_dict(),
+            project_facts=scoped_facts.get(child.operating_mode, project_facts)) for child in children]
         audit["physical_input_production"] = {
             "candidate_count": len(children),
             "with_collision_branches": sum(bool(child.facts.get("collision_branches")) for child in children),
@@ -718,6 +746,7 @@ class MethodScenarioCandidateService:
         speed_resolution: SpeedResolutionResult,
         functions: list[FunctionDefinition] | None = None,
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
+        project_facts = project_facts.for_scope(operating_mode=operating_mode)
         dimensions = list(self.method.scenario_model.dimensions)
         options = [
             self._project_values(

@@ -19,6 +19,7 @@ from hara_agent.services.extraction.evidence_retrieval import (
     retrieval_blocks,
 )
 from hara_agent.infrastructure.llm import LLMOutputLimitError
+from hara_agent.models.item_facts import scoped_odd_context
 
 
 def _unmodeled_declared_response(candidate, method):
@@ -326,7 +327,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
             len(row["scenario_ids"]) - len(set(row["exact_input_keys"]))
             for row in metrics["plan_reuse_records"])
         metrics["metrics_scope"] = "PHYSICAL_PROPOSALS_AND_SOLVES; causal reuse is accounted in scenario audits"
-    project = project_facts.to_dict() if hasattr(project_facts, "to_dict") else asdict(project_facts) if project_facts else {}
+    project_union = project_facts.to_dict() if hasattr(project_facts, "to_dict") else asdict(project_facts) if project_facts else {}
     functions = {f["function_id"]: f for f in state.functions}
     config = getattr(agent.client, "config", None)
     route = {key: getattr(config, key, "") for key in ("provider", "model", "base_url", "scenario_thinking")}
@@ -340,12 +341,13 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
         metrics["existing_path_skipped"] += len(kept)
         # Distribute source-condition requests over existing motion groups;
         # never multiply groups by all parking layouts or weather conditions.
-        source_conditions = [{"source_field": field, "value": value}
-            for field in ("odd_road_types", "odd_weather_conditions")
-            for value in dict.fromkeys(project.get(field, []))]
         coverage_offset = int(signature(mf.to_dict())[:8], 16)
         for (task_scope, condition_key), family in sorted(groups.items()):
             first = family[0]
+            project = scoped_odd_context(project_union, mf.function_id, first.operating_mode)
+            source_conditions = [{"source_field": field, "value": value}
+                for field in ("odd_road_types", "odd_weather_conditions")
+                for value in dict.fromkeys(project.get(field, []))]
             driver_configurations = (shared_configurations if shared_configurations is not None else
                 sorted({producer.driver_position(c) for c in family if producer.driver_position(c)}))
             project_policy = effective_project_policy(method.metadata.get("project_analysis_policy", {}),

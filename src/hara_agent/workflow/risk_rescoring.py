@@ -132,7 +132,7 @@ class OfflineRiskRescorer:
             baseline: Path, report_template: Path, output: Path,
             run_dir: Path = Path("runtime/agent"), review_root: Path = Path("runtime/review"),
             checkpoint: Path | None = None, supplement: Path | None = None,
-            source_baseline: Path | None = None) -> dict:
+            source_baseline: Path | None = None, item_path: Path | None = None) -> dict:
         started = perf_counter()
         repository = CheckpointRepository(run_dir)
         source_path = (checkpoint or repository.path_for(source_run_id)).resolve()
@@ -280,13 +280,24 @@ class OfflineRiskRescorer:
         if (source.method_contract["contract_version"] != method.contract_version
                 or source.method_contract["compiler_version"] != method.compiler_version):
             raise ValueError("Source method version/hash incompatible; stage dependency proof is required")
-        source_files = [source_path, Path(source.item_definition["source_path"]).resolve(), report_template.resolve()]
+        original_item = Path(source.item_definition["source_path"]).resolve()
+        current_item = item_path.resolve() if item_path is not None else original_item
+        expected = source.item_definition.get("item_sha256")
+        if (item_path is not None and not expected) or (expected and file_hash(current_item) != expected):
+            raise ValueError("Source input must match the checkpoint input content hash")
+        source_files = [source_path, current_item, report_template.resolve()]
         source_files.extend(Path(event["output_path"]).resolve() for event in source.audit_trail
                             if event.get("event") == "draft_excel_report_rendered")
         source_review = review_root.resolve() / source_run_id
         source_files.extend(path for path in source_review.rglob("*") if path.is_file())
         hashes = {str(path): file_hash(path) for path in source_files}
         state = deepcopy(source)
+        if current_item != original_item:
+            # Location is transport metadata. SourceRef identity and all
+            # semantic inputs stay bound to the same verified document bytes.
+            state.item_definition["source_path"] = str(current_item)
+            state.record("input_location_rebound", original_path=str(original_item),
+                         current_path=str(current_item), item_sha256=file_hash(current_item))
         supplement_payload = json.loads(supplement.read_text(encoding="utf-8")) if supplement else {}
         supplement_decisions = apply_supplement(
             state, supplement_payload, hashes[str(source_path)],

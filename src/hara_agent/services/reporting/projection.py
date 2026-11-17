@@ -61,7 +61,8 @@ class HARAReportProjectionService:
             ), {})
 
         configured = event("bounded_sample_configured")
-        replay = event("p7_fixed_population_replay")
+        replay = (event("offline_risk_rescoring_completed") or
+                  event("offline_risk_rescoring_started") or event("p7_fixed_population_replay"))
         offline_sample = event("offline_source_context_replay")
         partial_recovery = event("real_partial_response_recovery")
         bounded = bool(configured)
@@ -1261,12 +1262,19 @@ class HARAReportProjectionService:
 
         summary = run_summary or {}
 
+        def displayed_score_states(entry):
+            states = self._score_states(entry["risk"], entry["trace"],
+                                        trace_provided=risk_trace is not None)
+            # Summary completion follows the same actual branch tuple that the
+            # reviewer sees. A stored aggregate grade cannot fill a missing
+            # dimension on that selected branch.
+            return {field: _UNCALCULATED if value == "待评定" else states[field]
+                    for field, value in zip(("severity", "exposure", "controllability", "asil"),
+                                            entry["display_tuple"])}
+
         score_counts = {
             field: Counter(
-                self._score_states(
-                    entry["risk"], entry["trace"],
-                    trace_provided=risk_trace is not None,
-                )[field]
+                displayed_score_states(entry)[field]
                 for entry in entries
             )
             for field in ("severity", "exposure", "controllability", "asil")
@@ -1277,18 +1285,14 @@ class HARAReportProjectionService:
 
         complete_risk_chain_count = sum(
             all(
-                self._score_states(
-                    entry["risk"], entry["trace"],
-                    trace_provided=risk_trace is not None,
-                )[field] == _CALCULATED
+                displayed_score_states(entry)[field] == _CALCULATED
                 for field in ("severity", "exposure", "controllability", "asil")
             )
             for entry in entries
         )
         scope = self._run_scope(state, trace_rows, complete_risk_chain_count)
         scope["numeric_risk_chain_count"] = sum(
-            all(value != _UNCALCULATED for value in self._score_states(
-                entry["risk"], entry["trace"], trace_provided=risk_trace is not None).values())
+            all(value != _UNCALCULATED for value in displayed_score_states(entry).values())
             for entry in entries)
         scope["numeric_asil_count"] = score_counts["asil"][_CALCULATED] + score_counts["asil"][_TRIAL]
         scope["asil_without_complete_sec_count"] = scope["numeric_asil_count"] - scope["numeric_risk_chain_count"]
@@ -1364,6 +1368,12 @@ class HARAReportProjectionService:
         offline_goals = any(event.get("event") == "offline_source_context_replay" for event in state.audit_trail)
         conditional_goal_ids = {risk.safety_goal_id for risk in state.risk_results
             if risk.asil.value and risk.asil.status.value != "FINALIZED"}
+        goal_timing_inputs = {goal.sg_id: [
+            {**timing_inputs[(risk.malfunction_id, risk.scenario_id)],
+             "driver_position": scenarios[risk.scenario_id].facts.get("driver_position", "")
+                if risk.scenario_id in scenarios else ""}
+            for risk in state.risk_results if risk.safety_goal_id == goal.sg_id]
+            for goal in state.safety_goals}
         goals = tuple(
             SafetyGoalView(goal.sg_id, goal_texts[goal.sg_id],
                 goal_safe_states[goal.sg_id],
@@ -1374,7 +1384,8 @@ class HARAReportProjectionService:
                 status="离线模拟草稿" if offline_goals
                     else "条件性草稿" if goal.sg_id in conditional_goal_ids
                     else "历史草稿" if any(event.get("event") == "p7_fixed_population_replay" for event in state.audit_trail)
-                    else ("待审核" if goal.status.value != "FINALIZED" else "已审核"))
+                    else ("待审核" if goal.status.value != "FINALIZED" else "已审核"),
+                timing_boundary=self.text.safety_goal_timing(goal_timing_inputs[goal.sg_id]))
             for goal in state.safety_goals
         )
         divergence_groups = sum(max(0, len(events) - 1) for events in base_events.values())
@@ -1382,6 +1393,7 @@ class HARAReportProjectionService:
         projection_metrics = {
             "safety_goal_scope_note": "最高 ASIL 仅覆盖本次已计算成员；未计算成员不包含在该最大值中。"
                 + " Safe State栏列车辆期望达到的状态；不同控制路径、参数及适用条件见场景明细，不能相互替用。审核性质见状态列。"
+                + " 时间栏按响应路径和驾驶员条件分别列已计算成员最小边界，未决成员不被该数值覆盖。"
                 + (" 本页使用离线模拟响应。" if offline_goals else "")
                 + (" 条件性数值仍待工程确认。" if conditional_goal_ids else ""),
             "safety_goal_stage_completed": any(event.get("event") == "safety_goals_aggregated"
@@ -1393,6 +1405,10 @@ class HARAReportProjectionService:
                 "每条明细保留原身份、条件和分支评级，按HARA-ID查回主表。分组便于审核，不证明风险等价或ODD覆盖完整。"),
             "safety_goal_text_mapping": [goal.to_dict() for goal in goals],
             "safety_goal_display_evidence": goal_presentations,
+            "safety_goal_timing_evidence": {goal.sg_id: {
+                "full_response_scopes": self.text.safety_goal_timing(goal_timing_inputs[goal.sg_id], detailed=True),
+                "scenario_ids": [item["scenario_id"] for item in goal_timing_inputs[goal.sg_id]],
+            } for goal in state.safety_goals},
             "safe_state_evidence": {goal.sg_id: {
                 "recorded_text": goal.safe_state, "goal_status": goal.status.value,
                 "candidates": state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_candidates", []),
@@ -1462,8 +1478,7 @@ class HARAReportProjectionService:
             pending = counts["PENDING_CAUSAL"]
             members = [entry for entry in entries if entry["risk"].malfunction_id == identity]
             distributions = []
-            member_states = {entry["risk"].assessment_id: self._score_states(
-                entry["risk"], entry["trace"], trace_provided=risk_trace is not None) for entry in members}
+            member_states = {entry["risk"].assessment_id: displayed_score_states(entry) for entry in members}
             known_asils = [entry["risk"].branch_summary.get("highest_known_asil") or
                 self._display_score(entry["risk"].asil, member_states[entry["risk"].assessment_id]["asil"]) for entry in members]
             known_asils = [value for value in known_asils if value in asil_order]
@@ -1476,8 +1491,10 @@ class HARAReportProjectionService:
                 + "；已知最高 ASIL=" + (max(known_asils, key=asil_order.index) if known_asils else "Pending")
                 + ("；仅限所列假设，未证明全范围上界" if conditional_count else "；仅汇总已验证子结果，未决分支另列"))
             for dimension in ("severity", "exposure", "controllability", "asil"):
-                distribution = Counter(self._display_score(getattr(entry["risk"], dimension), member_states[entry["risk"].assessment_id][dimension]) for entry in members)
-                distributions.append(f"{dimension}: " + ", ".join(f"{key}×{value}" for key, value in sorted(distribution.items())))
+                position = ("severity", "exposure", "controllability", "asil").index(dimension)
+                distribution = Counter(entry["display_tuple"][position] for entry in members)
+                dimension_label = {"severity": "严重度", "exposure": "暴露", "controllability": "可控性", "asil": "ASIL"}[dimension]
+                distributions.append(f"{dimension_label}: " + "、".join(f"{key}×{value}" for key, value in sorted(distribution.items())))
                 statuses = Counter(member_states[entry["risk"].assessment_id][dimension] for entry in members)
                 distributions.append("评定性质：" + "、".join(f"{status}×{count}" for status, count in statuses.items()))
             pending_reasons = Counter(
@@ -1532,7 +1549,7 @@ class HARAReportProjectionService:
             tuple(rows), summary_view, basis, goals, tuple(audit), self.schema.schema_hash,
             method_hash, style_template_hash, tuple(details), projection_metrics,
             children, tuple(inventory),
-            tuple((label, self.text.engineering_terms("、".join(value) if isinstance(value, list) else str(value)))
+            tuple((label, self.text.item_fact_text(field, value, state.item_definition.get("typed", {}), functions))
                   for field, label in (("system_description", "系统"), ("item_boundary", "边界"),
                       ("operating_modes", "运行模式"), ("odd_locations", "允许位置"),
                       ("odd_road_types", "允许道路/车位"), ("odd_weather_conditions", "天气"),

@@ -272,9 +272,9 @@ class PhysicalScenarioAgent:
     PREVIOUS_REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     REQUEST_VIEW_VERSION = "physical-request-view-v6-dedup-model-scope"
     CONTROL_REQUEST_VIEW_VERSION = "physical-request-view-v5-scoped-control-context"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v32-singleton-personnel-response"
-    PROMPT_VERSION = "post-fault-physical-scenario-v57-scoped-structured-policies"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v37-scoped-structured-policies"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v33-remote-trajectory-applicability"
+    PROMPT_VERSION = "post-fault-physical-scenario-v58-fault-mechanism-remote-response"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v38-remote-response-delay"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
         "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
@@ -442,10 +442,10 @@ class PhysicalScenarioAgent:
             "RANGE始终满足lower<=value<=upper，包括负数，例如-8<=-7<=-6.5，不能按绝对值排列。"
             "basis_refs只能选basis_ref_ids中的完整ID，不得把它扩展成未提供的字段路径。"
             "failed_controls/remaining_controls只能选control_identities中的完整键。"
-            "遵守analysis_strategy；先形成有依据的可计算代表工况，确实不能合理定点才保留符号关系。"
-            "你是故障后物理场景分析员。使用给定项目事实、来源限定、FM、Atom 和已确认方法约束，"
-            "提出 1–3 个有工程意义的条件性物理假设；原文未提供故障加速度并不禁止提出分析假设。"
-            "若目录中没有能表示当前危险机制的模型，返回hypotheses空数组，并在uncovered_conditions具体说明模型缺口。"
+            "先在rationale说明失效输出→车辆运动变化及剩余控制，再按analysis_strategy选模型、对象和完整代表参数。"
+            "使用项目事实、来源限定、FM及方法约束提出1–3个条件性假设；动态参数可作假设，不能另加一个独立故障来制造运动。"
+            "输出缺失不自动导致继续驱动或松开制动；若解释为停滞，保留停滞及移动目标交互。"
+            "确实无法定点才保留符号；目录不能表示该机制时返回hypotheses空数组，在uncovered_conditions说明具体缺口。"
             "不得为了满足模型目录把后车追尾改成前方静止目标碰撞，或把移动目标换成静止目标；"
             "合法新增条件仍必须代表当前失效的危险机制，不能以另一危险机制替代原问题。"
             "有source_condition_focus时，在本次现有假设中落实相关来源条件：新增operating_condition="
@@ -480,7 +480,9 @@ class PhysicalScenarioAgent:
             "用可选intervention_assumptions明确给出remote_intervention_available和/或"
             "other_road_user_avoidance_possible，每项为{value:布尔值,rationale:理由,basis_refs:引用ID数组,"
             "conditions:适用条件数组}。未知就省略，不把未提及解释为false；有App不等于故障后能远程制动，"
-            "目标静止不等于人员不能逃避。remote为true须有剩余remote_control路径及未失效的执行能力。"
+            "目标静止不等于人员不能逃避。remote为true须有剩余remote_control路径及未失效的执行能力；"
+            "若为当前轨迹主张远程避碰收益，在该干预项给出response_delay_s：从模型起点到响应实际建立的总延迟，"
+            "含发现、决策、传输和执行建立；明确条件性依据，并用同一safe_state_proposal描述远程响应，程序检查能否避碰。"
             "在本次方案中一并提出安全状态候选，使用可选safe_state_proposal："
             "{description:简明目标状态,required_controls:依赖的剩余控制键数组,basis_refs:引用ID数组,"
             "conditions:适用条件数组}。描述希望达到的车辆状态，不能仅复述控制指令；"
@@ -568,6 +570,7 @@ class PhysicalScenarioAgent:
                 "type": "object", "optional_keys": sorted(INTERVENTION_ASSUMPTION_FIELDS),
                 "entry_shape": {"value": "boolean, never null", "rationale": "reason",
                     "basis_refs": ["a supplied evidence ID"], "conditions": ["explicit applicability"]},
+                "remote_optional": {"response_delay_s": "finite nonnegative total delay from model start to effective remote response; conditional assumption, not measured capability"},
                 "unknown": "omit that key; use {} if all unknown, never null or an array",
                 "derived_inputs": "driver_in_vehicle comes from each driver branch; emergency_braking_available comes from failed_controls/remaining_controls, not additional keys here",
             },

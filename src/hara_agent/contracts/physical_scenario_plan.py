@@ -337,11 +337,14 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
             raise ValueError("Control proposal must be an object")
         if "value" in proposal:
             field = next(key for key, value in interventions.items() if value is proposal)
-            _object(proposal, {"value", "rationale", "basis_refs", "conditions"}, {"avoidance"},
+            _object(proposal, {"value", "rationale", "basis_refs", "conditions"}, {"avoidance", "response_delay_s"},
                     path=f"intervention_assumptions.{field}")
             if type(proposal["value"]) is not bool:
                 raise ValueError("Intervention assumption requires an explicit boolean")
             _text(proposal["rationale"])
+            if "response_delay_s" in proposal:
+                if field != "remote_intervention_available" or _number(proposal["response_delay_s"]) < 0:
+                    raise ValueError("Remote response_delay_s must be a finite nonnegative model-start-to-response delay")
             if "avoidance" in proposal:
                 avoidance = _object(proposal["avoidance"],
                     {"recognition_delay_s", "escape_direction", "escape_speed_mps", "available_clearance_m"})

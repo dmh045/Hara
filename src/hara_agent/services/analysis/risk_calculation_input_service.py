@@ -95,6 +95,7 @@ class RiskCalculationInputService:
             "remote_intervention_available", "other_road_user_avoidance_possible",
             "vehicle_stability", "function_type",
         )
+
         return ControllabilityAssessmentInput(
             malfunction_id=malfunction_id,
             scenario_id=scenario_id,
@@ -122,6 +123,38 @@ class RiskCalculationInputService:
                 "TTC-to-C bands must be compiled from the approved MethodContract."
             ),
         )
+
+    def remote_intervention_applicability(self, scenario: dict[str, Any], *,
+            malfunction_id: str, scenario_id: str, method) -> dict[str, Any]:
+        """Check a claimed remote response against this trajectory, without grading C.
+
+        Interface availability is retained in the original scenario. Its C credit
+        requires an explicit conditional response delay and the existing response
+        calculator's positive window, using the same driver, object and model.
+        Legacy table-only facts without a modeled trajectory keep their contract.
+        """
+        if scenario.get("remote_intervention_available") is not True or not scenario.get("fault_motion_model"):
+            return {}
+        analysis = scenario.get("control_analysis") or scenario.get("physical_analysis", {})
+        hypothesis = analysis.get("hypothesis", {})
+        proposal = hypothesis.get("safe_state_proposal", {})
+        intervention = hypothesis.get("intervention_assumptions", {}).get("remote_intervention_available", {})
+        if ("remote_control" not in proposal.get("required_controls", [])
+                or proposal.get("required_command_path")):
+            return {"status": "REMOTE_RESPONSE_PATH_UNRESOLVED"}
+        delay = self._number(intervention.get("response_delay_s"))
+        if delay is None:
+            return {"status": "REMOTE_RESPONSE_DELAY_UNRESOLVED"}
+        timing = self.ftti(malfunction_id, scenario_id, "", scenario, method=method)
+        trace = timing.timing_trace
+        window = self._number(trace.get("time_s"))
+        valid = (trace.get("status") == "CONDITIONAL_BOUNDARY" and window is not None
+                 and delay < window and trace.get("response_path_status") != "REQUIRED_NOT_ESTABLISHED")
+        return {"status": "CONDITIONAL_REMOTE_RESPONSE_VALIDATED" if valid else "REMOTE_RESPONSE_NOT_ESTABLISHED",
+                "response_delay_s": delay, "latest_response_start_s": window,
+                "response_status": trace.get("status", trace.get("pending_reason", "UNRESOLVED")),
+                "required_controls": proposal.get("required_controls", []),
+                "engineering_approval": "NOT_GRANTED"}
 
     def ftti(
         self, malfunction_id: str, scenario_id: str, asil: str,

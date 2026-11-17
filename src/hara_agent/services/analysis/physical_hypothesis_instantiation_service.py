@@ -10,6 +10,7 @@ from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_
 from .scenario_equivalence import signature
 from .scenario_physics import CONDITIONAL_ORIGIN, derive_scenario_physics, source_is_accepted_for, physical_semantics, grade_rollaway_acceleration
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
+from hara_agent.models.item_facts import scoped_odd_context
 
 
 def summarize_physical_hypotheses(state, method):
@@ -799,6 +800,10 @@ class PhysicalHypothesisInstantiationService:
             "grade_orientation_basis": frame["orientation_basis"]}
 
     def _instantiate(self, parent, malfunction, h, values, plan_key, model_name, sensitivity, project_context, function):
+        function_id = ((function or {}).get("function_id", "") if isinstance(function, dict)
+                       else getattr(function, "function_id", "")) or getattr(malfunction, "function_id", "")
+        project_context = scoped_odd_context(project_context or {},
+            function_id, parent.operating_mode)
         g = deepcopy(h["geometry"])
         operating_condition = h.get("operating_condition")
         if operating_condition and operating_condition["value"] not in (project_context or {}).get(operating_condition["source_field"], []):

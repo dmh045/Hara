@@ -3,6 +3,7 @@ from __future__ import annotations
 from .parsing import REPORT_LANGUAGE_PROMPT
 
 import os
+import json
 import sys
 import time
 from dataclasses import dataclass, field, replace
@@ -148,16 +149,16 @@ class ItemEvidenceRouter:
 
 
 class ItemSupplementAgent:
-    PROMPT_VERSION = "item-supplement-v6-ego-location-scope"
+    PROMPT_VERSION = "item-supplement-v7-qualified-odd-scope"
 
     def __init__(self, client: LLMClient):
         self.client = client
 
-    def extract(self, routed: RoutedDocumentBlocks, source_id: str) -> tuple[dict[str, Any], dict]:
+    def extract(self, routed: RoutedDocumentBlocks, source_id: str, *, functions=()) -> tuple[dict[str, Any], dict]:
         if routed.task == "odd_repair":
             fields = (
                 "operating_modes和odd；odd包含locations、road_types、weather_conditions、"
-                "road_surfaces、speed_range_kph([min,max]或null)"
+                "road_surfaces、speed_range_kph([min,max]或null)，可选scope_evidence"
             )
         else:
             raise ValueError(f"未知局部抽取任务: {routed.task}")
@@ -176,6 +177,7 @@ class ItemSupplementAgent:
                 "road_types也包含功能说明中明确支持的车位类型；保留否定和适用前提。"
                 "locations仅描述车辆运行环境，不含操作者与车辆的相对位置或遥控距离。"
                 "所有列表元素必须是字符串，不能是对象；road_types只写类型名称，泊入/泊出写入operating_modes。"
+                "例外是scope_evidence：仅局部功能/阶段适用的ODD须以对象保留field(odd_前缀字段名)、values、function_ids、operating_modes、source_location/source_excerpt；未知功能ID时不猜ID，保留明确阶段；不得将局部条件推广为全项目限制。"
                 "仅声明预设速度档而无数值时，speed_range_kph返回null。"
                 + REPORT_LANGUAGE_PROMPT
             ),
@@ -183,6 +185,9 @@ class ItemSupplementAgent:
                 f"返回JSON对象，字段为{fields}。每个source_excerpt最多120字符，"
                 "不得输出解释、Markdown或额外字段。"
                 + "\nsource_id=" + source_id + "\n" + routed.text
+                + ("\n已抽取功能（仅用于作用域ID绑定，不作为ODD来源）：" + json.dumps([
+                    {"function_id": f.function_id, "name": f.name, "odd_constraints": f.odd_constraints}
+                    for f in functions], ensure_ascii=False, separators=(",", ":")) if functions else "")
             ),
             schema_name=f"ItemSupplement:{routed.task}",
             prompt_version=self.PROMPT_VERSION,

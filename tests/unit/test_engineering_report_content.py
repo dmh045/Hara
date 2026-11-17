@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -89,9 +90,12 @@ def test_text_mapper_projects_resolved_synthesized_dimensions_separately():
             },
         },
     )
+    before = deepcopy(scenario)
     operational, detail = EngineeringReportTextMapper().scenario(scenario)
     assert operational == "项目运行区域内，系统处于激活状态。"
-    assert detail == "运行细节未确定。"
+    assert detail == "尚未形成可用于数值分析的结构化运行条件；具体来源和缺口见场景明细。"
+    assert scenario == before
+    assert "原文未提供" not in detail  # method bindings are not missing source facts
     for raw in ("Garage", "Parking in/out", "Low speed", "Pedestrian", "EGO_X_ROAD", "FA001"):
         assert raw not in operational + detail
 

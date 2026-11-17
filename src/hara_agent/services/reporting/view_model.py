@@ -177,6 +177,7 @@ class SafetyGoalView:
     hazard: str
     original_text: str = ""
     status: str = ""
+    timing_boundary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {item.name: getattr(self, item.name) for item in fields(self)}

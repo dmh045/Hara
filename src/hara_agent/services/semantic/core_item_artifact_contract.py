@@ -4,6 +4,20 @@ from copy import deepcopy
 from typing import Any
 
 
+ODD_SCOPE_EVIDENCE_SCHEMA = {
+    "type": "array",
+    "items": {"type": "object", "additionalProperties": False,
+        "required": ["field", "values", "function_ids", "operating_modes", "source_location", "source_excerpt"],
+        "properties": {
+            "field": {"enum": ["odd_locations", "odd_road_types", "odd_weather_conditions", "odd_road_surfaces"]},
+            "values": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "function_ids": {"type": "array", "items": {"type": "string"}},
+            "operating_modes": {"type": "array", "items": {"type": "string"}},
+            "source_location": {"type": "string"}, "source_excerpt": {"type": "string"},
+        }},
+}
+
+
 CORE_ITEM_ARTIFACTS_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "CoreItemArtifacts",
@@ -37,6 +51,7 @@ CORE_ITEM_ARTIFACTS_SCHEMA: dict[str, Any] = {
                         "road_types": {"type": ["array", "null"], "items": {"type": "string"}},
                         "weather_conditions": {"type": ["array", "null"], "items": {"type": "string"}},
                         "road_surfaces": {"type": ["array", "null"], "items": {"type": "string"}},
+                        "scope_evidence": ODD_SCOPE_EVIDENCE_SCHEMA,
                         "speed_range_kph": {
                             "oneOf": [
                                 {"type": "array", "minItems": 2, "maxItems": 2},
@@ -100,7 +115,7 @@ _ITEM_FIELDS = {
 }
 _ODD_FIELDS = {
     "locations", "road_types", "weather_conditions", "road_surfaces",
-    "speed_range_kph",
+    "speed_range_kph", "scope_evidence",
 }
 _FUNCTION_FIELDS = {
     "function_id", "name", "output", "description", "preconditions",

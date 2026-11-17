@@ -205,21 +205,18 @@ def test_sample_private_policy_cannot_change_production_strategy_or_request(meth
     assert requests[0] == requests[1] and outputs[0] == outputs[1]
 
 
-@pytest.mark.parametrize("remote,expected", [(True, "C1"), (False, "")])
-def test_lateral_active_override_survives_without_longitudinal_ttc(method, remote, expected):
+@pytest.mark.parametrize("remote", [True, False])
+def test_lateral_interface_without_response_does_not_bypass_missing_method(method, remote):
     candidate = make_candidate(3.6)
     candidate.facts["remote_intervention_available"] = remote
     sc = instantiate(method, raw_plan("CONSTANT_LATERAL_ACCELERATION_TO_CONTACT"), candidate)[0]
     result = score(method, sc)
-    assert result["controllability"]["controllability_score"] == expected
+    assert result["controllability"]["controllability_score"] == ""
     assert "ttc_s" not in sc.facts
-    if expected:
-        assert result["controllability"]["decision_status"] == "OVERRIDE_MATCH"
-        assert result["controllability"]["engineering_status"] == "PENDING"
-        assert all(row['scores']['controllability']['controllability_score'] == expected
-                   for row in result['branch_evaluations'])
-    else:
-        assert result["controllability"]["pending_reason"] == "LATERAL_C_METHOD_NOT_AVAILABLE"
+    assert result["controllability"]["pending_reason"] == "LATERAL_C_METHOD_NOT_AVAILABLE"
+    assert all(row['scores']['controllability']['controllability_score'] == ""
+               for row in result['branch_evaluations'])
+    assert sc.facts['remote_intervention_available'] is remote
 
 
 @pytest.mark.parametrize('external,expected', [(True, 'C1'), (False, '')])

@@ -183,8 +183,17 @@ class StructuredRiskScoringService:
         return result
 
     def _score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
+        remote_check = self.inputs.remote_intervention_applicability(scenario,
+            malfunction_id=str(scenario.get("malfunction_id", "UNKNOWN")),
+            scenario_id=str(scenario.get("scenario_id", "UNKNOWN")), method=self.method)
+        if remote_check and remote_check["status"] != "CONDITIONAL_REMOTE_RESPONSE_VALIDATED":
+            # The interface fact remains in the saved input. Only its unproven
+            # avoidance credit is withheld from this calculation's lookup view.
+            scenario = {**scenario, "remote_intervention_available": None}
         result = self._calculate(scenario, hazard_event)
         control = result["controllability"]
+        if remote_check or scenario.get("_intervention_applicability"):
+            control["intervention_applicability"] = {"remote": remote_check} if remote_check else scenario["_intervention_applicability"]
         hypothesis = scenario.get("control_analysis", scenario.get("physical_analysis", {})).get("hypothesis", {})
         failed_controls = hypothesis.get("failed_controls", [])
         braking_path_unresolved = scenario.get("emergency_braking_available") is False or (

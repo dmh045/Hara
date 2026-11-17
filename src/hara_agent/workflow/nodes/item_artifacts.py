@@ -85,7 +85,7 @@ def _missing_core_fields(facts: ItemDefinitionFacts) -> list[str]:
 
 
 def _merge_supplements(
-    facts: ItemDefinitionFacts, patches: dict[str, dict],
+    facts: ItemDefinitionFacts, patches: dict[str, dict], source_blocks=(),
 ) -> tuple[ItemDefinitionFacts, list[str]]:
     warnings = []
     values = {
@@ -99,6 +99,7 @@ def _merge_supplements(
         "speed_envelopes": list(facts.speed_envelopes),
         "risk_facts": list(facts.risk_facts),
         "method_risk_fact_bindings": list(facts.method_risk_fact_bindings),
+        "odd_scope_evidence": list(facts.odd_scope_evidence),
     }
     odd_patch = patches.get("odd_repair", {})
     odd = odd_patch.get("odd", {}) if isinstance(odd_patch, dict) else {}
@@ -125,6 +126,11 @@ def _merge_supplements(
         values["speed_min_kph"], values["speed_max_kph"] = speed_min, speed_max
         if warning:
             warnings.append(warning)
+    for record in ItemDefinitionNormalizer.scope_evidence(
+            odd.get("scope_evidence"), facts.sources[0].source_id, source_blocks):
+        if record not in values["odd_scope_evidence"]:
+            values["odd_scope_evidence"].append(record)
+        values[record["field"]] = list(dict.fromkeys([*values[record["field"]], *record["values"]]))
 
     return replace(facts, **values), warnings
 
@@ -366,7 +372,7 @@ def extract_item_artifacts(
         cache_lock = threading.Lock()
 
         def extract_and_cache(item):
-            result = supplement_agent.extract(item, source_id)
+            result = supplement_agent.extract(item, source_id, functions=functions)
             if cache and cache_key and isinstance(cached_payload, dict):
                 with cache_lock:
                     cached_payload.setdefault("supplements", {})[item.task] = result[0]
@@ -391,7 +397,7 @@ def extract_item_artifacts(
     supplement_wall_elapsed = time.monotonic() - supplement_wall_started
     merge_started = time.monotonic()
     if patches:
-        facts, merge_warnings = _merge_supplements(facts, patches)
+        facts, merge_warnings = _merge_supplements(facts, patches, blocks)
     else:
         merge_warnings = []
     merge_elapsed = time.monotonic() - merge_started
@@ -450,6 +456,9 @@ def extract_item_artifacts(
             cache_save_elapsed += targeted_save_elapsed[0]
         facts = _merge_targeted_project_facts(facts, targeted_payloads)
     facts = ItemDefinitionNormalizer.normalize_source_scope(facts, blocks, source_id)
+    if any(set(record.get("function_ids", [])) - {f.function_id for f in functions}
+           for record in facts.odd_scope_evidence):
+        raise ValueError("odd.scope_evidence references an unknown Function")
     # Approved input is accepted after bounded normalization.  Missing core
     # facts and degraded repairs remain fail-closed at the specific boundary.
     facts.status = (

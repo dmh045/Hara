@@ -125,6 +125,60 @@ def test_pending_scored_harm_preserves_hazard_handoff_and_does_not_approve_relea
     assert not any(n['node_type']=='HARM' for n in item['causal_assessment']['causal_graph']['nodes'])
 
 
+@pytest.mark.parametrize('relocated', [False, True])
+def test_rescore_rejects_replacement_document_with_same_name_and_different_bytes(tmp_path, source_state, relocated):
+    source_state.item_definition['item_sha256'] = file_hash(Path(source_state.item_definition['source_path']))
+    replacement = tmp_path/'other'/'engineering-fixture.json' if relocated else Path(source_state.item_definition['source_path'])
+    replacement.parent.mkdir(exist_ok=True)
+    replacement.write_text('{"different": "project"}')
+    repo = CheckpointRepository(tmp_path/'runs')
+    repo.save(source_state)
+    with pytest.raises(ValueError, match='content hash'):
+        OfflineRiskRescorer().run(source_run_id='source', target_run_id='other', baseline=BASELINE,
+            report_template=TEMPLATE, output=tmp_path/'other.xlsx', run_dir=repo.run_dir,
+            review_root=tmp_path/'review', item_path=replacement if relocated else None)
+    assert not (tmp_path/'other.xlsx').exists()
+
+
+@pytest.mark.parametrize('harm_status', [ReviewStatus.FINALIZED, ReviewStatus.PENDING])
+def test_confirmed_harm_cannot_approve_conditional_malfunction_or_remove_scoring_queue(source_state, harm_status):
+    from dataclasses import replace
+    from hara_agent.models import evaluate_risk_eligibility_payload
+
+    item = source_state.item_definition['scenario_assessments'][0]
+    causal = _validated_causal_assessment(item)
+    first, *rest = causal.evidence_bindings
+    source = SourceRef('malfunction_hypothesis', item['malfunction_id'], 'derived failure', 'conditional premise')
+    causal = replace(causal, review_status=ReviewStatus.PENDING,
+        evidence_bindings=(replace(first, source_refs=(source,)), *rest))
+    item.update(status='PENDING', causal_assessment=causal.to_dict())
+    assert evaluate_risk_eligibility_payload(item).eligible
+
+    attached = causal.with_harm(potential_harm='method injury class', evidence_refs=first.evidence_refs,
+        source_refs=first.source_refs, review_status=harm_status)
+    item['causal_assessment'] = attached.to_dict()
+    assert attached.review_status is ReviewStatus.PENDING
+    assert next(b for b in attached.evidence_bindings if b.edge_id == 'H_TO_HARM').status is harm_status
+    assert attached.evidence_bindings[:-1] == causal.evidence_bindings
+    assert evaluate_risk_eligibility_payload(item).eligible
+    assert ScenarioCausalAssessment.from_dict(attached.to_dict()) == attached
+
+    # Older scoring checkpoints promoted the whole causal record when only
+    # H→Harm was confirmed. The reviewed upstream bindings, conditional premise
+    # and outer PENDING state remain sufficient for conditional recalculation.
+    legacy = {**item, 'causal_assessment': {**attached.to_dict(), 'review_status': 'FINALIZED'}}
+    assert evaluate_risk_eligibility_payload(legacy).eligible
+    for edge in ('M_TO_B', 'B_TO_I', 'I_TO_H'):
+        incomplete = deepcopy(legacy)
+        next(b for b in incomplete['causal_assessment']['evidence_bindings'] if b['edge_id'] == edge)['status'] = 'PENDING'
+        assert not evaluate_risk_eligibility_payload(incomplete).eligible
+
+    # Resuming risk calculation strips only the scoring-owned harm tail.
+    clean_risk_stage(source_state)
+    assert evaluate_risk_eligibility_payload(item).eligible
+    assert item['status'] == 'PENDING'
+
+
 @pytest.fixture
 def source_state(tmp_path, method):
     # Deliberate synthetic engineering fixture, never a claimed r2 project fact.
@@ -172,9 +226,16 @@ def source_state(tmp_path, method):
 
 
 @pytest.mark.parametrize("with_guidewords", [True, False])
-def test_real_scoring_offline_preserves_source_and_writes_fresh_trace(tmp_path, method, source_state, with_guidewords):
+@pytest.mark.parametrize("relocated", [False, True])
+def test_real_scoring_offline_preserves_source_and_writes_fresh_trace(tmp_path, method, source_state, with_guidewords, relocated):
     if not with_guidewords:
         source_state.guideword_assessments = []
+    item_path = None
+    if relocated:
+        previous = Path(source_state.item_definition['source_path'])
+        source_state.item_definition['item_sha256'] = file_hash(previous)
+        item_path = tmp_path/'renamed-project-input.json'
+        previous.rename(item_path)
     repository = CheckpointRepository(tmp_path / "runs")
     source_path = repository.save(source_state)
     digest = file_hash(source_path)
@@ -188,7 +249,7 @@ def test_real_scoring_offline_preserves_source_and_writes_fresh_trace(tmp_path, 
     ) as provider, patch("hara_agent.application.create_llm_client", side_effect=AssertionError("factory")) as factory:
         result = OfflineRiskRescorer().run(source_run_id="source", target_run_id="new", baseline=BASELINE,
             report_template=TEMPLATE, output=tmp_path / "new.xlsx", run_dir=repository.run_dir,
-            review_root=tmp_path / "review")
+            review_root=tmp_path / "review", item_path=item_path)
     assert provider.call_count == factory.call_count == 0
     assert calls == ["SC-1"]
     assert result["values_before"] == dict.fromkeys(("severity", "exposure", "controllability", "asil"), 0)
@@ -198,6 +259,9 @@ def test_real_scoring_offline_preserves_source_and_writes_fresh_trace(tmp_path, 
     assert not new.risk_results[0].exposure.value and not new.risk_results[0].asil.value
     assert file_hash(source_path) == digest
     assert new.scenarios == source_state.scenarios
+    if relocated:
+        assert new.item_definition['source_path'] == str(item_path.resolve())
+        assert any(e['event'] == 'input_location_rebound' for e in new.audit_trail)
     assert new.scenario_contract_version == "atomic-scenario-v1"
     assert result["safety_goals_status"] == "DETERMINISTIC_REAGGREGATED"
     assert len(new.safety_goals) == 1

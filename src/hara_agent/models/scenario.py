@@ -195,7 +195,7 @@ def evaluate_risk_eligibility(
     # or incomplete causal hops do not acquire this eligibility.
     conditional_malfunction = bool(assessment.status is ReviewStatus.PENDING
         and causal and causal.is_validated
-        and causal.review_status is ReviewStatus.PENDING
+        and causal.review_status in {ReviewStatus.PENDING, ReviewStatus.FINALIZED}
         and all(key in bindings and bindings[key].status is ReviewStatus.FINALIZED
                 for key in ("M_TO_B", "B_TO_I", "I_TO_H"))
         and any(ref.source_type == "malfunction_hypothesis"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 from .common import FactProvenance, ReviewStatus, SourceRef
@@ -8,6 +8,29 @@ from .project_facts import (
     MethodRiskFactBinding, RiskFact,
     method_risk_fact_binding_from_dict, risk_fact_from_dict,
 )
+
+
+def scoped_odd_context(context: dict[str, Any], function_id: str = "", operating_mode: str = "") -> dict[str, Any]:
+    """Project explicit source qualifiers without treating a union as universal ODD.
+
+    Old records without qualifiers remain project-wide. A qualified value is
+    available only in its declared function/mode; an explicit unqualified
+    record of the same value also preserves its independently stated scope.
+    """
+    result = dict(context)
+    records = context.get("odd_scope_evidence", [])
+    for name in ("odd_locations", "odd_road_types", "odd_weather_conditions", "odd_road_surfaces"):
+        scoped = [r for r in records if r.get("field") == name
+                  and (r.get("function_ids") or r.get("operating_modes"))]
+        if not scoped:
+            continue
+        qualified = {v for r in scoped for v in r.get("values", [])}
+        applicable = {v for r in records if r.get("field") == name
+                      and (not r.get("function_ids") or function_id in r["function_ids"])
+                      and (not r.get("operating_modes") or operating_mode in r["operating_modes"])
+                      for v in r.get("values", [])}
+        result[name] = [v for v in context.get(name, []) if v not in qualified or v in applicable]
+    return result
 
 
 @dataclass(frozen=True)
@@ -74,6 +97,11 @@ class ItemDefinitionFacts:
     status: ReviewStatus = ReviewStatus.PENDING
     confidence: float = 0.0
     odd_scope_evidence: list[dict[str, Any]] = field(default_factory=list)
+
+    def for_scope(self, function_id: str = "", operating_mode: str = "") -> "ItemDefinitionFacts":
+        view = scoped_odd_context(vars(self), function_id, operating_mode)
+        return replace(self, **{key: view[key] for key in (
+            "odd_locations", "odd_road_types", "odd_weather_conditions", "odd_road_surfaces")})
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ItemDefinitionFacts":

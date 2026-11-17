@@ -26,6 +26,7 @@ class EngineeringReportTextMapper:
         "SIDE": "侧向碰撞", "LATERAL": "侧向碰撞",
     }
     _PHYSICAL_MODEL_TEXT = {
+        "CONSTANT_SPEED_REPRESENTATIVE": "恒速代表运动",
         "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": "坡道溜车（重力减残余阻力）",
         "CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE": "恒加速度至首次接触",
         "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT": "独立横向加速至接触（不等同于等速转向）",
@@ -271,7 +272,7 @@ class EngineeringReportTextMapper:
             "Rear-、Front-或TopView": "后视、前视或俯视画面",
             "Rear-, Front-或TopView": "后视、前视或俯视画面",
             "RearView": "后视画面", "FrontView": "前视画面", "TopView": "俯视画面",
-            "profile": "配置方案", "maneuver": "操作",
+            "profile": "配置方案", "maneuver": "操作", "manoeuvre": "操作",
             "Deceleration normal": "正常减速",
             "Parkplatz": "停车场", "Parkhaus": "停车楼", "Garage": "车库",
             "activation in motion": "行驶中激活",
@@ -285,6 +286,10 @@ class EngineeringReportTextMapper:
             "FIRST_CONTACT_BOUND": "首次接触边界", "FAULT_ONSET": "故障发生时刻",
             "FRONTAL": "正面", "PROJECT": "项目",
             "REQUIRED_NOT_ESTABLISHED": "所需通道尚未建立",
+            "VEHICLE": "其他车辆", "PEDESTRIAN": "行人", "CYCLIST": "骑行者",
+            "RETAINED_FOR_RISK": "保留用于风险分析", "EXCLUDED_FROM_RISK": "不进入风险分析",
+            "PENDING_CAUSAL": "因果待定", "NOT_ASSESSED": "尚未分析",
+            "severity": "严重度", "controllability": "可控性", "asil": "ASIL",
             "in_driver_seat": "在驾驶位", "outside_driver_seat": "不在驾驶位",
             "intervention_assumptions": "干预能力假设", "post_stop_motion": "停止后运动",
             "control_assessment": "控制能力分析",
@@ -313,6 +318,32 @@ class EngineeringReportTextMapper:
             text = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(raw)}(?![A-Za-z0-9_-])",
                           lambda _match, label=display: label, text, flags=re.IGNORECASE)
         return text
+
+    @classmethod
+    def item_fact_text(cls, field: str, value: Any, project: Mapping[str, Any],
+                       functions: Mapping[str, Mapping[str, Any]]) -> str:
+        """Keep source function/mode qualifiers visible on the Item overview."""
+        if not isinstance(value, list):
+            return cls.engineering_terms(str(value))
+        records = [r for r in project.get("odd_scope_evidence", []) if r.get("field") == field]
+        values = []
+        for item in value:
+            matches = [r for r in records if item in r.get("values", [])]
+            scoped = [r for r in matches if r.get("function_ids") or r.get("operating_modes")]
+            if scoped and not any(not r.get("function_ids") and not r.get("operating_modes") for r in matches):
+                qualifications = []
+                for record in scoped:
+                    parts = []
+                    if record.get("function_ids"):
+                        parts.append("、".join(str(functions.get(identity, {}).get("name") or identity)
+                                               for identity in record["function_ids"]))
+                    if record.get("operating_modes"):
+                        parts.append("模式：" + "、".join(record["operating_modes"]))
+                    qualifications.append("，".join(parts))
+                values.append(str(item) + "（仅适用" + "；或".join(dict.fromkeys(qualifications)) + "）")
+            else:
+                values.append(str(item))
+        return cls.engineering_terms("、".join(values))
 
     @staticmethod
     def causal_status(value: str) -> str:
@@ -852,7 +883,8 @@ class EngineeringReportTextMapper:
         selected_conditions = [label for label in selected_conditions if label]
         if selected_conditions:
             details.append("方法条件：" + " / ".join(selected_conditions))
-        return operational, "；".join(details) + "。" if details else "运行细节未确定。"
+        return operational, ("；".join(details) + "。" if details else
+            self.physical_model_gap(scenario) or "尚未形成可用于数值分析的结构化运行条件；具体来源和缺口见场景明细。")
 
     @classmethod
     def hazardous_event(cls, value: Any, scenario: Any = None) -> str:
@@ -1022,7 +1054,15 @@ class EngineeringReportTextMapper:
                     clause = re.sub(r"^.*?因(?=.+(?:失效|失去|无法|卡死|异常))", "", clause)
                 if re.search(r"\d", clause):
                     continue
-                if re.search(r"非预期|(?:高于|低于)预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|碰撞|相撞|擦碰|刮碰|碾压|与.*物理接触|禁停|禁止停车", clause):
+                # A causal prefix or prepositional noun phrase is not a safety
+                # intent. Keep searching supported clauses instead of emitting
+                # fragments such as "防止因..." or "防止车辆基于...目标".
+                if clause.startswith(("因", "由于", "基于", "当", "在")) and not re.search(
+                        r"车辆|本车|自车|驾驶员|执行器|制动|转向|功能", clause):
+                    continue
+                if re.search(r"^(?:车辆|本车|自车)?(?:因|由于|基于).*(?:目标|输出|信息|数据|请求)$", clause):
+                    continue
+                if re.search(r"非预期|(?:高于|低于)预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|(?:尚未|未经).*(?:确认|验证).*(?:泊车|运动|进入|驶入)|碰撞|相撞|擦碰|刮碰|碾压|与.*物理接触|禁停|禁止停车", clause):
                     clause = re.sub(r"^(?:发生|出现|产生)", "", clause)
                     clause = re.sub(r"^(?:车辆|本车)(?:发生|出现)", "车辆", clause)
                     # Keep the sentence's explicit subject when a later clause
@@ -1348,6 +1388,88 @@ class EngineeringReportTextMapper:
             "FAULT_CLOCK_UNRESOLVED": "故障起点或危险判据待绑定",
             "NO_CONTACT_WITHIN_MODEL": "模型时域内未建立接触边界",
         }.get(item.get("timing_trace", {}).get("pending_reason"), "待确定")
+
+    @classmethod
+    def safety_goal_timing(cls, timing_inputs: list[Mapping[str, Any]], *, detailed: bool = False) -> str:
+        """Summarize sampled boundaries within the same declared response path.
+
+        This is a display projection: no new timing computation or approval.
+        Different response families, required controls and driver scopes remain
+        separate, and unavailable members never disappear behind a known minimum.
+        """
+        groups: dict[tuple, list[Mapping[str, Any]]] = {}
+        for item in timing_inputs:
+            trace = item.get("timing_trace", {})
+            command = trace.get("required_command_path") or {}
+            key = (trace.get("response_model_family") or trace.get("response_model")
+                   or item.get("physical_model", ""),
+                   tuple(sorted(trace.get("required_controls") or ())),
+                   item.get("driver_position", ""), item.get("time_origin", ""),
+                   item.get("hazard_criterion", ""), trace.get("response_path_status", ""),
+                   command.get("initiator", ""), tuple(sorted(command.get("independent_of") or ())))
+            groups.setdefault(key, []).append(item)
+        lines = []
+        compact_paths = []
+        for key, members in groups.items():
+            family, controls, driver, origin, criterion, path_status, initiator, independent_of = key
+            scope = []
+            if driver:
+                scope.append(cls.engineering_terms(driver))
+            families = {"MOVING_TARGET_BRAKING": "移动目标制动并保持",
+                        "MOVING_TARGET_FAULT_RELEASE": "解除异常减速并保持当时速度"}
+            if family:
+                scope.append(families.get(family) or cls._PHYSICAL_MODEL_TEXT.get(family, "所声明处置模型"))
+            if controls:
+                scope.append("依赖" + "、".join(cls._CONTROL_TEXT.get(c, "未分类控制路径") for c in controls))
+            if path_status == "REQUIRED_NOT_ESTABLISHED":
+                scope.append("独立响应通道待建立")
+            if independent_of:
+                scope.append("独立于" + "、".join(cls._CONTROL_TEXT.get(c, "未分类控制路径") for c in independent_of))
+            if initiator:
+                scope.append({"SYSTEM": "由系统发起", "REMOTE_OPERATOR": "由远程操作者发起",
+                              "DRIVER": "由驾驶员发起", "OTHER_ROAD_USER": "由其他交通参与者发起"}
+                             .get(initiator, "由方案声明的主体发起"))
+            scope.append("从故障发生时计时" if origin == "FAULT_ONSET" else
+                         "从模型初始状态计时" if origin == "MODEL_INITIAL_STATE" else "计时起点待绑定")
+            if criterion:
+                scope.append({"LOSS_OF_RESPONSE_AVOIDABILITY": "失去所选响应避碰能力",
+                              "LOSS_OF_BRAKING_AVOIDABILITY": "失去制动避碰能力"}
+                             .get(criterion, "所声明危险判据"))
+            label = "；".join(scope) or "当前声明的处置范围"
+            value = cls.ftti_value(members)
+            lines.append(f"{label}：{value}（{len(members)}个成员）")
+            numeric = [m["hazard_time_limit_s"] for m in members
+                       if m.get("hazard_time_limit_s") is not None
+                       and m.get("timing_trace", {}).get("status") not in {
+                           "AVOIDABILITY_ALREADY_LOST", "NO_IMMEDIATE_SAFE_BRAKING_WINDOW"}]
+            short_scope = ([cls.engineering_terms(driver)] if driver else [])
+            short_scope.append(families.get(family) or cls._PHYSICAL_MODEL_TEXT.get(family, "所声明处置"))
+            if path_status == "REQUIRED_NOT_ESTABLISHED":
+                short_scope.append("通道待建立")
+            compact_paths.append({"scope": "，".join(short_scope), "minimum": min(numeric) if numeric else None,
+                                  "count": len(members), "missing": len(members) - len(numeric), "value": value})
+        if not lines:
+            return "尚无关联成员的时间边界；具体响应和缺口见场景明细。"
+        if detailed:
+            return "\n".join(lines)
+        # Review cells show a bounded preview of strict sampled paths. The full
+        # path labels, controls, clocks and all members remain in timing audit.
+        compact_paths.sort(key=lambda p: (p["minimum"] is None,
+                                          p["minimum"] if p["minimum"] is not None else 0))
+        shown = compact_paths[:2]
+        preview = []
+        for index, path in enumerate(shown, 1):
+            value = ("已计算最小 " + quantity(path["minimum"], "s") + " s" if path["minimum"] is not None
+                     else path["value"])
+            if path["minimum"] is not None and path["missing"]:
+                value += f"；另{path['missing']}个成员无有效边界"
+            preview.append(f"路径{index}（{path['scope']}）：{value}（{path['count']}个成员）")
+        remaining = compact_paths[2:]
+        if remaining:
+            preview.append(f"另有{len(remaining)}条响应路径（{sum(p['count'] for p in remaining)}个成员），"
+                           f"其中{sum(p['missing'] for p in remaining)}个成员无有效边界。")
+        preview.append("各路径分别取已计算样本最小值；完整控制依赖、适用范围及未决原因见场景明细和时间追溯。")
+        return "\n".join(preview)
 
     @staticmethod
     def ftti_rationale(timing_inputs: list[Mapping[str, Any]] | None = None) -> str:

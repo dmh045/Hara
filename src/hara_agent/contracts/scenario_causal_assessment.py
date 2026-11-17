@@ -203,10 +203,13 @@ class ScenarioCausalAssessment:
             hazardous_event=self.hazardous_event,
             potential_harm=potential_harm,
             provenance=tuple(dict.fromkeys((*provenance, *evidence_refs))),
-            review_status=(
-                self.review_status
-                if review_status is None else review_status
-            ),
+            # The new scoring tail cannot approve the semantic path that
+            # produced it. A pending tail can make the combined path pending;
+            # a confirmed injury rule cannot promote a conditional malfunction.
+            review_status=(ReviewStatus.PENDING
+                if self.review_status is ReviewStatus.FINALIZED
+                and review_status not in (None, ReviewStatus.FINALIZED)
+                else self.review_status),
         )
 
     def to_dict(self) -> dict[str, Any]:

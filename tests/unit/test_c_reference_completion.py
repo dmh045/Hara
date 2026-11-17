@@ -155,7 +155,10 @@ def test_successful_ttc_and_positive_override_keep_priority(method):
     metadata["project_analysis_policy"]["controllability"]["conditional_reference_rules"] = []
     assert score(method, sc) == score(replace(method, metadata=metadata), sc)
     sc.facts.update(driver_in_vehicle=False, remote_intervention_available=True)
-    assert score(method, sc)["controllability"]["decision_status"] == "OVERRIDE_MATCH"
+    # Interface availability without a same-trajectory response is not proof
+    # of effective evasion. A complete positive remote example is exercised
+    # by test_remote_response_applicability through production instantiation.
+    assert score(method, sc)["controllability"]["decision_status"] != "OVERRIDE_MATCH"
 
 
 def crossing_candidate(method, *, offset=4):
