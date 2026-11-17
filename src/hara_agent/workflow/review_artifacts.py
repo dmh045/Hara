@@ -205,7 +205,8 @@ def _expected_candidate_count(
         for item in p6_instances:
             instance = item["analysis_instance"]
             for origin in (instance, instance.get("driver_configuration_branch", {}),
-                           instance.get("physical_hypothesis", {})):
+                           instance.get("physical_hypothesis", {}),
+                           instance.get("control_analysis", {})):
                 parent_id = origin.get("parent_scenario_id")
                 if parent_id:
                     replaced_parents.add(parent_id)

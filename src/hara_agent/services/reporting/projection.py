@@ -1368,8 +1368,8 @@ class HARAReportProjectionService:
             SafetyGoalView(goal.sg_id, goal_texts[goal.sg_id],
                 goal_safe_states[goal.sg_id],
                 goal.max_asil or "待评定",
-                "；".join(dict.fromkeys(str(malfunctions.get(risk.malfunction_id, {}).get("vehicle_level_hazard", ""))
-                    for risk in state.risk_results if risk.safety_goal_id == goal.sg_id)),
+                self.text.engineering_terms("；".join(dict.fromkeys(str(malfunctions.get(risk.malfunction_id, {}).get("vehicle_level_hazard", ""))
+                    for risk in state.risk_results if risk.safety_goal_id == goal.sg_id))),
                 original_text=state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("original_safety_goal", goal.text),
                 status="离线模拟草稿" if offline_goals
                     else "条件性草稿" if goal.sg_id in conditional_goal_ids

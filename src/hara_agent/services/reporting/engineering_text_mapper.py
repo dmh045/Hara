@@ -272,6 +272,8 @@ class EngineeringReportTextMapper:
             "Rear-, Front-或TopView": "后视、前视或俯视画面",
             "RearView": "后视画面", "FrontView": "前视画面", "TopView": "俯视画面",
             "profile": "配置方案", "maneuver": "操作",
+            "Deceleration normal": "正常减速",
+            "Parkplatz": "停车场", "Parkhaus": "停车楼", "Garage": "车库",
             "activation in motion": "行驶中激活",
             "FORWARD": "前向", "REVERSE": "后向", "LEFT": "左", "RIGHT": "右",
             "FRONT": "前方", "REAR": "后方", "STATIONARY": "静止",
@@ -899,7 +901,7 @@ class EngineeringReportTextMapper:
         else:
             parts.append("该条件下的危险交互尚不能由当前物理模型完整表达")
         parts.append("完整因果声明及限定见审计表原始分析说明")
-        return "；".join(parts) + "。"
+        return self.engineering_terms("；".join(parts) + "。")
 
     def pending_value(self, evidence: Any) -> str:
         return self._PENDING_VALUE
@@ -981,7 +983,7 @@ class EngineeringReportTextMapper:
             text, basis = self._grounded_safety_intent(member, original)
             if unambiguous:
                 text, basis = matches[0]["text"], matches[0]["source"]
-            records.append({**member, "display_text": text,
+            records.append({**member, "display_text": self.engineering_terms(text),
                 "wording_id": matches[0]["id"] if unambiguous else "grounded_behavior_excerpt",
                 "basis": basis})
         texts = list(dict.fromkeys(record["display_text"].rstrip("。；") for record in records))
@@ -989,7 +991,7 @@ class EngineeringReportTextMapper:
         # Do not use a common character prefix (it may cut away a negation).
         texts = [text for text in texts if not any(
             text != other and text.startswith(other) for other in texts)]
-        return {"text": "；".join(texts) + "。" if texts else original,
+        return {"text": "；".join(texts) + "。" if texts else self.engineering_terms(original),
                 "members": records, "nature": "DISPLAY_ONLY_NO_ENGINEERING_APPROVAL"}
 
     @staticmethod
@@ -1161,7 +1163,7 @@ class EngineeringReportTextMapper:
             final_value = str(trace.get("result", getattr(evidence, "value", "")) or "")
             skipped = [item for item in bindings if item.get("skipped")]
             gap = "；无可用暴露值的条件未参与本次组合，见追溯" if skipped else ""
-            return f"{atom_text}；{branch_text}，最终 {final_value}{gap}。"
+            return self.engineering_terms(f"{atom_text}；{branch_text}，最终 {final_value}{gap}。")
         readiness = trace.get("input_readiness", {})
         readiness = readiness if isinstance(readiness, Mapping) else {}
         readiness_status = str(readiness.get("status", ""))

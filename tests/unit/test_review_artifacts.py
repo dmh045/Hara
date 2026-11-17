@@ -109,3 +109,31 @@ def test_cli_review_filters_run_without_llm(review_root, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "MALFUNCTION MF-F01-001" in output
     assert "SCN-1" in output
+
+
+def test_control_only_child_replaces_its_parent_but_other_unassessed_parent_stays_pending(tmp_path):
+    writer = ReviewArtifactWriter('control-scope', tmp_path)
+    writer.record_malfunction({'malfunction_id': 'MF-control'})
+    for identity in ('parent-a', 'parent-b'):
+        writer.record_scenario_candidate({'scenario_id': identity, 'analysis_instance': {
+            'p6_generation': True, 'parent_scenario_id': 'base-context'}},
+            generated_for_malfunction_ids=['MF-control'])
+    writer.record_scenario_candidate({'scenario_id': 'control-child', 'analysis_instance': {
+        'p6_generation': True, 'parent_scenario_id': 'base-context',
+        'control_analysis': {'parent_scenario_id': 'parent-a'}}},
+        generated_for_malfunction_ids=['MF-control'])
+    writer.record_scenario_feasibility({'malfunction_id': 'MF-control',
+        'scenario_id': 'control-child', 'final_retain': True})
+    state = SimpleNamespace(stage=SimpleNamespace(value='scenarios'))
+    writer.write_summary(state)
+    reader = ReviewArtifactReader('control-scope', tmp_path)
+    item = reader.summary()['per_malfunction_summary']['MF-control']
+    assert item['expected_scenario_count']==2 and item['total']==1
+    assert item['assessment_status']=='PARTIAL'
+    writer.record_scenario_feasibility({'malfunction_id': 'MF-control',
+        'scenario_id': 'parent-b', 'final_retain': False})
+    writer.write_summary(state)
+    item = reader.summary()['per_malfunction_summary']['MF-control']
+    assert item['expected_scenario_count']==item['total']==2
+    assert item['assessment_status']=='COMPLETED'
+    assert len(reader.read_all()['scenario_candidate'])==3  # Audit parents survive.

@@ -131,6 +131,38 @@ def test_operation_and_configuration_terms_use_one_projection_for_function_and_f
     assert state == before
 
 
+def test_localization_reaches_structured_event_fallback_exposure_and_safety_goals(active_method):
+    mapper = EngineeringReportTextMapper()
+    scenario = SimpleNamespace(facts={'road_user_type': 'PEDESTRIAN', 'object_position': 'FRONT',
+        'motion_model_outcome': {'status': 'CONTACT'}, 'first_contact_time_s': 1.234}, analysis_instance={})
+    event = mapper.review_event('The display is stale during the parking operation.', scenario,
+        {'description': 'TopView延迟期间车辆继续运动'})
+    assert '俯视画面延迟' in event and 'TopView' not in event
+    assert mapper.hazardous_event('车辆在Parkplatz/Parkhaus/Garage区域运动') == '车辆在停车场/停车楼/车库区域运动。'
+    evidence = EvidenceValue('E2', ReviewStatus.PENDING)
+    trace = {'atom_details': [{'atom_id': 'unseen', 'used': True, 'e_rank': 'E3', 'dimensions': ['EGO_DYNAMICS']}],
+        'scenario_terms': {'EGO_DYNAMICS': {'atom_id': 'unseen', 'atom_label': 'Deceleration normal (< 2.44 m/s²)'}},
+        'result': 'E2'}
+    before_trace = deepcopy(trace)
+    assert '正常减速 (< 2.44 m/s²)=E3' in mapper.exposure_rationale(evidence, trace, calculated=True)
+    assert trace == before_trace
+    state = _p6_report_state()
+    for malfunction in state.malfunctions:
+        malfunction['vehicle_level_hazard'] = '车辆在TopView延迟期间继续运动，可能碰撞行人'
+    from hara_agent.models import SafetyGoal
+    state.safety_goals = [SafetyGoal('SG-display', '原目标TopView', '待确定', '',
+        [risk.scenario_id for risk in state.risk_results])]
+    for risk in state.risk_results:
+        risk.safety_goal_id = 'SG-display'
+    before = deepcopy(state)
+    view = HARAReportProjectionService(load_report_schema()).project(state, active_method)
+    assert view.safety_goals
+    assert all('TopView' not in goal.safety_goal and 'TopView' not in goal.hazard for goal in view.safety_goals)
+    assert any('俯视画面' in goal.safety_goal for goal in view.safety_goals)
+    assert view.safety_goals[0].original_text == '原目标TopView'
+    assert state == before
+
+
 @pytest.mark.parametrize("parent_type,selected_type", [
     ("平行停车位", "垂直停车位"), ("分流车道", "汇入车道"),
 ])
