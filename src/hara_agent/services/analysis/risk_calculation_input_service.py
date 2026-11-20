@@ -14,6 +14,14 @@ class RiskCalculationInputService:
     """Assemble typed S/E/C/FTTI inputs without choosing engineering values."""
 
     @staticmethod
+    def _has_modeled_trajectory(scenario: dict[str, Any]) -> bool:
+        # A missing flat projection cannot turn an analytical checkpoint into
+        # a table-only source fact. Do not invent the absent model inputs.
+        return bool(scenario.get("fault_motion_model") or any(
+            scenario.get(key, {}).get("hypothesis", {}).get("model")
+            for key in ("physical_analysis", "control_analysis")))
+
+    @staticmethod
     def _number(value: Any) -> float | None:
         if (isinstance(value, bool) or not isinstance(value, (int, float))
                 or not math.isfinite(value) or value < 0):
@@ -96,6 +104,10 @@ class RiskCalculationInputService:
             "vehicle_stability", "function_type",
         )
 
+        manual = self.manual_braking_applicability(scenario, malfunction_id=malfunction_id, scenario_id=scenario_id)
+        braking = scenario.get("emergency_braking_available")
+        if manual and manual["status"] != "DECLARED_MANUAL_BRAKING_PATH":
+            braking = False if manual["status"] == "MANUAL_BRAKING_PATH_UNAVAILABLE" else None
         return ControllabilityAssessmentInput(
             malfunction_id=malfunction_id,
             scenario_id=scenario_id,
@@ -105,7 +117,7 @@ class RiskCalculationInputService:
             has_remote_app=scenario.get("has_remote_app"),
             function_type=str(scenario.get("function_type", "")),
             direct_control_available=scenario.get("direct_control_available"),
-            emergency_braking_available=scenario.get("emergency_braking_available"),
+            emergency_braking_available=braking,
             remote_intervention_available=scenario.get(
                 "remote_intervention_available"
             ),
@@ -124,6 +136,36 @@ class RiskCalculationInputService:
             ),
         )
 
+    @staticmethod
+    def manual_braking_applicability(scenario: dict[str, Any], *, malfunction_id: str,
+                                    scenario_id: str) -> dict[str, Any]:
+        """A modeled in-seat braking response needs its own personnel command.
+
+        Retained service-brake execution remains available to automatic timing
+        responses; this only determines credit in the driver's C lookup view.
+        Legacy source/table inputs without an analytical model keep their scope.
+        """
+        if (not RiskCalculationInputService._has_modeled_trajectory(scenario) or scenario.get("driver_in_vehicle") is not True
+                or scenario.get("emergency_braking_available") is not True):
+            return {}
+        from .scenario_physics import source_is_accepted_for
+        for key in ("control_analysis", "physical_analysis"):
+            if not source_is_accepted_for(scenario.get("_fact_provenance", {}).get(key, {}),
+                    malfunction_id=malfunction_id, scenario_id=scenario_id):
+                continue
+            h = scenario.get(key, {}).get("hypothesis", {})
+            if not any(field in h for field in ("remaining_controls", "failed_controls", "unresolved_controls")):
+                continue
+            available = ("driver_braking" in h.get("remaining_controls", [])
+                and "driver_braking" not in h.get("failed_controls", [])
+                and "driver_braking" not in h.get("unresolved_controls", {})
+                and "braking" not in h.get("failed_controls", []))
+            unavailable = "driver_braking" in h.get("failed_controls", []) or "braking" in h.get("failed_controls", [])
+            return {"status": ("DECLARED_MANUAL_BRAKING_PATH" if available else
+                    "MANUAL_BRAKING_PATH_UNAVAILABLE" if unavailable else "MANUAL_BRAKING_PATH_UNRESOLVED"),
+                    "required_controls": ["driver_braking"], "assessment": key}
+        return {"status": "MANUAL_BRAKING_PATH_UNRESOLVED", "required_controls": ["driver_braking"]}
+
     def remote_intervention_applicability(self, scenario: dict[str, Any], *,
             malfunction_id: str, scenario_id: str, method) -> dict[str, Any]:
         """Check a claimed remote response against this trajectory, without grading C.
@@ -133,7 +175,7 @@ class RiskCalculationInputService:
         calculator's positive window, using the same driver, object and model.
         Legacy table-only facts without a modeled trajectory keep their contract.
         """
-        if scenario.get("remote_intervention_available") is not True or not scenario.get("fault_motion_model"):
+        if scenario.get("remote_intervention_available") is not True or not self._has_modeled_trajectory(scenario):
             return {}
         analysis = scenario.get("control_analysis") or scenario.get("physical_analysis", {})
         hypothesis = analysis.get("hypothesis", {})
@@ -155,6 +197,28 @@ class RiskCalculationInputService:
                 "response_status": trace.get("status", trace.get("pending_reason", "UNRESOLVED")),
                 "required_controls": proposal.get("required_controls", []),
                 "engineering_approval": "NOT_GRANTED"}
+
+    @staticmethod
+    def road_user_avoidance_applicability(scenario: dict[str, Any], *,
+            malfunction_id: str, scenario_id: str) -> dict[str, Any]:
+        """Use the same trajectory check for creation, replay and direct scoring.
+
+        A confirmed table-only capability without an analytical trajectory keeps
+        its source contract. Once modeled, capability alone is not a proof that
+        this object can escape this contact geometry.
+        """
+        if (scenario.get("other_road_user_avoidance_possible") is not True
+                or not RiskCalculationInputService._has_modeled_trajectory(scenario)):
+            return {}
+        from .scenario_physics import moving_target_avoidance, source_is_accepted_for
+        analysis = next((scenario[key] for key in ("control_analysis", "physical_analysis")
+            if scenario.get(key) and source_is_accepted_for(
+                scenario.get("_fact_provenance", {}).get(key, {}),
+                malfunction_id=malfunction_id, scenario_id=scenario_id)), None)
+        if analysis is None:
+            return {"status": "AVOIDANCE_PROPOSAL_SOURCE_UNRESOLVED"}
+        proposal = analysis.get("hypothesis", {}).get("intervention_assumptions", {}).get("other_road_user_avoidance_possible", {})
+        return moving_target_avoidance(scenario, proposal)
 
     def ftti(
         self, malfunction_id: str, scenario_id: str, asil: str,

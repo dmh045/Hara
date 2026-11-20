@@ -74,3 +74,28 @@ def test_method_source_resolver_separates_yaml_and_report_hashes():
     )
     assert resolution.source_kind is MethodSourceKind.YAML_BASELINE
     assert resolution.method.metadata["method_source_hash"] != resolution.report_template_hash
+
+
+@pytest.mark.parametrize("invalid", ["control", "pattern", "missing_reason"])
+def test_reference_applicability_metadata_fails_closed(tmp_path, invalid):
+    import hashlib
+    import shutil
+    import yaml
+    bundle = tmp_path / "baseline"
+    shutil.copytree(MANIFEST.parent, bundle)
+    policy = bundle / "normalized/project_analysis_policy.yaml"
+    content = yaml.safe_load(policy.read_text())
+    rule = content["controllability"]["conditional_reference_rules"][0]
+    if invalid == "control":
+        rule["required_controls"] = ["unknown_brake_interface"]
+    elif invalid == "pattern":
+        rule["excluded_conditions"][0]["pattern"] = "["
+    else:
+        rule["excluded_conditions"][0].pop("reason_code")
+    policy.write_text(yaml.safe_dump(content, allow_unicode=True))
+    manifest = bundle / "manifest.yaml"
+    content = yaml.safe_load(manifest.read_text())
+    content["asset_hashes"]["normalized/project_analysis_policy.yaml"] = hashlib.sha256(policy.read_bytes()).hexdigest()
+    manifest.write_text(yaml.safe_dump(content, allow_unicode=True))
+    with pytest.raises(YamlBaselineCompileError, match="conditional controllability"):
+        YamlBaselineCompiler().compile(manifest, report_contract=_report_contract())

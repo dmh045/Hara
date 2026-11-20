@@ -394,7 +394,9 @@ def test_hara_278_same_geometry_rejects_unclosed_escape_and_preserves_counterfac
     proposal = {'avoidance':dict(recognition_delay_s=.1,escape_direction='RIGHT',escape_speed_mps=1,available_clearance_m=4)}
     assert moving_target_avoidance(facts, proposal)['status'] == 'CONTACT_BEFORE_ESCAPE'
     proposal['avoidance']['recognition_delay_s'] = .01
-    assert moving_target_avoidance(facts, proposal)['status'] == 'CONDITIONAL_ESCAPE_VALIDATED'
+    assert moving_target_avoidance(facts, proposal)['status'] == 'AVOIDANCE_TRANSITION_UNRESOLVED'
+    proposal['avoidance']['transition'] = dict(deceleration_mps2=2, acceleration_mps2=1, reorientation_time_s=.2)
+    assert moving_target_avoidance(facts, proposal)['status'] == 'ESCAPE_DOES_NOT_ESTABLISH_AVOIDANCE'
     proposal['avoidance']['available_clearance_m'] = .01
     assert moving_target_avoidance(facts, proposal)['status'] == 'ESCAPE_CORRIDOR_TOO_SHORT'
 

@@ -50,6 +50,14 @@ def test_rear_contact_does_not_turn_unknown_evasion_into_a_fact(method, evade, e
         parent.facts["other_road_user_avoidance_possible"] = evade
     sc = instantiate(method, moving_plan(initial=0, target_direction="FORWARD", x=-8,
         position="REAR", collision="REAR_END"), parent)[0]
+    if evade is True:
+        # A confirmed generic capability flag is not this trajectory's escape.
+        assert score(method, sc)["controllability"]["controllability_score"] != "C1"
+        sc.facts["physical_analysis"]["hypothesis"]["intervention_assumptions"] = {
+            "other_road_user_avoidance_possible": {"value": True,
+                "avoidance": {"recognition_delay_s": .1, "escape_direction": "FORWARD",
+                    "escape_speed_mps": 0, "available_clearance_m": 1,
+                    "transition": {"deceleration_mps2": 1}}}}
     before = deepcopy(sc)
     c = score(method, sc)["controllability"]
     assert c["controllability_score"] == expected
@@ -120,8 +128,10 @@ def test_explicit_braking_loss_does_not_erase_independent_evasion(method):
     assert result["controllability"]["engineering_rule_id"] == "IAV_UNAVAILABLE_BRAKING_REFERENCE"
     sc.facts["other_road_user_avoidance_possible"] = True
     result = score(method, sc)
-    assert result["controllability"]["controllability_score"] == "C1"
-    assert result["controllability"]["decision_status"] == "OVERRIDE_MATCH"
+    assert result["controllability"]["controllability_score"] == "C3"
+    assert result["controllability"]["decision_status"] != "OVERRIDE_MATCH"
+    # The original geometry has no target-response model. Its flag cannot
+    # manufacture independent evasion, even though the brake loss is explicit.
 
 
 @pytest.mark.parametrize("mutation", ["unknown_driver", "unapproved_driver", "wrong_scope", "no_contact", "no_time", "search"])
@@ -192,6 +202,12 @@ def test_crossing_braking_time_requires_ego_motion_not_only_target_contact(metho
         assert "始终静止" in EngineeringReportTextMapper.controllability_branch({"controllability": trace})
         # Independently evidenced target evasion still uses its existing rule.
         sc.facts["other_road_user_avoidance_possible"] = True
+        assert score(method, sc)["controllability"]["decision_status"] != "OVERRIDE_MATCH"
+        sc.facts["physical_analysis"]["hypothesis"]["intervention_assumptions"] = {
+            "other_road_user_avoidance_possible": {"value": True,
+                "avoidance": {"recognition_delay_s": .1, "escape_direction": "RIGHT",
+                    "escape_speed_mps": 0, "available_clearance_m": 1,
+                    "transition": {"deceleration_mps2": 1}}}}
         assert score(method, sc)["controllability"]["decision_status"] == "OVERRIDE_MATCH"
     else:
         assert sc.facts["motion_model_outcome"]["trajectory_max_speed_kph"] > 0

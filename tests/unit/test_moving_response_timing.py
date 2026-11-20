@@ -164,6 +164,11 @@ def test_moving_proposal_reaches_numeric_timing_without_changing_unmitigated_rat
     assert timing.hazard_time_limit_s == pytest.approx(3.75)
     assert timing.status.value=='CONDITIONAL' and timing.timing_trace['engineering_approval']=='NOT_GRANTED'
     assert '移动目标' in EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+    candidate = {**child.facts['physical_analysis']['hypothesis']['safe_state_proposal'],
+                 'scenario_id': child.scenario_id}
+    assert '在已检查范围内避免与目标接触' in EngineeringReportTextMapper.safe_state_outcome(candidate, timing.to_dict())[1]
+    assert '响应避碰效果尚待验证' in EngineeringReportTextMapper.safe_state_outcome(
+        candidate, {**timing.to_dict(), 'scenario_id': 'another-member'})[1]
     assert child==original and score(method,child)==risk
     outside=RiskCalculationInputService().ftti('MF',child.scenario_id,'',{**view,'driver_in_vehicle':False},method=method)
     assert outside.hazard_time_limit_s is None
@@ -398,3 +403,247 @@ def test_acknowledged_unreachable_stop_keeps_negative_trace_without_reasking(met
     assert state.item_definition['physical_analysis_metrics']['semantic_corrections'] == 0
     run(method, agent, state=state, candidates={'MF': [make_candidate(7.2)]})
     assert len(client.requests) == 1
+
+
+# Frozen input parameters from the three independently reviewed delivery
+# counterexamples. No report/checkpoint directory or Provider is needed here.
+NO_CONTACT_RESPONSE_CASES = [
+    pytest.param(dict(ego_speed_kph=7, longitudinal_acceleration_mps2=-.3,
+        object_speed_kph=12, object_offset_x_m=-6, object_offset_y_m=0,
+        contact_half_length_m=3.2, contact_half_width_m=1.3, model_valid_until_s=10,
+        ego_longitudinal_direction='FORWARD', object_longitudinal_direction='FORWARD',
+        object_position='REAR', object_reaction_time_s=.8, object_braking_deceleration_mps2=2,
+        post_stop_motion='HOLD_POSITION'), 1.5, 1.2901528823223163, False, id='AVP-response-creates-contact'),
+    pytest.param(dict(ego_speed_kph=5, longitudinal_acceleration_mps2=-1,
+        object_speed_kph=10, object_offset_x_m=-8, object_offset_y_m=0,
+        contact_half_length_m=4.6, contact_half_width_m=1.9, model_valid_until_s=6,
+        ego_longitudinal_direction='FORWARD', object_longitudinal_direction='FORWARD',
+        object_position='REAR', object_reaction_time_s=1, object_braking_deceleration_mps2=2),
+        2, 1.4808486711468356, True, id='IPA-High-held-response-contact'),
+    pytest.param(dict(ego_speed_kph=10, longitudinal_acceleration_mps2=-2,
+        object_speed_kph=15, object_offset_x_m=-3, object_offset_y_m=-9,
+        contact_half_length_m=3.3, contact_half_width_m=3.25, model_valid_until_s=5,
+        ego_longitudinal_direction='REVERSE', object_longitudinal_direction='LEFT',
+        object_position='REAR', object_reaction_time_s=1, object_braking_deceleration_mps2=3),
+        3, 1.454299786596626, True, id='RPA-held-response-contact'),
+]
+
+
+def no_contact_response_plan(facts, deceleration):
+    from hara_agent.contracts.physical_scenario_plan import PARAMETER_UNITS
+    raw = proposal()
+    h = raw['hypotheses'][0]
+    for field in ('ego_longitudinal_direction', 'object_longitudinal_direction', 'object_position'):
+        h['geometry'][field] = facts[field]
+    h['parameters'] = [dict(field=k, value=v, unit=PARAMETER_UNITS[k], kind='POINT',
+        rationale='Frozen delivery counterexample parameter, conditional and unapproved')
+        for k, v in facts.items() if k in PARAMETER_UNITS]
+    if facts.get('post_stop_motion'):
+        h['post_stop_motion'] = facts['post_stop_motion']
+    h['safe_state_proposal']['transition']['net_deceleration_mps2'] = deceleration
+    h['safe_state_proposal']['description'] = '车辆停止并保持静止，避免与同一目标接触'
+    return raw
+
+
+@pytest.mark.parametrize('facts,deceleration,contact_s,held', NO_CONTACT_RESPONSE_CASES)
+def test_no_original_contact_still_checks_response_and_suppresses_legacy_safe_state(
+        method, facts, deceleration, contact_s, held):
+    from hara_agent.services.analysis import MethodSafetyGoalService
+    from hara_agent.services.reporting import HARAReportProjectionService, load_report_schema
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    from hara_agent.workflow import HARAState
+    from hara_agent.workflow.nodes.safety_goals import aggregate_safety_goals
+    from test_report_review_corrections import mixed_pending_group
+
+    raw = no_contact_response_plan(facts, deceleration)
+    child = instantiate(method, raw, make_candidate(facts['ego_speed_kph']))[0]
+    before = deepcopy(child)
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    trace = timing.timing_trace
+    assert timing.status.value == 'NOT_APPLICABLE' and timing.hazard_time_limit_s is None
+    assert trace['status'] == 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
+    assert trace['original'] == child.facts['motion_model_outcome']
+    assert trace['response_contact']['time_s'] == pytest.approx(contact_s)
+    assert (trace['response_contact'].get('contact_phase') == 'HELD_AFTER_STOP') is held
+    assert trace['evaluated_until_s'] == facts['model_valid_until_s']
+    text = EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+    assert '模型初态计时' in text and '同一目标接触' in text
+    assert ('未覆盖停车后' in text) is held
+    assert ('停车并保持之后' in text) is held
+    assert '缺少可用的接触时间' not in text and child == before
+
+    state = mixed_pending_group()
+    risk = state.risk_results[-1]
+    risk.scenario_id, risk.malfunction_id = child.scenario_id, 'MF'
+    state.risk_results, state.scenarios = [risk], [child]
+    state.malfunctions[0]['malfunction_id'] = 'MF'
+    aggregate_safety_goals(state, MethodSafetyGoalService(method))
+    goal = state.safety_goals[0]
+    # Simulate the old committed checkpoint which had retained this proposal.
+    original_candidate = {**raw['hypotheses'][0]['safe_state_proposal'], 'scenario_id': child.scenario_id}
+    state.item_definition['safety_goal_catalog'][goal.sg_id]['safe_state_candidates'] = [original_candidate]
+    goal.safe_state = original_candidate['description']
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    legacy_view = HARAReportProjectionService(load_report_schema()).project(restored, method)
+    assert '该提案不能作为安全状态' in legacy_view.rows[0].safe_state
+    assert '所选响应不能避碰' == legacy_view.rows[0].ftti
+    aggregate_safety_goals(restored, MethodSafetyGoalService(method))
+    entry = restored.item_definition['safety_goal_catalog'][goal.sg_id]
+    assert entry['safe_state_candidates'] == []
+    assert entry['safe_state_gaps'][0]['reason_code'] == 'RESPONSE_INTERACTION_UNSAFE'
+    assert entry['prior_safe_state']['description'] == original_candidate['description']
+    assert restored.safety_goals[0].safe_state == '待确定'
+    view = HARAReportProjectionService(load_report_schema()).project(restored, method)
+    assert '尚无可用安全处置' in view.rows[0].safe_state
+    assert view.safety_goals[0].sg_id == goal.sg_id
+    assert restored.scenarios[0] == before
+
+
+def test_no_contact_original_and_response_remain_conditional_candidate_without_ftti(method):
+    from hara_agent.services.analysis import MethodSafetyGoalService
+    from hara_agent.services.reporting.engineering_text_mapper import EngineeringReportTextMapper
+    from hara_agent.workflow.nodes.safety_goals import aggregate_safety_goals
+    from test_report_review_corrections import mixed_pending_group
+    facts = dict(ego_speed_kph=7.2, longitudinal_acceleration_mps2=0,
+        object_speed_kph=3.6, object_offset_x_m=100, object_offset_y_m=0,
+        contact_half_length_m=1, contact_half_width_m=.5, model_valid_until_s=10,
+        ego_longitudinal_direction='FORWARD', object_longitudinal_direction='FORWARD', object_position='FRONT')
+    raw = no_contact_response_plan(facts, 2)
+    child = instantiate(method, raw, make_candidate(7.2))[0]
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.status.value == 'PENDING_INPUT' and timing.hazard_time_limit_s is None
+    assert timing.timing_trace['status'] == 'NO_UNMITIGATED_CONTACT_BOUNDARY'
+    assert timing.timing_trace['original']['evaluated_until_s'] == 10
+    assert timing.timing_trace['response_contact']['evaluated_until_s'] == 10
+    state = mixed_pending_group()
+    risk = state.risk_results[-1]
+    risk.scenario_id, risk.malfunction_id = child.scenario_id, 'MF'
+    state.risk_results, state.scenarios = [risk], [child]
+    state.malfunctions[0]['malfunction_id'] = 'MF'
+    aggregate_safety_goals(state, MethodSafetyGoalService(method))
+    candidate = state.item_definition['safety_goal_catalog'][state.safety_goals[0].sg_id]['safe_state_candidates'][0]
+    assert '即刻响应在已检查时域内未接触目标' in EngineeringReportTextMapper.safe_state_outcome(candidate, timing.to_dict())[1]
+    assert '响应避碰效果尚待验证' in EngineeringReportTextMapper.safe_state_outcome(candidate)[1]
+    changed = deepcopy(candidate)
+    changed['transition']['net_deceleration_mps2'] = 3
+    assert '响应避碰效果尚待验证' in EngineeringReportTextMapper.safe_state_outcome(changed, timing.to_dict())[1]
+    assert '未建立响应延迟边界' in EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
+
+
+def test_no_contact_unsafe_response_uses_existing_bounded_correction_and_checkpoint_resume(method, tmp_path):
+    from test_geometry_completion import Client, run
+    from hara_agent.services.semantic.physical_scenario_agent import PhysicalScenarioAgent
+    from hara_agent.workflow import HARAState
+    facts, deceleration, _, _ = NO_CONTACT_RESPONSE_CASES[0].values
+    raw = no_contact_response_plan(facts, deceleration)
+    corrected = deepcopy(raw)
+    corrected['hypotheses'][0].pop('safe_state_proposal')
+    corrected['hypotheses'][0]['safe_state_unresolved_reason'] = 'Immediate braking creates rear contact in this unchanged world; withdraw this response.'
+    client = Client([raw, corrected])
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
+    parent = make_candidate(facts['ego_speed_kph'])
+    state, generated = run(method, agent, candidates={'MF': [parent]})
+    assert len(client.requests) == 2
+    assert 'SAFE_STOP_RESPONSE_UNREACHABLE' in client.requests[1].user_prompt
+    child = generated['MF'][0]
+    assert child.facts['motion_model_outcome']['status'] == 'NO_CONTACT_WITHIN_MODEL'
+    assert child.facts['motion_model_outcome']['evaluated_until_s'] == 10
+    history = child.facts['physical_analysis']['rejected_response_evaluation']
+    assert history['proposal'] == raw['hypotheses'][0]['safe_state_proposal']
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
+        {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
+    assert timing.timing_trace['response_contact']['time_s'] == pytest.approx(1.2901528823223163)
+    assert timing.status.value == 'NOT_APPLICABLE' and timing.hazard_time_limit_s is None
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    _, again = run(method, agent, state=restored, candidates={'MF': [parent]})
+    assert again == generated and len(client.requests) == 2
+
+
+def withdrawn_response_view(method, *, lost=False):
+    from hara_agent.services.analysis.deterministic_risk_executor import FTTIMethodExecutor
+    raw = timed_plan() if lost else proposal()
+    if lost:
+        next(p for p in raw['hypotheses'][0]['parameters'] if p['field'] == 'relative_distance_m')['value'] = .1
+    else:
+        raw['hypotheses'][0]['geometry']['object_longitudinal_direction'] = 'REVERSE'
+    initial = next(p['value'] for p in raw['hypotheses'][0]['parameters'] if p['field'] == 'ego_speed_kph')
+    child = instantiate(method, raw, make_candidate(initial))[0]
+    view = {**child.facts, '_fact_provenance': child.fact_provenance}
+    timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '', view, method=method)
+    assert timing.timing_trace['status'] == ('AVOIDABILITY_ALREADY_LOST' if lost else 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW')
+    analysis = view['physical_analysis']
+    analysis['rejected_response_evaluation'] = {
+        'input_values': FTTIMethodExecutor.response_input_snapshot(view),
+        'method_source_hash': method.metadata['method_source_hash'],
+        'proposal': analysis['hypothesis'].pop('safe_state_proposal'),
+        'timing_trace': timing.timing_trace}
+    # Exercise the JSON checkpoint representation rather than sharing mutable
+    # hypothesis objects with the saved calculation trace.
+    return child.scenario_id, json.loads(json.dumps(view))
+
+
+@pytest.mark.parametrize('lost', [False, True])
+def test_withdrawn_negative_response_is_rechecked_after_c_only_method_migration(method, lost):
+    sid, view = withdrawn_response_view(method, lost=lost)
+    upgraded = deepcopy(method)
+    upgraded.metadata['method_source_hash'] = 'c-only-applicability-migration'
+    upgraded.metadata['project_analysis_policy']['controllability']['basis'] += '; C applicability revised'
+    before = deepcopy(view)
+    timing = RiskCalculationInputService().ftti('MF', sid, '', view, method=upgraded)
+    assert timing.status.value == 'NOT_APPLICABLE' and timing.hazard_time_limit_s is None
+    assert timing.timing_trace['status'] == ('AVOIDABILITY_ALREADY_LOST' if lost else 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW')
+    trace = timing.timing_trace['rejected_response_revalidation']
+    assert trace['previous_method_source_hash'] == method.metadata['method_source_hash']
+    assert trace['method_source_hash'] == upgraded.metadata['method_source_hash']
+    assert trace['proposal_remains_withdrawn'] is True
+    assert view == before and 'safe_state_proposal' not in view['physical_analysis']['hypothesis']
+
+
+@pytest.mark.parametrize('change', ['snapshot', 'controls', 'source_scope', 'timing_method'])
+def test_withdrawn_response_migration_cannot_bypass_current_world_or_control_guards(method, change):
+    sid, view = withdrawn_response_view(method)
+    current = deepcopy(method)
+    current.metadata['method_source_hash'] = 'changed-method'
+    if change == 'snapshot':
+        view['object_id'] = 'different-target'
+    elif change == 'controls':
+        view['physical_analysis']['hypothesis']['remaining_controls'] = []
+    elif change == 'source_scope':
+        view['_fact_provenance']['physical_analysis']['applicable_scope']['scenario_id'] = 'another-scenario'
+    else:
+        current.metadata['project_analysis_policy']['timing_analysis']['response_model'] = 'UNSUPPORTED_RESPONSE'
+    before = deepcopy(view)
+    timing = RiskCalculationInputService().ftti('MF', sid, '', view, method=current)
+    assert timing.status.value == 'PENDING_INPUT' and timing.hazard_time_limit_s is None
+    assert timing.timing_trace.get('status') not in {'NO_IMMEDIATE_SAFE_BRAKING_WINDOW', 'AVOIDABILITY_ALREADY_LOST'}
+    if change in {'controls', 'timing_method'}:
+        evaluation = timing.timing_trace['rejected_response_revalidation']['current_evaluation']
+        assert evaluation['status'] == 'PENDING_INPUT'
+        assert '重验' in timing.reason
+    else:
+        assert 'rejected_response_revalidation' not in timing.timing_trace
+    assert view == before and 'safe_state_proposal' not in view['physical_analysis']['hypothesis']
+
+
+def test_positive_revalidation_does_not_reinstate_a_withdrawn_response(method):
+    from hara_agent.services.analysis.deterministic_risk_executor import FTTIMethodExecutor
+    child = instantiate(method, proposal(), make_candidate(7.2))[0]
+    view = {**child.facts, '_fact_provenance': child.fact_provenance}
+    analysis = view['physical_analysis']
+    # A legacy negative record can disagree with the current physical solver.
+    # Revalidation must expose that difference without resurrecting its plan.
+    analysis['rejected_response_evaluation'] = {
+        'input_values': FTTIMethodExecutor.response_input_snapshot(view),
+        'method_source_hash': 'previous-method',
+        'proposal': analysis['hypothesis'].pop('safe_state_proposal'),
+        'timing_trace': {'status': 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'}}
+    before = deepcopy(view)
+    result = RiskCalculationInputService().ftti('MF', child.scenario_id, '', view, method=method)
+    assert result.status.value == 'PENDING_INPUT' and result.hazard_time_limit_s is None
+    comparison = result.timing_trace['rejected_response_revalidation']
+    assert comparison['previous_timing_trace']['status'] == 'NO_IMMEDIATE_SAFE_BRAKING_WINDOW'
+    assert comparison['current_evaluation']['timing_trace']['status'] == 'CONDITIONAL_BOUNDARY'
+    assert comparison['current_evaluation']['hazard_time_limit_s'] == pytest.approx(3.75)
+    assert comparison['proposal_remains_withdrawn'] is True and view == before

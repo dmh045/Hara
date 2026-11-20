@@ -41,7 +41,8 @@ MODEL_CATALOG = {
     "CONSTANT_SPEED_CURVATURE_TO_CONTACT": {
         "target_motion": "STATIONARY",
         "required": ["ego_speed_kph", "turn_radius_m", "lateral_clearance_m", "model_valid_until_s"],
-        "scope": "Pure steering deviation represented by a constant-speed circular path with assumed positive turn radius; no sideslip or tangential acceleration. Initial travel aligned FORWARD/REVERSE; geometry.ego_lateral_direction LEFT/RIGHT specifies the displacement side independently of target position. Stationary side boundary extended along initial travel; lateral_clearance_m is effective first-contact path clearance, not center-to-center distance. Evaluated only to the explicit horizon or first quarter-turn. v magnitude stays constant, a_normal=v²/R; no longitudinal TTC. Radius and validity are conditional assumptions, not proven steering/grip capability. Use another model for acceleration or instability.",
+        "optional": ["object_offset_x_m", "contact_half_length_m"],
+        "scope": "Pure steering deviation represented by a constant-speed circular path with assumed positive turn radius; no sideslip or tangential acceleration. Initial travel aligned FORWARD/REVERSE; geometry.ego_lateral_direction LEFT/RIGHT specifies the displacement side independently of target position. Stationary side boundary extended along initial travel; lateral_clearance_m is effective first-contact path clearance, not center-to-center distance. Contact requires the target's effective side to cover the calculated contact x in the initial BODY_FORWARD_POSITIVE frame. Without a declared longitudinal span, results are conditional on that extended-boundary assumption, not verification of contact with an arbitrary finite vehicle. Optional object_offset_x_m and contact_half_length_m must be supplied together to check the fixed effective longitudinal contact interval [offset-half, offset+half]; these retain their combined ego/target contact-envelope meaning, NOT an actual vehicle length. The effective interval is a declared projection/clearance assumption, not a rotating vehicle-box model. If the contact point lies outside it, this side-boundary approximation is inapplicable; do not infer no collision elsewhere. Evaluated only to the explicit horizon or first quarter-turn. v magnitude stays constant, a_normal=v²/R; no longitudinal TTC. Radius and validity are conditional assumptions, not proven steering/grip capability. Use another model for acceleration or instability.",
     },
     "RECTILINEAR_MOVING_TARGET_CONTACT": {
         "target_motion": "CONSTANT_VELOCITY",
@@ -155,7 +156,7 @@ def braking_capability(hypothesis: dict) -> bool | None:
     """Translate declared controls, without inferring fault independence."""
     failed = set(hypothesis.get("failed_controls", []))
     remaining = set(hypothesis.get("remaining_controls", []))
-    if failed & {"braking", "driver_braking"}:
+    if "braking" in failed or "driver_braking" in failed and "braking" not in remaining:
         return False
     if "automatic_braking_command" in failed and "driver_braking" not in remaining:
         return None
@@ -347,13 +348,18 @@ def _validate_controls(h: dict, evidence_ids: set[str]) -> None:
                     raise ValueError("Remote response_delay_s must be a finite nonnegative model-start-to-response delay")
             if "avoidance" in proposal:
                 avoidance = _object(proposal["avoidance"],
-                    {"recognition_delay_s", "escape_direction", "escape_speed_mps", "available_clearance_m"})
+                    {"recognition_delay_s", "escape_direction", "escape_speed_mps", "available_clearance_m"}, {"transition"})
                 if avoidance["escape_direction"] not in {"LEFT", "RIGHT", "FORWARD", "REVERSE"}:
                     raise ValueError("Avoidance direction must use the same body coordinate frame")
                 if (_number(avoidance["recognition_delay_s"]) < 0
-                        or _number(avoidance["escape_speed_mps"]) <= 0
+                        or _number(avoidance["escape_speed_mps"]) < 0
                         or _number(avoidance["available_clearance_m"]) <= 0):
-                    raise ValueError("Avoidance requires nonnegative delay and positive speed/clearance")
+                    raise ValueError("Avoidance requires nonnegative delay/speed and positive clearance")
+                if "transition" in avoidance:
+                    transition = _object(avoidance["transition"], set(),
+                        {"acceleration_mps2", "deceleration_mps2", "reorientation_time_s"})
+                    if not transition or any(_number(value) <= 0 for value in transition.values()):
+                        raise ValueError("Avoidance transition values must be explicit positive finite acceleration/deceleration or stopped reorientation time")
         elif proposal is not h.get("safe_state_proposal"):
             raise ValueError("Intervention assumption requires value and rationale")
         refs = _texts(proposal["basis_refs"], limit=max(16, len(evidence_ids)))

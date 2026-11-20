@@ -131,3 +131,128 @@ def test_mixed_parent_modes_equal_separate_scope_generation_without_cross_mode_m
     assert audit['atom_generation']['raw_candidate_count'] == raw_count
     assert set(audit['atom_generation']['source_boundary_parent_ids_by_mode']) == {'training','execution'}
     assert parents == before
+
+
+@pytest.mark.parametrize('with_item', [False, True])
+def test_offline_generation_replays_draft_without_inventing_missing_speed(method, tmp_path, monkeypatch, with_item):
+    from pathlib import Path
+    from types import SimpleNamespace
+    import hashlib
+    import scripts.benchmark_p6_offline as benchmark
+    from hara_agent.application import HARAApplication
+
+    project = p6_project()
+    project.speed_min_kph = project.speed_max_kph = None
+    item_path = tmp_path / 'relocated.pdf'
+    item_path.write_bytes(b'Frozen original document identity')
+    source_hash = hashlib.sha256(item_path.read_bytes()).hexdigest()
+    saved = dict(run_id='original', item_definition={'typed': asdict(project), 'item_sha256': source_hash},
+                 functions=[asdict(p6_function())], malfunctions=[asdict(p6_malfunction())],
+                 scenarios=[], risk_results=[], audit_trail=[], method_contract={'method_source_hash': 'historical'})
+    checkpoint = tmp_path / 'checkpoint.json'
+    checkpoint.write_text(json.dumps(saved))
+    before = checkpoint.read_bytes()
+    monkeypatch.setattr(benchmark.MethodSourceResolver, 'resolve', lambda *args, **kwargs: SimpleNamespace(method=method))
+    monkeypatch.setattr(benchmark.DocumentReader, 'read', lambda *args: SimpleNamespace(blocks=[], source_id='relocated.pdf'))
+    calls = []
+    prepare = HARAApplication.prepare_scenario_candidates
+
+    def ordinary_prepare(application, state, service):
+        calls.append(state.item_definition['item_sha256'])
+        result = prepare(application, state, service)
+        assert service.method.metadata['project_input_sha256'] == source_hash
+        assert application.resolve_project_speed_context(state).matched_envelope == {}
+        return result
+
+    monkeypatch.setattr(HARAApplication, 'prepare_scenario_candidates', ordinary_prepare)
+    result = benchmark.run(checkpoint, Path('unused-method'), Path('unused-template'), tmp_path / 'generation',
+                           item=item_path if with_item else None,
+                           generation_only=True, operating_mode='parking vehicle control')
+    assert calls == [source_hash]
+    assert result['provider_calls'] == result['new_committed_risk_records'] == 0
+    assert result['candidate_preview']['candidate_scenarios_after_driver'] > 0
+    assert result['new_causal_provider_validation'] == 'NOT_RUN'
+    assert checkpoint.read_bytes() == before
+    if with_item:
+        item_path.write_bytes(b'Different content at the same path')
+        with pytest.raises(ValueError, match='checkpoint input hash'):
+            benchmark.run(checkpoint, Path('unused-method'), Path('unused-template'), tmp_path/'changed-item',
+                          item=item_path, generation_only=True, operating_mode='parking vehicle control')
+        assert calls == [source_hash]
+
+
+@pytest.mark.parametrize('layout', ['parallel', 'diagonal'])
+def test_ordinary_candidate_accepts_analytical_geometry_without_claiming_source_permission(method, tmp_path, layout):
+    from pathlib import Path
+    from hara_agent.application import HARAApplication
+    from hara_agent.config import RunConfig
+    from test_reference_interaction_physics import angle_plan, parameters
+
+    project = facts(function='source-scoped-exploratory')
+    state = HARAState('geometry-scope', item_definition={'typed': asdict(project)},
+                      functions=[asdict(p6_function())])
+    application = HARAApplication(RunConfig(item_path=Path('source.pdf'), template_path=None,
+        run_dir=tmp_path, output_path=tmp_path/'unused.xlsx',
+        operating_mode='parking_vehicle_control', allow_draft=True), None)
+    service = MethodScenarioCandidateService(method)
+    parents, _ = application.prepare_scenario_candidates(state, service)
+    fault = replace(mf(), function_id=p6_function().function_id)
+    generated, _ = service.generate_for_malfunction(fault, parents, project_facts=project, function=p6_function())
+    parent = generated[0]
+    before = deepcopy(parent)
+    raw = angle_plan()
+    h = raw['hypotheses'][0]
+    h.pop('safe_state_proposal'); h.pop('hazard_timing')
+    h.update(remaining_controls=[], unresolved_controls={'braking': 'No independent response is specified by this geometry fixture.'},
+             driver_positions=['in_driver_seat'],
+             condition_changes={'initial_state': True, 'target': True,
+                 'rationale': 'A separate conditional geometric world, not a source-stated parking layout.'})
+    h['geometry']['object_id'] = layout+'-assumed-target'
+    h['geometry'].update(road_user_type='PEDESTRIAN', collision_type='VEHICLE_TO_ROAD_USER')
+    h['rationale'] = 'Conditional '+layout+' parking geometry for the existing fault; not an extracted product permission.'
+    h['conditions'] = [h['rationale']]
+    if layout == 'parallel':
+        h['geometry'].update(object_position='FRONT')
+        parameters(raw, ego_heading_angle_deg=0, object_offset_x_m=5, object_offset_y_m=0)
+
+    class Client:
+        def __init__(self): self.requests=[]
+        def complete_json(self, request):
+            self.requests.append(request)
+            payload=json.loads(request.user_prompt)
+            from hara_agent.services.semantic.physical_scenario_agent import expand_physical_prompt_view
+            context = expand_physical_prompt_view(payload['context'], payload['source_texts'])
+            assert context['project_context']['odd_road_types'] == []
+            assert 'source_condition_focus' not in context
+            # The fixture chooses a compatible shared compound operation from
+            # the actual bounded catalog, without fabricating a method identity.
+            allowed = context['operating_atom_options']
+            dynamic_ids = {row['atom_id'] for row in allowed['EGO_DYNAMICS']}
+            operation = next(row['atom_id'] for row in allowed['EGO_ACTION']
+                if row['atom_id'] in dynamic_ids and row.get('speed_range_kph')
+                and row['speed_range_kph'][0] == 0 and row['speed_range_kph'][1] >= 7)
+            response = deepcopy(raw)
+            response['hypotheses'][0]['operating_atoms'] = {
+                'EGO_ACTION': operation, 'EGO_DYNAMICS': operation, 'TRAFFIC_PATTERN': None}
+            response['hypotheses'][0]['operating_atom_exclusions'] = {
+                'TRAFFIC_PATTERN': 'No catalog-specific traffic relation in this stationary-target geometric assumption.'}
+            return LLMResponse(response, 'OFFLINE')
+
+    client = Client()
+    agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path/'responses')
+    result = construct_physical_scenarios(state, {fault.malfunction_id:[parent]}, [fault],
+        method=method, agent=agent, project_facts=project)
+    child = result[fault.malfunction_id][0]
+    assert len(client.requests) == 1, [json.loads(r.user_prompt).get('repair_errors') for r in client.requests]
+    assert 'physical_analysis' in child.facts, state.item_definition['physical_analysis_metrics']
+    assert child.facts['motion_model_outcome']['status'] == 'CONTACT'
+    assert child.fact_provenance['ego_heading_angle_deg']['provenance'] == 'LLM_INFERENCE'
+    assert child.fact_provenance['ego_heading_angle_deg']['approval'] == 'PENDING'
+    assert 'selected_source_condition' not in child.facts
+    assert child.facts['source_road_type_scope'] == []
+    assert state.item_definition['typed']['odd_road_types'] == ['垂直车位']
+    assert parent == before
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    resumed = construct_physical_scenarios(restored, {fault.malfunction_id:[parent]}, [fault],
+        method=method, agent=agent, project_facts=project)
+    assert resumed == result and len(client.requests) == 1

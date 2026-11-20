@@ -401,7 +401,8 @@ def test_safe_state_groups_end_state_but_preserves_different_paths_and_parameter
     catalog={'safe_state_candidates':[first,second,third]};before=deepcopy(catalog)
     text=HARAReportProjectionService._safe_state_display(goal,catalog)
     assert '候选' not in text and '适用3个成员' in text
-    assert text.count('车辆在与目标接触前停止') == 1
+    assert text.count('目标状态：车辆停止') == 1
+    assert '响应避碰效果尚待验证' in text and '接触前停止' not in text
     assert '驾驶员制动踏板' not in text and '自动制动命令链' not in text
     for c in catalog['safe_state_candidates']:
         detail=EngineeringReportTextMapper.safe_state_member(c,SimpleNamespace(facts={},analysis_instance={}))

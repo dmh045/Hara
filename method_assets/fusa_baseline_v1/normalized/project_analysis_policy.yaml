@@ -90,6 +90,14 @@ controllability:
       result: ACTIVE_PROFILE
       profile_time_input: first_contact_time_s
       requires_contact: true
+      required_controls: [driver_braking]
+      excluded_conditions: &driver_observation_exclusions
+        - reason_code: CONFLICT_VISIBILITY_OCCLUDED
+          pattern: '遮挡|遮蔽|(?:限制).{0,8}(?:视线|视野)|\bocclu(?:sion|d(?:e[sd]?|ing))|\b(?:limited|obstructed)\s+(?:visibility|view|sight(?:line)?)\b'
+          negation_pattern: '(?<!非)(?:无|没有|不存在|未发生|未被)[^，,]{0,16}?(?:遮挡|遮蔽|(?:降低|限制)[^，,]{0,10}(?:可见性|视线|视野))|(?:不是|而非|不(?:会|构成|造成|形成|提供|产生|作为|假设|证明|据此推定|据此断言))[^，,。；;\n]{0,45}?(?:遮挡|遮蔽|可见性)|(?:不|未)(?:覆盖|建模|考虑|包含|假设|量化|在本假设中量化|提供)[^，,。；;\n]{0,100}(?:遮挡|遮蔽)|不自动[^，,]{0,20}证明[^，,]{0,30}遮挡|(?:遮挡|遮蔽)[^，,]{0,30}(?:未(?:覆盖|建模|量化|提供)|(?:属于|作为)[^，,]{0,6}未覆盖|不在[^，,]{0,12}(?:范围|覆盖))|(?:遮挡|遮蔽)[^。；;\n]{0,65}(?:属于未覆盖(?:几何|条件)|仅在未覆盖条件中记录|未在[^，,]{0,20}建模)|不(?:会)?(?:遮挡|遮蔽)|不(?:降低|限制)[^，,]{0,10}(?:可见性|视线|视野)|(?:若|如果|假如)[^，,]{0,30}(?:遮挡|遮蔽)|(?:可能|易受)[^，,]{0,30}(?:遮挡|遮蔽|降低[^，,]{0,10}可见性)(?![^。；;]{0,40}(?:缩短|压缩|导致|减少|变短))|(?:no|without)\s+(?:(?:visual|physical|sensor|visibility)\s+)?occlusion|(?:no|without)\s+(?:limited|obstructed)\s+(?:visibility|view|sight)|(?:does not|do not|not)\s+(?:(?:physically|directly|actually)\s+)*(?:block\s+or\s+)?occlud(?:e[sd]?|ing)|not (?:(?:treated|used|regarded|modeled|considered) )?as (?:a |an )?(?:physical |solid )?(?:wall|barrier|obstacle|curb)s?[^;。\n]{0,60}occlu(?:sion|d(?:e[sd]?|ing|er))|(?:occlu(?:sion|d(?:e[sd]?|ing|er))|visibility)[^,;。\n]{0,75}(?:not modeled|not covered|uncovered|unquantified)|(?:excludes|does not cover)[^,;。\n]{0,75}occlu(?:sion|d(?:e[sd]?|ing|er))|(?:may|might|could)[^,]{0,20}occlu(?:sion|d(?:e[sd]?|ing|er))(?![^;。]{0,40}(?:shorten|reduce|narrow))'
+        - reason_code: CONFLICT_RECOGNITION_DELAYED
+          pattern: '(?:才|直到).{0,12}(?:发现|察觉|识别|看到|出现在)|(?:降低|延迟).{0,10}(?:发现|识别|察觉)|delayed recognition|late recognition|noticed only|recognition (?:is |was )?delayed'
+          negation_pattern: '(?:无|没有|不存在).{0,8}(?:识别|发现|察觉)延迟|(?:不|未)(?:覆盖|建模|考虑|量化)[^，,。；;\n]{0,100}(?:识别|发现|察觉|延迟)|可能[^，,]{0,15}(?:降低|延迟)[^，,]{0,20}(?:发现|识别|察觉)(?![^。；;]{0,40}(?:缩短|压缩|导致|减少|变短))|(?:可|能够|能)[^，,]{0,35}(?:前发现|前识别|前察觉|及时识别|及时发现)|响应延迟(?:边界|预算|上界|窗口)[^，,]{0,12}识别|(?:no|without|does not cover|excludes)[^,;。\n]{0,30}(?:recognition delay|delayed recognition)|delayed recognition.{0,12}(?:not modeled|not covered)'
       source_document: method_assets/fusa_baseline_v1/raw/c_profiles/iav_avp.yaml
       source_location: applies_when; ttc_applicability; ttc_thresholds
       source_sha256: 98468b3e57fb492b1bf498ee83e3cfb85c4b813ba50270fc389db0dc49ea6239
@@ -105,6 +113,7 @@ controllability:
     - rule_id: MQB_LOW_SPEED_ERRONEOUS_STEERING_REFERENCE
       status: CONDITIONAL_REFERENCE
       result: C1
+      required_controls: [driver_braking]
       source_document: MQBEvo-RHP2.0-SOTIF-GuR.xlsx
       source_location: Prerequisite & Assumptions park!D17
       source_sha256: ffb29c4c4a662ea3ba936ad817af6a37f1d0812e54a0538d2adafba5bb73a763
@@ -123,6 +132,7 @@ controllability:
     - rule_id: IAV_LOW_SPEED_STEERING_DEVIATION_BRAKING_REFERENCE
       status: CONDITIONAL_REFERENCE
       result: C1
+      required_controls: [driver_braking]
       source_document: 副本IAV_EHYREEV蓝海项目_代客泊车-HARA分析_V1.0.xlsx
       source_location: "6-HARA Analyses!M36:N40; MQBEvo-RHP2.0-SOTIF-GuR.xlsx:Prerequisite & Assumptions park!D17"
       source_sha256: 0698cc8e2f87ae861480c67ce8df89910f59d635a0cb49587e85b723e1d48898
@@ -141,6 +151,8 @@ controllability:
       result: ACTIVE_PROFILE
       profile_time_input: first_contact_time_s
       requires_contact: true
+      required_controls: [driver_braking]
+      excluded_conditions: *driver_observation_exclusions
       source_document: method_assets/fusa_baseline_v1/raw/c_profiles/iav_avp.yaml
       source_location: applies_when; ttc_applicability; ttc_thresholds
       source_sha256: 98468b3e57fb492b1bf498ee83e3cfb85c4b813ba50270fc389db0dc49ea6239

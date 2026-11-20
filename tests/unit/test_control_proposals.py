@@ -602,7 +602,11 @@ def test_existing_physical_proposal_does_not_fan_out_unresolved_controls(method)
     from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
     child = instantiate(method)[0]  # Valid motion, no declared remaining braking capability.
     assert not score(method, child)['controllability']['controllability_score']
-    assert PhysicalHypothesisInstantiationService(method).task_scope(child, 'MF') == ''
+    producer = PhysicalHypothesisInstantiationService(method)
+    assert producer.task_scope(child, 'MF') == 'CONTROL_INPUTS_ONLY'
+    child.facts['physical_analysis']['hypothesis']['unresolved_controls'] = {
+        'driver_braking': 'The scoped pedal path was assessed and its independence remains unknown.'}
+    assert producer.task_scope(child, 'MF') == ''
 
 
 @pytest.mark.parametrize('failed_command', ['automatic_drive_command', 'automatic_steering_command', 'automatic_parking_command'])
@@ -683,7 +687,11 @@ def test_workflow_proposals_reach_existing_c_and_sg_with_resume(method, tmp_path
         def complete_json(self, request):
             self.calls += 1
             assert 'safe_state_proposal' in request.system_prompt
-            return LLMResponse(proposal_plan(), 'OFFLINE_SYNTHETIC')
+            raw = proposal_plan()
+            if inside:
+                raw['hypotheses'][0]['remaining_controls'].append('driver_braking')
+                raw['hypotheses'][0]['conditions'].append('Independent in-seat manual brake path is retained.')
+            return LLMResponse(raw, 'OFFLINE_SYNTHETIC')
     client = Frozen()
     agent = PhysicalScenarioAgent(client, response_checkpoint_dir=tmp_path)
     parent = make_candidate(3.6)
@@ -794,7 +802,7 @@ def test_legacy_plan_still_reads_and_does_not_fabricate_state_or_intervention():
     assert 'safe_state_proposal' not in plan.hypotheses[0]
 
 
-@pytest.mark.parametrize('inside,remote,expected', [(True, None, 'C0'), (False, None, ''), (False, False, 'C3')])
+@pytest.mark.parametrize('inside,remote,expected', [(True, None, ''), (False, None, ''), (False, False, 'C3')])
 def test_generated_braking_capability_and_driver_access_are_separate(method, tmp_path, inside, remote, expected):
     raw = raw_plan(initial=7, acceleration=0)
     h = raw['hypotheses'][0]
@@ -827,11 +835,16 @@ def test_generated_braking_capability_and_driver_access_are_separate(method, tmp
     assert result['controllability']['controllability_score'] == expected
     assert result['severity']['severity_score'] == 'S1'
     assert result['controllability']['engineering_status'] == 'PENDING'
+    if inside:
+        # Personnel presence does not create a pedal path from an actuator.
+        conditional = deepcopy(child)
+        conditional.facts['physical_analysis']['hypothesis']['remaining_controls'].append('driver_braking')
+        assert score(method, conditional)['controllability']['controllability_score'] == 'C0'
     construct_physical_scenarios(state, {'MF': [parent]}, [mf()], method=method,
         agent=agent, project_facts=None)
     # An outside-only actuator with no usable command now gets one bounded
     # design-response assessment; the unchanged reply cannot invent a path.
-    assert client.calls == (2 if not inside and remote is not True else 1)
+    assert client.calls == 2  # In-seat omission and outside automatic-path omission share one bounded correction.
 
 
 def test_legacy_remaining_control_projection_preserves_checkpoint_and_provenance(method):
@@ -844,8 +857,13 @@ def test_legacy_remaining_control_projection_preserves_checkpoint_and_provenance
     child.facts.pop('emergency_braking_available')
     child.fact_provenance.pop('emergency_braking_available')
     before = deepcopy(child)
-    assert score(method, child)['controllability']['controllability_score'] == 'C3'
+    assert not score(method, child)['controllability']['controllability_score']
+    context = HazardousEventRiskContextService(method).build(malfunction_id='MF', scenario_id=child.scenario_id,
+        hazard_node_id='impact', scenario={**child.facts, '_fact_provenance': child.fact_provenance})
+    assert context.emergency_braking_available.value is True
     assert child == before
+    child.facts['physical_analysis']['hypothesis']['remaining_controls'].append('driver_braking')
+    assert score(method, child)['controllability']['controllability_score'] == 'C3'
     child.fact_provenance['physical_analysis']['validation_status'] = 'UNVALIDATED'
     result = score(method, child)
     assert not result['controllability']['controllability_score']
@@ -880,7 +898,7 @@ def test_motion_control_omission_corrects_once_per_plan_not_per_point_or_driver(
             context = json.loads(request.user_prompt)['context']
             reply = deepcopy(raw)
             if self.calls == 2:
-                assert {d['reason'] for d in context['correction_diagnostics']} == {'CONTROL_CAPABILITY_NOT_ASSESSED'}
+                assert {d['reason'] for d in context['correction_diagnostics']} == {'CONTROL_MANUAL_PATH_UNASSESSED'}
                 if outcome == 'available':
                     reply['hypotheses'][0]['remaining_controls'] = ['driver_braking']
                     reply['hypotheses'][0]['conditions'].append('Independent driver braking remains outside the drive fault')
@@ -916,7 +934,7 @@ def test_motion_control_omission_corrects_once_per_plan_not_per_point_or_driver(
         assert '控制能力分析假设' in text and '通道独立性' in text
         assert 'Independent driver braking remains outside the drive fault' in inside[0].facts['physical_analysis']['hypothesis']['conditions']
     if outcome == 'omitted_again':
-        assert inside[0].analysis_instance['physical_plan_diagnostics'][0]['reason'] == 'CONTROL_CAPABILITY_NOT_ASSESSED'
+            assert inside[0].analysis_instance['physical_plan_diagnostics'][0]['reason'] == 'CONTROL_MANUAL_PATH_UNASSESSED'
     # Numerical motion remains available even if the one correction fails.
     assert all(c.facts['ego_impact_speed_kph'] > 0 for c in children)
     assert all(c.status is ReviewStatus.PENDING for c in children)
@@ -944,12 +962,12 @@ def test_manual_path_gap_gets_one_review_and_other_assessed_inputs_need_none(met
         agent = PhysicalScenarioAgent(client)
         result = construct_physical_scenarios(state, {'MF': [parent]}, [mf()],
             method=method, agent=agent, project_facts=None)
-        assert client.calls == (2 if manual else 1)
+        assert client.calls == (2 if manual or not assessed else 1)
         if assessed:
             assert all(c.facts.get('emergency_braking_available') is None for c in result['MF'])
         construct_physical_scenarios(state, {'MF': [parent]}, [mf()],
             method=method, agent=agent, project_facts=None)
-        assert client.calls == (2 if manual else 1)
+        assert client.calls == (2 if manual or not assessed else 1)
 
 
 def test_unresolved_controls_are_bounded_and_cannot_contradict_declared_capability():
@@ -1014,11 +1032,19 @@ def test_budget_stop_during_control_correction_saves_valid_motion_and_resumes(me
 
 def test_independent_evasion_rule_avoids_unnecessary_braking_request(method):
     from test_p7_closure import source
+    from test_bounded_interaction_coverage import moving_plan
+    raw = moving_plan(initial=0, target_direction='STATIONARY', target_speed=0, x=8, acceleration=.5)
+    raw['hypotheses'][0]['remaining_controls'] = []
+    raw['hypotheses'][0]['intervention_assumptions'] = {'other_road_user_avoidance_possible': {
+        'value': True, 'rationale': 'Independent target can accelerate away before the finite contact envelope.',
+        'basis_refs': ['MF.description'], 'conditions': ['Target recognizes the approaching ego; forward corridor is open.'],
+        'avoidance': {'recognition_delay_s': .1, 'escape_direction': 'FORWARD', 'escape_speed_mps': 5,
+            'available_clearance_m': 50, 'transition': {'acceleration_mps2': 2}}}}
     class Frozen:
         calls = 0
         def complete_json(self, request):
             self.calls += 1
-            return LLMResponse(raw_plan(), 'OFFLINE_SYNTHETIC')
+            return LLMResponse(deepcopy(raw), 'OFFLINE_SYNTHETIC')
     parent = make_candidate()
     parent.facts['other_road_user_avoidance_possible'] = True
     parent.fact_provenance['other_road_user_avoidance_possible'] = source()

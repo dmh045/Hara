@@ -289,16 +289,24 @@ def test_frozen_real_numeric_case_retains_values_without_approving_new_fault(met
     for current, previous in zip(state.risk_results, legacy.risk_results):
         for field in ("severity", "exposure", "controllability", "asil"):
             assert getattr(current, field).value == getattr(previous, field).value
-            assert getattr(current, field).value
+            if field in ("severity", "exposure"):
+                assert getattr(current, field).value
+            else:
+                # Keep the original real response intact: it declared service
+                # braking, not the independent manual path needed by this C
+                # profile. Changing fault approval must not manufacture it.
+                assert not getattr(current, field).value
             assert getattr(current, field).status is ReviewStatus.PENDING
         assert [(b['S'], b['E'], b['C'], b['ASIL']) for b in current.branch_evaluations] == [
             (b['S'], b['E'], b['C'], b['ASIL']) for b in previous.branch_evaluations]
     aggregate_safety_goals(state, MethodSafetyGoalService(method))
     assert state.safety_goals and all(g.status is ReviewStatus.PENDING for g in state.safety_goals)
     trace = json.loads((writer.directory / "risk_execution_trace.json").read_text())
+    assert "MANUAL_BRAKING_PATH_UNRESOLVED" in json.dumps(trace)
     schema = load_report_schema()
     view = HARAReportProjectionService(schema).project(state, method, risk_trace=trace)
-    assert view.rows[0].asil == state.risk_results[0].asil.value
+    assert view.rows[0].asil == "待评定"
+    assert view.rows[0].controllability == "待评定"
     HARAReportWorkbookRenderer().render(view, Path("references/HARA_Template_AI_20260327.xlsx"), tmp_path / "source-premise.xlsx", schema)
     assert (tmp_path / "source-premise.xlsx").exists()
 

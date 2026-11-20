@@ -13,6 +13,61 @@ from test_reviewer_report_closure import _p6_report_state, ROOT
 from test_reuse_reporting_acceptance import active_method
 
 
+@pytest.mark.parametrize('label,chinese', [
+    ('Normal lateral accel (aY < 3 m/s²)', '正常侧向加速度'),
+    ('Increased lateral accel (3 ≤ aY < 5 m/s²)', '较高侧向加速度'),
+    ('High lateral accel (5 ≤ aY < 7 m/s²)', '高侧向加速度'),
+    ('Very high lateral accel (aY > 7 m/s²)', '很高侧向加速度'),
+])
+@pytest.mark.parametrize('long_form', [False, True])
+def test_lateral_method_labels_are_chinese_without_changing_bands_or_trace(label, chinese, long_form):
+    mapper = EngineeringReportTextMapper()
+    if long_form:
+        label = label.replace('accel ', 'acceleration ')
+    threshold = label[label.index('('):]
+    trace = {'atom_details': [{'atom_id': 'unseen-lateral-method', 'used': True,
+        'e_rank': 'E2', 'dimensions': ['EGO_DYNAMICS']}],
+        'scenario_terms': {'EGO_DYNAMICS': {'atom_id': 'unseen-lateral-method', 'atom_label': label}},
+        'result': 'E2'}
+    before = deepcopy(trace)
+    assert mapper.engineering_terms(label) == chinese+' '+threshold
+    text = mapper.exposure_rationale(EvidenceValue('E2', ReviewStatus.PENDING), trace, calculated=True)
+    assert chinese+' '+threshold+'=E2' in text
+    assert 'lateral' not in text.casefold() and trace == before
+    identity = 'RAW_Normal_lateral_accel_v3'
+    assert identity in mapper.engineering_terms('方法身份 '+identity+' 保留')
+    original = 'The operator observes normal lateral acceleration during parking.'
+    assert mapper.engineering_terms(original) == original
+
+
+@pytest.mark.parametrize('interval', [None, [-5, -3]])
+def test_target_longitudinal_coverage_keeps_checked_and_assumed_scope_distinct(interval):
+    limitation = ('目标有效侧面覆盖接触点；已按所列区间检查。' if interval
+        else '目标有效侧面须覆盖接触点；尚未提供数值区间，未完成纵向覆盖核验。')
+    facts = {'fault_motion_model': 'CONSTANT_SPEED_CURVATURE_TO_CONTACT',
+        'motion_model_outcome': {'status': 'CONTACT', 'target_longitudinal_coverage': {
+            'contact_x_m': -3.799671, 'coordinate_frame': 'BODY_FORWARD_POSITIVE',
+            'assessment_reference': 'MODEL_INITIAL_STATE', 'finite_span_checked': bool(interval),
+            'effective_contact_interval_m': interval,
+            'contact_within_interval': True if interval else None, 'limitation': limitation}}}
+    before = deepcopy(facts)
+    text = EngineeringReportTextMapper.physical_inputs(SimpleNamespace(facts=facts), {})
+    assert '侧方接触点纵向坐标：-3.8 m' in text
+    assert limitation in text
+    assert ('目标有效纵向接触区间' in text) is bool(interval)
+    assert facts == before
+
+
+def test_legacy_curve_without_coverage_trace_does_not_claim_finite_object_validation():
+    facts = {'fault_motion_model': 'CONSTANT_SPEED_CURVATURE_TO_CONTACT',
+             'motion_model_outcome': {'status': 'CONTACT'}}
+    before = deepcopy(facts)
+    text = EngineeringReportTextMapper.physical_inputs(SimpleNamespace(facts=facts), {})
+    assert '本历史结果未单独核验有限对象的纵向覆盖' in text
+    assert '不能等同于任意单辆车辆的接触' in text
+    assert '目标有效纵向接触区间' not in text and facts == before
+
+
 @pytest.mark.parametrize("outcome", ["CONTACT", "NO_CONTACT_WITHIN_MODEL", "GEOMETRY_NOT_APPLICABLE"])
 def test_foreign_event_uses_current_world_without_inventing_contact(outcome):
     mapper = EngineeringReportTextMapper()
@@ -39,7 +94,8 @@ def test_chinese_control_qualification_is_retained_and_foreign_state_uses_transi
     assert candidate["description"] in mapper.safe_state_member(candidate, scenario)
     candidate["description"] = "Bring the vehicle to a controlled standstill before the contact envelope."
     text = mapper.safe_state_member(candidate, scenario)
-    assert "车辆在与目标接触前停止" in text and "1.23 m/s²" in text
+    assert "目标状态：车辆停止" in text and "1.23 m/s²" in text
+    assert "响应避碰效果尚待验证" in text and "接触前停止" not in text
     assert "保持静止" not in text  # no holding phase was supplied
 
 

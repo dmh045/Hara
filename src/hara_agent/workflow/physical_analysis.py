@@ -570,7 +570,10 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     metrics["schema_repairs"] += audit["schema_repairs"]
                     metrics["response_cache_hits"] += audit["response_cache_hits"]
                 def instantiate_family(current_plan):
-                    def control_gap(hypothesis):
+                    def control_gap(hypothesis, candidate):
+                        manual_gap = producer.manual_path_gap(candidate, hypothesis, mf.malfunction_id)
+                        if manual_gap:
+                            return manual_gap
                         if braking_capability(hypothesis) is not None:
                             return None
                         unresolved_controls = hypothesis.get("unresolved_controls", {})
@@ -670,7 +673,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     # A syntactically valid motion plan may have omitted the
                     # capability analysis. Use the existing ONE family-level
                     # correction, retaining useful motion even if still unknown.
-                    if "emergency_braking_available" in inputs["intervention_inputs"]:
+                    if "emergency_braking_available" in inputs["intervention_inputs"] or producer.manual_braking_input_required:
                         from hara_agent.services.analysis.scenario_physics import source_is_accepted_for
                         from hara_agent.services.analysis.hazardous_event_risk_context_service import HazardousEventRiskContextService
                         contexts = HazardousEventRiskContextService(method)
@@ -683,7 +686,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                 for hypothesis in current_plan.hypotheses:
                                     if (hypothesis["hypothesis_id"] in failed_ids
                                             and "in_driver_seat" in hypothesis.get("driver_positions", ["in_driver_seat"])
-                                            and (gap := control_gap(hypothesis)) and gap not in errors):
+                                            and (gap := control_gap(hypothesis, parent)) and gap not in errors):
                                         errors.append(gap)
                             for child in children:
                                 if child.facts.get("driver_in_vehicle") is not True:
@@ -693,8 +696,12 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                                     continue  # No numeric contact needing C, or a deliberately symbolic plan.
                                 analysis = child.facts.get("control_analysis") or child.facts.get("physical_analysis", {})
                                 hypothesis = analysis.get("hypothesis", {})
-                                error = control_gap(hypothesis)
+                                error = control_gap(hypothesis, child)
                                 if error is None:
+                                    continue
+                                if error["reason"] == "CONTROL_MANUAL_PATH_UNASSESSED":
+                                    if error not in errors:
+                                        errors.append(error)
                                     continue
                                 if (type(child.facts.get("emergency_braking_available")) is bool
                                         and source_is_accepted_for(child.fact_provenance.get("emergency_braking_available", {}),
@@ -717,7 +724,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                     for deferred in entry.get("audit", {}).get("deferred_safe_states", []))
                 if (prior_status == "VALIDATED" and prior_validation != validation_version
                         and entry.get("semantic_correction_completed")
-                        and any(f.get("reason") in {"CONTROL_AUTOMATIC_COMMAND_UNASSESSED", "SAFE_STATE_INDEPENDENT_RESPONSE_REQUIRED"} for f in failures)):
+                        and any(f.get("reason") in {"CONTROL_AUTOMATIC_COMMAND_UNASSESSED", "SAFE_STATE_INDEPENDENT_RESPONSE_REQUIRED", "CONTROL_MANUAL_PATH_UNASSESSED"} for f in failures)):
                     entry.setdefault("validation_history", []).append({"version": prior_validation,
                         "error": "Retained actuator needs current command/response requirement assessment",
                         "initial_plan": entry.get("initial_plan"), "diagnostics": entry.get("correction_diagnostics", [])})

@@ -168,16 +168,11 @@ class HazardousEventRiskContextService:
     ) -> HazardousEventRiskContext:
         if not hazard_node_id:
             raise ValueError("HazardousEventRiskContext requires a canonical hazard node identity")
-        # Replayed plans use the same trajectory check as new instantiations.
-        # Confirmed project capability is not replaced by an analytical check.
-        if (scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
-                and scenario.get("other_road_user_avoidance_possible") is True
-                and scenario.get("_fact_provenance", {}).get("other_road_user_avoidance_possible", {}).get("approval") != "FINALIZED"):
-            from .scenario_physics import moving_target_avoidance
-            analysis = scenario.get("control_analysis") or scenario.get("physical_analysis", {})
-            proposal = analysis.get("hypothesis", {}).get("intervention_assumptions", {}).get("other_road_user_avoidance_possible", {})
-            if moving_target_avoidance(scenario, proposal)["status"] != "CONDITIONAL_ESCAPE_VALIDATED":
-                scenario = {k: v for k, v in scenario.items() if k != "other_road_user_avoidance_possible"}
+        from .risk_calculation_input_service import RiskCalculationInputService
+        evasion = RiskCalculationInputService.road_user_avoidance_applicability(scenario,
+            malfunction_id=malfunction_id, scenario_id=scenario_id)
+        if evasion and evasion["status"] != "CONDITIONAL_ESCAPE_VALIDATED":
+            scenario = {k: v for k, v in scenario.items() if k != "other_road_user_avoidance_possible"}
         values = {
             field: self._fact(
                 field, scenario, malfunction_id=malfunction_id,
@@ -185,7 +180,6 @@ class HazardousEventRiskContextService:
             )
             for field in self._FIELDS
         }
-        from .risk_calculation_input_service import RiskCalculationInputService
         remote_check = RiskCalculationInputService().remote_intervention_applicability(scenario,
             malfunction_id=malfunction_id, scenario_id=scenario_id, method=self.method)
         if (values["remote_intervention_available"].status is RiskContextFactStatus.AVAILABLE

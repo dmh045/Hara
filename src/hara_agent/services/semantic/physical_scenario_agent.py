@@ -272,7 +272,7 @@ class PhysicalScenarioAgent:
     PREVIOUS_REQUEST_VIEW_VERSION = "physical-request-view-v4-scoped-evidence-and-stable-prefix"
     REQUEST_VIEW_VERSION = "physical-request-view-v6-dedup-model-scope"
     CONTROL_REQUEST_VIEW_VERSION = "physical-request-view-v5-scoped-control-context"
-    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v33-remote-trajectory-applicability"
+    RESPONSE_VALIDATION_VERSION = "physical-response-validation-v35-manual-path-completeness"
     PROMPT_VERSION = "post-fault-physical-scenario-v58-fault-mechanism-remote-response"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v38-remote-response-delay"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
@@ -741,11 +741,16 @@ class PhysicalScenarioAgent:
             "明确说明每个所请求驾驶员位置的处置或具体缺口；不能只写在驾驶位方案就默认完成不在驾驶位分析。"
             "自动路径须同时说明remaining_controls中的automatic_braking_command与braking，远程路径须说明remote_control与braking；"
             "命令链、执行能力、故障独立性和响应条件分别交代，有App或完整执行器并不自动证明这条链可用。"
+            "驾驶员人工制动路径须单独在driver_braking声明剩余、失效或未知；braking执行器可用不表示已评估踏板路径，未知不强制改为可用。"
             "优先采用适用于本工况的剩余路径；无法成立时保留明确局部缺口，不能转移目标来让停车看起来安全。"
             + self.RESPONSE_TIMING_POLICY +
             "移动目标的other_road_user_avoidance_possible=true必须给出同一项中的avoidance={"
-            "recognition_delay_s:非负秒,escape_direction:FORWARD|REVERSE|LEFT|RIGHT,escape_speed_mps:正数,"
-            "available_clearance_m:正数}，并论证可见性和逃生空间；程序检验同一几何，不是只检查理由非空。"
+            "recognition_delay_s:非负秒,escape_direction:FORWARD|REVERSE|LEFT|RIGHT,escape_speed_mps:非负数,"
+            "available_clearance_m:正数}，并论证可见性和逃生空间。改变目标速度必须给出可选transition的"
+            "acceleration_mps2或deceleration_mps2正值；沿同轴折返还须给出正的reorientation_time_s，"
+            "先有限减速至静止、静止转向、再有限加速；不能瞬间反向或瞬间达到逃生速度。"
+            "当前不支持移动中转向到垂直方向；没有过渡依据则不声明规避成立，不能补默认能力。"
+            "程序检验同一几何，不是只检查理由非空。"
             "初始静止的本车被横穿者接触时，要检查即使本车不动是否仍会接触；不能把原本就发生的接触归因于溜车。"
         )
         if not controls_only and context.get("operating_atom_options"):

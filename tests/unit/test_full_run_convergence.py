@@ -170,14 +170,18 @@ def test_original_real_proposal_replays_through_production_physics_and_sec(metho
         assessment_key='replay', function=func, operating_mode=sc.operating_mode)
     result = StructuredRiskScoringService(method).score(view, 'unmodified real proposal replay')
     assert tuple(result[key][field] for key, field in (
-        ('severity', 'severity_score'), ('exposure', 'exposure_score'), ('controllability', 'controllability_score'))) == ('S1', 'E3', 'C3' if fresh_source_generation else '')
+        ('severity', 'severity_score'), ('exposure', 'exposure_score'), ('controllability', 'controllability_score'))) == ('S1', 'E3', '')
     # This saved candidate predates validated driver-location provenance. The
     # real proposal's braking capability is preserved, but TTC alone cannot
     # bypass the unresolved driver input in this historical direct replay.
     assert sc.facts['emergency_braking_available'] is True
     if fresh_source_generation:
         assert context.driver_in_vehicle.status.value == 'AVAILABLE'
-        assert result['branch_summary']['highest_known_asil'] == 'A'
+        # Preserve the actual frozen response: an intact brake actuator was
+        # declared, but its manual pedal path was never assessed.
+        assert result['controllability']['intervention_applicability']['manual']['status'] == 'MANUAL_BRAKING_PATH_UNRESOLVED'
+        assert 'driver_braking' not in sc.facts['physical_analysis']['hypothesis']['remaining_controls']
+        assert not result['branch_summary']['highest_known_asil']
     else:
         assert context.driver_in_vehicle.status.value == 'UNAVAILABLE'
         assert 'driver_in_vehicle' in result['controllability']['pending_reason']
@@ -219,7 +223,7 @@ def test_lateral_interface_without_response_does_not_bypass_missing_method(metho
     assert sc.facts['remote_intervention_available'] is remote
 
 
-@pytest.mark.parametrize('external,expected', [(True, 'C1'), (False, '')])
+@pytest.mark.parametrize('external,expected', [(True, ''), (False, '')])
 def test_override_does_not_restore_failed_brake_actuator(method, external, expected):
     candidate = make_candidate()
     candidate.facts.update(remote_intervention_available=True, other_road_user_avoidance_possible=external)
@@ -229,6 +233,9 @@ def test_override_does_not_restore_failed_brake_actuator(method, external, expec
     result = score(method, child)
     assert result['controllability']['controllability_score'] == expected
     assert all(row['scores']['controllability']['controllability_score'] == expected for row in result['branch_evaluations'])
+    assert result['controllability']['decision_status'] != 'OVERRIDE_MATCH'
+    assert child.facts['other_road_user_avoidance_possible'] is external
+    assert child.facts['fault_motion_model'] == 'CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE'
 
 
 @pytest.mark.parametrize('change', ['none', 'source', 'object', 'phase', 'query', 'driver'])

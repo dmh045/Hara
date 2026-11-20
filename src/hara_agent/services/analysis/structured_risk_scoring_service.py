@@ -6,6 +6,7 @@ from .asil_service import MethodContractASILService
 from copy import deepcopy
 from dataclasses import asdict, replace
 import math
+import re
 
 from hara_agent.contracts import (
     CalculationStatus, ExposureDimensionCoverageDecision,
@@ -183,6 +184,11 @@ class StructuredRiskScoringService:
         return result
 
     def _score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
+        evasion = self.inputs.road_user_avoidance_applicability(scenario,
+            malfunction_id=str(scenario.get("malfunction_id", "UNKNOWN")),
+            scenario_id=str(scenario.get("scenario_id", "UNKNOWN")))
+        if evasion and evasion["status"] != "CONDITIONAL_ESCAPE_VALIDATED":
+            scenario = {**scenario, "other_road_user_avoidance_possible": None}
         remote_check = self.inputs.remote_intervention_applicability(scenario,
             malfunction_id=str(scenario.get("malfunction_id", "UNKNOWN")),
             scenario_id=str(scenario.get("scenario_id", "UNKNOWN")), method=self.method)
@@ -190,10 +196,22 @@ class StructuredRiskScoringService:
             # The interface fact remains in the saved input. Only its unproven
             # avoidance credit is withheld from this calculation's lookup view.
             scenario = {**scenario, "remote_intervention_available": None}
+        manual_check = self.inputs.manual_braking_applicability(scenario,
+            malfunction_id=str(scenario.get("malfunction_id", "UNKNOWN")),
+            scenario_id=str(scenario.get("scenario_id", "UNKNOWN")))
+        if manual_check and manual_check["status"] != "DECLARED_MANUAL_BRAKING_PATH":
+            # One C lookup view for table, reference and branch execution. The
+            # saved generic actuator fact remains available to automatic FTTI.
+            scenario = {**scenario, "emergency_braking_available":
+                False if manual_check["status"] == "MANUAL_BRAKING_PATH_UNAVAILABLE" else None}
         result = self._calculate(scenario, hazard_event)
         control = result["controllability"]
         if remote_check or scenario.get("_intervention_applicability"):
             control["intervention_applicability"] = {"remote": remote_check} if remote_check else scenario["_intervention_applicability"]
+        if manual_check:
+            control.setdefault("intervention_applicability", {})["manual"] = manual_check
+        if evasion:
+            control.setdefault("intervention_applicability", {})["other_road_user"] = evasion
         hypothesis = scenario.get("control_analysis", scenario.get("physical_analysis", {})).get("hypothesis", {})
         failed_controls = hypothesis.get("failed_controls", [])
         braking_path_unresolved = scenario.get("emergency_braking_available") is False or (
@@ -339,10 +357,47 @@ class StructuredRiskScoringService:
                     continue
             # An evidenced scope exclusion cannot be repaired by filling an
             # unrelated unknown control input.
+            # A scoped control declaration and the retained physical scene are
+            # applicability evidence, not new engineering ratings. Method data
+            # supplies the required path and the excluded physical conditions.
+            hypotheses = [scenario.get(key, {}).get("hypothesis", {})
+                for key in ("control_analysis", "physical_analysis")
+                if source_is_accepted_for(metadata.get(key, {}), **scope)]
+            declared = next((h for h in hypotheses if any(
+                field in h for field in ("remaining_controls", "failed_controls", "unresolved_controls"))), None)
+            excluded = []
+            for h in hypotheses:
+                texts = [*h.get("conditions", []), h.get("operating_condition", {}).get("physical_effect", "")]
+                for text in texts:
+                    # Keep negated lists together; a decimal point is not a
+                    # sentence boundary. A contrast starts its own assertion.
+                    for clause in re.split(r"[。；;\n!?]|(?<!\d)\.(?!\d)|\b(?:but|however)\b|(?:但是|然而|但|且)", text, flags=re.IGNORECASE):
+                        for exclusion in rule.get("excluded_conditions", []):
+                            negative_spans = [m.span() for m in re.finditer(
+                                exclusion["negation_pattern"], clause, flags=re.IGNORECASE)]
+                            if any(not any(start <= match.start() and match.end() <= end for start, end in negative_spans)
+                                   for match in re.finditer(exclusion["pattern"], clause, flags=re.IGNORECASE)):
+                                excluded.append({"rule_id": rule["rule_id"],
+                                    "reason_code": exclusion["reason_code"], "condition": clause.strip(),
+                                    "source_ref": rule["source_ref"]})
+            if excluded:
+                if scope_exclusions is not None:
+                    scope_exclusions.extend(excluded)
+                continue
             if unmatched:
                 if unresolved_inputs is not None:
                     unresolved_inputs.append({"rule_id": rule["rule_id"],
                         "unknown_conditions": unmatched, "source_ref": rule["source_ref"]})
+                continue
+            required = set(rule.get("required_controls", []))
+            if required and (declared is None or not required <= (
+                    set(declared.get("remaining_controls", []))
+                    - set(declared.get("failed_controls", []))
+                    - set(declared.get("unresolved_controls", {})))):
+                if unresolved_inputs is not None:
+                    unresolved_inputs.append({"rule_id": rule["rule_id"],
+                        "unknown_conditions": {"required_controls": sorted(required)},
+                        "source_ref": rule["source_ref"]})
                 continue
             fields = tuple(key for key, value in rule["when"].items() if isinstance(value, bool))
             if not all(source_is_accepted_for(metadata.get(key, {}), **scope) for key in fields):
@@ -400,7 +455,7 @@ class StructuredRiskScoringService:
                 reference_rule={key: rule[key] for key in ("rule_id", "source_document", "source_location",
                     "source_sha256", "source_statement", "limitation", "when", "rationale",
                     "trajectory_speed_upper_exclusive_kph", "evaluation_phase", "requires_contact",
-                    "profile_time_input") if key in rule})
+                    "profile_time_input", "required_controls", "excluded_conditions") if key in rule})
             if profile_trace:
                 result["reference_rule"]["profile_lookup"] = profile_trace
             if limit is not None:

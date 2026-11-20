@@ -66,6 +66,38 @@ class PhysicalHypothesisInstantiationService:
         self.intervention_inputs = ({condition.field for rule in structured.controllability_overrides
                                      for condition in (*rule.all_of, *rule.any_of)} |
                                     {condition.field for condition in structured.controllability_profile.applicability})
+        applicability = {condition.field: condition.expected for condition in structured.controllability_profile.applicability}
+        self.manual_braking_input_required = (all(applicability.get(field) is True for field in (
+            "driver_in_vehicle", "emergency_braking_available")) or any(
+                "driver_braking" in rule.get("required_controls", []) for rule in
+                method.metadata.get("project_analysis_policy", {}).get("controllability", {}).get("conditional_reference_rules", [])))
+
+    def manual_path_gap(self, candidate, hypothesis, malfunction_id):
+        """Complete the active driver's command declaration, not its availability.
+
+        An explicit remaining, failed or unresolved path closes this assessment.
+        A valid independent override needs no extra personnel capability input.
+        """
+        facts = candidate.facts
+        driver = self.driver_position(candidate)
+        if (not self.manual_braking_input_required or driver == "outside_driver_seat"
+                or driver != "in_driver_seat" and facts.get("driver_in_vehicle") is not True):
+            return None
+        h = controls_for_driver(hypothesis, driver)
+        if (any("driver_braking" in h.get(field, {}) for field in (
+                "remaining_controls", "failed_controls", "unresolved_controls"))
+                or "braking" in h.get("failed_controls", []) or "braking" in h.get("unresolved_controls", {})):
+            return None
+        from .hazardous_event_risk_context_service import HazardousEventRiskContextService
+        contexts = HazardousEventRiskContextService(self.method)
+        context = contexts.build(malfunction_id=malfunction_id, scenario_id=candidate.scenario_id,
+            hazard_node_id="manual-path-completeness", scenario={**facts, "_fact_provenance": candidate.fact_provenance})
+        readiness = contexts.controllability_readiness(context)
+        if readiness["status"] == "READY" and readiness["branch"] == "OVERRIDE":
+            return None
+        return {"reason": "CONTROL_MANUAL_PATH_UNASSESSED", "field": "driver_braking",
+            "hypothesis_id": h.get("hypothesis_id", "control_assessment"), "driver_position": driver,
+            "resolution": "Preserve motion and the automatic response. Assess the current driver's manual brake-pedal path separately from retained braking execution: declare driver_braking remaining, failed, or unresolved with a source/fault basis. Do not infer manual access from an intact actuator, force availability, or change the world. Use the same single control correction only."}
 
     @staticmethod
     def driver_position(candidate):
@@ -98,6 +130,9 @@ class PhysicalHypothesisInstantiationService:
                         and not self.driver_position(candidate) and len(h.get("driver_positions", [])) != 1
                         and "driver_in_vehicle" not in h.get("unresolved_controls", {})):
                     return "CONTROL_INPUTS_ONLY"  # Legacy omission; retain motion, assess the missing condition once.
+                contact = candidate.facts.get("motion_model_outcome", {}).get("status") == "CONTACT" or bool(candidate.facts.get("collision_branches"))
+                if contact and self.manual_path_gap(candidate, h, malfunction_id):
+                    return "CONTROL_INPUTS_ONLY"
                 return ""  # An assessed limitation is not another request on resume.
         # A validated symbolic/no-contact world may intentionally have no
         # collision branches. Reuse its assessment rather than proposing the

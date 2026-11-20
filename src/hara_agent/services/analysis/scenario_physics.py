@@ -249,11 +249,35 @@ def constant_speed_curved_contact(facts: dict) -> dict:
     time = radius * angle / v
     if time > horizon:
         return no_contact
-    return {"status": "CONTACT", "time_s": time, "impact_speed_kph": speed,
-            "trajectory_max_speed_kph": speed, "heading_change_rad": angle,
-            "contact_x_m": (1 if facts["ego_longitudinal_direction"] == "FORWARD" else -1) * radius * math.sin(angle),
-            "contact_y_m": (1 if direction == "LEFT" else -1) * clearance,
-            "normal_acceleration_mps2": v * v / radius}
+    contact_x = (1 if facts["ego_longitudinal_direction"] == "FORWARD" else -1) * radius * math.sin(angle)
+    contact = {"status": "CONTACT", "time_s": time, "impact_speed_kph": speed,
+               "trajectory_max_speed_kph": speed, "heading_change_rad": angle,
+               "contact_x_m": contact_x, "contact_y_m": (1 if direction == "LEFT" else -1) * clearance,
+               "normal_acceleration_mps2": v * v / radius}
+    # The curve meets a lateral boundary, not automatically a finite vehicle.
+    # Retain the existing point-path result as conditional when no effective
+    # longitudinal contact span is declared. Never supply a default car length.
+    coverage = {"contact_x_m": contact_x, "coordinate_frame": "BODY_FORWARD_POSITIVE",
+                "assessment_reference": "MODEL_INITIAL_STATE", "finite_span_checked": False,
+                "effective_contact_interval_m": None, "contact_within_interval": None,
+                "limitation": "结果依赖目标有效侧面沿初始行驶方向覆盖计算接触点x；单个有限对象的纵向覆盖未由当前输入核验，不能将延展边界接触等同于任意单辆车辆接触。"}
+    fields = ("object_offset_x_m", "contact_half_length_m")
+    declared = {p.get("field") for p in facts.get("physical_analysis", {}).get("hypothesis", {}).get("parameters", [])}
+    if any(key in facts or key in declared for key in fields):
+        center, half = (facts.get(key) for key in fields)
+        if (any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                for value in (center, half)) or half <= 0):
+            return {"status": "MODEL_INPUTS_UNRESOLVED", "reason": "TARGET_LONGITUDINAL_EXTENT_UNRESOLVED",
+                    "candidate_extended_boundary_contact": contact, "target_longitudinal_coverage": coverage}
+        interval = [center - half, center + half]
+        within = interval[0] <= contact_x <= interval[1]
+        coverage.update(finite_span_checked=True, effective_contact_interval_m=interval,
+                        contact_within_interval=within,
+                        limitation="仅按已声明的固定有效纵向接触区间核对计算接触点；区间含本车与目标的投影包络，不是实际车长，也不证明转动后完整车体几何或工程批准。")
+        if not within:
+            return {"status": "MODEL_GEOMETRY_NOT_APPLICABLE", "reason": "CONTACT_OUTSIDE_TARGET_LONGITUDINAL_EXTENT",
+                    "candidate_extended_boundary_contact": contact, "target_longitudinal_coverage": coverage}
+    return {**contact, "target_longitudinal_coverage": coverage}
 
 
 def _quadratic_roots(c, b, q):
@@ -380,12 +404,27 @@ def rectilinear_moving_contact(facts: dict, *, response_delay_s=None, response_d
         code = str(error)
         return {'status': 'MODEL_GEOMETRY_NOT_APPLICABLE', 'reason': code} if code in {
             'TARGET_OFFSET_POSITION_CONFLICT', 'HEADING_DIRECTION_CONFLICT'} else {'status': code}
+    return _rectilinear_contact_from_segments(facts, ego, target, ev, ov, end, stop)
+
+
+def _rectilinear_contact_from_segments(facts, ego, target, ev, ov, end, stop, *, signed_target=False):
+    """One envelope solver for the original world and explicit target responses.
+
+    Signed scalar target phases permit a finite stop and reversal on the same
+    axis. The public unmitigated calculator retains its original phase math.
+    """
     offsets = (facts['object_offset_x_m'], facts['object_offset_y_m'])
     extents = (facts['contact_half_length_m'], facts['contact_half_width_m'])
     breaks = sorted({0.0, end} | {t for s in ego+target for t in s[:2] if 0 < t < end})
     for begin, finish in zip(breaks, breaks[1:]):
         ep, es, ea = _travel_at(ego, (begin+finish)/2)
-        op, os, oa = _travel_at(target, (begin+finish)/2)
+        if signed_target:
+            phase = next(s for s in target if s[0] <= (begin+finish)/2 <= s[1])
+            start, _, origin, initial, oa = phase
+            dt = (begin+finish)/2-start
+            op, os = origin+initial*dt+oa*dt*dt/2, initial+oa*dt
+        else:
+            op, os, oa = _travel_at(target, (begin+finish)/2)
         # Midpoint selects the correct phase; evaluate its initial state locally.
         half = (finish-begin)/2
         ep, es = ep-es*half+ea*half*half/2, es-ea*half
@@ -401,7 +440,8 @@ def rectilinear_moving_contact(facts: dict, *, response_delay_s=None, response_d
             if not (inside(dt) or index+1 < len(ordered) and inside((dt+ordered[index+1])/2)):
                 continue
             time = begin+dt
-            speed, other = max(0.0, es+ea*dt), max(0.0, os+oa*dt)
+            speed = max(0.0, es+ea*dt)
+            other = os+oa*dt if signed_target else max(0.0, os+oa*dt)
             rv = tuple(ev[i]*speed-ov[i]*other for i in (0,1))
             xy = [c+b*dt+q*dt*dt for c,b,q in polys]
             # First contact's closing component is retained separately from
@@ -409,7 +449,7 @@ def rectilinear_moving_contact(facts: dict, *, response_delay_s=None, response_d
             axes = [i for i in (0,1) if math.isclose(abs(xy[i]), extents[i], rel_tol=1e-10, abs_tol=1e-12)]
             normal = max((abs(rv[i]) for i in axes), default=math.hypot(*rv))
             return {'status':'CONTACT', 'time_s':time, 'ego_impact_speed_kph':speed*3.6,
-                'object_impact_speed_kph':other*3.6, 'relative_speed_kph':math.hypot(*rv)*3.6,
+                'object_impact_speed_kph':abs(other)*3.6, 'relative_speed_kph':math.hypot(*rv)*3.6,
                 'contact_normal_speed_kph':normal*3.6,
                 'trajectory_max_speed_kph':max(max(s[3],s[3]+s[4]*(min(s[1],time)-s[0]))*3.6 for s in ego if s[0] <= time),
                 'contact_offset_x_m':xy[0], 'contact_offset_y_m':xy[1],
@@ -420,7 +460,7 @@ def rectilinear_moving_contact(facts: dict, *, response_delay_s=None, response_d
 
 
 def moving_target_avoidance(facts: dict, proposal: dict) -> dict:
-    """Check a proposed two-phase escape against the same contact envelopes.
+    """Check an explicit finite target response in the same contact envelopes.
 
     This establishes only the stated conditional trajectory, never human reaction
     capability. No C threshold, default reaction time or speed is introduced.
@@ -438,31 +478,72 @@ def moving_target_avoidance(facts: dict, proposal: dict) -> dict:
     delay = escape["recognition_delay_s"]
     if delay >= original["time_s"]:
         return {"status": "CONTACT_BEFORE_ESCAPE", "contact_time_s": original["time_s"]}
-    remaining = facts["model_valid_until_s"] - delay
     speed = escape["escape_speed_mps"]
-    if speed <= 0 or remaining * speed > escape["available_clearance_m"]:
-        return {"status": "ESCAPE_CORRIDOR_TOO_SHORT"}
+    if delay < 0 or speed < 0 or escape["available_clearance_m"] <= 0:
+        return {"status": "AVOIDANCE_GEOMETRY_UNRESOLVED"}
     vectors = {"FORWARD": (1, 0), "REVERSE": (-1, 0), "LEFT": (0, 1), "RIGHT": (0, -1)}
     if escape.get("escape_direction") not in vectors:
         return {"status": "AVOIDANCE_GEOMETRY_UNRESOLVED"}
-    v, a = facts["ego_speed_kph"] / 3.6, facts["longitudinal_acceleration_mps2"]
-    if v + a * delay < 0:
-        return {"status": "AVOIDANCE_STOP_PHASE_UNRESOLVED"}
-    sign = vectors[facts["ego_longitudinal_direction"]][0]
-    ux, uy = [x * facts["object_speed_kph"] / 3.6 for x in vectors[facts["object_longitudinal_direction"]]]
-    dx = facts["object_offset_x_m"] + ux*delay - sign*(v*delay + a*delay*delay/2)
-    dy = facts["object_offset_y_m"] + uy*delay
-    shifted = {**facts, "ego_speed_kph": (v+a*delay)*3.6,
-        "object_offset_x_m": dx, "object_offset_y_m": dy,
-        "object_speed_kph": speed*3.6, "object_longitudinal_direction": escape["escape_direction"],
-        "model_valid_until_s": remaining,
-        "object_position": ("FRONT" if dx > 0 else "REAR") if abs(dx) > facts["contact_half_length_m"]
-            else ("LEFT" if dy > 0 else "RIGHT")}
-    outcome = rectilinear_moving_contact(shifted)
-    valid = outcome.get("status") == "NO_CONTACT_WITHIN_MODEL" and outcome.get("evaluated_until_s") == remaining
+    ego, _, ev, ov, end, stop = _straight_world(facts)
+    initial = facts["object_speed_kph"] / 3.6
+    desired_vector = vectors[escape["escape_direction"]]
+    if initial == 0:
+        ov = desired_vector
+    alignment = sum(x*y for x, y in zip(ov, desired_vector))
+    if initial and alignment == 0:
+        return {"status": "UNSUPPORTED_AVOIDANCE_TURN", "reason": "Changing axis needs a turning-envelope model"}
+    desired = speed * alignment
+    transition = escape.get("transition", {})
+    if not isinstance(transition, dict):
+        return {"status": "AVOIDANCE_TRANSITION_UNRESOLVED"}
+    def positive(key):
+        value = transition.get(key)
+        return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value > 0 else None)
+    acceleration, deceleration = positive("acceleration_mps2"), positive("deceleration_mps2")
+    turning = positive("reorientation_time_s")
+    if ((desired > initial and acceleration is None)
+            or (desired < initial and deceleration is None)
+            or (desired < 0 and (acceleration is None or turning is None))):
+        return {"status": "AVOIDANCE_TRANSITION_UNRESOLVED",
+                "reason": "Velocity changes require explicit finite acceleration/deceleration; reversal also requires stopped reorientation time"}
+    phases, begin, position, current, travelled = [], 0.0, 0.0, initial, 0.0
+    def phase(duration, rate):
+        nonlocal begin, position, current, travelled
+        finish = min(end, begin+duration)
+        dt = max(0.0, finish-begin)
+        if dt:
+            phases.append((begin, finish, position, current, rate))
+            distance = current*dt+rate*dt*dt/2
+            if begin >= delay:
+                travelled += abs(distance)
+            position += distance
+            current += rate*dt
+            begin = finish
+    phase(delay, 0.0)
+    if desired < 0:
+        phase(initial/deceleration, -deceleration)
+        if begin < end:
+            current = 0.0
+            phase(turning, 0.0)
+        if begin < end:
+            phase(speed/acceleration, -acceleration)
+    elif desired != initial:
+        rate = acceleration if desired > initial else -deceleration
+        phase(abs(desired-initial)/abs(rate), rate)
+    if begin < end:
+        current = desired
+        phase(end-begin, 0.0)
+    if travelled > escape["available_clearance_m"]:
+        return {"status": "ESCAPE_CORRIDOR_TOO_SHORT", "response_path_length_m": travelled}
+    outcome = _rectilinear_contact_from_segments(facts, ego, phases, ev, ov, end, stop, signed_target=True)
+    valid = outcome.get("status") == "NO_CONTACT_WITHIN_MODEL" and outcome.get("evaluated_until_s") == facts["model_valid_until_s"]
     return {"status": "CONDITIONAL_ESCAPE_VALIDATED" if valid else "ESCAPE_DOES_NOT_ESTABLISH_AVOIDANCE",
             "original": original, "escape": outcome, "recognition_delay_s": delay,
-            "evaluated_horizon_s": facts["model_valid_until_s"]}
+            "evaluated_horizon_s": facts["model_valid_until_s"], "transition": transition,
+            "response_path_length_m": travelled,
+            "target_response_segments": [dict(begin_s=s[0], end_s=s[1], position_m=s[2],
+                velocity_mps=s[3], acceleration_mps2=s[4]) for s in phases]}
 
 
 def braking_avoidability_boundary(speed_mps: float, acceleration_mps2: float,
@@ -560,7 +641,7 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
     it does not assume arbitrary crossing-contact outcomes are monotone.
     """
     original = rectilinear_moving_contact(facts)
-    if original.get("status") != "CONTACT":
+    if original.get("status") not in {"CONTACT", "NO_CONTACT_WITHIN_MODEL"}:
         return {"status": "NO_UNMITIGATED_CONTACT_BOUNDARY", "original": original}
     b = _nonnegative_number(net_deceleration_mps2)
     v, a = facts["ego_speed_kph"]/3.6, facts["longitudinal_acceleration_mps2"]
@@ -568,6 +649,21 @@ def moving_braking_avoidability_boundary(facts: dict, net_deceleration_mps2: flo
         return {"status": "FAULT_RELEASE_NOT_APPLICABLE"}
     if b is None or not b and not release_deceleration:
         return {"status": "RESPONSE_INPUTS_UNRESOLVED"}
+    if original["status"] == "NO_CONTACT_WITHIN_MODEL":
+        # No unmitigated contact does not validate a proposed stop. A stronger
+        # response can create rear/crossing contact; an original trajectory
+        # ending at EGO_STOP also says nothing about the held response phase.
+        # Check the same target through the declared response horizon without
+        # inventing a contact criterion or a positive response-delay boundary.
+        response = rectilinear_moving_contact(facts, response_delay_s=0.0,
+                                            response_deceleration_mps2=b)
+        return {"status": ("NO_IMMEDIATE_SAFE_BRAKING_WINDOW" if response.get("status") == "CONTACT"
+                           else "NO_UNMITIGATED_CONTACT_BOUNDARY"),
+                "original": original, "response_contact": response,
+                "evaluated_until_s": facts["model_valid_until_s"],
+                "response_model_family": "MOVING_TARGET_FAULT_RELEASE" if release_deceleration else "MOVING_TARGET_BRAKING",
+                "response_motion": "CONTINUE_AT_ONSET_SPEED" if release_deceleration else "BRAKE_AND_HOLD",
+                **({} if release_deceleration else {"post_stop_motion": "HOLD_POSITION"})}
     try:
         _, target, ev, ov, _, _ = _straight_world(facts)
     except ValueError as error:
@@ -1352,6 +1448,7 @@ def derive_scenario_physics(
         keys = ("ego_speed_kph", "turn_radius_m", "lateral_clearance_m", "model_valid_until_s",
                 "ego_lateral_direction", "ego_longitudinal_direction", "object_position", "object_extent",
                 "object_speed_kph", "collision_type", "fault_motion_model", "impact_time_id")
+        keys += tuple(key for key in ("object_offset_x_m", "contact_half_length_m") if key in scenario.facts)
         formula = "x=sign(v)*R*sin(v*t/R); y=side*R*(1-cos(v*t/R)); |v| constant; first quarter-turn only"
         records.append(derived_record("motion_model_outcome", outcome, keys, DerivedPhysicsType.KINEMATIC_IMPACT_SPEED,
             formula=formula))

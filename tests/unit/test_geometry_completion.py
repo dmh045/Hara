@@ -737,7 +737,7 @@ def test_missing_geometry_is_one_shared_correction_not_silent_symbol(method, tmp
     assert len(geometry_errors) == 2 and all(field in e['fields'] for e in geometry_errors)
     control_errors = [e for e in entry['correction_diagnostics'] if 'fields' not in e]
     assert len(control_errors) == 1
-    assert control_errors[0]['reason'] == 'CONTROL_CAPABILITY_NOT_ASSESSED'
+    assert control_errors[0]['reason'] == 'CONTROL_MANUAL_PATH_UNASSESSED'
     assert control_errors[0]['scenario_id'] == parent.scenario_id
     context = json.loads(client.requests[0].user_prompt)['context']
     assert field in context['model_input_status']['models'][model]['needs_hypothesis']

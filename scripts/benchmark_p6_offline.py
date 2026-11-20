@@ -24,7 +24,7 @@ from hara_agent.workflow import HARAState
 from hara_agent.services.extraction import DocumentReader
 from hara_agent.services.semantic.item_definition_agent import ItemDefinitionNormalizer
 from hara_agent.models import ItemDefinitionFacts, MalfunctionCandidate, ReviewStatus, SourceRef
-from hara_agent.services.analysis import MethodScenarioCandidateService, ProjectFactResolver
+from hara_agent.services.analysis import MethodScenarioCandidateService
 from hara_agent.services.analysis.exposure_input_readiness_service import ExposureInputReadinessService, READY_STATUSES
 from hara_agent.services.analysis.malfunction_situation_selection import selection_function
 from hara_agent.services.analysis.scenario_equivalence import driver_families, scenario_conditions, signature
@@ -129,26 +129,32 @@ def run(checkpoint: Path, method_baseline: Path, report_template: Path, output: 
     typed['method_risk_fact_bindings'] = [b for b in typed['method_risk_fact_bindings'] if b['source_fact_id'] in fact_ids]
     project = ItemDefinitionFacts.from_dict(typed)
     if item is not None:
+        input_hash = saved['item_definition'].get('item_sha256', '')
+        if input_hash:
+            with item.open('rb') as stream:
+                if hashlib.file_digest(stream, 'sha256').hexdigest() != input_hash:
+                    raise ValueError('Replay Item content does not match the checkpoint input hash')
         document = DocumentReader().read(item)
         project = ItemDefinitionNormalizer.normalize_source_scope(project, document.blocks, document.source_id)
     service = MethodScenarioCandidateService(method)
     mode = operating_mode or next((s['operating_mode'] for s in saved['scenarios'] if s.get('operating_mode')), None)
     if not mode:
         raise ValueError('A checkpoint without generated scenarios requires --operating-mode')
-    speed = ProjectFactResolver().resolve_speed_context(project, mode)
     functions = {f['function_id']: selection_function(f) for f in saved['functions']}
-    parents, parent_audit = service.generate(project_facts=project, operating_mode=mode,
-                                           speed_resolution=speed, functions=list(functions.values()))
-    if item is not None:
-        # Exercise the ordinary application boundary with the same saved
-        # extraction and explicit source normalization; no client is created.
-        state = HARAState(run_id="offline-coverage", item_definition={"typed": asdict(project)},
-                          functions=saved['functions'])
-        application = HARAApplication(RunConfig(item_path=item, template_path=None, run_dir=output,
-            output_path=output / 'unused.xlsx',
-            method_baseline_path=method_baseline, report_template_path=report_template,
-            operating_mode=mode, allow_draft=True), None)
-        parents, parent_audit = application.prepare_scenario_candidates(state, service)
+    # Reuse the ordinary draft boundary for both checkpoint-only and explicit
+    # source replay. It retains missing speed specifications and project scope;
+    # no strict preflight or duplicate parent generator runs ahead of it.
+    state = HARAState(run_id="offline-coverage", item_definition={
+                          "typed": asdict(project),
+                          "item_sha256": saved['item_definition'].get('item_sha256', ''),
+                      },
+                      functions=saved['functions'])
+    source_path = item or Path(saved['item_definition'].get('source_path') or checkpoint)
+    application = HARAApplication(RunConfig(item_path=source_path, template_path=None, run_dir=output,
+        output_path=output / 'unused.xlsx',
+        method_baseline_path=method_baseline, report_template_path=report_template,
+        operating_mode=mode, allow_draft=True), None)
+    parents, parent_audit = application.prepare_scenario_candidates(state, service)
     readiness = ExposureInputReadinessService(method)
     counts, e_reasons, e_values, ready_e_values, dimensional = Counter(), Counter(), Counter(), Counter(), Counter()
     source_locations, source_roads, where_atoms, road_atoms = Counter(), Counter(), Counter(), Counter()

@@ -53,13 +53,32 @@ class FTTIMethodExecutor:
                 malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id):
             return pending("时间假设未绑定当前失效与场景，不能继承其他成员的处置时间。")
         rejected = analysis.get("rejected_response_evaluation", {})
-        if (not proposal and rejected.get("input_values") == FTTIMethodExecutor.response_input_snapshot(scenario)
-                and rejected.get("method_source_hash") == method.metadata.get("method_source_hash")
+        if (not proposal and rejected.get("proposal")
+                and rejected.get("input_values") == FTTIMethodExecutor.response_input_snapshot(scenario)
                 and rejected.get("timing_trace", {}).get("status") in {
                     "NO_IMMEDIATE_SAFE_BRAKING_WINDOW", "AVOIDABILITY_ALREADY_LOST"}):
-            return replace(inputs, status=CalculationStatus.NOT_APPLICABLE,
-                reason="所选响应已计算但不能避开当前目标，原提案及轨迹结论保留；其他处置策略尚未完成，不能归为缺少控制能力输入。",
-                method_rule_ids=(policy["rule_id"],), timing_trace=rejected["timing_trace"])
+            # The whole method hash can change for C-only policy edits. Reuse
+            # the one executor on a calculation copy, including its CURRENT
+            # control/driver/model guards, rather than inheriting an old result
+            # or reinstating the withdrawn proposal in source state. Restoring
+            # a proposal on the copy makes this exactly one nested evaluation.
+            from copy import deepcopy
+            checked_analysis = {**analysis, "hypothesis": {
+                **hypothesis, "safe_state_proposal": deepcopy(rejected["proposal"])}}
+            checked = FTTIMethodExecutor.evaluate(inputs,
+                {**scenario, analysis_field: checked_analysis}, method)
+            revalidation = {"previous_method_source_hash": rejected.get("method_source_hash"),
+                            "method_source_hash": method.metadata.get("method_source_hash"),
+                            "proposal_remains_withdrawn": True}
+            if checked.timing_trace.get("status") in {"NO_IMMEDIATE_SAFE_BRAKING_WINDOW", "AVOIDABILITY_ALREADY_LOST"}:
+                return replace(inputs, status=CalculationStatus.NOT_APPLICABLE,
+                    reason="已撤回的所选响应按当前方法重验，仍不能避开当前目标；原提案继续撤回，其他处置策略尚未完成。",
+                    method_rule_ids=checked.method_rule_ids,
+                    timing_trace={**checked.timing_trace, "rejected_response_revalidation": revalidation})
+            return replace(pending("已撤回响应按当前方法重验未得到原负面结论；不继承旧结论，也不恢复提案。当前重验：" + checked.reason),
+                timing_trace={**inputs.timing_trace, "pending_reason": "RESPONSE_INPUTS_UNRESOLVED",
+                    "rejected_response_revalidation": {**revalidation,
+                        "previous_timing_trace": rejected["timing_trace"], "current_evaluation": checked.to_dict()}})
         rectilinear = scenario.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT"
         moving = rectilinear and scenario.get("object_speed_kph") != 0
         if (scenario.get("fault_motion_model") not in policy["supported_models"]
@@ -134,6 +153,12 @@ class FTTIMethodExecutor:
             return pending("移动目标需明确制动后保持静止及其控制依据，不能在停车瞬间截断交互。", "POST_STOP_MOTION_UNRESOLVED")
         result = (moving_braking_avoidability_boundary(scenario, b, release_deceleration=release) if moving else
                   braking_avoidability_boundary(v/3.6, a, d, b))
+        if result.get("original", {}).get("status") == "NO_CONTACT_WITHIN_MODEL":
+            result = {**result, "net_deceleration_mps2": b, "required_controls": sorted(controls),
+                      "unmitigated_motion_model": scenario.get("fault_motion_model"),
+                      "safe_state": proposal["description"], "conditions": proposal["conditions"],
+                      "source_ref": policy["source_ref"], "hypothesis": hypothesis,
+                      "engineering_approval": "NOT_GRANTED", "continuous_range_proven": False}
         if required_path:
             result = {**result, "response_path_status": "REQUIRED_NOT_ESTABLISHED",
                       "required_command_path": required_path}
@@ -144,7 +169,17 @@ class FTTIMethodExecutor:
             if result["status"] == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW":
                 reason = ("同一移动目标轨迹下，即刻解除异常减速并保持当时速度仍不能建立避碰窗口。" if release else
                     "同一移动目标轨迹下，即刻制动并停车保持仍不能建立避碰窗口；不能把停车直接当安全。其他处置策略需另行建模。")
+                original = result.get("original", {})
+                if original.get("status") == "NO_CONTACT_WITHIN_MODEL":
+                    reason += "原轨迹的无接触结论仅覆盖其已检查时段；所选响应仍与同一目标接触，原检查时域与响应接触阶段见时间追溯。"
                 return replace(pending(reason), status=CalculationStatus.NOT_APPLICABLE, timing_trace=result)
+            if result["status"] == "NO_UNMITIGATED_CONTACT_BOUNDARY" and result.get("response_contact"):
+                checked = result["response_contact"].get("status") == "NO_CONTACT_WITHIN_MODEL"
+                reason = ("原轨迹在已检查时段未形成接触；即刻所选响应也已检查且在声明时域内未接触目标，"
+                          "但没有该接触判据的响应延迟边界，不表示任意延迟均安全或时域外无危险。" if checked else
+                          "原轨迹未形成接触；所选响应检查尚未完成，不能确认安全状态或给出响应延迟边界。")
+                return replace(pending(reason, "NO_CONTACT_WITHIN_MODEL"),
+                               timing_trace={**result, "pending_reason": "NO_CONTACT_WITHIN_MODEL"})
             return pending("未形成该危险判据的数值边界：" + result["status"])
         horizon = scenario.get("model_valid_until_s")
         if horizon is not None and result["time_s"] > horizon:

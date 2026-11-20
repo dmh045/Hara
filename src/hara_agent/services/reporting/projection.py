@@ -648,7 +648,7 @@ class HARAReportProjectionService:
         return text
 
     @staticmethod
-    def _safe_state_display(goal: Any, catalog: Mapping, scenario_ids=None, *, scenarios=None) -> str:
+    def _safe_state_display(goal: Any, catalog: Mapping, scenario_ids=None, *, scenarios=None, timings=None) -> str:
         scope = set(goal.associated_scenario_ids if scenario_ids is None else scenario_ids)
         candidates = [c for c in catalog.get("safe_state_candidates", []) if c["scenario_id"] in scope]
         gaps = [g for g in catalog.get("safe_state_gaps", []) if g["scenario_id"] in scope]
@@ -673,14 +673,14 @@ class HARAReportProjectionService:
         if candidates:
             variants = defaultdict(list)
             for candidate in candidates:
-                outcome = EngineeringReportTextMapper.safe_state_outcome(candidate)
+                outcome = EngineeringReportTextMapper.safe_state_outcome(candidate, (timings or {}).get(candidate["scenario_id"]))
                 key = ("outcome", outcome[0]) if outcome else ("text", narrative(candidate, "description"))
                 variants[key].append(candidate)
             lines = []
             for members in variants.values():
                 count = len({c["scenario_id"] for c in members})
-                outcome = EngineeringReportTextMapper.safe_state_outcome(members[0])
-                text = outcome[1] if outcome else narrative(members[0], "description")
+                outcome = EngineeringReportTextMapper.safe_state_outcome(members[0], (timings or {}).get(members[0]["scenario_id"]))
+                text = outcome[1] if outcome else "目标状态（响应尚待验证）：" + narrative(members[0], "description")
                 lines.append(text + (f"（适用{count}个成员）" if len(scope) > 1 else ""))
             return "\n".join(lines) + (
                 f"\n其余{missing}个成员：{gap_text or '尚未形成适用处置方案'}。" if missing else "")
@@ -990,6 +990,18 @@ class HARAReportProjectionService:
         details: list[ScenarioDetailView] = []
         audit: list[AuditReferenceView] = []
         variant_counts: Counter[str] = Counter()
+        timing_inputs = {
+            (risk.malfunction_id, risk.scenario_id): RiskCalculationInputService().ftti(
+                risk.malfunction_id, risk.scenario_id, _value(risk.asil),
+                {**scenarios[risk.scenario_id].facts,
+                 "_fact_provenance": scenarios[risk.scenario_id].fact_provenance}
+                if risk.scenario_id in scenarios else {},
+                risk.branch_evaluations,
+                method=method,
+            ).to_dict()
+            for risk in state.risk_results
+        }
+        scenario_timings = {scenario_id: timing for (_, scenario_id), timing in timing_inputs.items()}
         goal_presentations = {goal.sg_id: self.text.safety_goal_presentation([
             {"scenario_id": risk.scenario_id, "malfunction_id": risk.malfunction_id,
              "malfunction": str(malfunctions.get(risk.malfunction_id, {}).get("description", "")),
@@ -1002,7 +1014,7 @@ class HARAReportProjectionService:
         ], goal.text) for goal in state.safety_goals}
         goal_texts = {sg_id: result["text"] for sg_id, result in goal_presentations.items()}
         goal_safe_states = {goal.sg_id: self._safe_state_display(goal,
-                            state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}), scenarios=scenarios)
+                            state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}), scenarios=scenarios, timings=scenario_timings)
                             for goal in state.safety_goals}
         safe_state_members = {c["scenario_id"]: c for goal in state.safety_goals
             for c in state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_candidates", [])}
@@ -1010,17 +1022,6 @@ class HARAReportProjectionService:
             for g in state.item_definition.get("safety_goal_catalog", {}).get(goal.sg_id, {}).get("safe_state_gaps", [])}
         severity_descriptions = ({level.level: level.description for level in method.severity.scale.levels}
                                  if hasattr(method, "severity") else {})
-        timing_inputs = {
-            (risk.malfunction_id, risk.scenario_id): RiskCalculationInputService().ftti(
-                risk.malfunction_id, risk.scenario_id, _value(risk.asil),
-                {**scenarios[risk.scenario_id].facts,
-                 "_fact_provenance": scenarios[risk.scenario_id].fact_provenance}
-                if risk.scenario_id in scenarios else {},
-                risk.branch_evaluations,
-                method=method,
-            ).to_dict()
-            for risk in state.risk_results
-        }
         partial_group_distributions = {}
         for offset, siblings in enumerate(ordered_groups, start=1):
             siblings.sort(key=self._representative_rank)
@@ -1110,7 +1111,7 @@ class HARAReportProjectionService:
                     (f"{sg_id}：" if len(group_goal_ids) > 1 else "") + self._safe_state_display(
                         next(goal for goal in state.safety_goals if goal.sg_id == sg_id),
                         state.item_definition.get("safety_goal_catalog", {}).get(sg_id, {}),
-                        [e["risk"].scenario_id for e in siblings if e["risk"].safety_goal_id == sg_id], scenarios=scenarios)
+                        [e["risk"].scenario_id for e in siblings if e["risk"].safety_goal_id == sg_id], scenarios=scenarios, timings=scenario_timings)
                     for sg_id in group_goal_ids) or (
                         "不适用（本行QM，无需分配SG）" if all(e["risk"].asil.value == "QM" for e in siblings)
                         else "待确定"),
@@ -1215,7 +1216,7 @@ class HARAReportProjectionService:
                     driver_branch=self.text.driver_branch(child, child_trace),
                     controllability_branch=self.text.controllability_branch(child_trace),
                     analysis_basis=self.text.analysis_basis(child) + "\n" + boundary_notes(child.facts, method) + timing_note
-                        + ("\n" + self.text.safe_state_member(safe_state_members[child.scenario_id], child)
+                        + ("\n" + self.text.safe_state_member(safe_state_members[child.scenario_id], child, timing)
                            if child.scenario_id in safe_state_members else
                            "\n安全处置缺口：" + self.text.analysis_note(safe_state_gaps[child.scenario_id]["reason"],
                                self.text._SAFE_STATE_GAP_LABELS.get(safe_state_gaps[child.scenario_id].get("reason_code"),

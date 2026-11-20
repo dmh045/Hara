@@ -123,7 +123,7 @@ class EngineeringReportTextMapper:
     }
     _SAFE_STATE_GAP_LABELS = {
         "RESPONSE_INSUFFICIENT": "即刻制动也无法在接触前停止",
-        "RESPONSE_INTERACTION_UNSAFE": "停车或解除减速后仍会与目标接触",
+        "RESPONSE_INTERACTION_UNSAFE": "所选响应仍会与目标接触",
         "DRIVER_CONTROL_UNAVAILABLE": "未满足驾驶员在驾驶位操作踏板的条件",
         "DRIVER_POSITION_OUT_OF_SCOPE": "处置方案不适用当前驾驶员位置",
         "NO_ANALYSIS": "尚未建立处置模型",
@@ -274,6 +274,10 @@ class EngineeringReportTextMapper:
             "RearView": "后视画面", "FrontView": "前视画面", "TopView": "俯视画面",
             "profile": "配置方案", "maneuver": "操作", "manoeuvre": "操作",
             "Deceleration normal": "正常减速",
+            "Normal lateral acceleration": "正常侧向加速度", "Normal lateral accel": "正常侧向加速度",
+            "Increased lateral acceleration": "较高侧向加速度", "Increased lateral accel": "较高侧向加速度",
+            "High lateral acceleration": "高侧向加速度", "High lateral accel": "高侧向加速度",
+            "Very high lateral acceleration": "很高侧向加速度", "Very high lateral accel": "很高侧向加速度",
             "Parkplatz": "停车场", "Parkhaus": "停车楼", "Garage": "车库",
             "activation in motion": "行驶中激活",
             "FORWARD": "前向", "REVERSE": "后向", "LEFT": "左", "RIGHT": "右",
@@ -310,7 +314,9 @@ class EngineeringReportTextMapper:
             "remaining": "保留的", "failed": "失效", "unresolved": "未明确", "intervention": "干预",
             "true": "是", "false": "否",
             "kph": "km/h"}
-        if cls.has_foreign_prose(text) and not re.search(r"[\u3400-\u9fff]", text):
+        lateral_method_label = re.fullmatch(
+            r"(?:Normal|Increased|High|Very high) lateral accel(?:eration)?\s*(?:\([^)]*\))?", text, re.IGNORECASE)
+        if cls.has_foreign_prose(text) and not re.search(r"[\u3400-\u9fff]", text) and not lateral_method_label:
             return text
         text = re.sub(r"向(FORWARD|REVERSE)(?:方向)?(?![A-Za-z0-9_-])",
                       lambda match: "向前" if match[1] == "FORWARD" else "向后", text)
@@ -551,6 +557,18 @@ class EngineeringReportTextMapper:
             parts.append("恒速代表工况；用于所列碰撞条件，不是故障最大速度包络")
         elif model:
             parts.append(f"运动模型：{cls._PHYSICAL_MODEL_TEXT.get(model, model)}")
+        coverage = facts.get("motion_model_outcome", {}).get("target_longitudinal_coverage", {})
+        if coverage:
+            contact_x = coverage.get("contact_x_m")
+            interval = coverage.get("effective_contact_interval_m")
+            if isinstance(contact_x, (int, float)):
+                parts.append(f"侧方接触点纵向坐标：{quantity(contact_x, 'm')} m（车头前向为正）")
+            if isinstance(interval, (list, tuple)) and len(interval) == 2:
+                parts.append("目标有效纵向接触区间：" + quantity_range(interval[0], interval[1], 'm') + " m")
+            if coverage.get("limitation"):
+                parts.append("目标覆盖条件：" + coverage["limitation"])
+        elif model == "CONSTANT_SPEED_CURVATURE_TO_CONTACT":
+            parts.append("圆弧模型将目标近似为沿初始行驶方向延展的侧边界；本历史结果未单独核验有限对象的纵向覆盖，不能等同于任意单辆车辆的接触。")
         if not any(part.startswith("TTC：") for part in parts) and (
             str(derived.get("closing_speed_status", "")) == "TTC_NOT_CLOSING"
         ):
@@ -636,11 +654,21 @@ class EngineeringReportTextMapper:
         if control.get("physical_plan_gap"):
             return control["physical_plan_gap"] + "；对应模型范围与未覆盖条件见物理方案诊断"
         if control.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH":
-            return control.get("reference_rule", {}).get("rationale", "按参考工况进行条件性 C 评定；适用性待审核")
+            rule = control.get("reference_rule", {})
+            if (control.get("intervention_applicability", {}).get("manual", {}).get("status") == "MANUAL_BRAKING_PATH_UNAVAILABLE"
+                    and rule.get("when", {}).get("emergency_braking_available") is False):
+                value = control.get("result", "")
+                return ("驾驶员人工制动路径已明确不可用；按当前参考方法" +
+                    (f"条件性评为 {value}" if value else "作条件性评定") +
+                    "；自动制动路径及响应边界另见安全状态与 FTTI。")
+            return rule.get("rationale", "按参考工况进行条件性 C 评定；适用性待审核")
         if control.get("decision_status") == "OVERRIDE_MATCH":
             return "C 分支：干预覆盖；依据已命中的干预条件评分，未使用 TTC 分档"
         if control.get("decision_status") == "REFERENCE_APPLICABILITY_UNRESOLVED":
+            if control.get("intervention_applicability", {}).get("manual", {}).get("status") == "MANUAL_BRAKING_PATH_UNRESOLVED":
+                return "已有适用场景类型的条件性 C 规则，但驾驶员人工制动路径尚未明确；自动制动执行能力不能替代该条件"
             labels = {"emergency_braking_available": "独立制动能力", "driver_in_vehicle": "驾驶员位置",
+                "required_controls": "驾驶员人工制动路径",
                 "steering_control_available": "转向控制能力",
                 "remote_intervention_available": "远程干预能力", "other_road_user_avoidance_possible": "他方避让条件"}
             missing = dict.fromkeys(key for rule in control.get("unresolved_reference_inputs", [])
@@ -653,6 +681,13 @@ class EngineeringReportTextMapper:
             if reason.startswith("REAR_APPROACH_BRAKING_APPLICABILITY_UNRESOLVED"):
                 return "后车从本车行进方向的后方接近；本车制动不能直接作为避免被追尾的路径，当前避险方法适用性未确定"
             if reason.startswith("LATERAL_C_METHOD_NOT_AVAILABLE"):
+                conditions = dict.fromkeys(item.get("reason_code")
+                    for item in control.get("reference_scope_exclusions", []) if item.get("condition"))
+                labels = {"CONFLICT_VISIBILITY_OCCLUDED": "目标可见性受遮挡影响",
+                          "CONFLICT_RECOGNITION_DELAYED": "驾驶员或目标的危险识别存在延迟"}
+                reasons = [labels[key] for key in conditions if key in labels]
+                if reasons:
+                    return "所选参考规则排除当前遮挡或延迟识别条件：" + "；".join(reasons) + "；C 待评定"
                 limits = dict.fromkeys((item["actual"], item["upper_exclusive"])
                     for item in control.get("reference_scope_exclusions", [])
                     if item.get("field") == "trajectory_max_speed_kph")
@@ -670,6 +705,8 @@ class EngineeringReportTextMapper:
         if control.get("decision_status") == "PHYSICAL_INPUT_UNRESOLVED":
             return "当前轨迹在模型有效范围内未建立接触，或几何不适用；不能据此判定范围外无危险，也不能直接套用碰撞避险分档"
         if control.get("decision_status") == "PROFILE_APPLICABILITY_UNRESOLVED":
+            if control.get("intervention_applicability", {}).get("manual", {}).get("status") == "MANUAL_BRAKING_PATH_UNRESOLVED":
+                return "尚未建立驾驶员人工制动路径；自动制动执行能力不能替代车内驾驶员的制动反应分档条件"
             inputs = control.get("override_inputs", control.get("inputs", control.get("physical_inputs", {})))
             if inputs.get("driver_in_vehicle") is False:
                 return "驾驶员在车外，车内制动反应分档不适用；远程干预或他方避让尚无适用结论"
@@ -1236,6 +1273,9 @@ class EngineeringReportTextMapper:
         if getattr(evidence, "value", None):
             if trace.get("decision_status") == "CONDITIONAL_REFERENCE_MATCH":
                 rule = trace.get("reference_rule", {})
+                if (trace.get("intervention_applicability", {}).get("manual", {}).get("status") == "MANUAL_BRAKING_PATH_UNAVAILABLE"
+                        and rule.get("when", {}).get("emergency_braking_available") is False):
+                    return self.controllability_branch({"controllability": {**trace, "result": evidence.value}})
                 speed = rule.get("trajectory_max_speed_kph")
                 prefix = f"接触前轨迹速度上界 {quantity(speed, 'km/h')} km/h；" if isinstance(speed, (int, float)) else ""
                 return prefix + rule.get("rationale", "按参考工况进行条件性 C 评定；适用性待审核")
@@ -1306,23 +1346,44 @@ class EngineeringReportTextMapper:
         return "S/E/C 未全部确定，ASIL 暂不评定。"
 
     @staticmethod
-    def safe_state_outcome(candidate: Mapping[str, Any]) -> tuple[str, str] | None:
+    def safe_state_outcome(candidate: Mapping[str, Any], timing_input: Mapping[str, Any] | None = None) -> tuple[str, str] | None:
         """Name the modelled end state, not the actuator used to reach it.
 
-        Display grouping only: member controls, parameters and qualifications
-        remain in the detail and do not become common engineering evidence.
+        Display grouping only: avoid-contact wording requires the same scoped
+        proposal's calculation trace; a response model alone states a target.
+        Member controls and qualifications remain in the detail.
         """
         response = candidate.get("transition", {})
+        timing_input = timing_input or {}
+        trace = timing_input.get("timing_trace", {})
+        checked_proposal = trace.get("hypothesis", {}).get("safe_state_proposal", {})
+        if (timing_input.get("scenario_id") != candidate.get("scenario_id") or not checked_proposal
+                or any(candidate.get(field) != checked_proposal.get(field) for field in (
+                    "description", "required_controls", "conditions", "transition", "required_command_path"))):
+            trace = {}
+        status = trace.get("status")
+        if status in {"NO_IMMEDIATE_SAFE_BRAKING_WINDOW", "AVOIDABILITY_ALREADY_LOST"}:
+            return "UNSAFE_RESPONSE", "所选响应仍会与目标接触；该提案不能作为安全状态"
+        validated = status == "CONDITIONAL_BOUNDARY"
+        immediate_only = (status == "NO_UNMITIGATED_CONTACT_BOUNDARY"
+                          and trace.get("response_contact", {}).get("status") == "NO_CONTACT_WITHIN_MODEL")
         outcome = None
         if response.get("model") == "CONSTANT_NET_DECELERATION":
             if response.get("post_stop_motion") == "HOLD_POSITION":
-                outcome = ("STOP_AND_HOLD", "车辆停止并保持静止，在已检查时域内避免与目标接触")
+                outcome = ("STOP_AND_HOLD", "车辆停止并保持静止")
             else:
-                outcome = ("STOP", "车辆在与目标接触前停止；停车后的保持条件见成员明细")
+                outcome = ("STOP", "车辆停止；停车后的保持条件见成员明细")
         elif response.get("model") == "RELEASE_DECELERATION_TO_CONSTANT_SPEED":
-            outcome = ("CONTINUE", "解除异常减速，保持响应开始时的速度行驶，在已检查时域内避免与目标接触")
+            outcome = ("CONTINUE", "解除异常减速，保持响应开始时的速度行驶")
+        if outcome:
+            if validated:
+                outcome = outcome[0] + "_CHECKED", outcome[1] + "；在已检查范围内避免与目标接触"
+            elif immediate_only:
+                outcome = outcome[0] + "_IMMEDIATE_ONLY", outcome[1] + "；即刻响应在已检查时域内未接触目标，响应延迟边界未确定"
+            else:
+                outcome = outcome[0] + "_UNVERIFIED", "目标状态：" + outcome[1] + "；响应避碰效果尚待验证"
         if outcome and candidate.get("required_command_path"):
-            return outcome[0] + "_REQUIRED_PATH", "目标状态（需建立独立响应通道）：" + outcome[1]
+            return outcome[0] + "_REQUIRED_PATH", "目标状态（需建立独立响应通道）：" + outcome[1].removeprefix("目标状态：")
         return outcome
 
     @staticmethod
@@ -1342,10 +1403,13 @@ class EngineeringReportTextMapper:
         return (controls, positions, held), label
 
     @classmethod
-    def safe_state_member(cls, candidate: Mapping[str, Any], scenario: Any) -> str:
-        outcome = cls.safe_state_outcome(candidate)
-        text = "期望安全状态：" + (outcome[1] if outcome and cls.has_foreign_prose(candidate["description"])
-                                else cls.hazardous_event(candidate["description"], scenario))
+    def safe_state_member(cls, candidate: Mapping[str, Any], scenario: Any,
+                          timing_input: Mapping[str, Any] | None = None) -> str:
+        outcome = cls.safe_state_outcome(candidate, timing_input)
+        original = cls.hazardous_event(candidate["description"], scenario)
+        text = "期望安全状态：" + (outcome[1] if outcome else original + "；响应避碰效果尚待验证")
+        if outcome and not cls.has_foreign_prose(candidate["description"]):
+            text += "；原提案及限定：" + original
         required = candidate.get("required_command_path")
         if required:
             text += "；尚需建立的系统响应：" + cls.analysis_note(required["description"],
@@ -1481,8 +1545,28 @@ class EngineeringReportTextMapper:
             "RESPONSE_INPUTS_UNRESOLVED": "响应计算所需参数仍不完整或不满足物理条件。",
         }
         explanations = []
+        response_checks = []
         for item in timing_inputs or []:
             reason = str(item.get("reason", ""))
+            trace = item.get("timing_trace", {})
+            original = trace.get("original", {})
+            response = trace.get("response_contact", {})
+            if original.get("status") == "NO_CONTACT_WITHIN_MODEL" and response:
+                checked_until = original.get("evaluated_until_s")
+                detail = "以下轨迹时刻均从模型初态计时。"
+                if checked_until is not None:
+                    detail += "原轨迹检查至 " + quantity(checked_until, "s") + " s 未接触"
+                    detail += ("，在自车停车时结束，未覆盖停车后。" if original.get("limiting_condition") == "EGO_STOP"
+                               else "，仅覆盖声明时域。")
+                if response.get("status") == "CONTACT":
+                    detail += "即刻所选响应于 " + quantity(response["time_s"], "s") + " s 与同一目标接触"
+                    detail += ("，接触发生在自车于 " + quantity(response["ego_stop_time_s"], "s") + " s 停车并保持之后。"
+                               if response.get("contact_phase") == "HELD_AFTER_STOP" else
+                               "，该响应保持当时速度行驶，并非停车。" if trace.get("response_motion") == "CONTINUE_AT_ONSET_SPEED"
+                               else "，接触时自车尚未停稳。")
+                elif response.get("status") == "NO_CONTACT_WITHIN_MODEL":
+                    detail += "即刻所选响应检查至 " + quantity(response["evaluated_until_s"], "s") + " s 未接触；未建立响应延迟边界。"
+                response_checks.append(detail)
             if reason.startswith("未形成该危险判据的数值边界："):
                 code = reason.split("：", 1)[1]
                 reason = boundary_reasons.get(code, "当前轨迹尚未形成有效时间边界，具体原因见时间追溯。")
@@ -1494,16 +1578,17 @@ class EngineeringReportTextMapper:
             if any("\u4e00" <= ch <= "\u9fff" for ch in reason):
                 explanations.append(EngineeringReportTextMapper.engineering_terms(reason))
         reasons = "；".join(dict.fromkeys(explanations))
+        response_note = "".join(dict.fromkeys(response_checks))
         required_count = sum(item.get("timing_trace", {}).get("response_path_status") == "REQUIRED_NOT_ESTABLISHED"
                              for item in timing_inputs or [])
-        required_note = (f"{required_count}个成员按尚需建立的独立系统响应计算设计边界；该通道未被认定为现有能力，不计入C的避险收益。"
+        required_note = (f"{required_count}个成员按尚需建立的独立系统响应评估，是否形成边界见各成员结果；该通道未被认定为现有能力，不计入C的避险收益。"
                          if required_count else "")
         lost = [item for item in timing_inputs or [] if item.get("timing_trace", {}).get("status") == "AVOIDABILITY_ALREADY_LOST"]
         lost_note = (f"{len(lost)}个成员在模型初始状态已无制动避碰余量：即使立即按假设净减速度制动，也不能在目标前停下。"
                      "原始0秒表示没有可用的响应延迟窗口，不是可供设计采用的正常FTTI，也不证明所有其他处置均无效。" if lost else "")
         calculated = [item for item in timing_inputs or [] if item.get("hazard_time_limit_s") is not None and item not in lost]
         if lost and not calculated:
-            return required_note + lost_note + ("其余成员的具体时间缺口见逐成员追溯。" if len(lost) != len(timing_inputs or []) else "")
+            return required_note + lost_note + response_note + ("其余成员的具体时间缺口见逐成员追溯。" if len(lost) != len(timing_inputs or []) else "")
         if calculated:
             missing = len(timing_inputs or []) - len(calculated) - len(lost)
             moving = any(item.get("timing_trace", {}).get("response_model_family") == "MOVING_TARGET_BRAKING" for item in calculated)
@@ -1515,10 +1600,12 @@ class EngineeringReportTextMapper:
                        "依据同一轨迹、静止目标及剩余净减速假设计算。" if not release else "") +
                     "检测、决策和处置建立必须在该边界前完成；后续完成耗时不与此边界相加。"
                     "尚未经工程批准，不是完整ODD的FTTI；假设与逐成员计算见时间追溯。"
-                    + lost_note + (f"仍有{missing}个成员尚无数值时间边界，具体控制、轨迹或输入缺口见逐成员追溯；已知最小值不代表全组结论。" if missing else ""))
+                    + lost_note + response_note + (f"仍有{missing}个成员尚无数值时间边界，具体控制、轨迹或输入缺口见逐成员追溯；已知最小值不代表全组结论。" if missing else ""))
         timings = [row for item in timing_inputs or [] for row in item.get("branch_timings") or [item]]
         available = [item for item in timings if item.get("contact_time_s") is not None]
         if not available:
+            if response_note:
+                return required_note + reasons + response_note + "所选响应的接触检查不能作为未干预轨迹的接触时限或 FTTI。"
             if timing_inputs and all(item.get("timing_trace", {}).get("pending_reason") == "NO_CONTACT_WITHIN_MODEL"
                                      for item in timing_inputs):
                 return required_note + reasons

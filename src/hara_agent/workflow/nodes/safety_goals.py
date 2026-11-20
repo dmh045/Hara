@@ -113,7 +113,9 @@ def aggregate_safety_goals(
             # Preserve its recorded scope instead of applying it to new members.
             value["prior_safe_state"] = {"description": previous.safe_state,
                 "scenario_ids": previous.associated_scenario_ids, "status": previous.status.value}
-            if not value.get("safe_state_candidates"):
+            if (not value.get("safe_state_candidates") and not any(
+                    gap.get("reason_code") not in {"NO_ANALYSIS", "NO_PROPOSAL"}
+                    for gap in value["safe_state_gaps"])):
                 value["safety_state"] = previous.safe_state
         statuses = risk_status_by_goal[sg_id]
         finalized = catalog.is_approved and not value.get("safe_state_candidates") and all(

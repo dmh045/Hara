@@ -586,6 +586,23 @@ class YamlBaselineCompiler:
             for index, rule in enumerate(reference_rules):
                 conditions = rule.get("when", {}) if isinstance(rule, dict) else {}
                 speed_limit = rule.get("trajectory_speed_upper_exclusive_kph") if isinstance(rule, dict) else None
+                required_controls = rule.get("required_controls", []) if isinstance(rule, dict) else []
+                excluded_conditions = rule.get("excluded_conditions", []) if isinstance(rule, dict) else []
+                from hara_agent.contracts.physical_scenario_plan import CONTROL_IDENTITIES
+                if (not isinstance(required_controls, list)
+                        or any(not isinstance(value, str) or value not in CONTROL_IDENTITIES for value in required_controls)
+                        or not isinstance(excluded_conditions, list)):
+                    raise YamlBaselineCompileError("Invalid conditional controllability applicability constraints")
+                for exclusion in excluded_conditions:
+                    if (not isinstance(exclusion, dict)
+                            or set(exclusion) != {"reason_code", "pattern", "negation_pattern"}
+                            or any(not isinstance(value, str) or not value.strip() for value in exclusion.values())):
+                        raise YamlBaselineCompileError("Invalid conditional controllability exclusion")
+                    try:
+                        re.compile(exclusion["pattern"])
+                        re.compile(exclusion["negation_pattern"])
+                    except re.error as error:
+                        raise YamlBaselineCompileError("Invalid conditional controllability exclusion pattern") from error
                 if (not isinstance(rule, dict) or not rule.get("rule_id")
                         or rule["rule_id"] in seen_reference_rules
                         or rule.get("status") != "CONDITIONAL_REFERENCE"

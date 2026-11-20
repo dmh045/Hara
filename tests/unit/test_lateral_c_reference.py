@@ -14,7 +14,7 @@ from hara_agent.services.reporting.engineering_text_mapper import EngineeringRep
 def steering_candidate(method, *, initial=7, clearance=.5, acceleration=6):
     raw = raw_plan('CONSTANT_LATERAL_ACCELERATION_TO_CONTACT', initial=initial)
     h = raw['hypotheses'][0]
-    h['remaining_controls'] = ['braking']
+    h['remaining_controls'] = ['braking', 'driver_braking']
     for p in h['parameters']:
         if p['field'] == 'lateral_clearance_m': p['value'] = clearance
         if p['field'] == 'lateral_acceleration_mps2': p['value'] = acceleration
