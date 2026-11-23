@@ -98,15 +98,8 @@ def _update_response_totals(metrics, responses, sign=1):
 
 
 def _physical_conditions(candidate):
-    """Share seat variants, preserving a presence fact that does not name a seat."""
-    common = scenario_conditions(candidate, without_driver=True)
-    if (not PhysicalHypothesisInstantiationService.driver_position(candidate)
-            and candidate.facts.get("driver_in_vehicle") is not None):
-        full = scenario_conditions(candidate)
-        for section in ("facts", "fact_authority"):
-            if "driver_in_vehicle" in full[section]:
-                common[section]["driver_in_vehicle"] = full[section]["driver_in_vehicle"]
-    return common
+    """Retained scheduling entry for the producer's canonical request view."""
+    return PhysicalHypothesisInstantiationService.physical_conditions(candidate)
 
 
 def _physical_families(producer, candidates, malfunction_id):
@@ -277,7 +270,7 @@ def _retain_rejected_response(candidate, generated, entry, *, producer, mf, meth
         original = PhysicalScenarioPlan.from_dict(entry["initial_plan"], evidence_ids=set(entry["context"]["evidence"]))
         originals, _ = producer.instantiate(candidate, mf, original, plan_key=key,
             response_model=entry["audit"]["model"], project_context=project,
-            function=function)
+            function=function, request_context=entry.get("context"))
         for child in generated:
             analysis = child.facts.get("control_analysis") or child.facts.get("physical_analysis", {})
             if analysis.get("hypothesis", {}).get("safe_state_proposal"):
@@ -423,11 +416,16 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                             "preserve explicit source constraints and state a specific incompatibility if it cannot apply. "
                             "Replace a redundant representative; do not add a coverage axis or multiply instances.")
                 inputs["interaction_coverage_policy"] = (
-                    "Compare physically compatible object motions before choosing representatives. "
-                    "Existing specific objects/constraints remain binding. For a justified new target, "
-                    "prefer distinct relevant interactions within this plan; do not repeat the same "
-                    "stationary-target mechanism only with another distance. When road_user_focus is supplied, use at least one existing hypothesis slot for that explicitly source-named class, with its actual motion/interaction; if incompatible, give the specific uncovered condition instead. Other explicit classes remain alternatives, not mandatory extra instances. When the selected method object explicitly includes multiple road-user types, compare their distinct movement/escape mechanisms; do not silently narrow that scope to only the most familiar type. Replace redundant hypotheses rather than multiplying them. Keep at most 3 total instances. "
-                    "If no distinct supported interaction is appropriate, explain why; never add an unrelated fault.")
+                    "Respect explicit source/method objects and function-scoped limits; inferred MF objects are "
+                    "not immutable source constraints. For unknown layout, do not borrow another function's "
+                    "perpendicular restriction. Within existing slots, prioritize a compatible moving bay/aisle "
+                    "interaction over redundant stationary/distance variants; consider parallel/angled geometry "
+                    "when it changes real paths/contact or control dependencies. Preserve applicable source "
+                    "layout limits. Give a specific fault/model incompatibility if omitted, not just an uncovered "
+                    "label. Map local physical equivalence to one hypothesis. When road_user_focus is supplied, "
+                    "use a slot for that explicitly source-named class or explain its incompatibility. Compare "
+                    "movement/escape mechanisms of selected method object types. No unrelated fault or "
+                    "Cartesian expansion. Keep at most 3 total instances.")
                 if inputs.get("road_user_focus_basis"):
                     inputs["interaction_coverage_policy"] = inputs["interaction_coverage_policy"].replace(
                         "explicitly source-named class", "method-supported analytical class")
@@ -588,7 +586,7 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
 
                     rows = [(candidate, *producer.instantiate(candidate, mf, current_plan,
                         plan_key=key, response_model=entry["audit"]["model"], project_context=project,
-                        function=functions.get(mf.function_id))) for candidate in family]
+                        function=functions.get(mf.function_id), request_context=entry.get("context"))) for candidate in family]
                     # A declared target side conflicting with numeric coordinates
                     # is a proposal error, not a new no-contact mechanism. Feed
                     # the existing bounded correction; retain the original child.

@@ -525,19 +525,21 @@ class MethodScenarioCandidateService:
                          for mode in {p.operating_mode for p in parents}}
                         if project_facts is not None else {})
         if project_facts is not None:
+            has_qualified_scope = any(r.get("function_ids") or r.get("operating_modes")
+                                      for r in project_facts.odd_scope_evidence)
             if len(scoped_facts) == 1:
                 project_facts = next(iter(scoped_facts.values()))
             # Parents are prepared before a malfunction/function is selected.
-            # Replace their union-valued permission view, retaining the original
-            # source evidence and concrete parent world.
+            # Project their union permission/evidence view; the full original
+            # project facts remain in the source audit, not this scoped world.
             parents = [replace(p, facts={**p.facts,
                 "source_road_type_scope": list(scoped_facts[p.operating_mode].odd_road_types),
                 "source_weather_scope": list(scoped_facts[p.operating_mode].odd_weather_conditions),
+                "odd_scope_evidence": deepcopy(scoped_facts[p.operating_mode].odd_scope_evidence),
                 **({"source_operating_conditions": {**p.facts["source_operating_conditions"],
                     "permitted_road_types": list(scoped_facts[p.operating_mode].odd_road_types)}}
                    if "permitted_road_types" in p.facts.get("source_operating_conditions", {}) else {})})
-                for p in parents] if any(r.get("function_ids") or r.get("operating_modes")
-                    for r in project_facts.odd_scope_evidence) else parents
+                for p in parents] if has_qualified_scope else parents
         templates = ScenarioMethodService(self.method)
         if not self.atom_resolver.catalog or project_facts is None:
             return templates.instantiate_analytical_candidates(

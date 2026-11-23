@@ -13,6 +13,38 @@ from test_reviewer_report_closure import _p6_report_state, ROOT
 from test_reuse_reporting_acceptance import active_method
 
 
+@pytest.mark.parametrize('kind,aisle,label', [('PARALLEL', 0, '平行车位'), ('ANGLED', 45, '斜列车位')])
+def test_layout_display_explains_axes_and_motion_without_mutating_risk_inputs(kind, aisle, label):
+    scenario = deepcopy(_p6_report_state().scenarios[0])
+    scenario.facts['layout_relation'] = {
+        'kind': kind, 'basis': 'ANALYSIS_ASSUMPTION', 'axes_deg': {'bay': 0, 'aisle': aisle},
+        'path_checks': {'ego': {'status': 'INITIAL_DIRECTION_MATCH', 'path': 'BAY_AXIS'},
+                        'object': {'status': 'INITIAL_DIRECTION_MATCH', 'path': 'AISLE_AXIS'}},
+        'geometry_scope': 'TWO_AXIS_RELATIVE_MOTION', 'trajectory_scope': 'FIXED_MODEL_AXES'}
+    before = deepcopy(scenario)
+    mapper = EngineeringReportTextMapper()
+    description, detail = mapper.scenario(scenario)
+    inputs = mapper.physical_inputs(scenario, {})
+    assert '布局假设：' + label in description
+    for text in (detail, inputs):
+        assert f'通道轴线 {aisle}°' in text and '车位轴线 0°' in text
+        assert '自车初始运动沿车位轴线' in text and '目标初始运动沿通道轴线' in text
+        assert 'BAY_AXIS' not in text and 'TWO_AXIS_RELATIVE_MOTION' not in text
+    assert scenario == before
+
+
+def test_layout_display_separates_local_curve_and_unresolved_direction_from_coverage():
+    scenario = SimpleNamespace(facts={'layout_relation': {
+        'kind': 'ANGLED', 'axes_deg': {'bay': -10, 'aisle': 35},
+        'path_checks': {'ego': {'status': 'SYMBOLIC_OR_UNRESOLVED'}},
+        'trajectory_scope': 'INITIAL_TANGENT_ONLY', 'geometry_scope': 'LOCAL_INITIAL_RELATION_ONLY'}})
+    text = EngineeringReportTextMapper.layout_text(scenario)
+    assert '自车运动与布局轴线的关系尚未确定' in text
+    assert '仅核对圆弧初始切向' in text and '不代表已验证双方' in text
+    assert '车位轴线 -10°' in text and '通道轴线 35°' in text
+    assert EngineeringReportTextMapper.layout_text(SimpleNamespace(facts={})) == ''
+
+
 @pytest.mark.parametrize('label,chinese', [
     ('Normal lateral accel (aY < 3 m/s²)', '正常侧向加速度'),
     ('Increased lateral accel (3 ≤ aY < 5 m/s²)', '较高侧向加速度'),

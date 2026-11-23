@@ -39,8 +39,11 @@ def test_scope_preserves_legacy_union_but_projects_function_and_phase_without_mu
     original = facts(mode="execution")
     before = deepcopy(original)
     assert original.for_scope("other", "execution").odd_road_types == []
+    assert original.for_scope("other", "execution").odd_scope_evidence == []
     assert original.for_scope("renamed-function", "training").odd_road_types == []
+    assert original.for_scope("renamed-function", "training").odd_scope_evidence == []
     assert original.for_scope("renamed-function", "execution").odd_road_types == ["垂直车位"]
+    assert original.for_scope("renamed-function", "execution").odd_scope_evidence == original.odd_scope_evidence
     assert original == before
     restored = ItemDefinitionFacts.from_dict(json.loads(json.dumps(asdict(original))))
     assert restored.for_scope("other", "execution").odd_road_types == []
@@ -52,6 +55,31 @@ def test_independent_global_evidence_preserves_same_value_in_other_functions():
     value = asdict(facts())
     value["odd_scope_evidence"].append({"field":"odd_road_types", "values":["垂直车位"], "sources":[]})
     assert scoped_odd_context(value, "other")["odd_road_types"] == ["垂直车位"]
+    assert scoped_odd_context(value, "other")["odd_scope_evidence"] == [value['odd_scope_evidence'][-1]]
+
+
+def test_scope_projects_unqualified_and_duplicate_global_records_without_removing_authority():
+    global_record={'field':'odd_road_types','values':['垂直车位'],'sources':[]}
+    value=asdict(facts(mode='execution'))
+    value['odd_scope_evidence'].extend([deepcopy(global_record),deepcopy(global_record)])
+    before=deepcopy(value)
+    view=scoped_odd_context(value,'another-function','training')
+    assert view['odd_road_types']==['垂直车位']
+    assert view['odd_scope_evidence']==[global_record,global_record]
+    assert value==before
+    legacy={'odd_road_types':['斜列车位']}
+    assert scoped_odd_context(legacy,'any','any')==legacy
+
+
+def test_function_and_mode_qualifiers_select_the_same_evidence_and_value_view():
+    records=[{'field':'odd_weather_conditions','values':['rain'],'function_ids':['F1'],'sources':[]},
+        {'field':'odd_weather_conditions','values':['snow'],'operating_modes':['training'],'sources':[]},
+        {'field':'odd_weather_conditions','values':['fog'],'function_ids':['F1'],'operating_modes':['execution'],'sources':[]}]
+    context={'odd_weather_conditions':['rain','snow','fog'],'odd_scope_evidence':records}
+    for function,mode,expected in [('F1','execution',['rain','fog']),('F2','training',['snow']),('F2','execution',[])]:
+        view=scoped_odd_context(context,function,mode)
+        assert view['odd_weather_conditions']==expected
+        assert [v for r in view['odd_scope_evidence'] for v in r['values']]==expected
 
 
 def test_contract_and_normalizer_preserve_qualified_source_clause():
@@ -103,6 +131,8 @@ def test_ordinary_physics_projects_function_scope_and_resumes_without_extra_requ
     fault=replace(mf(),function_id='renamed-function') if applicable else mf()
     out=construct_physical_scenarios(state,{'MF':[parent]},[fault],method=method,agent=agent,project_facts=facts())
     assert len(out['MF'])==1 and len(client.requests)==1
+    context=next(iter(state.item_definition['physical_analysis_plans'].values()))['context']
+    assert bool(context['project_context']['odd_scope_evidence']) is applicable
     restored=HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
     replay=construct_physical_scenarios(restored,{'MF':[parent]},[fault],method=method,agent=agent,project_facts=facts())
     assert replay==out and len(client.requests)==1
@@ -125,6 +155,8 @@ def test_mixed_parent_modes_equal_separate_scope_generation_without_cross_mode_m
         assert generated
         raw_count += subaudit['atom_generation']['raw_candidate_count']
         assert all(c.facts['source_road_type_scope'] == (['垂直车位'] if parent.operating_mode=='execution' else [])
+                   for c in generated)
+        assert all(c.facts['odd_scope_evidence'] == ([record] if parent.operating_mode=='execution' else [])
                    for c in generated)
         separate.extend(generated)
     assert {c.scenario_id for c in together} == {c.scenario_id for c in separate}

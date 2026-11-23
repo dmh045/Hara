@@ -25,6 +25,73 @@ def test_r03_lower_severity_higher_asil_is_retained(method):
     assert rows["pedestrian"]["ASIL"] == "QM"
 
 
+def conflicting_branch_view(method):
+    view = scoring_view(method)
+    view.update(driver_in_vehicle=False, operating_mode="parking_vehicle_control",
+        ego_speed_kph=7, object_speed_kph=0, ego_longitudinal_direction="FORWARD",
+        object_longitudinal_direction="STATIONARY", object_position="FRONT",
+        road_user_type="VEHICLE", collision_type="FRONTAL", relative_distance_m=2,
+        travel_to_impact_m=2, longitudinal_acceleration_mps2=1,
+        fault_motion_model="CONSTANT_ACCELERATION_TO_IMPACT_DISTANCE",
+        relative_speed_kph=12, motion_model_outcome={"status": "CONTACT", "time_s": 1},
+        first_contact_time_s=1)
+    view["_fact_provenance"].update({k: source() for k in view if not k.startswith("_")})
+    bad = branch("incompatible-side", "VEHICLE", "SIDE", 12)
+    bad["object_position"] = "LEFT"
+    bad["_fact_provenance"]["object_position"] = source()
+    view["collision_branches"] = [bad]
+    return view
+
+
+def test_unresolved_branch_cannot_restore_parent_controllability(method):
+    view = conflicting_branch_view(method)
+    before = deepcopy(view)
+    service = StructuredRiskScoringService(method)
+    parent = service.score({k: v for k, v in view.items() if k != "collision_branches"}, "impact")
+    assert parent["controllability"]["controllability_score"] == "C3"
+    result = service.score(view, "impact")
+    row = result["branch_evaluations"][0]
+    assert row["physical_input_conflicts"]
+    assert (row["S"], row["E"], row["C"], row["ASIL"]) == ("", "E4", "", "")
+    assert tuple(result[k][k + "_score"] for k in ("severity", "exposure", "controllability")) == (row["S"], row["E"], row["C"])
+    assert result["branch_summary"]["partial_branch_id"] == row["branch_id"]
+    assert result["branch_summary"]["status"] == "PENDING"
+    assert not result["branch_summary"]["highest_known_asil"]
+    assert view == before
+
+
+@pytest.mark.parametrize("invalid", [[], [{"branch_id": "missing-physical-evidence"}]])
+def test_no_evaluated_branch_keeps_independent_e_without_parent_sc(method, invalid):
+    view = conflicting_branch_view(method)
+    view["collision_branches"] = invalid
+    result = StructuredRiskScoringService(method).score(view, "impact")
+    assert tuple(result[k][k + "_score"] for k in ("severity", "exposure", "controllability")) == ("", "E4", "")
+    assert not result["branch_evaluations"]
+    assert not result["branch_summary"]["highest_known_asil"]
+
+
+def test_known_asil_branch_survives_an_unresolved_branch_without_splicing(method):
+    view = scoring_view(method)
+    conflicting = conflicting_branch_view(method)
+    bad = conflicting["collision_branches"][0]
+    for key in ("fault_motion_model", "ego_speed_kph", "object_speed_kph",
+                "ego_longitudinal_direction", "object_longitudinal_direction",
+                "travel_to_impact_m", "relative_distance_m", "longitudinal_acceleration_mps2"):
+        bad[key] = conflicting[key]
+        bad["_fact_provenance"][key] = source()
+    good = branch("valid-front", "VEHICLE", "FRONTAL", 7)
+    good["ttc_s"] = .154286
+    view["collision_branches"] = [bad, good]
+    result = StructuredRiskScoringService(method).score(view, "impact")
+    row = next(r for r in result["branch_evaluations"] if r["branch_id"] == good["branch_id"])
+    assert row["ASIL"]
+    assert tuple(result[k][k + "_score"] for k in ("severity", "exposure", "controllability")) == (row["S"], row["E"], row["C"])
+    assert result["branch_summary"]["highest_known_asil"] == row["ASIL"]
+    assert result["branch_summary"]["deciding_branch_id"] == row["branch_id"]
+    assert result["branch_summary"]["status"] == "PENDING"
+    assert "partial_branch_id" not in result["branch_summary"]
+
+
 def test_r04_distance_override_invalidates_parent_ttc(method):
     view = scoring_view(method)
     view.update(ttc_s=8, closing_speed_kph=7, relative_distance_m=15.555556)

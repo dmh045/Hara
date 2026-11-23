@@ -19,17 +19,22 @@ def scoped_odd_context(context: dict[str, Any], function_id: str = "", operating
     """
     result = dict(context)
     records = context.get("odd_scope_evidence", [])
+    def applies(record):
+        return ((not record.get("function_ids") or function_id in record["function_ids"])
+                and (not record.get("operating_modes") or operating_mode in record["operating_modes"]))
+
+    applicable_records = [record for record in records if applies(record)]
     for name in ("odd_locations", "odd_road_types", "odd_weather_conditions", "odd_road_surfaces"):
         scoped = [r for r in records if r.get("field") == name
                   and (r.get("function_ids") or r.get("operating_modes"))]
         if not scoped:
             continue
         qualified = {v for r in scoped for v in r.get("values", [])}
-        applicable = {v for r in records if r.get("field") == name
-                      and (not r.get("function_ids") or function_id in r["function_ids"])
-                      and (not r.get("operating_modes") or operating_mode in r["operating_modes"])
+        applicable = {v for r in applicable_records if r.get("field") == name
                       for v in r.get("values", [])}
         result[name] = [v for v in context.get(name, []) if v not in qualified or v in applicable]
+    if "odd_scope_evidence" in context:
+        result["odd_scope_evidence"] = applicable_records
     return result
 
 
@@ -101,7 +106,7 @@ class ItemDefinitionFacts:
     def for_scope(self, function_id: str = "", operating_mode: str = "") -> "ItemDefinitionFacts":
         view = scoped_odd_context(vars(self), function_id, operating_mode)
         return replace(self, **{key: view[key] for key in (
-            "odd_locations", "odd_road_types", "odd_weather_conditions", "odd_road_surfaces")})
+            "odd_locations", "odd_road_types", "odd_weather_conditions", "odd_road_surfaces", "odd_scope_evidence")})
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ItemDefinitionFacts":

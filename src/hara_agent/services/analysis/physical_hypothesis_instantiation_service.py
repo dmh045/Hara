@@ -5,9 +5,10 @@ No network, source extraction, rating rules, or engineering approvals live here.
 from copy import deepcopy
 from dataclasses import replace, asdict
 import math
+import re
 
-from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability, steering_capability, controls_for_driver
-from .scenario_equivalence import signature
+from hara_agent.contracts.physical_scenario_plan import MODEL_CATALOG, PHYSICAL_PLAN_VERSION, PARAMETER_UNITS, braking_capability, steering_capability, controls_for_driver, layout_axis_separation_deg
+from .scenario_equivalence import signature, scenario_conditions
 from .scenario_physics import CONDITIONAL_ORIGIN, derive_scenario_physics, source_is_accepted_for, physical_semantics, grade_rollaway_acceleration
 from .risk_vocabulary_adapter import RiskVocabularyAdapter
 from hara_agent.models.item_facts import scoped_odd_context
@@ -109,6 +110,18 @@ class PhysicalHypothesisInstantiationService:
         # Being inside the vehicle does not establish the occupied seat or
         # access to its pedals. Being outside does exclude the driver seat.
         return "outside_driver_seat" if facts.get("driver_in_vehicle") is False else ""
+
+    @staticmethod
+    def physical_conditions(candidate):
+        """Canonical request input shared by scheduling and scope validation."""
+        common = scenario_conditions(candidate, without_driver=True)
+        if (not PhysicalHypothesisInstantiationService.driver_position(candidate)
+                and candidate.facts.get("driver_in_vehicle") is not None):
+            full = scenario_conditions(candidate)
+            for section in ("facts", "fact_authority"):
+                if "driver_in_vehicle" in full[section]:
+                    common[section]["driver_in_vehicle"] = full[section]["driver_in_vehicle"]
+        return common
 
     def _same_input(self, field, old, proposed):
         if field in {"road_user_type", "collision_type"}:
@@ -467,18 +480,50 @@ class PhysicalHypothesisInstantiationService:
             "policy": "Use applicable inputs; jointly justify missing geometry and motion, or explicitly explain a symbolic relationship. PENDING assumptions can be computed conditionally. Constraints are not measurements."}
 
     def instantiate(self, candidate, malfunction, plan, *, plan_key: str, response_model: str,
-                    project_context=None, function=None):
+                    project_context=None, function=None, request_context=None):
         results, diagnostics = [], []
         driver_position = self.driver_position(candidate)
+        request_driver = ""
+        if request_context and request_context.get("driver_configurations"):
+            configurations = request_context["driver_configurations"]
+            if (request_context.get("plan_key") != plan_key
+                    or signature({k:v for k,v in request_context.items() if k != "plan_key"}) != plan_key
+                    or request_context.get("malfunction", {}).get("malfunction_id") != malfunction.malfunction_id
+                    or request_context.get("conditions") != self.physical_conditions(candidate)):
+                diagnostics.append({"reason": "REQUEST_DRIVER_SCOPE_CONTEXT_NOT_APPLICABLE",
+                    "plan_key": plan_key, "scenario_id": candidate.scenario_id})
+            elif len(configurations) == 1 and configurations[0] in {"in_driver_seat", "outside_driver_seat"}:
+                request_driver = configurations[0]
+
+        def assumed_position(hypothesis):
+            positions = hypothesis.get("driver_positions", [])
+            if driver_position:
+                return "", False
+            if len(positions) == 1:
+                if request_driver and positions[0] != request_driver:
+                    diagnostics.append({"reason": "REQUEST_DRIVER_SCOPE_CONFLICT", "field": "driver_positions",
+                        "hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment")})
+                    return "", False
+                return positions[0], False
+            if positions or not request_driver or "driver_in_vehicle" in hypothesis.get("unresolved_controls", {}):
+                return "", False
+            presence = hypothesis.get("intervention_assumptions", {}).get("driver_in_vehicle", {}).get("value")
+            if request_driver == "in_driver_seat" and presence is False:
+                diagnostics.append({"reason": "REQUEST_DRIVER_SCOPE_CONFLICT", "field": "driver_in_vehicle",
+                    "hypothesis_id": hypothesis.get("hypothesis_id", "control_assessment")})
+                return "", False
+            return request_driver, True
+
         if plan.control_assessment is not None:
             positions = plan.control_assessment.get("driver_positions", [])
             if positions and driver_position and driver_position not in positions:
                 return [], [{"reason": "HYPOTHESIS_DRIVER_SCOPE_NOT_APPLICABLE", "driver_position": driver_position}]
-            assumed_driver = positions[0] if not driver_position and len(positions) == 1 else ""
+            assumed_driver, from_request = assumed_position(plan.control_assessment)
             try:
                 return [self._instantiate_controls(candidate, malfunction, controls_for_driver(plan.control_assessment,
-                    driver_position or assumed_driver),
-                    plan_key, response_model, assumed_driver=assumed_driver)], []
+                    driver_position or assumed_driver, driver_scope=request_driver),
+                    plan_key, response_model, assumed_driver=assumed_driver,
+                    request_driver_scope=from_request)], diagnostics
             except PhysicalInputConflict as error:
                 return [], [{"reason": str(error), **error.details}]
         for h in plan.hypotheses:
@@ -487,8 +532,8 @@ class PhysicalHypothesisInstantiationService:
                 continue  # Explicit applicability, not a risk-equivalence judgement.
             # A singleton scope explicitly proposed by the model can narrow an
             # unknown operating condition. It is not a new project source fact.
-            assumed_driver = positions[0] if not driver_position and len(positions) == 1 else ""
-            h = controls_for_driver(h, driver_position or assumed_driver)
+            assumed_driver, from_request = assumed_position(h)
+            h = controls_for_driver(h, driver_position or assumed_driver, driver_scope=request_driver)
             try:
                 inputs, inheritance = self._model_inputs(candidate, h, malfunction.malfunction_id)
             except PhysicalInputConflict as error:
@@ -505,6 +550,8 @@ class PhysicalHypothesisInstantiationService:
             samples, sensitivity = self._samples(h, inputs, self.MAX_INSTANCES_PER_PLAN // len(plan.hypotheses))
             if assumed_driver:
                 sensitivity["driver_position_assumption"] = assumed_driver
+                if from_request:
+                    sensitivity["request_driver_scope"] = {"plan_key": plan_key, "driver_configurations": [assumed_driver]}
             sensitivity["model_input_view"] = inheritance
             sensitivity["input_completeness"] = {
                 "classification": "EXPLAINED_SYMBOLIC_RELATION" if any(p["kind"] == "SYMBOLIC"
@@ -536,9 +583,12 @@ class PhysicalHypothesisInstantiationService:
             return [PhysicalHypothesisInstantiationService._rescope(v, old_id, new_id) for v in value]
         return new_id if value == old_id else value
 
-    def _instantiate_controls(self, parent, malfunction, assessment, plan_key, model_name, *, assumed_driver=""):
+    def _instantiate_controls(self, parent, malfunction, assessment, plan_key, model_name, *, assumed_driver="", request_driver_scope=False):
         """Condition the existing trajectory; never regenerate collision inputs."""
-        sid = f"{parent.scenario_id}-CTRL-{signature({'plan': plan_key, 'assessment': assessment})[:16]}"
+        identity = {"plan": plan_key, "assessment": assessment}
+        if request_driver_scope:
+            identity["request_driver_scope"] = assumed_driver
+        sid = f"{parent.scenario_id}-CTRL-{signature(identity)[:16]}"
         facts = self._rescope(deepcopy(parent.facts), parent.scenario_id, sid)
         provenance = self._rescope(deepcopy(parent.fact_provenance), parent.scenario_id, sid)
         scope = {"malfunction_id": malfunction.malfunction_id, "scenario_id": sid}
@@ -587,6 +637,13 @@ class PhysicalHypothesisInstantiationService:
             if proposal := assessment.get("intervention_assumptions", {}).get(field):
                 provenance[field].update(basis_refs=proposal["basis_refs"], conditions=proposal["conditions"])
                 provenance[field]["source_refs"][0]["excerpt"] = proposal["rationale"]
+        if request_driver_scope:
+            for field in ("driver_position", "driver_in_vehicle"):
+                if field in supplied:
+                    provenance[field].update(selection_basis="VALIDATED_REQUEST_DRIVER_SCOPE",
+                        analysis_value_semantic="OPERATING_DRIVER_CONFIGURATION")
+                    provenance[field]["source_refs"].append({"source_type": "analysis_hypothesis", "source_id": plan_key,
+                        "location": "context.driver_configurations", "excerpt": assumed_driver})
         facts["control_analysis"] = {"plan_key": plan_key, "hypothesis": deepcopy(assessment),
             "parent_scenario_id": parent.scenario_id, "response_model": model_name,
             "calculation_nature": "CONDITIONAL", "engineering_approval": "NOT_GRANTED"}
@@ -834,6 +891,81 @@ class PhysicalHypothesisInstantiationService:
             "ego_heading_relative_to_downhill": heading, "downhill_body_direction": downhill,
             "grade_orientation_basis": frame["orientation_basis"]}
 
+    @staticmethod
+    def _layout_relation(h, values, project_context):
+        """Bind optional parking axes to this world's initial motion, not labels."""
+        relation = h.get("layout_relation")
+        if not relation:
+            return None
+
+        def named_kinds(values):
+            # Representation normalization of already extracted allowed values;
+            # this never adds an allowed scope or reads method/grade rules.
+            aliases = {"PARALLEL": r"\b(?:parallel|longitudinal)\s+(?:parking|bays?|spaces?)\b|(?:平行|水平|纵向)车位|平行泊车|längspark",
+                "PERPENDICULAR": r"\b(?:perpendicular|transverse)\s+(?:parking|bays?|spaces?)\b|(?:垂直|横向)车位|垂直泊车|querpark",
+                "ANGLED": r"\b(?:angled?|diagonal|oblique)\s+(?:parking|bays?|spaces?)\b|(?:斜列|斜向)车位|斜向泊车|schrägpark"}
+            return {kind for kind, pattern in aliases.items()
+                    if any(str(value).strip().upper() == kind or
+                           re.search(pattern, str(value), re.IGNORECASE) for value in values)}
+
+        scope_kinds = named_kinds(project_context.get("odd_road_types", []))
+        if scope_kinds and relation["kind"] not in scope_kinds:
+            raise PhysicalInputConflict("LAYOUT_OUTSIDE_PROJECT_SCOPE", "layout_relation.kind",
+                sorted(scope_kinds), relation["kind"])
+        if relation["basis"] == "SELECTED_SOURCE_CONDITION":
+            selected = h.get("operating_condition", {})
+            source_kinds = named_kinds([selected.get("value", "")])
+            if relation["kind"] not in source_kinds:
+                raise PhysicalInputConflict("LAYOUT_SELECTED_SOURCE_KIND_UNRESOLVED", "layout_relation.kind",
+                    selected.get("value"), relation["kind"])
+        directions = {"FORWARD": 0., "REVERSE": 180., "LEFT": 90., "RIGHT": -90.}
+        model, geometry = h["model"], h["geometry"]
+        symbolic = {p["field"] for p in h["parameters"] if p["kind"] == "SYMBOLIC"}
+        headings = {}
+        for actor in ("ego", "object"):
+            field = actor + "_heading_angle_deg"
+            if field in symbolic:
+                headings[actor] = None
+            elif field in values:
+                headings[actor] = values[field]  # Explicit symbols stay unresolved.
+            else:
+                headings[actor] = directions.get(geometry.get(actor + "_longitudinal_direction"))
+        if model == "CONSTANT_LATERAL_ACCELERATION_TO_CONTACT":
+            speed, lateral = values.get("ego_speed_kph"), values.get("lateral_speed_mps")
+            if speed is not None and lateral is not None and (speed or lateral):
+                longitudinal = speed / 3.6 * (-1 if geometry["ego_longitudinal_direction"] == "REVERSE" else 1)
+                headings["ego"] = math.degrees(math.atan2(
+                    lateral * (-1 if geometry.get("ego_lateral_direction") == "RIGHT" else 1), longitudinal))
+        stationary_target = (MODEL_CATALOG[model]["target_motion"] == "STATIONARY"
+                             or values.get("object_speed_kph") == 0)
+        checks = {}
+        for actor, role in relation["paths"].items():
+            if role == "UNSPECIFIED":
+                checks[actor] = {"status": "NOT_USED"}
+                continue
+            if actor == "object" and stationary_target:
+                raise PhysicalInputConflict("LAYOUT_OBJECT_PATH_REQUIRES_MOTION", "layout_relation.paths.object",
+                    "STATIONARY", role)
+            heading = headings[actor]
+            axis = relation["axes_deg"]["bay" if role == "BAY_AXIS" else "aisle"]
+            if heading is None:
+                checks[actor] = {"status": "SYMBOLIC_OR_UNRESOLVED", "required_axis_deg": axis}
+                continue
+            if not math.isclose(layout_axis_separation_deg(heading, axis), 0, abs_tol=1e-9):
+                raise PhysicalInputConflict("LAYOUT_PATH_AXIS_CONFLICT", "layout_relation.paths." + actor,
+                    axis, heading, relation="Initial body-frame motion direction must align with the declared bay/aisle axis")
+            checks[actor] = {"status": "INITIAL_DIRECTION_MATCH", "motion_heading_deg": heading,
+                             "axis_deg": axis, "path": role}
+        two_axes = (set(relation["paths"].values()) == {"BAY_AXIS", "AISLE_AXIS"}
+                    and all(c["status"] == "INITIAL_DIRECTION_MATCH" for c in checks.values()))
+        return {**deepcopy(relation), "coordinate_frame": "BODY_FORWARD_POSITIVE",
+            "assessment_reference": "MODEL_INITIAL_STATE",
+            "axis_separation_deg": layout_axis_separation_deg(*relation["axes_deg"].values()),
+            "path_checks": checks,
+            "geometry_scope": "TWO_AXIS_RELATIVE_MOTION" if two_axes else "LOCAL_INITIAL_RELATION_ONLY",
+            "trajectory_scope": "INITIAL_TANGENT_ONLY" if model == "CONSTANT_SPEED_CURVATURE_TO_CONTACT" else "FIXED_MODEL_AXES",
+            "project_scope_kinds": sorted(scope_kinds), "engineering_approval": "NOT_GRANTED"}
+
     def _instantiate(self, parent, malfunction, h, values, plan_key, model_name, sensitivity, project_context, function):
         function_id = ((function or {}).get("function_id", "") if isinstance(function, dict)
                        else getattr(function, "function_id", "")) or getattr(malfunction, "function_id", "")
@@ -844,6 +976,7 @@ class PhysicalHypothesisInstantiationService:
         if operating_condition and operating_condition["value"] not in (project_context or {}).get(operating_condition["source_field"], []):
             raise PhysicalInputConflict("OPERATING_CONDITION_OUTSIDE_ITEM_SCOPE", operating_condition["source_field"],
                 (project_context or {}).get(operating_condition["source_field"], []), operating_condition["value"])
+        layout_relation = self._layout_relation(h, values, project_context)
         changes = h.get("condition_changes", {})
         new_initial, new_target = changes.get("initial_state", False), changes.get("target", False)
         if new_target and parent.facts.get("object_id") == g["object_id"]:
@@ -943,7 +1076,10 @@ class PhysicalHypothesisInstantiationService:
                 if field == "object_id" and not new_target:
                     raise PhysicalInputConflict("TARGET_ID_CHANGED_WITHOUT_NEW_CONDITION", field, parent.facts[field], value)
                 raise PhysicalInputConflict("CONFLICT_WITH_SELECTED_CONDITION", field, parent.facts[field], value)
-        identity = signature({"parent": parent.scenario_id, "plan": plan_key, "hypothesis": h, "point": values})[:16]
+        identity_inputs = {"parent": parent.scenario_id, "plan": plan_key, "hypothesis": h, "point": values}
+        if sensitivity.get("request_driver_scope"):
+            identity_inputs["request_driver_scope"] = sensitivity["request_driver_scope"]
+        identity = signature(identity_inputs)[:16]
         sid = f"{parent.scenario_id}-PH-{identity}"
 
         def rescope(value):
@@ -961,6 +1097,7 @@ class PhysicalHypothesisInstantiationService:
                  "travel_to_impact_m", "gravity_body_acceleration_mps2", "post_stop_motion", "contact_normal_speed_kph",
                  "grade_coordinate_frame", "slope_reference", "ego_heading_relative_to_downhill",
                  "downhill_body_direction", "grade_orientation_basis"}
+        stale.add("layout_relation")
         for field in stale:
             facts.pop(field, None); provenance.pop(field, None)
         # Keep the parent immutable, but expose only validated inputs to the
@@ -999,6 +1136,10 @@ class PhysicalHypothesisInstantiationService:
                 provenance[field]["basis_refs"] = list(assumption["basis_refs"])
                 provenance[field]["conditions"] = list(assumption["conditions"])
                 provenance[field]["source_refs"][0]["excerpt"] = assumption["rationale"]
+        if layout_relation is not None:
+            facts["layout_relation"] = layout_relation
+            provenance["layout_relation"] = {**deepcopy(meta), "coordinate_frame": "BODY_FORWARD_POSITIVE",
+                "assessment_reference": "MODEL_INITIAL_STATE", "causal_relevance": True}
         if "ego_speed_kph" in values:
             provenance["ego_speed_kph"] = {**provenance["ego_speed_kph"], "analysis_value_semantic": "PRE_FAULT_OPERATING_SPEED"}
         if assumed_driver:
@@ -1006,6 +1147,10 @@ class PhysicalHypothesisInstantiationService:
                 if field in supplied:
                     provenance[field].update(analysis_value_semantic="OPERATING_DRIVER_CONFIGURATION",
                         selection_basis="EXPLICIT_PHYSICAL_HYPOTHESIS_DRIVER_SCOPE", basis_refs=list(h["basis_refs"]))
+                    if sensitivity.get("request_driver_scope"):
+                        provenance[field]["selection_basis"] = "VALIDATED_REQUEST_DRIVER_SCOPE"
+                        provenance[field]["source_refs"].append({"source_type": "analysis_hypothesis", "source_id": plan_key,
+                            "location": "context.driver_configurations", "excerpt": assumed_driver})
         if "steering" in [control.lower() for control in h["failed_controls"]]:
             facts["steering_control_available"], provenance["steering_control_available"] = False, deepcopy(meta)
         if braking_capability(h) is False:
@@ -1027,7 +1172,8 @@ class PhysicalHypothesisInstantiationService:
         if assumed_driver:
             info["driver_configuration_assumption"] = {
                 "driver_position": assumed_driver, "status": "PENDING",
-                "basis": "模型明确限定的分析工况；不是原文已确认的人员位置。"}
+                "basis": ("有效请求上下文限定的单一人员配置；不是原文已确认的人员位置。"
+                    if sensitivity.get("request_driver_scope") else "模型明确限定的分析工况；不是原文已确认的人员位置。")}
         info["grade_mapping"] = {"source_tag": parent.facts.get("source_slope_direction", parent.facts.get("source_operating_conditions", {}).get("source_slope_direction")),
             "source_reference": parent.facts.get("slope_reference", "UNSPECIFIED"), **grade_mapping} if grade_mapping else {}
         # A newly assumed object does not inherit another object's Exposure.

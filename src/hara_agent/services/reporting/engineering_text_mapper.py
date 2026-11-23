@@ -484,6 +484,8 @@ class EngineeringReportTextMapper:
             if isinstance(number, (int, float)) and not isinstance(number, bool)
         ]
         model = facts.get("fault_motion_model")
+        if layout := cls.layout_text(scenario):
+            parts.append(layout)
         analysis = facts.get("physical_analysis", {})
         control_hypothesis = (facts.get("control_analysis") or analysis).get("hypothesis", {})
         if reason := control_hypothesis.get("unresolved_controls", {}).get("braking"):
@@ -819,6 +821,32 @@ class EngineeringReportTextMapper:
             parts.append("完整模型缺口及未覆盖范围见场景物理方案诊断")
         return "；".join(parts)
 
+    @classmethod
+    def layout_text(cls, scenario: Any, *, compact: bool = False) -> str:
+        relation = (getattr(scenario, "facts", {}) or {}).get("layout_relation", {})
+        label = {"PARALLEL": "平行车位", "ANGLED": "斜列车位", "PERPENDICULAR": "垂直车位"}.get(relation.get("kind"))
+        if not label:
+            return ""
+        title = f"布局假设：{label}"
+        if compact:
+            return title
+        axes = relation.get("axes_deg", {})
+        parts = [title]
+        if all(isinstance(axes.get(key), (int, float)) and not isinstance(axes[key], bool) for key in ("bay", "aisle")):
+            parts.append(f"初始车体坐标下，车位轴线 {quantity(axes['bay'], 'deg')}°、通道轴线 {quantity(axes['aisle'], 'deg')}°（车头前向为0°）")
+        labels = {"BAY_AXIS": "车位轴线", "AISLE_AXIS": "通道轴线"}
+        for actor, name in (("ego", "自车"), ("object", "目标")):
+            check = relation.get("path_checks", {}).get(actor, {})
+            if check.get("status") == "INITIAL_DIRECTION_MATCH":
+                parts.append(name + "初始运动沿" + labels.get(check.get("path"), "所声明轴线"))
+            elif check.get("status") == "SYMBOLIC_OR_UNRESOLVED":
+                parts.append(name + "运动与布局轴线的关系尚未确定")
+        if relation.get("trajectory_scope") == "INITIAL_TANGENT_ONLY":
+            parts.append("仅核对圆弧初始切向，后续运动沿所列圆弧计算")
+        if relation.get("geometry_scope") == "LOCAL_INITIAL_RELATION_ONLY":
+            parts.append("仅建立局部初始关系，不代表已验证双方沿两条布局轴线交互")
+        return "；".join(parts)
+
     def scenario(self, scenario: Any, *, variant_count: int = 1) -> tuple[str, str]:
         """Render validated structured facts without exposing Method vocabulary."""
         facts = getattr(scenario, "facts", {}) or {}
@@ -863,6 +891,8 @@ class EngineeringReportTextMapper:
         position = self._object_position(scenario)
 
         clauses = [location]
+        if layout := self.layout_text(scenario, compact=True):
+            clauses.append(layout)
         if condition:
             clauses.append(f"代表运行条件为{condition['value']}")
         if mode:
@@ -889,6 +919,8 @@ class EngineeringReportTextMapper:
         operational = "，".join(clauses) + "。"
 
         details = []
+        if layout := self.layout_text(scenario):
+            details.append(layout)
         slope_direction = facts.get("source_slope_direction", source_conditions.get("source_slope_direction", ""))
         slope_pct = facts.get("source_slope_pct", source_conditions.get("source_slope_pct"))
         if slope_direction and isinstance(slope_pct, (int, float)):

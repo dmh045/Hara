@@ -696,10 +696,21 @@ class StructuredRiskScoringService:
                     if result["severity"]["engineering_status"] != "FINALIZED":
                         failures.append("BRANCH_SEVERITY_UNRESOLVED")
         if failures or not rows:
-            result = self._score(base, hazard_event)
-            result["severity"].update(severity_score="", engineering_status="PENDING",
-                calculation_status="PENDING_INPUT", pending_reason="COLLISION_BRANCH_SET_UNRESOLVED",
-                reasoning="; ".join(sorted(set(failures))), executor_invoked=False)
+            if rows:
+                # Keep one actual partial tuple. Re-evaluating the parent here
+                # can restore an E/C value invalidated by the branch geometry.
+                # A known ASIL branch below still takes precedence; otherwise
+                # the stable first row is identified as partial in the summary.
+                result = deepcopy(rows[0]["scores"])
+            else:
+                result = self._score(base, hazard_event)
+                # Environmental E remains independently evaluated. Without an
+                # evaluated contact branch, parent S/C cannot establish this
+                # unresolved object's injury or avoidance result.
+                for dimension in ("severity", "controllability"):
+                    result[dimension].update(**{dimension + "_score": ""}, engineering_status="PENDING",
+                        calculation_status="PENDING_INPUT", pending_reason="COLLISION_BRANCH_SET_UNRESOLVED",
+                        reasoning="; ".join(sorted(set(failures))), executor_invoked=False)
         else:
             levels = list(self.method.asil.severity_levels)
             deciding = max(rows, key=lambda row: levels.index(row["scores"]["severity"]["severity_score"]))
@@ -742,7 +753,7 @@ class StructuredRiskScoringService:
         known = [row for row in evaluations if row["ASIL"]]
         order = asil_service.result_order()
         deciding_risk = max(known, key=lambda row: (order.index(row["ASIL"]), list(self.method.asil.severity_levels).index(row["S"]) if row["S"] else -1)) if known else None
-        maximum_s = result["severity"]["severity_score"]
+        maximum_s = "" if failures else result["severity"]["severity_score"]
         invariant_s = result["severity"].get("invariant")
         if deciding_risk:
             result = deepcopy(deciding_risk["scores"])
@@ -759,4 +770,6 @@ class StructuredRiskScoringService:
             "severity_maximum": maximum_s,
             "aggregation_basis": "EACH_BRANCH_OWN_SEC_ACTIVE_MATRIX",
         }
+        if failures and rows and not deciding_risk:
+            result["branch_summary"]["partial_branch_id"] = rows[0]["branch_id"]
         return result

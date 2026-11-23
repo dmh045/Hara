@@ -273,7 +273,7 @@ class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v6-dedup-model-scope"
     CONTROL_REQUEST_VIEW_VERSION = "physical-request-view-v5-scoped-control-context"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v35-manual-path-completeness"
-    PROMPT_VERSION = "post-fault-physical-scenario-v58-fault-mechanism-remote-response"
+    PROMPT_VERSION = "post-fault-physical-scenario-v59-initial-layout-relations"
     CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v38-remote-response-delay"
     RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
     CONTROL_ANALYSIS_POLICY = (
@@ -753,6 +753,15 @@ class PhysicalScenarioAgent:
             "程序检验同一几何，不是只检查理由非空。"
             "初始静止的本车被横穿者接触时，要检查即使本车不动是否仍会接触；不能把原本就发生的接触归因于溜车。"
         )
+        if not controls_only:
+            output_contract["layout_relation"] = {
+                "optional_hypothesis_field": {"kind": "PARALLEL|ANGLED|PERPENDICULAR",
+                    "basis": "SELECTED_SOURCE_CONDITION|ANALYSIS_ASSUMPTION",
+                    "axes_deg": {"bay": "degrees", "aisle": "degrees"},
+                    "paths": {"ego": "BAY_AXIS|AISLE_AXIS|UNSPECIFIED",
+                              "object": "BAY_AXIS|AISLE_AXIS|UNSPECIFIED"},
+                    "rationale": "布局如何影响本对象运动/接触几何及适用范围"},
+                "meaning": "仅在布局影响本假设时使用。两轴相对模型初始车体x前/y左，范围[-180,180]度；平行轴差0、斜列介于0与90、垂直90。paths绑定初始切向/固定运动方向，非车轮角；圆弧后续不必沿轴线。静止对象填UNSPECIFIED。来源仅限定允许类型，轴线仍是待审假设；无来源类型可提出相容分析布局。局部物理等价的布局写入同一假设适用范围，不按标签复制或增加实例。"}
         if not controls_only and context.get("operating_atom_options"):
             # Keep the output example consistent with the enforced contract.
             # Otherwise live models repeatedly follow the incomplete example

@@ -700,11 +700,19 @@ class ScenarioDimensionApplicabilityService:
                 and not query.get("unmapped_object_sources")
             ):
                 status = ScenarioDimensionApplicability.NOT_APPLICABLE
-                reason = (
-                    "The source-grounded static physical object remains in scenario facts; "
-                    "no independent Method Exposure object atom is required."
-                )
-                trigger = ("OBJECT_STATIC", "STATIC_PHYSICAL_FACT_PRESERVED")
+                if "OBJECT_STATIC" in query.get("structured_source_categories", []):
+                    reason = (
+                        "An existing structured or active Method static target remains bound; "
+                        "no independent Method Exposure object atom is required."
+                    )
+                    trigger = ("OBJECT_STATIC", "STATIC_PHYSICAL_FACT_PRESERVED")
+                else:
+                    reason = (
+                        "Only analytical MF/HE text suggests a static obstacle; no fixed source/Method "
+                        "object is established. This hint needs no independent Method Exposure object "
+                        "atom and does not prohibit a compatible conditional moving interaction."
+                    )
+                    trigger = ("OBJECT_STATIC", "ANALYTICAL_HAZARD_OBJECT_HINT")
             elif objects:
                 status = ScenarioDimensionApplicability.REQUIRED
                 reason = "Explicit structured or hazard-target evidence requires an object dimension."

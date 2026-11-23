@@ -646,6 +646,37 @@ def test_reverse_object_does_not_automatically_require_traffic(object_type):
     assert query["traffic_relations"] == []
 
 
+@pytest.mark.parametrize('origin', ['SOURCE_FACT', 'ACTIVE_METHOD'])
+def test_structured_static_object_retains_its_applicability_authority(origin):
+    parent = ScenarioCandidate('static-source','parking','','',
+        facts={'object_type':'static obstacle'} if origin=='SOURCE_FACT' else {})
+    query = ScenarioSemanticQueryBuilder.build(malfunction={},parent=parent,assessment={},project_context={},
+        fm_template={'active_option':{'obj_type':'static obstacle'}} if origin=='ACTIVE_METHOD' else {})
+    binding = ScenarioBindingDecision(dimension='OBJECT',authority=ScenarioBindingAuthority.ANALYTICAL_SELECTION,
+        refinable=True,source_refs=('PARENT.OBJECT',),basis='existing object')
+    decision = ScenarioDimensionApplicabilityService.assess('OBJECT',query,binding)
+    assert decision.status is ScenarioDimensionApplicability.NOT_APPLICABLE
+    assert 'existing structured or active Method static target remains bound' in decision.reason
+    assert 'STATIC_PHYSICAL_FACT_PRESERVED' in decision.trigger_evidence
+    assert 'ANALYTICAL_HAZARD_OBJECT_HINT' not in decision.trigger_evidence
+
+
+def test_pending_hazard_static_hint_is_not_a_source_object_or_a_moving_target_prohibition():
+    parent = ScenarioCandidate('unbound-source','parking','','',facts={})
+    query = ScenarioSemanticQueryBuilder.build(
+        malfunction={'status':'PENDING','vehicle_level_hazard':'The vehicle crosses the bay edge toward a curb or obstacle.'},
+        parent=parent,assessment={},project_context={},fm_template={})
+    binding = ScenarioBindingDecision(dimension='OBJECT',authority=ScenarioBindingAuthority.ANALYTICAL_SELECTION,
+        refinable=True,source_refs=('MF.vehicle_level_hazard',),basis='analytical hazard premise')
+    decision = ScenarioDimensionApplicabilityService.assess('OBJECT',query,binding)
+    assert query['object_categories'] == ['OBJECT_STATIC']
+    assert 'OBJECT_STATIC' not in query['structured_source_categories']
+    assert decision.status is ScenarioDimensionApplicability.NOT_APPLICABLE
+    assert decision.trigger_evidence == ('OBJECT_STATIC','ANALYTICAL_HAZARD_OBJECT_HINT')
+    assert 'no fixed source/Method object is established' in decision.reason
+    assert 'does not prohibit' in decision.reason
+
+
 @pytest.mark.parametrize(
     ("relation", "category"),
     [

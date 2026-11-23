@@ -88,12 +88,23 @@ class FTTIMethodExecutor:
         remaining = set(hypothesis.get("remaining_controls", []))
         location = scenario.get("driver_in_vehicle")
         driver = "in_driver_seat" if location is True else "outside_driver_seat" if location is False else ""
-        if (not controls or not controls <= remaining or controls & set(hypothesis.get("failed_controls", []))
-                or "driver_braking" in controls and driver != "in_driver_seat"
-                or proposal.get("driver_positions") and driver not in proposal["driver_positions"]):
+        missing_controls = controls - remaining
+        failed_controls = controls & set(hypothesis.get("failed_controls", []))
+        driver_mismatch = bool("driver_braking" in controls and driver != "in_driver_seat"
+            or proposal.get("driver_positions") and driver not in proposal["driver_positions"])
+        if not controls or missing_controls or failed_controls or driver_mismatch:
             detail = hypothesis.get("timing_unresolved_reason") or hypothesis.get("safe_state_unresolved_reason")
-            return pending("本成员没有适用的剩余控制响应路径；不能借用其他驾驶员分支。"
-                           + ("具体原因：" + detail if detail else ""), "CONTROL_PATH_UNRESOLVED")
+            reasons = []
+            if not controls or missing_controls or failed_controls:
+                reasons.append("所选响应依赖的控制未在本成员中全部建立或不相容。")
+            if driver_mismatch:
+                reasons.append("所选响应不适用于本成员驾驶员范围；不能借用其他驾驶员分支。")
+            unresolved = pending("".join(reasons) + ("具体原因：" + detail if detail else ""),
+                "CONTROL_PATH_UNRESOLVED")
+            return replace(unresolved, timing_trace={**unresolved.timing_trace,
+                "required_controls": sorted(controls), "remaining_controls": sorted(remaining),
+                "missing_required_controls": sorted(missing_controls),
+                "failed_required_controls": sorted(failed_controls), "driver_scope_mismatch": driver_mismatch})
         release_policy = policy.get("fault_release_response", {})
         release = bool(release_policy and response.get("model") == release_policy.get("model"))
         required_path = proposal.get("required_command_path", {})

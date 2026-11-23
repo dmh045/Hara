@@ -408,8 +408,13 @@ def existing_motion(inside=True):
     parent = make_candidate(7)
     parent.facts.update(driver_in_vehicle=inside, relative_speed_kph=7., relative_distance_m=12.,
         ttc_s=12 / (7 / 3.6), collision_type="FRONTAL", object_position="FRONT",
+        harm_mechanism_id="MF:CONTACT", impact_time_id="existing-impact",
         collision_branches=[{"branch_id": "existing-contact", "mechanism_id": "MF:CONTACT",
-                             "physically_possible": True}])
+            "impact_time_id": "existing-impact", "physically_possible": True,
+            "road_user_type": "VEHICLE", "collision_type": "FRONTAL",
+            "relative_speed_kph": 7., "ttc_s": 12 / (7 / 3.6),
+            "_fact_provenance": {field: source() for field in (
+                "road_user_type", "collision_type", "relative_speed_kph", "ttc_s")}}])
     parent.fact_provenance.update({field: source() for field in parent.facts})
     return parent
 
@@ -525,7 +530,24 @@ def test_existing_motion_gets_only_missing_controls_then_scores_and_resumes(meth
         assert child.fact_provenance[field] == parent.fact_provenance[field]
     before, after = score(method, parent), score(method, child)
     assert after['controllability']['controllability_score'] == expected
-    assert before['severity'] == after['severity']
+    # Severity diagnostics contain the complete branch C/ASIL/context, which
+    # must change when controls are assessed. Compare the actual S/E executor
+    # records, not a nested copy of those changing control results.
+    assert len(before['branch_evaluations']) == len(after['branch_evaluations']) == 1
+    old_branch, new_branch = before['branch_evaluations'][0], after['branch_evaluations'][0]
+    for dimension in ('severity', 'exposure'):
+        assert old_branch['scores'][dimension] == new_branch['scores'][dimension]
+    for field in ('branch_id', 'impact_time_id', 'relative_speed_kph', 'ttc_s',
+                  'first_contact_time_s', 'physical_input_conflicts', 'invalidated_parent_fields', 'S', 'E'):
+        assert old_branch[field] == new_branch[field]
+    assert {k: v for k, v in before['severity'].items()
+            if k not in {'branch_evaluations', 'maximum_feasible_severity'}} == {
+        k: v for k, v in after['severity'].items()
+            if k not in {'branch_evaluations', 'maximum_feasible_severity'}}
+    for result in (before, after):
+        assert result['severity']['branch_evaluations'] == result['branch_evaluations']
+        if 'maximum_feasible_severity' in result['severity']:
+            assert result['severity']['maximum_feasible_severity'] == result['branch_summary']['severity_maximum'] == old_branch['S']
     assert before['exposure'] == after['exposure']
     assert after['controllability']['engineering_status'] == 'PENDING'
     assert 'physical_analysis' not in child.facts
@@ -539,6 +561,29 @@ def test_existing_motion_gets_only_missing_controls_then_scores_and_resumes(meth
     state.scenarios = [child]
     restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
     assert restored.scenarios == state.scenarios
+
+
+@pytest.mark.parametrize('missing', ['impact_time_id', 'harm_mechanism_id'])
+def test_control_completion_cannot_make_an_unidentified_contact_branch_scoreable(method, missing):
+    from hara_agent.services.analysis.physical_hypothesis_instantiation_service import PhysicalHypothesisInstantiationService
+    parent = existing_motion(False)
+    if missing == 'impact_time_id':
+        parent.facts['collision_branches'][0].pop(missing)
+    else:
+        parent.facts.pop(missing)
+    original = deepcopy(parent)
+    exposure = score(method, parent)['exposure']
+    plan = PhysicalScenarioPlan.from_dict(control_only_plan(), evidence_ids={'MF.description', 'SCENARIO.conditions'})
+    children, errors = PhysicalHypothesisInstantiationService(method).instantiate(parent, mf(), plan,
+        plan_key='invalid-existing-contact-controls', response_model='OFFLINE_SYNTHETIC')
+    assert not errors and len(children) == 1
+    result = score(method, children[0])
+    assert result['exposure'] == exposure
+    assert not result['severity']['severity_score']
+    assert not result['controllability']['controllability_score']
+    assert not result['branch_evaluations']
+    assert result['branch_summary']['unresolved_reasons'] == ['BRANCH_MECHANISM_OR_PHYSICS_UNRESOLVED']
+    assert parent == original
 
 
 def test_control_only_preserves_conflicting_project_and_old_hypothesis(method):

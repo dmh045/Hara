@@ -64,6 +64,35 @@ CONTROL_ASSESSMENT_OPTIONAL = {"intervention_assumptions", "unresolved_controls"
                                "safe_state_unresolved_reason", "hazard_timing", "timing_unresolved_reason"}
 
 
+def layout_axis_separation_deg(left: float, right: float) -> float:
+    """Unoriented axes in the initial body frame, distinct from travel headings."""
+    return abs((left - right + 90) % 180 - 90)
+
+
+def _validate_layout_relation(value: dict, hypothesis: dict) -> None:
+    relation = _object(value, {"kind", "basis", "axes_deg", "paths", "rationale"})
+    if relation["kind"] not in {"PARALLEL", "ANGLED", "PERPENDICULAR"}:
+        raise ValueError("Unknown layout_relation.kind")
+    if relation["basis"] not in {"SELECTED_SOURCE_CONDITION", "ANALYSIS_ASSUMPTION"}:
+        raise ValueError("layout_relation.basis must distinguish source constraint from analysis assumption")
+    if relation["basis"] == "SELECTED_SOURCE_CONDITION" and not hypothesis.get("operating_condition"):
+        raise ValueError("Source-constrained layout_relation requires the selected operating_condition")
+    axes = _object(relation["axes_deg"], {"bay", "aisle"})
+    if any(type(v) not in (int, float) or not math.isfinite(v) or not -180 <= v <= 180 for v in axes.values()):
+        raise ValueError("layout_relation axes require finite degrees in [-180,180]")
+    delta = layout_axis_separation_deg(axes["bay"], axes["aisle"])
+    actual = ("PARALLEL" if math.isclose(delta, 0, abs_tol=1e-9) else
+              "PERPENDICULAR" if math.isclose(delta, 90, abs_tol=1e-9) else "ANGLED")
+    if actual != relation["kind"]:
+        raise ValueError("LAYOUT_AXES_KIND_CONFLICT: kind and bay/aisle axis relationship disagree")
+    paths = _object(relation["paths"], {"ego", "object"})
+    if any(v not in {"BAY_AXIS", "AISLE_AXIS", "UNSPECIFIED"} for v in paths.values()):
+        raise ValueError("layout_relation paths must identify the initial motion-axis relationship")
+    if all(v == "UNSPECIFIED" for v in paths.values()):
+        raise ValueError("LAYOUT_WITHOUT_MOTION_RELATION: a label alone does not establish geometric coverage")
+    _text(relation["rationale"])
+
+
 def response_control_dependency_missing(proposal: dict) -> bool:
     """Require the declared dependencies of the existing response models."""
     model = proposal.get("transition", {}).get("model")
@@ -87,8 +116,8 @@ def required_command_path_conflicts(controls: list[str], failed: list[str], excl
     return {key: values for key, values in conflicts.items() if values}
 
 
-def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
-    """Retain shared faults/automatic response and scope personnel-specific paths."""
+def controls_for_driver(hypothesis: dict, driver_position: str, *, driver_scope: str = "") -> dict:
+    """Scope personnel paths, optionally using an already validated request scope."""
     assessment = hypothesis.get("driver_control_assessments", {}).get(driver_position)
     if assessment is None:
         return hypothesis
@@ -125,7 +154,11 @@ def controls_for_driver(hypothesis: dict, driver_position: str) -> dict:
     # already scoped. Preserve it only when this local assessment actually
     # declares every required control; never borrow a pedal/remote path across
     # drivers or infer access from an unspecified/multi-driver world.
-    personnel_scope = shared_response.get("driver_positions") or hypothesis.get("driver_positions", [])
+    # The producer validates request identity/conditions before supplying this
+    # fallback. It does not become a provider-declared driver_positions field.
+    personnel_scope = (shared_response.get("driver_positions") or hypothesis.get("driver_positions")
+        or ([driver_scope] if driver_scope == driver_position
+            and driver_scope in ("in_driver_seat", "outside_driver_seat") else []))
     scoped_personnel_response = (bool(personnel) and set(personnel_scope) == {driver_position}
         and required <= set(selected["remaining_controls"]))
     if ((automatic_response or scoped_personnel_response)
@@ -449,7 +482,7 @@ class PhysicalScenarioPlan:
         for index, h in enumerate(hypotheses):
             _object(h, {"hypothesis_id", "model", "rationale", "basis_refs", "geometry", "parameters",
                         "conditions", "uncovered_conditions", "failed_controls", "remaining_controls"},
-                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "unresolved_controls", "driver_positions", "post_stop_motion", "driver_operating_atoms",
+                    {"condition_changes", "grade_frame", "intervention_assumptions", "safe_state_proposal", "operating_condition", "layout_relation", "unresolved_controls", "driver_positions", "post_stop_motion", "driver_operating_atoms",
                      "operating_atoms", "operating_atom_exclusions", "hazard_timing", "safe_state_unresolved_reason", "timing_unresolved_reason", "driver_control_assessments"},
                     path=f"hypotheses[{index}]")
             if "operating_atoms" in h:
@@ -481,6 +514,8 @@ class PhysicalScenarioPlan:
                     raise ValueError("Operating condition must select an Item allowed scope")
                 _text(condition["value"])
                 _text(condition["physical_effect"])
+            if "layout_relation" in h:
+                _validate_layout_relation(h["layout_relation"], h)
             if "condition_changes" in h:
                 if isinstance(h["condition_changes"], dict) and "grade_frame" in h["condition_changes"]:
                     raise ValueError(_GRADE_FRAME_LOCATION)
@@ -726,6 +761,7 @@ class PhysicalScenarioPlan:
                 "condition_changes": {k: h.get("condition_changes", {}).get(k, False) for k in ("initial_state", "target")},
                 "driver_position": driver,
                 "operating_condition": {k: v for k, v in h.get("operating_condition", {}).items() if k != "physical_effect"},
+                "layout_relation": {k: v for k, v in h.get("layout_relation", {}).items() if k != "rationale"},
                 "excluded_operating_dimensions": sorted(h.get("operating_atom_exclusions", {})),
             }
 

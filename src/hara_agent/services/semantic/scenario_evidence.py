@@ -313,7 +313,7 @@ class CausalEvidenceSelector:
         if record.namespace in {"SCN", "DERIVED"} and ref.partition(".")[2] in {
             "fault_motion_model", "motion_model_outcome", "longitudinal_acceleration_mps2",
             "slope_percent", "residual_resistance_mps2", "turn_radius_m",
-            "lateral_acceleration_mps2", "lateral_speed_mps",
+            "lateral_acceleration_mps2", "lateral_speed_mps", "layout_relation",
         }:
             return 0, "current scoped motion model and derivation"
         for priority, terms, reason in (
