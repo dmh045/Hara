@@ -27,6 +27,12 @@ from hara_agent.services.reporting.engineering_text_mapper import EngineeringRep
     "The driver does not see the pedestrian because a parked vehicle occludes the view.",
     "The driver cannot see the pedestrian because a parked vehicle occludes the view.",
     "并非没有遮挡，车辆挡住了行人。",
+    "不假定实体遮挡物，但邻车遮挡行人视线。",
+    "未验证共同计算平台、电源或传感器遮挡导致的共同失效；邻车遮挡行人视线。",
+    "未验证独立性，停放车辆遮挡行人视线。",
+    "未验证当前已发生的传感器遮挡导致的共同失效能否被响应消除。",
+    "未验证当前遮挡导致的共同失效后果。",
+    "不据此声明实体阻挡、遮挡或限制通行，但停放车辆遮挡行人视线。",
 ])
 def test_reference_exclusion_is_local_to_the_actual_condition(method, text):
     child = crossing_candidate(method)
@@ -56,6 +62,8 @@ def test_reference_exclusion_is_local_to_the_actual_condition(method, text):
     "没有降低可见性，驾驶员持续监控。",
     "There is no limited visibility; the driver monitors the conflict.",
     "本条仅保留可能遮挡的未覆盖条件，不据此声称实际视野受限。",
+    "不假定实体遮挡物，也不改变路面附着。",
+    "车位标线及斜向车位几何仅作规划与几何参照，不据此声明实体阻挡、遮挡或限制通行。",
 ])
 def test_no_conflict_reference_keeps_its_transparent_monitoring_assumption(method, text):
     child = crossing_candidate(method)

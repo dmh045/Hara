@@ -121,6 +121,11 @@ presentation:
         text: 防止泊车制动能力丧失导致碰撞。
     scenario_condition_translations:
       "Traffic-induced halt on road": "因交通状况在道路上停车"
+      "Stop first place (V1)": "因交通状况在队列首位停车"
+      "Follow normal distance (V1)": "正常间距跟车"
+      "Free travel (V1)": "自由行驶（V1）"
+      "Following at normal distance (>=1/2 speedometer)": "正常间距跟车（间距≥车速表示值的1/2，按方法口径）"
+      "Following at short distance (<1/2 speedometer)": "短间距跟车（间距<车速表示值的1/2，按方法口径）"
       "Parking in a multi-story car park/garage": 多层停车场/车库
       "Parkplatz / Parkhaus / Garage (V1 usage)": 停车场/停车楼/车库
       "Reduced friction (µ < 0.8)": 低附着路面（µ < 0.8）

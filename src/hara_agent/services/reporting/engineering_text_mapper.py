@@ -25,6 +25,8 @@ class EngineeringReportTextMapper:
         "FRONTAL": "正面碰撞", "REAR_END": "追尾碰撞",
         "SIDE": "侧向碰撞", "LATERAL": "侧向碰撞",
     }
+    _CONTACT_OBJECT_TEXT = {"VEHICLE": "其他车辆", "PASSENGER_CAR": "乘用车", "PEDESTRIAN": "行人",
+                            "CYCLIST": "骑行者", "FIXED_OBJECT": "固定障碍物"}
     _PHYSICAL_MODEL_TEXT = {
         "CONSTANT_SPEED_REPRESENTATIVE": "恒速代表运动",
         "GRADE_ROLLAWAY_TO_IMPACT_DISTANCE": "坡道溜车（重力减残余阻力）",
@@ -255,20 +257,24 @@ class EngineeringReportTextMapper:
         return text if re.search(r"[\u3400-\u9fff]", text) else ""
 
     @staticmethod
-    def has_foreign_prose(value: Any) -> bool:
+    def has_foreign_prose(value: Any, *, include_slashes: bool = False) -> bool:
         """Detect narrative prose, not units, IDs or accepted abbreviations."""
-        return bool(re.search(r"\b[A-Za-z]{3,}(?:[ -]+[A-Za-z]{2,}){2,}\b", str(value or "")))
+        if not include_slashes:
+            return bool(re.search(r"\b[A-Za-z]{3,}(?:[ -]+[A-Za-z]{2,}){2,}\b", str(value or "")))
+        return any(re.search(r"[a-z]", match[0]) and re.search(r"\s", match[0]) for match in re.finditer(
+            r"\b[A-Za-z]{2,}(?:[ /-]+[A-Za-z]{2,}){2,}\b", str(value or "")))
 
     @classmethod
-    def analysis_note(cls, value: Any, fallback: str) -> str:
+    def analysis_note(cls, value: Any, fallback: str, *, include_slashes: bool = False) -> str:
         # This is a structured presentation fallback, not an alleged translation.
         # The full source language is retained in the existing audit table.
-        return fallback if cls.has_foreign_prose(value) else cls.engineering_terms(narrative_quantities(str(value or "")))
+        return fallback if cls.has_foreign_prose(value, include_slashes=include_slashes) else cls.engineering_terms(narrative_quantities(str(value or "")))
 
     @classmethod
     def engineering_terms(cls, text: str) -> str:
         """Localize known contract tokens in prose, never inside identifiers."""
         labels = {**cls._MODE_TEXT, **cls._CONTROL_TEXT, **cls._PHYSICAL_MODEL_TEXT,
+            "Vehicle ready to start": "车辆准备起步",
             "Rear-、Front-或TopView": "后视、前视或俯视画面",
             "Rear-, Front-或TopView": "后视、前视或俯视画面",
             "RearView": "后视画面", "FrontView": "前视画面", "TopView": "俯视画面",
@@ -492,9 +498,16 @@ class EngineeringReportTextMapper:
             parts.append("制动能力未决依据：" + cls.analysis_note(reason,
                 "当前人员配置下尚未建立可用的制动响应结论；命令通道、执行能力及独立性限定见审计表原始分析说明"))
         if controls := facts.get("control_analysis", {}).get("hypothesis"):
-            parts.append("干预能力假设：" + "；".join(controls["conditions"]))
+            conditions = controls["conditions"]
+            parts.append("干预能力假设：" + "；".join(dict.fromkeys(cls.analysis_note(text,
+                "本场景干预能力附有适用条件，完整外文条件见审计表原始控制方案", include_slashes=True) for text in conditions)))
+            if any(cls.has_foreign_prose(text, include_slashes=True) for text in conditions):
+                for field, label in (("remaining_controls", "方案中保留的控制"), ("failed_controls", "方案中失效的控制")):
+                    if identities := controls.get(field):
+                        parts.append(label + "：" + "、".join(cls._CONTROL_TEXT.get(c, c) for c in identities))
             for proposal in controls.get("intervention_assumptions", {}).values():
-                parts.append("干预条件：" + "；".join(proposal["conditions"]))
+                parts.append("干预条件：" + "；".join(dict.fromkeys(cls.analysis_note(text,
+                    "该干预判断附有适用条件，完整外文条件见审计表原始控制方案", include_slashes=True) for text in proposal["conditions"])))
         if analysis:
             if facts.get("post_stop_motion") == "HOLD_POSITION":
                 parts.append("停车后保持原位置至所列模型时限（分析假设），继续检查移动目标是否接触")
@@ -958,6 +971,7 @@ class EngineeringReportTextMapper:
     @classmethod
     def hazardous_event(cls, value: Any, scenario: Any = None) -> str:
         text = narrative_quantities(str(value or "").strip())
+        facts = (getattr(scenario, "facts", {}) or {}) if scenario is not None else {}
         if scenario is not None:
             identity = str((getattr(scenario, "facts", {}) or {}).get("object_id") or "")
             label = cls._first_category(cls._categories(scenario), (
@@ -973,9 +987,15 @@ class EngineeringReportTextMapper:
         text = re.sub(r"(?<![A-Za-z0-9_])BRAKE_AND_HOLD(?![A-Za-z0-9_])", "制动并停车保持", text)
         text = re.sub(r"(?<![A-Za-z])EPB(?![A-Za-z])", "电子驻车制动", text, flags=re.IGNORECASE)
         text = re.sub(r"(?<![A-Za-z])System\s+OK(?![A-Za-z])", "系统正常", text, flags=re.IGNORECASE)
+        reverse_contact = cls._reversing_stationary_rear_vehicle(
+            facts.get("road_user_type"), facts.get("collision_type"), facts)
         for raw, display in cls._COLLISION_TEXT.items():
+            if raw == "REAR_END" and reverse_contact:
+                display = "后向碰撞"
             text = re.sub(rf"(?<![A-Za-z0-9_-]){raw}\s*(?:接触|碰撞)", display, text)
         text = cls.engineering_terms(text)
+        if reverse_contact:
+            text = text.replace("追尾碰撞", "后向碰撞")
         clauses = [item.strip() for item in re.split(r"[；;]", text) if item.strip()]
         return "；".join(dict.fromkeys(clauses)).rstrip("。") + "。" if clauses else "待危险事件确认。"
 
@@ -1092,6 +1112,14 @@ class EngineeringReportTextMapper:
         # Do not use a common character prefix (it may cut away a negation).
         texts = [text for text in texts if not any(
             text != other and text.startswith(other) for other in texts)]
+        # The SG identity already belongs to these members. A shared contact
+        # intent must name their actual objects, not a parent's example object.
+        objects = list(dict.fromkeys(record.get("road_user_type") for record in records))
+        labels = self._CONTACT_OBJECT_TEXT
+        if (len(objects) > 1 and all(obj in labels for obj in objects)
+                and all(record["wording_id"] == "grounded_behavior_excerpt"
+                    and record["basis"].get("member_contact_grounded") for record in records)):
+            texts = ["防止车辆与" + "、".join(labels[obj] for obj in objects) + "发生接触"]
         return {"text": "；".join(texts) + "。" if texts else self.engineering_terms(original),
                 "members": records, "nature": "DISPLAY_ONLY_NO_ENGINEERING_APPROVAL"}
 
@@ -1103,19 +1131,58 @@ class EngineeringReportTextMapper:
         goal rather than manufacturing an intent from a guideword or parameters.
         """
         hazard = str(member.get("vehicle_hazard", ""))
+        event = str(member.get("hazardous_event", ""))
+        negative_claim = r"未发生|未出现|未产生|不会|不导致|不造成|不引发|无碰撞|无(?:物理)?接触|不能确认|待确定|未知|可能受伤|存在.*风险|(?:未|没有)(?:发生)?(?:碰撞|相撞|擦碰|刮碰|碾压|物理接触|驶入|停入|进入)|未与.+(?:接触|碰撞)"
+        member_contact = (member.get("contact_status") == "CONTACT"
+            and member.get("road_user_type") in EngineeringReportTextMapper._CONTACT_OBJECT_TEXT
+            and bool(re.search(r"碰撞|相撞|擦碰|刮碰|碾压|接触", event))
+            and bool(re.search(r"碰撞|相撞|擦碰|刮碰|碾压|接触", hazard)))
+        # Parent hazards may contain an example collision object. Only replace
+        # that excerpt when it explicitly names a different object class; a
+        # correct shared behavior or an object-neutral intent stays intact.
+        object_terms = {"VEHICLE": r"车辆|邻车|后车|前车|乘用车|汽车",
+                        "PEDESTRIAN": r"行人|人员|交通参与者|道路使用者",
+                        "CYCLIST": r"骑行|骑车|自行车|交通参与者|道路使用者",
+                        "FIXED_OBJECT": r"障碍物|路缘|充电桩|立柱|墙|边界物体"}
+        target = re.search(r"与(.+?)(?:碰撞|相撞|擦碰|刮碰|碾压|接触)", hazard)
+        target_text = target.group(1) if target else ""
+        actual_type = "VEHICLE" if member.get("road_user_type") == "PASSENGER_CAR" else member.get("road_user_type")
+        parent_object_mismatch = (bool(target_text) and actual_type in object_terms
+            and any(re.search(pattern, target_text) for pattern in object_terms.values())
+            and not re.search(object_terms[actual_type], target_text))
+        prefer_member_event = member_contact and parent_object_mismatch
         # An "or" in the parent hazard names different mechanisms. The concrete
         # event, rather than the first parent alternative, determines this member.
         alternatives = bool(re.search(r"[，；。]\s*或|或者|\bor\b", hazard))
-        fields = ("hazardous_event",) if alternatives else (
+        fields = ("hazardous_event",) if alternatives or prefer_member_event else (
             "vehicle_hazard", "functional_effect", "hazardous_event")
         for field in fields:
             source = str(member.get(field, "")).strip()
-            clauses = [c.strip(" 。；，") for c in re.split(r"[，；。]|(?:从而|导致|造成|引发)", source) if c.strip()]
+            clauses = re.split(r"([，；。]|(?:从而|导致|造成|引发))", source)
             candidates = []
-            for clause in clauses:
-                # Do not turn a negated or uncertain harm claim into an intent.
-                if re.search(r"未发生|未出现|未产生|不会|不导致|不造成|不引发|无碰撞|无(?:物理)?接触|不能确认|待确定|未知|可能受伤|存在.*风险|(?:未|没有)(?:发生)?(?:碰撞|相撞|擦碰|刮碰|碾压|物理接触|驶入|停入|进入)|未与.+(?:接触|碰撞)", clause):
+            shared_subject = ""
+            for index in range(0, len(clauses), 2):
+                clause = clauses[index].strip(" 。；，")
+                if not clause:
                     continue
+                if not index or clauses[index - 1] != "，":
+                    shared_subject = ""
+                # Do not turn a negated or uncertain harm claim into an intent.
+                if (re.search(negative_claim, clause)
+                        or re.search(r"(?:并非|并不|不是)(?:无法|不能)", clause)):
+                    shared_subject = ""
+                    continue
+                subject = re.match(r"^(车辆|本车|自车|驾驶员|乘员)", clause)
+                if subject:
+                    shared_subject = subject.group()
+                elif re.match(r"^(?:无法|不能)", clause):
+                    # A comma may omit the preceding explicit actor. Keep that
+                    # actor, never infer a driver/occupant from scenario facts.
+                    if not shared_subject:
+                        continue
+                    clause = shared_subject + clause
+                else:
+                    shared_subject = ""
                 if field == "hazardous_event":
                     # Drop an explicit scene prefix, not arbitrary numbers: a
                     # parameter-bearing sentence otherwise remains in evidence.
@@ -1131,7 +1198,8 @@ class EngineeringReportTextMapper:
                     continue
                 if re.search(r"^(?:车辆|本车|自车)?(?:因|由于|基于).*(?:目标|输出|信息|数据|请求)$", clause):
                     continue
-                if re.search(r"非预期|(?:高于|低于)预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|(?:尚未|未经).*(?:确认|验证).*(?:泊车|运动|进入|驶入)|碰撞|相撞|擦碰|刮碰|碾压|与.*物理接触|禁停|禁止停车", clause):
+                if (re.search(r"非预期|(?:高于|低于)预期|意外|失控|失去|失效|偏离|异常|丧失|溜车|过大|过小|不足|无法|不能|过度|延迟|提前|滞后|卡死|停滞|持续运行|固定不变|不随.*变化|反向|反而|虚假.*干扰|突发.*制动|与.*相反|未.*(?:退出|关闭|激活|驻车)|(?:尚未|未经).*(?:确认|验证).*(?:泊车|运动|进入|驶入)|碰撞|相撞|擦碰|刮碰|碾压|与.*物理接触|禁停|禁止停车", clause)
+                        or member_contact and re.search(r"(?:高于|低于|超过)目标|过快|过慢|与.*接触", clause)):
                     clause = re.sub(r"^(?:发生|出现|产生)", "", clause)
                     clause = re.sub(r"^(?:车辆|本车)(?:发生|出现)", "车辆", clause)
                     # Keep the sentence's explicit subject when a later clause
@@ -1139,6 +1207,8 @@ class EngineeringReportTextMapper:
                     if clause.startswith("与") and re.match(r"^(车辆|本车|自车)", source):
                         clause = re.match(r"^(车辆|本车|自车)", source).group() + clause
                     vehicle_subject = bool(re.match(r"^(车辆|本车|自车)", clause))
+                    if member_contact and field == "hazardous_event" and not vehicle_subject:
+                        continue
                     if vehicle_subject:
                         clause = re.sub(r"的(?:车辆级危险|风险)状态$", "", clause)
                         clause = re.sub(r"因[^，；。]*?而", "", clause)
@@ -1150,12 +1220,34 @@ class EngineeringReportTextMapper:
                 clause = max(enumerate(candidates), key=lambda pair: (pair[1][0], -pair[0]))[1][1]
                 return "防止" + clause + "。", {field: source, "selected_behavior": clause,
                     "function": member.get("function", ""), "malfunction": member.get("malfunction", ""),
-                    "hazardous_event": member.get("hazardous_event", "")}
+                    "hazardous_event": member.get("hazardous_event", ""),
+                    **({"member_contact_grounded": not bool(re.search(negative_claim, event)),
+                        "road_user_type": member["road_user_type"], "contact_status": "CONTACT"}
+                       if member_contact else {})}
+        if member_contact and (prefer_member_event or alternatives) and not re.search(negative_claim, event):
+            # A parameter-bearing event may have no compressible behavior
+            # clause. Its explicit, calculated contact still names this member's
+            # object without importing the parent's different example object.
+            return "防止车辆与" + EngineeringReportTextMapper._CONTACT_OBJECT_TEXT[member["road_user_type"]] + "发生接触。", {
+                "hazardous_event": event, "road_user_type": member["road_user_type"],
+                "contact_status": "CONTACT", "member_contact_grounded": True,
+                "original_goal": original, "reason": "Explicit member contact; no complete behavior clause to compress"}
         return original, {"original_goal": original, "reason": "No independently stated unsafe behavior to compress"}
 
+    @staticmethod
+    def _reversing_stationary_rear_vehicle(road_user_type: Any, collision_type: Any, facts: Mapping) -> bool:
+        speed = facts.get("object_speed_kph")
+        return (road_user_type in {"VEHICLE", "PASSENGER_CAR"} and collision_type == "REAR_END"
+            and facts.get("ego_longitudinal_direction") == "REVERSE" and facts.get("object_position") == "REAR"
+            and isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed == 0
+            and facts.get("object_longitudinal_direction") == "STATIONARY")
+
     @classmethod
-    def _collision_description(cls, road_user_type: Any, collision_type: Any) -> str:
+    def _collision_description(cls, road_user_type: Any, collision_type: Any, scenario: Any = None) -> str:
         target = {"VEHICLE": "车辆", "PASSENGER_CAR": "乘用车", "PEDESTRIAN": "行人", "CYCLIST": "骑行者", "FIXED_OBJECT": "固定障碍物"}.get(road_user_type, "")
+        if cls._reversing_stationary_rear_vehicle(road_user_type, collision_type,
+                (getattr(scenario, "facts", {}) or {}) if scenario is not None else {}):
+            return "倒车碰撞后方" + target
         collision = cls._COLLISION_TEXT.get(collision_type, "")
         if (collision or collision_type == "VEHICLE_TO_ROAD_USER") and road_user_type in {"PEDESTRIAN", "CYCLIST", "FIXED_OBJECT"}:
             side = {"FRONTAL": "前部", "REAR_END": "后部", "SIDE": "侧面", "LATERAL": "侧面"}.get(collision_type, "")
@@ -1163,14 +1255,17 @@ class EngineeringReportTextMapper:
         return target + collision
 
     @classmethod
-    def branch_result(cls, branch: Mapping[str, Any]) -> str:
+    def branch_result(cls, branch: Mapping[str, Any], scenario: Any = None) -> str:
         scores = " / ".join(str(branch.get(key) or "待评定") for key in ("S", "E", "C", "ASIL"))
         parts = [f"分支 {branch.get('branch_id', '')}：{scores}"]
         context = branch.get("risk_context", {})
         def value(field):
             evidence = context.get(field, {})
             return evidence.get("value") if isinstance(evidence, Mapping) else None
-        description = cls._collision_description(value("road_user_type"), value("collision_type"))
+        declared = (getattr(scenario, "facts", {}) or {}).get("collision_branches", []) if scenario is not None else []
+        same_branch = len(declared) == 1 and declared[0].get("branch_id") == branch.get("branch_id")
+        description = cls._collision_description(value("road_user_type"), value("collision_type"),
+            scenario if same_branch else None)
         if description:
             parts.append(description)
         if branch.get("relative_speed_kph") is not None:
@@ -1196,11 +1291,11 @@ class EngineeringReportTextMapper:
             return "待S评定完成后确定"
         return self._PENDING_VALUE
 
-    def severity_rationale(self, evidence: Any, trace: Mapping[str, Any]) -> str:
+    def severity_rationale(self, evidence: Any, trace: Mapping[str, Any], *, scenario: Any = None) -> str:
         if getattr(evidence, "value", None):
             inputs = trace.get("physical_inputs", {})
             speed = inputs.get("relative_speed_kph", trace.get("inputs", {}).get("relative_speed_kph"))
-            description = self._collision_description(inputs.get("road_user_type"), inputs.get("collision_type"))
+            description = self._collision_description(inputs.get("road_user_type"), inputs.get("collision_type"), scenario)
             parts = [description] if description else []
             if isinstance(speed, (int, float)):
                 parts.append("碰撞相对速度 " + quantity(speed, "km/h") + " km/h")
@@ -1410,6 +1505,8 @@ class EngineeringReportTextMapper:
         if outcome:
             if validated:
                 outcome = outcome[0] + "_CHECKED", outcome[1] + "；在已检查范围内避免与目标接触"
+                if trace.get("pending_reason") == "FAULT_CLOCK_UNRESOLVED":
+                    outcome = outcome[0] + "_CLOCK_UNBOUND", outcome[1] + "；故障起点或危险判据待绑定，尚不能作为FTTI"
             elif immediate_only:
                 outcome = outcome[0] + "_IMMEDIATE_ONLY", outcome[1] + "；即刻响应在已检查时域内未接触目标，响应延迟边界未确定"
             else:
@@ -1512,6 +1609,7 @@ class EngineeringReportTextMapper:
             if driver:
                 scope.append(cls.engineering_terms(driver))
             families = {"MOVING_TARGET_BRAKING": "移动目标制动并保持",
+                        "RECTILINEAR_STATIONARY_TARGET_BRAKING": "静止目标有限包络制动并保持",
                         "MOVING_TARGET_FAULT_RELEASE": "解除异常减速并保持当时速度"}
             if family:
                 scope.append(families.get(family) or cls._PHYSICAL_MODEL_TEXT.get(family, "所声明处置模型"))

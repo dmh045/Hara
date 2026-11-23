@@ -30,6 +30,71 @@ class FTTIMethodExecutor:
         return {k: deepcopy(scenario[k]) for k in sorted(fields) if k in scenario}
 
     @staticmethod
+    def _rejected_response_current_physics_proof(scenario, rejected, *, malfunction_id, scenario_id):
+        """Recompute the one historical axis-cache repair; never ignore snapshot fields."""
+        from copy import deepcopy
+        from .hazardous_event_risk_context_service import HazardousEventRiskContextService
+        from .scenario_physics import source_is_accepted_for
+        previous = rejected.get("input_values", {})
+        current = FTTIMethodExecutor.response_input_snapshot(scenario)
+        if (scenario.get("fault_motion_model") != "RECTILINEAR_MOVING_TARGET_CONTACT"
+                or "ttc_s" in previous or "ttc_s" not in scenario):
+            return None
+        old_outcome = previous.get("motion_model_outcome", {})
+        new_outcome = current.get("motion_model_outcome", {})
+        if (old_outcome.get("status") != "CONTACT"
+                or old_outcome.get("longitudinal_contact") is not False
+                or new_outcome.get("longitudinal_contact") is not True):
+            return None
+        expected = deepcopy(previous)
+        expected["motion_model_outcome"]["longitudinal_contact"] = True
+        if expected != current:
+            return None
+        analysis = scenario.get("control_analysis") or scenario.get("physical_analysis", {})
+        if analysis.get("engineering_approval") != "NOT_GRANTED":
+            return None
+        provenance = scenario.get("_fact_provenance", {})
+        if any(provenance.get(field, {}).get("provenance") != "DERIVED"
+                or provenance.get(field, {}).get("approval") != ReviewStatus.PENDING.value
+                or not source_is_accepted_for(provenance[field],
+                    malfunction_id=malfunction_id, scenario_id=scenario_id)
+                for field in ("motion_model_outcome", "ttc_s")):
+            return None
+        # Use the existing source/conflict-aware materializer on a calculation
+        # copy of the frozen world. Its same-derivation/input checks must yield
+        # the complete current snapshot, not merely the changed boolean.
+        frozen = {key: deepcopy(value) for key, value in scenario.items() if not key.startswith("_")}
+        frozen.pop("ttc_s", None)
+        frozen.update(deepcopy(previous))
+        try:
+            computed = HazardousEventRiskContextService._scenario_with_derived_physics({
+                "scenario_id": scenario_id, "facts": frozen, "fact_provenance": deepcopy(provenance),
+                "analysis_instance": {"malfunction_id": malfunction_id}})
+        except ValueError:
+            return None
+        if (FTTIMethodExecutor.response_input_snapshot(computed) != current
+                or computed.get("ttc_s") != scenario["ttc_s"]):
+            return None
+        # Values alone cannot authorize changed used sources. The retained
+        # calculation's input snapshots must still carry the same authority.
+        # Aggregate normalization lineage may be refreshed; its underlying
+        # input_fact_metadata, source refs, scope and approval remain exact.
+        authority = ("field", "provenance", "origin", "approval", "source_refs", "applicable_scope",
+                     "analysis_assumption_scope", "validation_status", "method_contract_hash", "input_fact_metadata")
+        for field in ("motion_model_outcome", "ttc_s"):
+            retained = provenance[field]
+            fresh = computed["_fact_provenance"].get(field, {})
+            if any(retained.get(key) != fresh.get(key) for key in ("derivation_type", "inputs", "approval", "source_refs")):
+                return None
+            old_inputs, new_inputs = retained.get("input_fact_metadata", []), fresh.get("input_fact_metadata", [])
+            if (not old_inputs or len(old_inputs) != len(new_inputs)
+                    or any(old.get(key) != new.get(key) for old, new in zip(old_inputs, new_inputs) for key in authority)):
+                return None
+        return {"basis": "RECOMPUTED_CURRENT_DERIVED_LONGITUDINAL_VIEW",
+                "changed_fields": ["motion_model_outcome.longitudinal_contact", "ttc_s"],
+                "frozen_trajectory_recomputed_equal": True}
+
+    @staticmethod
     def evaluate(inputs, scenario, method):
         import math
         from hara_agent.contracts.physical_scenario_plan import response_control_dependency_missing
@@ -53,8 +118,13 @@ class FTTIMethodExecutor:
                 malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id):
             return pending("时间假设未绑定当前失效与场景，不能继承其他成员的处置时间。")
         rejected = analysis.get("rejected_response_evaluation", {})
+        snapshot_proof = None
+        snapshot_matches = rejected.get("input_values") == FTTIMethodExecutor.response_input_snapshot(scenario)
+        if not proposal and rejected.get("proposal") and not snapshot_matches:
+            snapshot_proof = FTTIMethodExecutor._rejected_response_current_physics_proof(scenario, rejected,
+                malfunction_id=inputs.malfunction_id, scenario_id=inputs.scenario_id)
         if (not proposal and rejected.get("proposal")
-                and rejected.get("input_values") == FTTIMethodExecutor.response_input_snapshot(scenario)
+                and (snapshot_matches or snapshot_proof)
                 and rejected.get("timing_trace", {}).get("status") in {
                     "NO_IMMEDIATE_SAFE_BRAKING_WINDOW", "AVOIDABILITY_ALREADY_LOST"}):
             # The whole method hash can change for C-only policy edits. Reuse
@@ -70,6 +140,21 @@ class FTTIMethodExecutor:
             revalidation = {"previous_method_source_hash": rejected.get("method_source_hash"),
                             "method_source_hash": method.metadata.get("method_source_hash"),
                             "proposal_remains_withdrawn": True}
+            if snapshot_proof:
+                # Both views use CURRENT source, controls, driver and method.
+                # Historical response rationale and list order are not new
+                # control policies. An incompatible current path stays pending.
+                frozen = {**scenario, **deepcopy(rejected["input_values"]), analysis_field: checked_analysis}
+                frozen.pop("ttc_s", None)
+                frozen_checked = FTTIMethodExecutor.evaluate(inputs, frozen, method)
+                equal = frozen_checked.to_dict() == checked.to_dict()
+                revalidation["snapshot_revalidation"] = {**snapshot_proof, "response_evaluations_equal": equal}
+                if not equal:
+                    return replace(pending("已撤回响应在原冻结输入与当前派生视图下重验结果不一致；不继承旧结论，也不恢复提案。"),
+                        timing_trace={**inputs.timing_trace, "pending_reason": "RESPONSE_INPUTS_UNRESOLVED",
+                            "rejected_response_revalidation": {**revalidation,
+                                "previous_timing_trace": rejected["timing_trace"],
+                                "frozen_evaluation": frozen_checked.to_dict(), "current_evaluation": checked.to_dict()}})
             if checked.timing_trace.get("status") in {"NO_IMMEDIATE_SAFE_BRAKING_WINDOW", "AVOIDABILITY_ALREADY_LOST"}:
                 return replace(inputs, status=CalculationStatus.NOT_APPLICABLE,
                     reason="已撤回的所选响应按当前方法重验，仍不能避开当前目标；原提案继续撤回，其他处置策略尚未完成。",
@@ -128,6 +213,9 @@ class FTTIMethodExecutor:
         a = scenario.get("longitudinal_acceleration_mps2")
         d = scenario.get("travel_to_impact_m")
         outcome = scenario.get("motion_model_outcome", {})
+        stationary_no_contact = (rectilinear and not moving
+            and outcome.get("status") == "NO_CONTACT_WITHIN_MODEL")
+        finite_interaction = moving or stationary_no_contact
         if scenario.get("fault_motion_model") == "CONSTANT_SPEED_REPRESENTATIVE":
             # The already selected constant-speed model defines a=0. This is
             # not a default for an unknown fault acceleration or another model.
@@ -150,7 +238,7 @@ class FTTIMethodExecutor:
             d = v/3.6*t + a*t*t/2
         b = 0.0 if release else response.get("net_deceleration_mps2")
         offset = timing.get("fault_to_model_start_s")
-        numeric_inputs = (v, a, b) if moving else (v, a, d, b)
+        numeric_inputs = (v, a, b) if finite_interaction else (v, a, d, b)
         if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in numeric_inputs):
             if (outcome.get("status") == "NO_CONTACT_WITHIN_MODEL"
                     and source_is_accepted_for(scenario.get("_fact_provenance", {}).get("motion_model_outcome", {}),
@@ -160,16 +248,22 @@ class FTTIMethodExecutor:
             if moving:
                 return pending("移动目标响应仍有符号参数；需在同一包络内关联故障行驶、制动和停车保持三段轨迹。")
             return pending("当前条件仍有符号参数；时间边界关系为 v0·t+a·t²/2+(v0+a·t)²/(2·b净)=可用行程。")
-        if moving and not release and response.get("post_stop_motion") != policy.get("moving_target_response", {}).get("post_stop_motion", "HOLD_POSITION"):
-            return pending("移动目标需明确制动后保持静止及其控制依据，不能在停车瞬间截断交互。", "POST_STOP_MOTION_UNRESOLVED")
-        result = (moving_braking_avoidability_boundary(scenario, b, release_deceleration=release) if moving else
+        if finite_interaction and not release and response.get("post_stop_motion") != policy.get("moving_target_response", {}).get("post_stop_motion", "HOLD_POSITION"):
+            return pending("有限接触包络响应需明确制动后保持静止及其控制依据，不能在停车瞬间截断交互。", "POST_STOP_MOTION_UNRESOLVED")
+        result = (moving_braking_avoidability_boundary(scenario, b, release_deceleration=release) if finite_interaction else
                   braking_avoidability_boundary(v/3.6, a, d, b))
-        if result.get("original", {}).get("status") == "NO_CONTACT_WITHIN_MODEL":
-            result = {**result, "net_deceleration_mps2": b, "required_controls": sorted(controls),
-                      "unmitigated_motion_model": scenario.get("fault_motion_model"),
-                      "safe_state": proposal["description"], "conditions": proposal["conditions"],
-                      "source_ref": policy["source_ref"], "hypothesis": hypothesis,
-                      "engineering_approval": "NOT_GRANTED", "continuous_range_proven": False}
+        if stationary_no_contact:
+            if result.get("original", {}).get("status") != "NO_CONTACT_WITHIN_MODEL":
+                return pending("原无接触记录与当前有限接触包络轨迹未能相互核验，不能据此给出响应延迟边界。")
+            result = {**result, "response_model_family": "RECTILINEAR_STATIONARY_TARGET_BRAKING"}
+        # Every executed response keeps its own proposal and source scope,
+        # including negative results and a boundary whose fault clock is absent.
+        # The latter proves only a model-relative response, never an FTTI value.
+        result = {**result, "net_deceleration_mps2": b, "required_controls": sorted(controls),
+                  "unmitigated_motion_model": scenario.get("fault_motion_model"),
+                  "safe_state": proposal["description"], "conditions": proposal["conditions"],
+                  "source_ref": policy["source_ref"], "hypothesis": hypothesis,
+                  "engineering_approval": "NOT_GRANTED", "continuous_range_proven": False}
         if required_path:
             result = {**result, "response_path_status": "REQUIRED_NOT_ESTABLISHED",
                       "required_command_path": required_path}
@@ -178,8 +272,8 @@ class FTTIMethodExecutor:
             return pending("当前轨迹含故障后速度限幅；现有制动边界不能跨限幅阶段外推，接触时间仍保留。")
         if result.get("time_s") is None:
             if result["status"] == "NO_IMMEDIATE_SAFE_BRAKING_WINDOW":
-                reason = ("同一移动目标轨迹下，即刻解除异常减速并保持当时速度仍不能建立避碰窗口。" if release else
-                    "同一移动目标轨迹下，即刻制动并停车保持仍不能建立避碰窗口；不能把停车直接当安全。其他处置策略需另行建模。")
+                reason = ("同一目标轨迹下，即刻解除异常减速并保持当时速度仍不能建立避碰窗口。" if release else
+                    "同一目标轨迹下，即刻制动并停车保持仍不能建立避碰窗口；不能把停车直接当安全。其他处置策略需另行建模。")
                 original = result.get("original", {})
                 if original.get("status") == "NO_CONTACT_WITHIN_MODEL":
                     reason += "原轨迹的无接触结论仅覆盖其已检查时段；所选响应仍与同一目标接触，原检查时域与响应接触阶段见时间追溯。"
@@ -209,13 +303,9 @@ class FTTIMethodExecutor:
             calculation_nature="CONDITIONAL", hazard_criterion=criterion, time_origin="FAULT_ONSET",
             reason=("初始状态已失去停车避碰能力：即刻制动也没有正的处置余量。" if result["status"] == "AVOIDABILITY_ALREADY_LOST" else
                 "条件性危险时限：在所建模交互时段内失去所选响应的避碰能力。检测、决策和处置建立延迟必须小于可用响应起始窗口；不与后续完成耗时相加。"),
-            timing_trace={**result, "fault_to_model_start_s": offset, "net_deceleration_mps2": b,
-                "available_path_distance_m": d, "required_controls": sorted(controls),
-                "unmitigated_motion_model": scenario.get("fault_motion_model"),
-                "initial_speed_kph": v, "fault_acceleration_mps2": a,
-                "safe_state": proposal["description"], "conditions": proposal["conditions"],
-                "source_ref": policy["source_ref"], "hypothesis": hypothesis,
-                "engineering_approval": "NOT_GRANTED", "continuous_range_proven": False})
+            timing_trace={**result, "fault_to_model_start_s": offset,
+                "available_path_distance_m": d,
+                "initial_speed_kph": v, "fault_acceleration_mps2": a})
 
 
 class ExposureCombinationExecutor:

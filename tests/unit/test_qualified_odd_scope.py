@@ -161,6 +161,9 @@ def test_mixed_parent_modes_equal_separate_scope_generation_without_cross_mode_m
         separate.extend(generated)
     assert {c.scenario_id for c in together} == {c.scenario_id for c in separate}
     assert audit['atom_generation']['raw_candidate_count'] == raw_count
+    assert {row['operating_mode'] for row in audit['atom_generation']['source_focus_allocation']} == {'execution'}
+    assert all(c.analysis_instance.get('source_condition_focus', {}).get('value') != '垂直车位'
+               for c in together if c.operating_mode == 'training')
     assert set(audit['atom_generation']['source_boundary_parent_ids_by_mode']) == {'training','execution'}
     assert parents == before
 

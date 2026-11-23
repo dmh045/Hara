@@ -377,8 +377,13 @@ def construct_physical_scenarios(state, candidates, malfunctions, *, method, age
                 # Scope selection must not change the task for the same world.
                 # A sample's ordinal is different from its full-run ordinal;
                 # use the canonical condition identity, not enumeration order.
-                focus_index = (coverage_offset + int(focus_identity[:8], 16)) % len(source_conditions)
-                inputs["source_condition_focus"] = source_conditions[focus_index]
+                allocated = first.analysis_instance.get("source_condition_focus")
+                if allocated in source_conditions:
+                    inputs["source_condition_focus"] = allocated
+                else:
+                    # Legacy/replayed candidates predate population allocation.
+                    focus_index = (coverage_offset + int(focus_identity[:8], 16)) % len(source_conditions)
+                    inputs["source_condition_focus"] = source_conditions[focus_index]
                 inputs["source_condition_policy"] = (
                     "Use this allowed source condition only if relevant and compatible; otherwise select a relevant "
                     "alternative from project_context or explain the uncovered condition. Return operating_condition "

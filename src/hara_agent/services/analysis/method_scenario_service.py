@@ -514,6 +514,7 @@ class MethodScenarioCandidateService:
         *, project_facts: ItemDefinitionFacts | None,
         function: FunctionDefinition | None = None,
         record_generated: Callable[[ScenarioCandidate], None] | None = None,
+        selected_parent_ids: tuple[str, ...] = (),
     ) -> tuple[list[ScenarioCandidate], dict[str, Any]]:
         """Ordinary analyze: physical options → governed atoms → driver subsets."""
         from .scenario_method_service import ScenarioMethodService
@@ -542,9 +543,10 @@ class MethodScenarioCandidateService:
                 for p in parents] if has_qualified_scope else parents
         templates = ScenarioMethodService(self.method)
         if not self.atom_resolver.catalog or project_facts is None:
-            return templates.instantiate_analytical_candidates(
+            children, audit = templates.instantiate_analytical_candidates(
                 malfunction, parents, project_facts=project_facts, function=function,
             )
+            return self._filter_parent_scope(children, selected_parent_ids), audit
         options, audit = templates.instantiate_analytical_candidates(
             malfunction, parents, project_facts=project_facts, function=function,
             expand_driver_configurations=False,
@@ -612,6 +614,19 @@ class MethodScenarioCandidateService:
             if "source_contexts" in result:
                 result["scenario_ids"] = [sid for a in result["source_contexts"] for sid in a["scenario_ids"]]
         representatives, mapping = coalesce_candidates(generated)
+        available_parent_ids = {parent.scenario_id for parent in parents}
+        roots_by_id = {child.scenario_id: self._source_parent_ids(child) & available_parent_ids
+                       for child in generated}
+        for index, child in enumerate(representatives):
+            original_roots = set().union(*(roots_by_id.get(identity, set())
+                for identity in child.analysis_instance.get("equivalent_candidate_ids", [child.scenario_id])))
+            # Coalescing already records its immediate synthesis/option parents.
+            # Preserve a second mapping only when the original source-parent
+            # level is different, so bounded source scope survives both levels.
+            if original_roots and original_roots != set(child.analysis_instance.get("equivalent_parent_ids", [])):
+                representatives[index] = replace(child, analysis_instance={**child.analysis_instance,
+                    "source_parent_ids": sorted(original_roots)})
+        representatives, focus_audit = self._allocate_source_focus(representatives, scoped_facts)
         audit["atom_generation"] = {
             "version": "ordinary-analyze-atoms-v5-stable-source-order", "provider_calls": 0,
             "raw_candidate_count": len(generated),
@@ -623,7 +638,14 @@ class MethodScenarioCandidateService:
             **({"source_boundary_parent_ids_by_mode": mode_boundaries} if mode_boundaries else {}),
             "coverage_policy": "JOINT_PRIMARY_SOURCE_AND_ROAD_COVERAGE",
             "coverage_limit": "Unselected context/variant combinations are not evaluated or proven equivalent.",
+            "source_focus_allocation": focus_audit,
         }
+        representatives = self._filter_parent_scope(representatives, selected_parent_ids)
+        if selected_parent_ids:
+            audit["bounded_parent_selection"] = {
+                "selected_ids": list(selected_parent_ids),
+                "selected_condition_count": len(representatives),
+            }
         children, audit = templates._with_driver_configurations(
             malfunction, representatives, audit, project_facts,
         )
@@ -638,14 +660,86 @@ class MethodScenarioCandidateService:
         }
         if record_generated is not None:
             final_ids = {child.scenario_id for child in children}
+            scoped_originals = {identity for child in representatives for identity in
+                child.analysis_instance.get("equivalent_candidate_ids", [child.scenario_id])}
             for candidate in generated:
                 # The caller persists final instances. Do not consume their
                 # append-only identity before the equivalence proof is attached.
-                if candidate.scenario_id not in final_ids:
+                if candidate.scenario_id in scoped_originals and candidate.scenario_id not in final_ids:
                     record_generated(replace(candidate, analysis_instance={
                         **candidate.analysis_instance, "generation_role": "BEFORE_EQUIVALENCE",
                     }))
         return children, audit
+
+    @staticmethod
+    def select_parent_scope(parents, *, limit=None, selected_ids=()):
+        """Select scope without truncating the population used by generation."""
+        if selected_ids:
+            indexed = {parent.scenario_id: parent for parent in parents}
+            missing = [identity for identity in selected_ids if identity not in indexed]
+            if missing:
+                raise ValueError(f"Bounded sample parent Scenario IDs are unavailable: {missing}")
+            return [indexed[identity] for identity in selected_ids]
+        return list(parents[:limit] if limit is not None else parents)
+
+    @staticmethod
+    def _source_parent_ids(candidate):
+        result = {candidate.scenario_id, candidate.source_scenario_id}
+        instance = candidate.analysis_instance
+        while isinstance(instance, dict):
+            result.update(instance.get("source_parent_ids", []))
+            result.update(instance.get("equivalent_parent_ids", []))
+            result.add(instance.get("parent_scenario_id", ""))
+            instance = instance.get("base_analysis_instance")
+        return result - {""}
+
+    @classmethod
+    def _filter_parent_scope(cls, candidates, selected_ids):
+        if not selected_ids:
+            return candidates
+        allowed = set(selected_ids)
+        return [child for child in candidates if cls._source_parent_ids(child) & allowed]
+
+    @staticmethod
+    def _allocate_source_focus(candidates, scoped_facts):
+        """Round-robin existing canonical worlds, before driver/sample expansion."""
+        from .scenario_equivalence import scenario_conditions, signature
+        groups = {}
+        for index, child in enumerate(candidates):
+            project = scoped_facts.get(child.operating_mode)
+            options = tuple((field, value) for field in ("odd_road_types", "odd_weather_conditions")
+                for value in dict.fromkeys(getattr(project, field, [])))
+            if not options or child.facts.get("physical_analysis") or child.facts.get("fault_motion_model"):
+                continue
+            key = signature(scenario_conditions(child, without_driver=True))
+            groups.setdefault((child.operating_mode, options), {}).setdefault(key, []).append(index)
+        result = list(candidates)
+        audit = []
+        for (mode, options), worlds in groups.items():
+            used = set()
+            pending = []
+            for key, indices in sorted(worlds.items()):
+                child = candidates[indices[0]]
+                fixed = child.facts.get("selected_source_condition") or child.facts.get("source_operating_conditions", {}).get("selected_condition")
+                if fixed:
+                    if (fixed.get("source_field"), fixed.get("value")) in options:
+                        used.add((fixed["source_field"], fixed["value"]))
+                    continue  # A fixed condition is not a new analytical choice.
+                pending.append(indices)
+            remaining = [option for option in options if option not in used]
+            for rank, indices in enumerate(pending):
+                field, value = (remaining[rank] if rank < len(remaining)
+                                else options[(rank - len(remaining)) % len(options)])
+                used.add((field, value))
+                for index in indices:
+                    child = result[index]
+                    result[index] = replace(child, analysis_instance={**child.analysis_instance,
+                        "source_condition_focus": {"source_field": field, "value": value}})
+            audit.append({"operating_mode": mode, "canonical_worlds": len(worlds),
+                "allowed_conditions": len(options), "assigned_or_fixed_conditions": len(used),
+                "unassigned_conditions": [{"source_field": field, "value": value}
+                    for field, value in options if (field, value) not in used], "new_worlds": 0})
+        return result, audit
 
     @staticmethod
     def _select_context_representatives(pool):

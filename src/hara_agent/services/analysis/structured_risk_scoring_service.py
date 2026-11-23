@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
-from .scenario_physics import source_is_accepted_for, branch_physics_view
+from .scenario_physics import (
+    source_is_accepted_for, branch_physics_view,
+    target_is_stationary_in_model, derive_stationary_object_direction,
+)
 from .asil_service import MethodContractASILService
 from copy import deepcopy
 from dataclasses import asdict, replace
@@ -155,6 +158,15 @@ class StructuredRiskScoringService:
         return None
 
     def score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
+        from hara_agent.models import ScenarioCandidate
+        from .scenario_equivalence import scenario_with_current_physics
+        candidate = ScenarioCandidate(str(scenario.get("scenario_id", "UNKNOWN")), "", "", "",
+            facts={key: value for key, value in scenario.items() if not key.startswith("_")},
+            fact_provenance=scenario.get("_fact_provenance", {}),
+            analysis_instance={"malfunction_id": str(scenario.get("malfunction_id", "UNKNOWN"))})
+        current = scenario_with_current_physics(candidate)
+        if current is not candidate:
+            scenario = {**scenario, **current.facts, "_fact_provenance": current.fact_provenance}
         result = self._score(scenario, hazard_event)
         analysis = scenario.get("physical_analysis")
         controls = scenario.get("control_analysis")
@@ -184,6 +196,23 @@ class StructuredRiskScoringService:
         return result
 
     def _score(self, scenario: dict[str, Any], hazard_event: str) -> dict[str, dict[str, Any]]:
+        if scenario.get("object_longitudinal_direction") not in (None, "STATIONARY"):
+            from hara_agent.models import ScenarioCandidate
+            candidate = ScenarioCandidate(str(scenario.get("scenario_id", "")), "", "", "",
+                facts={key: value for key, value in scenario.items() if not key.startswith("_")},
+                fact_provenance=scenario.get("_fact_provenance", {}))
+            malfunction_id = str(scenario.get("malfunction_id", ""))
+            if target_is_stationary_in_model(candidate, malfunction_id=malfunction_id):
+                # A calculation-only velocity direction, with the existing
+                # zero-speed derivation's source chain. Raw heading/facts stay
+                # intact and cannot make a stationary target a crossing user.
+                stationary = derive_stationary_object_direction(replace(candidate,
+                    facts={key: value for key, value in candidate.facts.items()
+                           if key != "object_longitudinal_direction"}), malfunction_id=malfunction_id)
+                if stationary:
+                    scenario = {**scenario, "object_longitudinal_direction": stationary[0],
+                        "_fact_provenance": {**candidate.fact_provenance,
+                            "object_longitudinal_direction": stationary[1]}}
         evasion = self.inputs.road_user_avoidance_applicability(scenario,
             malfunction_id=str(scenario.get("malfunction_id", "UNKNOWN")),
             scenario_id=str(scenario.get("scenario_id", "UNKNOWN")))

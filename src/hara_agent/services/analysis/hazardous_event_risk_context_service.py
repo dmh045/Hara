@@ -408,13 +408,33 @@ class HazardousEventRiskContextService:
         return inventory
 
     @staticmethod
+    def _retained_physics_value_changed(retained: Any, current: Any, *, field: str = "", model: str = "") -> bool:
+        """Keep only the proven legacy curve diagnostic addition compatible."""
+        if (model == "CONSTANT_SPEED_CURVATURE_TO_CONTACT" and field == "motion_model_outcome"
+                and isinstance(retained, dict) and isinstance(current, dict)
+                and "target_longitudinal_coverage" not in retained):
+            diagnostic = current.get("target_longitudinal_coverage", {})
+            if (isinstance(diagnostic, dict) and set(diagnostic) == {"contact_x_m", "coordinate_frame", "assessment_reference",
+                    "finite_span_checked", "effective_contact_interval_m", "contact_within_interval", "limitation"}
+                    and diagnostic.get("coordinate_frame") == "BODY_FORWARD_POSITIVE"
+                    and diagnostic.get("assessment_reference") == "MODEL_INITIAL_STATE"
+                    and diagnostic.get("contact_x_m") == current.get("contact_x_m")
+                    and diagnostic.get("finite_span_checked") is False
+                    and diagnostic.get("effective_contact_interval_m") is None
+                    and diagnostic.get("contact_within_interval") is None
+                    and {key: value for key, value in current.items() if key != "target_longitudinal_coverage"} == retained):
+                return False
+        return retained != current
+
+    @staticmethod
     def _scenario_with_derived_physics(candidate: dict[str, Any]) -> dict[str, Any]:
         """Materialize the same canonical physics facts used by runtime scoring."""
         facts = candidate.get("facts", {})
         facts = dict(facts) if isinstance(facts, dict) else {}
         provenance = candidate.get("fact_provenance", {})
         provenance = dict(provenance) if isinstance(provenance, dict) else {}
-        status = ReviewStatus(str(candidate.get("status", ReviewStatus.PENDING.value)))
+        saved_status = candidate.get("status", ReviewStatus.PENDING.value)
+        status = saved_status if isinstance(saved_status, ReviewStatus) else ReviewStatus(str(saved_status))
         typed_candidate = ScenarioCandidate(
             scenario_id=str(candidate.get("scenario_id", "")),
             operating_scenario=str(candidate.get("operating_scenario", "")),
@@ -427,14 +447,34 @@ class HazardousEventRiskContextService:
             semantic_fingerprint=str(candidate.get("semantic_fingerprint", "")),
             analysis_instance=dict(candidate.get("analysis_instance", {})),
         )
+        retained_provenance = dict(provenance)
         scenario = {**facts, "_fact_provenance": provenance}
         for record in derive_scenario_physics(typed_candidate):
             key = record.evidence_ref.split(".", 1)[1]
-            if key in scenario and scenario[key] != record.value:
-                raise ValueError(
-                    "Scenario contains a value that conflicts with deterministic "
-                    f"physics: key={key!r}"
-                )
+            retained = retained_provenance.get(key, {})
+            scope = {"malfunction_id": typed_candidate.analysis_instance.get("malfunction_id", ""),
+                "scenario_id": typed_candidate.scenario_id}
+            computed = {**record.metadata, "provenance": record.provenance.value,
+                "approval": record.approval_status.value, "source_refs": [vars(ref) for ref in record.source_refs]}
+            cached = (retained.get("provenance") == "DERIVED"
+                and retained.get("derivation_type") == record.metadata.get("derivation_type")
+                and retained.get("inputs") == record.metadata.get("inputs")
+                and not any(retained.get("applicable_scope", {}).get(field)
+                    and retained["applicable_scope"][field] != identity for field, identity in scope.items())
+                and source_is_accepted_for(retained, **scope)
+                and source_is_accepted_for(computed, **scope))
+            if key in scenario:
+                changed = HazardousEventRiskContextService._retained_physics_value_changed(
+                    scenario[key], record.value, field=key, model=facts.get("fault_motion_model", ""))
+                if changed and not cached:
+                    raise ValueError(
+                        "Scenario contains a value that conflicts with deterministic "
+                        f"physics: key={key!r}"
+                    )
+                if not changed and not cached:
+                    # An equal direct fact or explicit analysis input keeps
+                    # its own complete authority; it is not a calculator cache.
+                    continue
             scenario[key] = record.value
             scenario["_fact_provenance"][key] = {
                 "provenance": record.provenance.value,

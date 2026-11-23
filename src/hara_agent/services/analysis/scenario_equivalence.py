@@ -84,8 +84,33 @@ def scenario_conditions(scenario: ScenarioCandidate, *, without_driver: bool = F
     return semantic({"operating_mode": scenario.operating_mode, "facts": facts, "fact_authority": authority})
 
 
+def scenario_with_current_physics(scenario: ScenarioCandidate) -> ScenarioCandidate:
+    """Refresh a stale calculated causal view without changing physical inputs.
+
+    Keep existing task keys and source facts verbatim when no retained derived
+    value changed. A changed calculated cache uses the same validated runtime
+    view for the causal prompt and its identity; direct source conflicts fail.
+    """
+    # This materializer repairs a retained moving-contact calculation. Legacy
+    # table inputs and other motion models keep their existing normalization
+    # and branch-local conflict boundaries; this is not a new derive-on-score
+    # path for every structured scenario.
+    if (scenario.facts.get("fault_motion_model") != "RECTILINEAR_MOVING_TARGET_CONTACT"
+            or not isinstance(scenario.facts.get("motion_model_outcome"), dict)):
+        return scenario
+    from .hazardous_event_risk_context_service import HazardousEventRiskContextService
+    view = HazardousEventRiskContextService._scenario_with_derived_physics(asdict(scenario))
+    if not any(key not in scenario.facts or HazardousEventRiskContextService._retained_physics_value_changed(
+                   scenario.facts[key], value, field=key, model=scenario.facts.get("fault_motion_model", ""))
+               for key, value in view.items() if not key.startswith("_")):
+        return scenario
+    return replace(scenario, facts={key: value for key, value in view.items() if not key.startswith("_")},
+        fact_provenance=view["_fact_provenance"])
+
+
 def exact_task_key(agent, malfunction, scenario, project_registry=None) -> str:
     """Task identity includes all effective versions and raw, unrounded inputs."""
+    scenario = scenario_with_current_physics(scenario)
     config = getattr(getattr(agent, "client", None), "config", None)
     return signature({
         "version": "exact-scenario-task-v1", "malfunction": malfunction.to_dict(),

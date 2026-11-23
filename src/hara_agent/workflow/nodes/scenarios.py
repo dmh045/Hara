@@ -27,6 +27,7 @@ from .parallel import ordered_parallel_map
 from ..review_artifacts import ReviewArtifactWriter
 from hara_agent.services.analysis.scenario_equivalence import (
     DRIVER_FIELDS, driver_families, driver_reuse_proof, exact_task_key, rebind_assessment_payload,
+    scenario_with_current_physics,
 )
 
 
@@ -38,6 +39,7 @@ def _scenario_batch_cache_key(
     malfunction: MalfunctionCandidate,
     candidates: Sequence[ScenarioCandidate],
 ) -> str:
+    candidates = [scenario_with_current_physics(item) for item in candidates]
     config = getattr(agent.client, "config", None)
     material = {
         "cache_version": SCENARIO_BATCH_CHECKPOINT_VERSION,
@@ -376,7 +378,8 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                      risk_fact_agent: ScenarioRiskFactAgent | None = None,
                      physical_agent=None,
                      prepared_candidates_by_malfunction: dict[str, list[ScenarioCandidate]] | None = None,
-                     selected_generated_scenario_ids=(),
+                     selected_generated_scenario_ids=(), parent_scenario_limit=None,
+                     selected_parent_scenario_ids=(),
                      required_fact_specs: Sequence[RequiredFactSpec] = (),
                      method: MethodContract | None = None,
                      checkpoint: Callable[[HARAState], object] | None = None,
@@ -405,6 +408,10 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
     batch_by_malfunction: dict[str, tuple[list, dict]] = {}
     pending_malfunctions = []
     template_service = MethodScenarioCandidateService(method) if method is not None else None
+    parent_scope = (tuple(parent.scenario_id for parent in template_service.select_parent_scope(
+        candidates, limit=parent_scenario_limit, selected_ids=selected_parent_scenario_ids))
+        if template_service is not None and prepared_candidates_by_malfunction is None
+        and (parent_scenario_limit is not None or selected_parent_scenario_ids) else ())
     contextual_candidates: dict[str, list[ScenarioCandidate]] = {}
     instantiation_audit: dict[str, dict] = {}
     for malfunction in malfunctions:
@@ -438,6 +445,7 @@ def assess_scenarios(state: HARAState, agent: ScenarioFeasibilityAgent,
                 record_generated=(lambda candidate: review_artifact_writer.record_scenario_candidate(
                     candidate, generated_for_malfunction_ids=[malfunction.malfunction_id],
                 )) if review_artifact_writer is not None else None,
+                selected_parent_ids=parent_scope,
             )
             contextual_candidates[malfunction.malfunction_id] = instantiated
             instantiation_audit[malfunction.malfunction_id] = audit

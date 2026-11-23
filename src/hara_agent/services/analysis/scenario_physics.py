@@ -392,6 +392,37 @@ def _straight_world(facts, response_delay_s=None, response_deceleration_mps2=Non
     return ego, target, ev, ov, end, stop
 
 
+def _segments_are_stationary(segments) -> bool:
+    return bool(segments) and all(phase[3] == phase[4] == 0 for phase in segments)
+
+
+def target_is_stationary_in_model(scenario: ScenarioCandidate, *, malfunction_id: str) -> bool:
+    """Prove zero target velocity over the existing bounded model, not a label.
+
+    A cardinal heading multiplied by zero speed is a zero vector. Preserve its
+    declared value and authority; this proof only distinguishes that case from
+    inconsistent or differently phased source inputs during scoring.
+    """
+    facts = scenario.facts
+    if facts.get("fault_motion_model") != "RECTILINEAR_MOVING_TARGET_CONTACT" or type(facts.get("object_speed_kph")) not in (int, float) or facts["object_speed_kph"] != 0:
+        return False
+    scope = {"malfunction_id": malfunction_id, "scenario_id": scenario.scenario_id}
+    if not all(source_is_accepted_for(scenario.fact_provenance.get(field, {}), **scope)
+               for field in ("object_speed_kph", "fault_motion_model")):
+        return False
+    metadata = scenario.fact_provenance["object_speed_kph"]
+    semantics = physical_semantics(metadata)
+    phase = " ".join(str(semantics.get(field, "")).upper()
+                     for field in ("analysis_value_semantic", "time_role", "assessment_reference"))
+    if any(token in phase for token in ("IMPACT", "CONTACT", "RESPONSE")) or metadata.get("object_id") not in (None, "", facts.get("object_id")):
+        return False
+    try:
+        _, target, _, _, _, _ = _straight_world(facts)
+    except ValueError:
+        return False
+    return _segments_are_stationary(target)
+
+
 def rectilinear_moving_contact(facts: dict, *, response_delay_s=None, response_deceleration_mps2=None) -> dict:
     """Exact first overlap of fixed envelopes with piecewise straight motion.
 
@@ -454,7 +485,11 @@ def _rectilinear_contact_from_segments(facts, ego, target, ev, ov, end, stop, *,
                 'trajectory_max_speed_kph':max(max(s[3],s[3]+s[4]*(min(s[1],time)-s[0]))*3.6 for s in ego if s[0] <= time),
                 'contact_offset_x_m':xy[0], 'contact_offset_y_m':xy[1],
                 **({'contact_phase':'HELD_AFTER_STOP','ego_stop_time_s':stop} if time >= stop and stop < end else {}),
-                'longitudinal_contact':ev[1] == ov[1] == 0 and not is_lateral_collision(facts.get('collision_type'))}
+                # Collision surface/type belongs to consequence classification.
+                # Pure body-x paths remain longitudinal even at a side-labelled
+                # target whose lateral envelopes already overlap.
+                'longitudinal_contact': ((ev[1] == 0 or _segments_are_stationary(ego))
+                    and (ov[1] == 0 or _segments_are_stationary(target)))}
     return {'status':'NO_CONTACT_WITHIN_MODEL', 'evaluated_until_s':end,
         'limiting_condition':'EGO_STOP' if end < facts['model_valid_until_s'] else 'MODEL_HORIZON'}
 

@@ -24,9 +24,10 @@ from hara_agent.services.analysis.scenario_physics import (
     derive_scenario_physics, restore_template_ego_direction,
     derive_stationary_object_speed, derive_stationary_object_direction,
     select_ego_speed_from_policy,
-    has_conditional_lineage, source_is_accepted_for,
+    has_conditional_lineage, source_is_accepted_for, target_is_stationary_in_model,
 )
 from hara_agent.services.analysis.driver_configuration_service import DriverConfigurationBrancher
+from hara_agent.services.analysis.scenario_equivalence import scenario_with_current_physics
 from hara_agent.workflow.state import HARAState, WorkflowStage
 from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
 
@@ -186,7 +187,7 @@ def score_structured_scenarios(
             raise ValueError(
                 f"场景评分外键缺失: scenario_id={scenario_id!r}, malfunction_id={malfunction_id!r}"
             )
-        candidate = scenario_by_id[scenario_id]
+        candidate = scenario_with_current_physics(scenario_by_id[scenario_id])
         malfunction = malfunction_by_id[malfunction_id]
         method = getattr(scoring, "method", None)
         policy = (
@@ -383,6 +384,7 @@ def score_structured_scenarios(
             scenario.get("object_speed_kph") == 0
             and "object_longitudinal_direction" in scenario
             and str(scenario["object_longitudinal_direction"]).upper() != "STATIONARY"
+            and not target_is_stationary_in_model(candidate, malfunction_id=malfunction_id)
         )
         if stationary_direction_conflict:
             physics_conflicts.append({

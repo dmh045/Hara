@@ -17,7 +17,7 @@ DEFAULT_SCENARIO_BATCH_MAX_CHARS = LLMConfig.scenario_batch_max_chars
 DEFAULT_SCENARIO_BATCH_MAX_ITEMS = LLMConfig.scenario_batch_max_items
 
 
-DRIVER_COMPARISON_TASK = """只有输入 driver_reuse_comparison 时，额外比较其中明确列出的驾驶员配置；它表示非驾驶员结构化输入相同，不是无关性证明，也不是新增待返回身份。分别核查 enablement（功能在这些配置下使能）、trigger（失效触发）、interaction（故障车辆与当前目标交互）、hazard（危险事件形成）。当前运行状态已明确给定时，只判断该状态下的依赖，不要求证明全项目所有状态的使能；若该状态本身依赖驾驶员动作或在位条件，仍必须分别判断。trajectory_scope=UNMITIGATED时，比较的是已给定的无避险响应轨迹：不要求证明驾驶员不能踩制动或无法改变碰撞，也不把模型未加入干预等同于人员没有干预能力。驾驶员避险属于各分支后续C/FTTI评价；这里只证明既定失效、初态和未缓解轨迹形成同一危险事件。其他场景按其真实依赖判断。若有驾驶员动作、位置相关使能、不同目标或车内乘员伤害依赖，不复用。没有提到驾驶员不等于已证明无关。
+DRIVER_COMPARISON_TASK = """只有输入 driver_reuse_comparison 时，额外比较其中明确列出的驾驶员配置；它表示非驾驶员结构化输入相同，不是无关性证明，也不是新增待返回身份。分别核查 enablement（功能在这些配置下使能）、trigger（失效触发）、interaction（故障车辆与当前目标交互）、hazard（危险事件形成）。当前运行状态已明确给定时，只判断该状态下的依赖，不要求证明全项目所有状态的使能；若该状态本身依赖驾驶员动作或在位条件，仍必须分别判断。轨迹阶段遵循共同因果边界；trajectory_scope=UNMITIGATED时，只比较既定失效、初态和未缓解交互，人员避险能力另行评价。其他场景按其真实依赖判断。若有驾驶员动作、位置相关使能、不同目标或车内乘员伤害依赖，不复用。没有提到驾驶员不等于已证明无关。
 请求比较时返回 dependency_metadata={complete:false,driver_noninterference:{enablement:{independent:布尔值,evidence_refs:[精确ID],reason:一句依据或具体障碍},trigger:{...},interaction:{...},hazard:{...}}。complete=false仅表示没有声明全局依赖完备，不否定四项局部证明。可使用已验证且限于当前世界的条件性引用；结论仍为条件性。任一项不能证明则该项independent=false，evidence_refs允许为空，按当前身份正常完成因果判断；不要为复用编造事实。未请求比较时不分析或输出复用证明。"""
 
 
@@ -47,6 +47,8 @@ def _scenario_json(
     project_registry: FactRegistry | None = None,
     causal_evidence_budget: int = DEFAULT_CAUSAL_EVIDENCE_BUDGET,
 ) -> str:
+    from hara_agent.services.analysis.scenario_equivalence import scenario_with_current_physics
+    scenario = scenario_with_current_physics(scenario)
     registry = build_fact_registry(malfunction, scenario, project_registry)
     selection = CausalEvidenceSelector(
         max_evidence=causal_evidence_budget,

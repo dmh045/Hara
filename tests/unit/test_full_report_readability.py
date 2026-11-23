@@ -370,6 +370,80 @@ def test_method_glossary_translates_thresholds_without_changing_trace():
     assert trace == before
 
 
+@pytest.mark.parametrize('label,display', [
+    ('Stop first place (V1)', '因交通状况在队列首位停车'),
+    ('Follow normal distance (V1)', '正常间距跟车'),
+    ('Free travel (V1)', '自由行驶（V1）'),
+    ('Following at normal distance (>=1/2 speedometer)',
+     '正常间距跟车（间距≥车速表示值的1/2，按方法口径）'),
+    ('Following at short distance (<1/2 speedometer)',
+     '短间距跟车（间距<车速表示值的1/2，按方法口径）'),
+])
+def test_following_and_first_position_labels_use_report_catalog_without_changing_method(label, display):
+    mapper = EngineeringReportTextMapper(load_report_schema().presentation['language'])
+    trace = {'atom_details': [{'atom_id': 'unseen-method-identity', 'used': True,
+        'e_rank': 'E3', 'dimensions': ['EGO_ACTION']}],
+        'scenario_terms': {'EGO_ACTION': {'atom_id': 'unseen-method-identity', 'atom_label': label}},
+        'result': 'E3'}
+    before = deepcopy(trace)
+    evidence = EvidenceValue('E3', ReviewStatus.PENDING, rule_version='unchanged-method')
+    assert display + '=E3' in mapper.exposure_rationale(evidence, trace, calculated=True)
+    assert trace == before and evidence.status is ReviewStatus.PENDING
+    assert evidence.rule_version == 'unchanged-method'
+
+
+def test_control_conditions_localize_display_without_translating_or_losing_original_assumptions():
+    conditions = ['The driver pedal path remains available only with independent command authority.',
+                  '停车保持能力仅在本次故障未影响制动执行器时成立。',
+                  'No existing automatic path is established by this assumption.']
+    scenario = SimpleNamespace(facts={'control_analysis': {'hypothesis': {
+        'conditions': conditions, 'remaining_controls': ['driver_braking'],
+        'failed_controls': ['automatic_drive_command'], 'intervention_assumptions': {
+            'remote_intervention_available': {'conditions': [
+                'The remote operator cannot access the required pedal.', '驾驶员不在驾驶位。']}}}}})
+    before = deepcopy(scenario)
+    text = EngineeringReportTextMapper.physical_inputs(scenario, {})
+    assert '停车保持能力仅在本次故障未影响制动执行器时成立。' in text
+    assert '驾驶员不在驾驶位。' in text
+    assert '完整外文条件见审计表原始控制方案' in text
+    assert '方案中保留的控制：' in text and '方案中失效的控制：' in text
+    assert 'The driver' not in text and 'remote operator' not in text
+    assert scenario == before
+
+
+def test_ready_to_start_condition_keeps_ego_subject_and_chinese_engineering_text():
+    text = '自车从“Vehicle ready to start”状态低速起步。'
+    assert EngineeringReportTextMapper.engineering_terms(text) == '自车从“车辆准备起步”状态低速起步。'
+
+
+@pytest.mark.parametrize('condition,is_prose', [
+    ('no common MDC/IPB failure', True),
+    ('no common MDC/IPB fault', True),
+    ('A separate pedal path is required.', True),
+    ('MDC/IPB/EPB', False),
+    ('IPB ECU CAN', False),
+    ('MF-F7-001，TTC 0.15 s，车辆已停止。', False),
+])
+def test_control_note_detects_short_slash_prose_without_hiding_control_abbreviations(condition, is_prose):
+    mapper = EngineeringReportTextMapper()
+    assert mapper.has_foreign_prose(condition, include_slashes=True) is is_prose
+    text = mapper.analysis_note(condition, '完整外文条件见原始审计记录', include_slashes=True)
+    if is_prose:
+        assert text == '完整外文条件见原始审计记录'
+    else:
+        assert '完整外文条件' not in text
+
+
+def test_sensor_slash_list_does_not_hide_existing_source_visibility_qualifiers():
+    note = '无雾霾使能见度维持在100–500m范围，感知（camera/USSC/lidar/radar）可正常识别。'
+    mapper = EngineeringReportTextMapper()
+    assert mapper.has_foreign_prose(note) is False
+    assert mapper.has_foreign_prose(note, include_slashes=True) is False
+    text = mapper.analysis_note(note, '不应吞掉来源限定')
+    assert '无雾霾' in text and '100' in text and '500' in text and '正常识别' in text
+    assert '不应吞掉' not in text
+
+
 def test_acceleration_and_reverse_glossary_preserve_all_numeric_boundaries():
     import re
     glossary = load_report_schema().presentation['language']['scenario_condition_translations']

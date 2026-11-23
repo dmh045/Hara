@@ -69,7 +69,7 @@ class ScenarioSemanticConsistencyError(ScenarioSchemaContractError):
 class ScenarioFeasibilityAgent:
     """Assess each bounded candidate without treating generation as applicability proof."""
 
-    PROMPT_VERSION = "scenario-feasibility-v32-source-linked-fault-premise"
+    PROMPT_VERSION = "scenario-feasibility-v34-unmitigated-stage-boundary"
     ALLOWED_RISK_DIMENSIONS = frozenset(RISK_DIMENSION_VALUES)
     MAX_PROVIDER_OUTPUT_TOKENS = 16384
     paired_driver_requests = True
@@ -80,6 +80,7 @@ class ScenarioFeasibilityAgent:
 
 CAUSAL CHAIN AND STAGE BOUNDARY
 只分析 M→B→I→H，到 Hazardous Event 结束，不输出 Potential Harm、S/E/C、ASIL、FTTI 或安全目标。
+未施加避险响应时，判断既定M→B→I→H；remaining_controls或安全状态提案不证明已检测、请求或执行，不得据此否定危险或要求所有缓解失效，其效果另评C/FTTI。当前模型已施加的制动、保持或目标反应必须保留，不得删去制造接触；失效到所列运动仍需独立证据。
 Hazardous Event 是危险车辆状态与运行场景的组合，事故无须已经发生；缺少具体碰撞对象本身不能作为B_TO_I或I_TO_H断裂的唯一理由。已有运行条件下失去横纵向控制可构成危险状态，但不得写成与特定行人、车辆或设施必然碰撞。
 M_TO_B 用给定MF定义说明该失效的直接行为。标有analysis_premise的MF是待审分析前提，DIRECT_FACT仅表示对给定失效定义的引用，不是Item原文事实或工程批准；检查功能关联，不扩展故障部件或控制失效范围。缺少当前场景触发条件在B_TO_I检查。具体操作须由当前工况支持，不能把“泊入/泊出”统称当作两种操作已分别覆盖。
 MF.vehicle_level_hazard 是上游因果主张，不能单独证明 I_TO_H。每个 claim 必须解释所引证据怎样支持这一跳。
@@ -105,11 +106,10 @@ OUTPUT CONTRACT
 输出 assessments 数组，每个请求 scenario_id 恰好一项。每项包含 scenario_id、physically_feasible、functionally_relevant、causally_relevant (JSON boolean)、breakpoint、causal_chain、risk_dimension_changes、hazardous_event、physical_interaction、confidence (0..1)、status (PENDING/FINALIZED)。physical_interaction 按上面的对象/阶段结构返回，无当前外部目标主张时返回 {"target":"OTHER"}，不可省略。
 causal_chain 是对象而非数组，结构 {"m_to_b":{"claim":"...","basis_type":"DIRECT_FACT","evidence_refs":[]},"b_to_i":{...},"i_to_h":{...}}。所有返回的 hop 必须有非空 claim；示例只说明结构，不构成证据。
 risk_dimension_changes 每项含 dimension、evidence_refs、reason；只选择当前事实明确需要重评的维度，使用用户提示中的枚举，不输出 risk_dimensions_changed 或 rationale。
-只返回规定的必要字段，不重复输入、rationale或shared_causal_evidence。输入 shared_causal_evidence 可用于共有步骤；差异步骤仍独立判断并返回完整链，程序自行记录复用。
+仅返回规定字段，不重复输入或rationale。shared_causal_evidence仅用于共有步骤；差异步骤独立判断，仍返回完整链，程序记录复用。
 
 BOUNDED DECISION
-按失效行为→当前轨迹和交互→危险事件的顺序逐跳判断。已给出的确定性轨迹结果无需重新数值求解；仍须核对失效是否支持这些输入。遇到第一个证据断点即按上述契约结束，不展开未请求的场景、参数点或评分。条件完整且三跳成立后直接给出结构化结论，不重复讨论已明确的假设是否为来源事实。
-driver_reuse_comparison若存在，按其中task核对局部无关性；不存在则不分析或输出复用证明。"""
+沿用已给定的确定性计算，不重算数值；仅判断所请求工况。driver_reuse_comparison仅按其task核查局部无关性，未请求则不输出复用证明。"""
 
     MACHINE_OUTPUT_RULE = """MACHINE OUTPUT RULE
 Return exactly one JSON object {"assessments": [...]} with valid JSON strings, no markdown, comments, trailing commas or explanation outside JSON.
@@ -1644,6 +1644,9 @@ Return exactly one JSON object {"assessments": [...]} with valid JSON strings, n
         split_depth: int = 0,
         project_registry: FactRegistry | None = None,
     ) -> ScenarioFeasibilityAssessment:
+        if scenario is not None:
+            from hara_agent.services.analysis.scenario_equivalence import scenario_with_current_physics
+            scenario = scenario_with_current_physics(scenario)
         if not isinstance(item, dict):
             raise ScenarioSchemaContractError("Scenario assessment必须为JSON object")
         if any(field in item for field in ("edges", "supports", "mechanism_application")):

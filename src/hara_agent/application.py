@@ -273,6 +273,8 @@ class HARAApplication:
                 sample_function_ids=self.config.sample_function_ids,
                 sample_generated_scenario_ids=self.config.sample_generated_scenario_ids,
                 sample_malfunction_ids=self.config.sample_malfunction_ids,
+                sample_parent_scenario_limit=self.config.sample_parent_scenario_limit,
+                sample_parent_scenario_ids=self.config.sample_parent_scenario_ids,
             ),
             SemanticWorkflowAgents(
                 client=self.llm_client,
@@ -438,23 +440,14 @@ class HARAApplication:
         )
         if self.config.sample_parent_scenario_limit is not None:
             available = len(candidates)
-            if self.config.sample_parent_scenario_ids:
-                indexed = {item.scenario_id: item for item in candidates}
-                missing = [
-                    item_id for item_id in self.config.sample_parent_scenario_ids
-                    if item_id not in indexed
-                ]
-                if missing:
-                    raise ValueError(f"Bounded sample parent Scenario IDs are unavailable: {missing}")
-                candidates = [indexed[item_id] for item_id in self.config.sample_parent_scenario_ids]
-            else:
-                candidates = candidates[:self.config.sample_parent_scenario_limit]
+            selected = candidate_service.select_parent_scope(candidates,
+                limit=self.config.sample_parent_scenario_limit, selected_ids=self.config.sample_parent_scenario_ids)
             audit = dict(audit)
             audit["bounded_sample_parent_scenarios"] = {
                 "available_count": available,
-                "selected_count": len(candidates),
-                "selected_ids": [item.scenario_id for item in candidates],
-                "omitted_count": available - len(candidates),
+                "selected_count": len(selected),
+                "selected_ids": [item.scenario_id for item in selected],
+                "omitted_count": available - len(selected),
             }
         return candidates, audit
 
@@ -465,6 +458,9 @@ class HARAApplication:
         from hara_agent.services.analysis.malfunction_situation_selection import selection_function
 
         candidates, audit = self.prepare_scenario_candidates(state, candidate_service)
+        selected_parents = candidate_service.select_parent_scope(candidates,
+            limit=self.config.sample_parent_scenario_limit, selected_ids=self.config.sample_parent_scenario_ids)
+        selected_parent_ids = tuple(item.scenario_id for item in selected_parents)
         typed = state.item_definition.get("typed", {})
         project_facts = ItemDefinitionFacts.from_dict(typed)
         by_malfunction = {}
@@ -484,6 +480,7 @@ class HARAApplication:
                 function=selection_function(next(
                     (item for item in state.functions if item.get("function_id") == malfunction.function_id), None,
                 )),
+                selected_parent_ids=selected_parent_ids,
             )
             found_generated_ids.update(item.scenario_id for item in instances)
             if self.config.sample_generated_scenario_ids:
@@ -496,15 +493,15 @@ class HARAApplication:
         return {
             "function_count": len(state.functions),
             "malfunction_count": len(state.malfunctions),
-            "parent_scenario_count": len(candidates),
-            "selected_parent_scenario_ids": [item.scenario_id for item in candidates],
+            "parent_scenario_count": len(selected_parents),
+            "selected_parent_scenario_ids": list(selected_parent_ids),
             "selected_parent_scenarios": [{
                 "scenario_id": item.scenario_id,
                 "operating_scenario": item.operating_scenario,
                 "scenario_atom_ids": list(item.facts.get("scenario_atom_ids", [])),
                 "object_type": str(item.facts.get("object_type", "")),
                 "ego_action": str(item.facts.get("EGO_ACTION", "")),
-            } for item in candidates],
+            } for item in selected_parents],
             "scenario_pairs_after_method_instantiation": pair_count,
             "scenario_pairs_by_malfunction": by_malfunction,
             "scenario_pair_limit": self.config.sample_scenario_pair_limit,

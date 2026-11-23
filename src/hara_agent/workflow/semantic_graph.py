@@ -74,6 +74,8 @@ class SemanticWorkflowInputs:
     sample_generated_scenario_ids: tuple[str, ...] = ()
     sample_function_ids: tuple[str, ...] = ()
     sample_malfunction_ids: tuple[str, ...] = ()
+    sample_parent_scenario_limit: int | None = None
+    sample_parent_scenario_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -305,6 +307,8 @@ def build_semantic_frontend_graph(
             risk_fact_agent=agents.risk_facts,
             physical_agent=agents.physical_scenarios,
             selected_generated_scenario_ids=inputs.sample_generated_scenario_ids,
+            parent_scenario_limit=inputs.sample_parent_scenario_limit,
+            selected_parent_scenario_ids=inputs.sample_parent_scenario_ids,
             required_fact_specs=inputs.required_fact_specs,
             method=inputs.method_contract,
             checkpoint=(

@@ -571,3 +571,119 @@ def test_parent_identity_renaming_does_not_change_source_representatives(method)
     a, _ = service.generate_for_malfunction(failure, parents, project_facts=p, function=function())
     b, _ = service.generate_for_malfunction(failure, changed, project_facts=p, function=function())
     assert conditions(a) == conditions(b)
+
+
+def test_complete_population_allocates_source_focus_before_parent_and_driver_scope(method):
+    service = MethodScenarioCandidateService(method)
+    p = replace(project(), odd_road_types=['水平车位', '垂直车位', '斜向车位'],
+                odd_weather_conditions=['晴天'])
+    parents = [replace(parent(identity), operating_scenario=place,
+        facts={**parent().facts, 'operating_scenario': place})
+        for identity, place in [('indoor', '室内停车场'), ('outdoor', '室外停车场')]]
+    failure = replace(malfunction(), failure_type='excessive', guideword='More',
+                      description='驱动扭矩过大', functional_effect='车辆非预期加速')
+    full, full_audit = service.generate_for_malfunction(failure, parents, project_facts=p, function=function())
+    allocation = full_audit['atom_generation']['source_focus_allocation']
+    assert full and allocation and all(row['new_worlds'] == 0 for row in allocation)
+    assert all(not row['unassigned_conditions'] for row in allocation)
+    full_by_id = {child.scenario_id: child for child in full}
+    for selected in parents:
+        bounded, bounded_audit = service.generate_for_malfunction(failure, parents,
+            project_facts=p, function=function(), selected_parent_ids=(selected.scenario_id,))
+        assert bounded and len(bounded) < len(full)
+        assert bounded_audit['atom_generation']['source_focus_allocation'] == allocation
+        for child in bounded:
+            assert asdict(child) == asdict(full_by_id[child.scenario_id])
+            assert selected.scenario_id in service._source_parent_ids(child)
+    from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
+    focuses = {}
+    for child in full:
+        key = signature(scenario_conditions(child, without_driver=True))
+        focuses.setdefault(key, set()).add(tuple(sorted(child.analysis_instance['source_condition_focus'].items())))
+    assert all(len(values) == 1 for values in focuses.values())
+
+
+def test_source_focus_rotation_is_mode_scoped_and_duplicate_worlds_share_focus():
+    service = MethodScenarioCandidateService
+    p = replace(project(), odd_road_types=['平行车位', '斜向车位'], odd_weather_conditions=[])
+    worlds = [replace(parent(f'{mode}-{i}'), operating_mode=mode,
+        facts={**parent().facts, 'declared_condition': i})
+        for mode in ['parking-in', 'parking-out'] for i in range(2)]
+    duplicate = replace(worlds[0], scenario_id='same-world-other-id')
+    result, audit = service._allocate_source_focus(worlds + [duplicate],
+        {'parking-in': p, 'parking-out': p})
+    assert len(result) == 5 and len(audit) == 2
+    assert all(row['canonical_worlds'] == 2 and row['assigned_or_fixed_conditions'] == 2 for row in audit)
+    assert result[0].analysis_instance['source_condition_focus'] == result[-1].analysis_instance['source_condition_focus']
+    for mode in ['parking-in', 'parking-out']:
+        assert {child.analysis_instance['source_condition_focus']['value']
+                for child in result if child.operating_mode == mode} == set(p.odd_road_types)
+    reversed_result, _ = service._allocate_source_focus(list(reversed(worlds + [duplicate])),
+        {'parking-in': p, 'parking-out': p})
+    assert {c.scenario_id: c.analysis_instance for c in result} == {
+        c.scenario_id: c.analysis_instance for c in reversed_result}
+
+
+def test_source_parent_lineage_retains_all_coalesced_originals(method):
+    service = MethodScenarioCandidateService(method)
+    parents = [parent('first-source'), parent('second-source')]
+    failure = replace(malfunction(), failure_type='excessive', guideword='More',
+                      description='驱动扭矩过大', functional_effect='车辆非预期加速')
+    full, _ = service.generate_for_malfunction(failure, parents, project_facts=project(), function=function())
+    assert full
+    assert any(set(child.analysis_instance.get('source_parent_ids', [])) == {'first-source', 'second-source'}
+               for child in full)
+    selected, _ = service.generate_for_malfunction(failure, parents, project_facts=project(),
+        function=function(), selected_parent_ids=('second-source',))
+    assert {child.scenario_id for child in selected} == {child.scenario_id for child in full}
+    assert service.select_parent_scope(parents, limit=1, selected_ids=('second-source',)) == parents[1:]
+    with pytest.raises(ValueError, match='unavailable'):
+        service.select_parent_scope(parents, limit=1, selected_ids=('not-a-source',))
+
+
+def test_bounded_application_preview_and_assessment_share_full_population_focus(method, tmp_path):
+    from hara_agent.application import HARAApplication
+    from hara_agent.config import RunConfig
+    from hara_agent.models import SpeedEnvelope
+    p = replace(project(), odd_road_types=['水平车位', '垂直车位', '斜向车位'],
+        speed_envelopes=[SpeedEnvelope('parking vehicle control', 0, 7, sources=[SOURCE])])
+    failure = replace(malfunction(), failure_type='excessive', guideword='More',
+                      description='驱动扭矩过大', functional_effect='车辆非预期加速')
+    state = HARAState('full-population-scope', item_definition={'typed': asdict(p)},
+        functions=[asdict(function())], malfunctions=[asdict(failure)])
+    config = RunConfig(item_path=tmp_path/'item.docx', template_path=None,
+        output_path=tmp_path/'report.xlsx', run_dir=tmp_path/'runtime',
+        operating_mode='parking vehicle control', allow_draft=True, max_workers=1,
+        sample_function_limit=1, sample_malfunction_limit=1,
+        sample_parent_scenario_limit=1, sample_scenario_pair_limit=100)
+    app = HARAApplication(config, object())
+    service = MethodScenarioCandidateService(method)
+    parents, audit = app.prepare_scenario_candidates(state, service)
+    assert len(parents) > audit['bounded_sample_parent_scenarios']['selected_count'] == 1
+    selected_id = audit['bounded_sample_parent_scenarios']['selected_ids'][0]
+    full, _ = service.generate_for_malfunction(failure, parents, project_facts=p, function=function())
+    expected, _ = service.generate_for_malfunction(failure, parents, project_facts=p,
+        function=function(), selected_parent_ids=(selected_id,))
+    assert expected and len(expected) < len(full)
+    preview = app._preview_bounded_scope(state, service, method)
+    assert preview['parent_scenario_count'] == 1 and preview['available_parent_scenario_count'] == len(parents)
+    assert preview['scenario_pairs_after_method_instantiation'] == len(expected)
+    assess_scenarios(state, MockCausalAgent(), [failure], parents, method=method,
+        parent_scenario_limit=1)
+    assert {c.scenario_id for c in state.scenarios} == {c.scenario_id for c in expected}
+    assert {c.scenario_id: c.analysis_instance['source_condition_focus'] for c in state.scenarios} == {
+        c.scenario_id: c.analysis_instance['source_condition_focus'] for c in expected}
+    out_of_scope = next(c for c in full if c.scenario_id not in {s.scenario_id for s in expected})
+    app.config = replace(config, sample_generated_scenario_ids=(out_of_scope.scenario_id,))
+    with pytest.raises(ValueError, match='unavailable'):
+        app._preview_bounded_scope(state, service, method)
+    with pytest.raises(ValueError, match='unavailable'):
+        assess_scenarios(state, MockCausalAgent(), [failure], parents, method=method,
+            parent_scenario_limit=1, selected_generated_scenario_ids=(out_of_scope.scenario_id,))
+    # Committed targeted replay keeps its existing input scope; parent selection
+    # is a source-generation concern and must not reinterpret saved inputs.
+    prepared = deepcopy(expected[:1])
+    assess_scenarios(state, MockCausalAgent(), [failure], [], method=method,
+        prepared_candidates_by_malfunction={failure.malfunction_id: prepared},
+        selected_parent_scenario_ids=('not-a-current-parent',), parent_scenario_limit=1)
+    assert [c.scenario_id for c in state.scenarios] == [prepared[0].scenario_id]

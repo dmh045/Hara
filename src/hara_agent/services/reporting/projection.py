@@ -18,7 +18,9 @@ from .view_model import (
     AuditReferenceView, FunctionView, GeneratedChildView, HARAReportRowView, HARAReportViewModel,
     MalfunctionView, MethodBasisView, SafetyGoalView, ScenarioDetailView, SummaryView,
 )
-from hara_agent.services.analysis.scenario_equivalence import scenario_conditions, signature
+from hara_agent.services.analysis.scenario_equivalence import (
+    scenario_conditions, scenario_with_current_physics, signature,
+)
 from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
 
 
@@ -409,6 +411,7 @@ class HARAReportProjectionService:
 
     def _score_rationale(
         self, field: str, evidence: Any, trace: Mapping[str, Any], state: str,
+        *, scenario: Any = None,
     ) -> str:
         labels = {
             "severity": "S", "exposure": "E",
@@ -424,6 +427,8 @@ class HARAReportProjectionService:
             "controllability": self.text.controllability_rationale,
             "asil": self.text.asil_rationale,
         }
+        if field == "severity":
+            return mapper[field](evidence, trace, scenario=scenario)
         return mapper[field](evidence, trace)
 
     @staticmethod
@@ -593,7 +598,7 @@ class HARAReportProjectionService:
                 states = self._score_states(entry["risk"], entry["trace"], trace_provided=trace_provided)
                 counts[self._display_score(getattr(entry["risk"], field), states[field])] += 1
                 bases[self._score_rationale(field, getattr(entry["risk"], field),
-                    self._display_trace(field, entry["trace"]), states[field])] += 1
+                    self._display_trace(field, entry["trace"]), states[field], scenario=entry["scenario"])] += 1
                 if entry["trace"].get("risk_scoring_invoked") is not False:
                     branch_counts.update(str(b.get(label) or "待评定") for b in entry["risk"].branch_evaluations)
             observed = set(counts) | set(branch_counts)
@@ -822,7 +827,10 @@ class HARAReportProjectionService:
                 )
         causal_status_by_pair = self._causal_status_by_pair(causal_trace)
         malfunctions = {str(item.get("malfunction_id", "")): item for item in state.malfunctions}
-        scenarios = {str(item.scenario_id): item for item in state.scenarios}
+        source_scenarios = {str(item.scenario_id): item for item in state.scenarios}
+        scenarios = {identity: (scenario_with_current_physics(item)
+                               if item.facts.get("fault_motion_model") == "RECTILINEAR_MOVING_TARGET_CONTACT" else item)
+                     for identity, item in source_scenarios.items()}
         functions = {str(item.get("function_id", "")): item for item in state.functions}
 
         entries: list[dict[str, Any]] = []
@@ -993,9 +1001,12 @@ class HARAReportProjectionService:
         timing_inputs = {
             (risk.malfunction_id, risk.scenario_id): RiskCalculationInputService().ftti(
                 risk.malfunction_id, risk.scenario_id, _value(risk.asil),
-                {**scenarios[risk.scenario_id].facts,
-                 "_fact_provenance": scenarios[risk.scenario_id].fact_provenance}
-                if risk.scenario_id in scenarios else {},
+                # Rejected-response snapshots bind the untouched source world.
+                # Their executor already recomputes the same response physics;
+                # display-only derived-cache refresh must not invalidate them.
+                {**source_scenarios[risk.scenario_id].facts,
+                 "_fact_provenance": source_scenarios[risk.scenario_id].fact_provenance}
+                if risk.scenario_id in source_scenarios else {},
                 risk.branch_evaluations,
                 method=method,
             ).to_dict()
@@ -1008,6 +1019,8 @@ class HARAReportProjectionService:
              "function": str(functions.get(str(malfunctions.get(risk.malfunction_id, {}).get("function_id", "")), {}).get("name", "")),
              "functional_effect": str(malfunctions.get(risk.malfunction_id, {}).get("functional_effect", "")),
              "vehicle_hazard": str(malfunctions.get(risk.malfunction_id, {}).get("vehicle_level_hazard", "")),
+             "road_user_type": scenarios[risk.scenario_id].facts.get("road_user_type", "") if risk.scenario_id in scenarios else "",
+             "contact_status": scenarios[risk.scenario_id].facts.get("motion_model_outcome", {}).get("status", "") if risk.scenario_id in scenarios else "",
              "operating_mode": scenarios[risk.scenario_id].operating_mode if risk.scenario_id in scenarios else "",
              "hazardous_event": risk.hazardous_event}
             for risk in state.risk_results if risk.safety_goal_id == goal.sg_id
@@ -1081,7 +1094,7 @@ class HARAReportProjectionService:
                     method_description=severity_descriptions.get(values["severity"], "")),
                 severity=values["severity"],
                 severity_rationale=self._score_rationale(
-                    "severity", risk.severity, severity_trace, score_states["severity"],
+                    "severity", risk.severity, severity_trace, score_states["severity"], scenario=scenario,
                 ),
                 exposure=values["exposure"],
                 exposure_rationale=self._score_rationale(
@@ -1137,7 +1150,8 @@ class HARAReportProjectionService:
                     self._score_rationale(field, replace(getattr(risk, field), value=(
                         None if values[field] == "待评定" else values[field]),
                         status=ReviewStatus.PENDING if values[field] == "待评定" else getattr(risk, field).status),
-                        self._display_trace(field, trace, representative["display_branch"]), score_states[field])
+                        self._display_trace(field, trace, representative["display_branch"]), score_states[field],
+                        scenario=scenario if len(risk.branch_evaluations) == 1 else None)
                     for field in ("severity", "exposure", "controllability", "asil")})
             elif partial_rationales:
                 row = replace(row, **partial_rationales)
@@ -1228,7 +1242,7 @@ class HARAReportProjectionService:
                         child_trace.get(field, {}), _UNCALCULATED)
                         for field in ("severity", "exposure", "controllability", "asil")
                         if not _value(getattr(child_risk, field))),
-                    branch_results="\n".join(self.text.branch_result(branch)
+                    branch_results="\n".join(self.text.branch_result(branch, child)
                                              for branch in child_risk.branch_evaluations),
                 ))
                 audit.append(AuditReferenceView(

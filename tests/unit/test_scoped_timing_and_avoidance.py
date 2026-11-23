@@ -39,9 +39,16 @@ def test_no_contact_timing_is_not_reported_as_a_symbolic_parameter_gap(method, m
     timing = RiskCalculationInputService().ftti('MF', child.scenario_id, '',
         {**child.facts, '_fact_provenance': child.fact_provenance}, method=method)
     assert timing.hazard_time_limit_s is None and timing.status.value == 'PENDING_INPUT'
-    assert (timing.timing_trace.get('pending_reason') == 'NO_CONTACT_WITHIN_MODEL') is bound_outcome
     text = EngineeringReportTextMapper.ftti_rationale([timing.to_dict()])
-    if bound_outcome:
+    if model == 'stationary_envelope':
+        # A known original no-contact trajectory cannot validate this response:
+        # its transition has no post-stop model, even though its prose says hold.
+        assert timing.timing_trace['pending_reason'] == 'POST_STOP_MOTION_UNRESOLVED'
+        assert '有限接触包络响应需明确制动后保持' in text
+        assert EngineeringReportTextMapper.ftti_value([timing.to_dict()]) == '停车后保持待建模'
+    else:
+        assert (timing.timing_trace.get('pending_reason') == 'NO_CONTACT_WITHIN_MODEL') is bound_outcome
+    if model == 'curve' and bound_outcome:
         assert '模型有效范围内未建立接触' in text and '符号参数' not in text and 'v0·t' not in text
         assert EngineeringReportTextMapper.ftti_value([timing.to_dict()]) == '模型时域内未建立接触边界'
     assert before == (child.facts, child.fact_provenance)

@@ -239,7 +239,7 @@ def test_unknown_crossing_control_is_an_input_gap_not_an_absent_method(method):
     assert score(replace(method, metadata=absent), sc)['controllability']['pending_reason'] == 'LATERAL_C_METHOD_NOT_AVAILABLE'
 
 
-def test_static_side_contact_is_a_c_method_gap_after_successful_physics(method):
+def test_static_side_surface_preserves_the_actual_longitudinal_braking_approach(method):
     from test_bounded_interaction_coverage import moving_plan
 
     parent = make_candidate(5)
@@ -249,21 +249,20 @@ def test_static_side_contact_is_a_c_method_gap_after_successful_physics(method):
     sc = instantiate(method, raw, parent)[0]
     before = deepcopy(sc)
     assert sc.facts['motion_model_outcome']['status'] == 'CONTACT'
-    assert sc.facts['motion_model_outcome']['longitudinal_contact'] is False
+    assert sc.facts['motion_model_outcome']['longitudinal_contact'] is True
     assert sc.facts['first_contact_time_s'] == pytest.approx(2.16)
-    assert 'ttc_s' not in sc.facts
+    assert sc.facts['ttc_s'] == sc.facts['first_contact_time_s']
 
     risk = score(method, sc)
     control = risk['controllability']
     assert risk['severity']['severity_score']
-    assert control['controllability_score'] == ''
-    assert control['calculation_status'] == 'PENDING_METHOD_SEMANTICS'
-    assert control['pending_reason'] == 'LATERAL_C_METHOD_NOT_AVAILABLE'
-    assert control['decision_status'] == 'METHOD_NOT_APPLICABLE'
-    assert all(not row['C'] and not row['ASIL'] for row in risk['branch_evaluations'])
+    assert control['controllability_score'] == 'C3'
+    assert control['engineering_status'] == 'PENDING'
+    assert all(row['C'] == 'C3' for row in risk['branch_evaluations'])
     trace = RiskExecutionTraceService(method)._controllability_trace(sc.facts, control)
     text = EngineeringReportTextMapper.controllability_branch({'controllability': trace})
-    assert '侧向接触已建模' in text and '当前方法无适用 C 规则' in text
+    assert '当前方法无适用 C 规则' not in text
+    assert sc.facts['collision_type'] == 'SIDE'
     assert sc == before
 
 

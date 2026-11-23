@@ -273,11 +273,12 @@ class PhysicalScenarioAgent:
     REQUEST_VIEW_VERSION = "physical-request-view-v6-dedup-model-scope"
     CONTROL_REQUEST_VIEW_VERSION = "physical-request-view-v5-scoped-control-context"
     RESPONSE_VALIDATION_VERSION = "physical-response-validation-v35-manual-path-completeness"
-    PROMPT_VERSION = "post-fault-physical-scenario-v59-initial-layout-relations"
-    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v38-remote-response-delay"
-    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v12-reference-kinematics-zh-v1"
+    PROMPT_VERSION = "post-fault-physical-scenario-v61-conditional-control-scope"
+    CONTROL_PROMPT_VERSION = "post-fault-control-inputs-v40-conditional-control-scope"
+    RESPONSE_CORRECTION_VERSION = "post-fault-response-correction-v14-conditional-control-scope"
     CONTROL_ANALYSIS_POLICY = (
-        "区分两件事：来源能确认的接口/正常接管动作，与本次故障下尚未验证的通道独立性。"
+        "remaining_controls是本代表条件下相容的剩余能力，可含明确的独立性假设，不表示已验证；"
+        "人工和自动路径按同一故障范围判断，程序保留PENDING/NOT_GRANTED。"
         "按以下顺序完成控制分析：先确定本次故障作用于哪个输出命令或执行能力，再沿ITEM给出的控制链选择相容处置，最后列独立性假设及未覆盖共同失效。"
         "驱动/转向/制动/驻车命令异常分别用automatic_drive_command/automatic_steering_command/automatic_braking_command/automatic_parking_command；"
         "drive/steering/braking/parking_hold表示执行能力本身，只有该能力受本次故障影响时才列为failed。"
@@ -290,7 +291,7 @@ class PhysicalScenarioAgent:
         "例如本次定义为单一驱动输出信号超量，可在已有制动接口和自动停车功能的基础上，提出故障限于驱动输出、自动制动链仍工作的代表假设；"
         "不把它称为已验证冗余，控制器共同故障另列未覆盖条件。驻车输出异常也不自动排除常规制动持续保持。"
         "用remaining_controls和conditions说明该假设成立所需条件及不覆盖的共同失效；"
-        "这些是待审核的分析假设，不要求原文逐字证明故障后可靠性。原文未证明不是拒绝所有条件性假设的理由。"
+        "未知须说明连条件性路径也不能成立的具体故障、接口或架构障碍；仅未实测或未证明独立性不是未知理由。"
         "对远程干预和目标规避，同样需要在本代表的几何、可见性、突发性和行为条件下判断；"
         "有合理依据时提出明确true或false及条件，不能把未提及、静止、车外直接当作false。"
         "不要为得到完整评级机械填值，也不要额外假定独立故障。若连条件性工况也无法合理成立，具体说明矛盾或方法缺口。"
@@ -302,12 +303,11 @@ class PhysicalScenarioAgent:
         "本故障使其失效就列failed_controls，确实不能确定则在unresolved_controls.automatic_braking_command说明系统路径的具体障碍；"
         "缺少远程人员接口不能替代这项系统能力判断。"
         "若自动响应确有驾驶员在位使能条件，引用该条件并限定作用域；不得把未验证独立性这一共有假设只在一个人员分支当作拒绝理由。"
-        "当intervention_inputs包含emergency_braking_available且存在车内驾驶员时，必须分析制动能力："
-        "用failed_controls或remaining_controls声明结论；若检查来源与故障后仍无法合理提出条件性结论，"
-        "在同一假设或control_assessment的unresolved_controls.braking中说明具体原因。"
-        "这两种表示互斥：如果本代表工况已条件性保留driver_braking或braking，"
-        "不得同时在unresolved_controls.braking声明未知；尚未验证的独立性和未覆盖共同失效写入conditions和uncovered_conditions。"
-        "若连条件性人工路径也不能成立，则保留unresolved_controls.braking并不把driver_braking列为remaining。"
+        "当intervention_inputs包含emergency_braking_available且存在车内驾驶员时，须单独评估人工踏板driver_braking："
+        "相容的条件性路径列remaining_controls，受本故障影响列failed_controls；否则用unresolved_controls.driver_braking说明具体障碍。"
+        "braking只表示制动执行能力，人工路径未知时仍可条件性保留该执行能力，不能据此认定踏板已可用。"
+        "人工路径不能成立时，保留其driver_braking未知或明确失效，不把它列remaining。"
+        "unresolved_controls.braking仅表示制动执行能力整体未决，与已声明braking或driver_braking可用互斥。"
         "同一干预字段不能同时出现在unresolved_controls和intervention_assumptions：有条件性值则把限制写入conditions，否则只声明未知及具体原因。"
         "driver_positions只能用in_driver_seat或outside_driver_seat；已有driver_configurations且假设不再限缩时可以省略。"
         "来源未限定配置而当前方法需要人员条件时，为已有假设选择一个有依据的位置，不把缺少字段当作分析完成。"
@@ -364,15 +364,16 @@ class PhysicalScenarioAgent:
         "只有制动踏板、机械锁死或驱动也已失效时不能假定能恢复运动；保持速度不叫停车。"
     )
     ANALYSIS_STRATEGY = (
-        "本任务完成当前失效的有限条件性代表工况：先比较与故障有关的对象运动交互，再选择模型和取点。"
-        "当前输入是生成器已经按来源、道路和主要机制分开的一个代表工况，不是整个失效的唯一场景。"
-        "默认只输出一个完整假设，将指定来源焦点和对象类别落实在这个假设中。比较其他交互后可列为未覆盖条件，"
-        "不要每次又把静止、跟车、横穿全部复制一遍。只有当前输入明确包含无法由一个世界表达的不同交互时才增加假设，"
-        "总上限仍为三个；驾驶员位置、数学近似和单纯参数变化不构成新增交互。"
-        "对象、方向、净距、初始运动及故障运动必须共同成立。"
+        "构建当前失效的有限条件性工况。保留明确对象、轨迹和阶段；"
+        "只有ODD/道路/动作Atom的候选还没有分开对象运动或布局交互，并非固定物理世界。"
+        "先比较与故障相容的交互，再选模型和参数。在1–3槽内选择有实际风险差异的代表，"
+        "优先以有意义的移动交互替换冗余静止/距离变体；来源未列出的交互仍可作相容分析假设。"
+        "rationale说明选择及具体不适用依据，不能只将移动目标或其他布局列为未覆盖就结束。"
+        "不机械复制所有交互；局部物理等价布局共用一个假设。"
+        "驾驶员位置、数学近似和单纯参数变化不构成新机制，机制与范围采样共享最多三个实例。"
         "依据model_input_status与model_catalog.required逐项沿用适用输入或提出假设；"
-        "缺少实测距离、加速度或残余阻力时，可以自行选取有场景依据的POINT并解释选值、参考点、"
-        "有效阶段和未覆盖范围。假设不等于测量、批准或车辆能力上界，不设通用数值。"
+        "缺少实测动态参数时，可提出有场景依据的POINT，说明取值、参考点、阶段及未覆盖范围。"
+        "假设不等于测量、批准或车辆能力上界，不设通用数值。"
         "仅当连条件性代表也无法合理成立时保留SYMBOLIC，说明具体相容性/模型障碍及参数关系；"
         "仅说原文未提供实测值不是充分理由。无接触代表同样有效，不以得到某个评级为选值目标。"
         "默认只给代表点；只有来源明确要求范围，或能指出接触、停止、方向、使能或规避条件的"
@@ -400,7 +401,8 @@ class PhysicalScenarioAgent:
                     for d in context["correction_diagnostics"]))
         example = {
             "hypotheses": [{
-                "hypothesis_id": "h1", "model": "one model_catalog key", "rationale": "mechanism and applicability",
+                "hypothesis_id": "h1", "model": "one model_catalog key",
+                "rationale": "失效如何改变运动和控制；比较相关对象运动/布局的影响，说明所选代表及具体不适用依据",
                 "basis_refs": ["a supplied evidence ID"],
                 "geometry": {"road_user_type": "from method vocabulary", "collision_type": "from method vocabulary",
                     "object_position": "FRONT|REAR|LEFT|RIGHT", "ego_longitudinal_direction": "FORWARD|REVERSE",
@@ -411,8 +413,8 @@ class PhysicalScenarioAgent:
                     "kind": "POINT", "value": 0, "rationale": "why this conditional representative is useful"}],
                 "conditions": ["scope of this hypothesis"], "uncovered_conditions": ["limits of this analysis"],
                 "driver_positions": ["in_driver_seat", "outside_driver_seat"],
-                "failed_controls": ["affected control"], "remaining_controls": ["independent control, if supported"],
-                "unresolved_controls": {"braking": "optional: specific unresolved cause after assessment; omit if braking capability is declared"},
+                "failed_controls": ["affected control"], "remaining_controls": ["conditionally retained control; explain scope"],
+                "unresolved_controls": {"driver_braking": "optional: unresolved manual pedal path; braking actuator capability is separate"},
                 "condition_changes": {"initial_state": False, "target": False, "rationale": "same initial world and target; set true only for a justified independent child condition"},
                 "grade_frame": {"coordinate_frame": "BODY_FORWARD_POSITIVE",
                     "slope_reference": "EGO_FORWARD|ROAD_REFERENCE|UNSPECIFIED",
@@ -470,9 +472,8 @@ class PhysicalScenarioAgent:
             "正常速度约束仅约束初始速度；故障可加速、恒速或减速。区分失效控制与剩余控制，"
             "自动制动指令异常用automatic_braking_command，不能直接等同整个braking能力失效；"
             "驾驶员制动路径用driver_braking。结合Item的接口、接管条件和本次失效作用范围，"
-            "说明独立驾驶员制动路径是否仍可用；允许明确标识的条件性独立路径假设，"
-            "但正常状态下可踩制动退出AVP，并不证明故障后制动通道一定独立有效。"
-            "不能仅为得到C值声称remaining_controls；无法合理作条件性判断的能力用unresolved_controls具体说明。"
+            "按控制契约分别判断人工和自动路径，可提出明确条件性的独立路径假设，不把正常退出动作当成已验证隔离；"
+            "不能为得到C值填能力，无法形成相容假设时用unresolved_controls说明具体障碍。"
             "intervention_inputs是下游实际需要的干预条件；应在同一次方案中逐项检查。"
             "emergency_braking_available由你明确声明的failed_controls/remaining_controls派生，"
             "请说明当前故障后驾驶员制动能力是否保留及其条件；它与驾驶员是否在车内是两个条件。"
@@ -545,7 +546,7 @@ class PhysicalScenarioAgent:
                 "fields": ["failed_controls", "remaining_controls"],
                 "type": "flat JSON array of control identity strings; [] when none",
                 "shape_example": ["driver_braking", "braking"],
-                "meaning": "Shape only, not a default capability. Do not nest arrays or output expressions such as [[...]][0]. Put reasons and conditions in the existing rationale/conditions fields.",
+                "meaning": "remaining_controls是本代表条件性剩余能力，不是已验证能力或默认值；人工/自动采用同一故障范围标准。程序保持PENDING/NOT_GRANTED。依据和限制写rationale/conditions，未知写具体相容性障碍。仅用平铺数组，不输出嵌套数组或表达式。",
             },
             "driver_positions": {"optional": not needs_driver_scope,
                 "allowed": context.get("driver_configurations") or ["in_driver_seat", "outside_driver_seat"],
@@ -685,8 +686,8 @@ class PhysicalScenarioAgent:
                 "读取 context 的原文、限定与来源；$context_ref和$source_text是完整来源引用；"
                 "$context_value指向context.$context_values中的完整结构，可递归引用，来源、对象与阶段未省略。"
                 "根据功能、失效作用范围及现有条件区分各自动命令、执行能力和独立驾驶员制动路径。已有明确控制条件必须保留。"
-                "正常时踩制动能退出功能，不等于故障后独立制动一定有效；允许有依据的条件性能力假设，"
-                "明确写出适用条件，不能声称工程批准。已有驾驶员位置由各分支提供，本任务不改变它；未提供时按output_contract补充条件性位置。"
+                "按output_contract声明本代表的条件性控制能力及适用限制，不声称已验证或工程批准。"
+                "已有驾驶员位置由各分支提供，本任务不改变它；未提供时按output_contract补充条件性位置。"
                 "远程干预和目标规避通过 intervention_assumptions 表达，每项包含 value 布尔值、"
                 "rationale、basis_refs、conditions。仅可用output_contract.intervention_assumptions.optional_keys，"
                 "不是intervention_inputs中的所有字段；已知driver_in_vehicle由分支提供，"

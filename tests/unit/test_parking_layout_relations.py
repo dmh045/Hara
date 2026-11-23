@@ -215,3 +215,98 @@ def test_motion_policy_compares_real_interactions_in_one_existing_task_and_reuse
     assert signature(old) != context['plan_key']
     run(method,agent,state=state,candidates={'MF':[original,duplicate]})
     assert len(client.requests) == 1
+
+
+def test_odd_action_candidate_does_not_claim_its_interactions_are_already_generated(method):
+    from test_geometry_completion import Client, run
+    parent = make_candidate(7.2)
+    parent.facts.pop('road_user_type'); parent.fact_provenance.pop('road_user_type',None)
+    raw = layout_plan('ANGLED')
+    raw['hypotheses'][0]['rationale'] = 'A moving aisle vehicle changes the bay-exit overlap; fixed nearby objects are a different conditional world.'
+    client = Client([raw]); state, result = run(method,PhysicalScenarioAgent(client),candidates={'MF':[parent]})
+    assert len(client.requests) == 1 and len(result['MF']) == 1
+    request = json.loads(client.requests[0].user_prompt)
+    strategy = next(iter(state.item_definition['physical_analysis_plans'].values()))['context']['analysis_strategy']
+    assert '还没有分开对象运动或布局交互' in strategy
+    assert '默认只输出一个完整假设' not in strategy
+    assert '只有当前输入明确包含' not in strategy
+    assert '具体不适用依据' in request['output_shape']['hypotheses'][0]['rationale']
+    child=result['MF'][0]
+    assert child.facts['layout_relation']['geometry_scope']=='TWO_AXIS_RELATIVE_MOTION'
+    assert child.facts['first_contact_time_s']==pytest.approx(14/3)
+    assert child.fact_provenance['layout_relation']['approval']=='PENDING'
+
+
+def test_control_manual_unknown_retains_actuator_and_isolates_previous_prompt_cache(tmp_path):
+    from dataclasses import replace
+    from hara_agent.infrastructure.llm.response_checkpoint import ResponseCheckpoint
+    raw={'hypotheses':[], 'uncovered_conditions':[], 'control_assessment':{
+        'rationale':'The actuator may remain; no basis establishes the manual pedal path.',
+        'basis_refs':['MF.description'],'conditions':['Conditional actuator retention; manual path unresolved.'],
+        'uncovered_conditions':['Manual pedal path and common cause are unverified.'],
+        'failed_controls':['drive'],'remaining_controls':['braking'],
+        'unresolved_controls':{'driver_braking':'No source or compatible assumption establishes the pedal command path.'}}}
+    class Client:
+        def __init__(self):self.requests=[]
+        def complete_json(self,request):self.requests.append(request);return LLMResponse(deepcopy(raw),'OFFLINE')
+    context={'plan_key':'manual-channel','task_scope':'CONTROL_INPUTS_ONLY','driver_configurations':['in_driver_seat'],
+        'intervention_inputs':['emergency_braking_available'],'evidence':{'MF.description':'drive fault'}}
+    capture=Client();PhysicalScenarioAgent(capture).propose(context)
+    request=capture.requests[0]
+    assert 'unresolved_controls.driver_braking' in request.system_prompt
+    assert '不能据此认定踏板已可用' in request.system_prompt
+    store=ResponseCheckpoint(tmp_path);client=Client()
+    store.complete(client,replace(request,prompt_version='post-fault-control-inputs-v39-manual-channel-scope'))
+    agent=PhysicalScenarioAgent(client,response_checkpoint_dir=tmp_path)
+    plan,_=agent.propose(context)
+    assert len(client.requests)==2  # Revised manual semantics cannot hit the legacy response.
+    assert plan.control_assessment['remaining_controls']==['braking']
+    assert 'driver_braking' in plan.control_assessment['unresolved_controls']
+    agent.propose(context)
+    assert len(client.requests)==2  # The revised task itself remains recoverable.
+
+
+@pytest.mark.parametrize('manual_state,expected', [('conditional', True), ('architecture_unknown', None), ('failed', False)])
+def test_conditional_control_contract_keeps_manual_authority_separate_from_verification(method, manual_state, expected):
+    assessment = {'rationale':'The present fault is limited to the drive command; assess the existing pedal path in the same representative.',
+        'basis_refs':['MF.description'], 'conditions':['Existing pedal and braking actuator; conditional isolation of the failed drive command.'],
+        'uncovered_conditions':['Common controller failure and actual isolation remain unverified.'],
+        'failed_controls':['automatic_drive_command'], 'remaining_controls':['braking']}
+    if manual_state == 'conditional':
+        assessment['remaining_controls'].append('driver_braking')
+    elif manual_state == 'architecture_unknown':
+        assessment['unresolved_controls']={'driver_braking':'The existing pedal interface routes through the failed shared command path; no compatible retained pedal path is established in this representative.'}
+    else:
+        assessment['failed_controls'].append('driver_braking')
+    raw={'hypotheses':[], 'uncovered_conditions':assessment['uncovered_conditions'], 'control_assessment':assessment}
+    class Client:
+        def complete_json(self, request):
+            self.request=request
+            return LLMResponse(deepcopy(raw),'OFFLINE')
+    client=Client(); context={'plan_key':'conditional-control-definition','task_scope':'CONTROL_INPUTS_ONLY',
+        'driver_configurations':['in_driver_seat'],'intervention_inputs':['emergency_braking_available'],
+        'evidence':{'MF.description':'single drive command fault; an existing pedal interface'}}
+    before=deepcopy(context)
+    plan,_=PhysicalScenarioAgent(client).propose(context)
+    contract=json.loads(client.request.user_prompt)['output_contract']['control_arrays']
+    assert '本代表条件性剩余能力' in contract['meaning'] and '不是已验证能力' in contract['meaning']
+    assert '人工/自动采用同一故障范围标准' in contract['meaning']
+    assert '仅未实测或未证明独立性不是未知理由' in client.request.system_prompt
+    assert client.request.prompt_version == 'post-fault-control-inputs-v40-conditional-control-scope'
+    assert context == before and plan.control_assessment == assessment
+    from test_autonomous_physics import instantiate as instantiate_motion, raw_plan
+    from hara_agent.services.analysis.risk_calculation_input_service import RiskCalculationInputService
+    parent=instantiate_motion(method,raw_plan(initial=7.2),make_candidate(7.2))[0]
+    original=deepcopy(parent)
+    children,errors=PhysicalHypothesisInstantiationService(method).instantiate(parent,mf(),plan,
+        plan_key=context['plan_key'],response_model='OFFLINE')
+    assert not errors and len(children)==1 and parent==original
+    child=children[0]
+    # Retained braking execution is not a declaration of manual C credit.
+    assert child.facts['emergency_braking_available'] is True
+    applicability=RiskCalculationInputService.manual_braking_applicability(
+        {**child.facts,'_fact_provenance':child.fact_provenance},malfunction_id='MF',scenario_id=child.scenario_id)
+    assert applicability['status'] == ('DECLARED_MANUAL_BRAKING_PATH' if expected is True else
+        'MANUAL_BRAKING_PATH_UNAVAILABLE' if expected is False else 'MANUAL_BRAKING_PATH_UNRESOLVED')
+    assert child.fact_provenance['emergency_braking_available']['approval']=='PENDING'
+    assert child.fact_provenance['emergency_braking_available']['calculation_scope']=='CONDITIONAL'
