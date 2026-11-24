@@ -1,0 +1,68 @@
+# 工作流工程详解增强版：源文、重建与验收
+
+[打开完整HTML](../HARA_Workflow_Engineering_Detail_20261124.html) · [返回交接手册](../README.md)
+
+## 1. 这次是在什么基础上补充
+
+用户提供的原文件为 `HARA_方案评审_可视化报告_工作流详解版.html`，日期2026-10-22，代码基准652f0774。原文件SHA-256：
+
+```text
+889eb1bbf0ed35ec1e45a8199708f5f46daf0c96072c890a47bea3e9204a6ae2
+```
+
+本版生产代码基准为 `d6a400e7010d62ff5dda56efd8215f23729bb3ec`，交接文档起点4429a2d。不是直接把旧页面里的日期换成新日期：沿原13张工作流卡片扩写81个内部小节，补入真实调用、字段、来源、条件判断、错误去向、模型方程、复用/恢复、例子和现有测试。当前正文与旧v8数量/旧实现说明明确分开。
+
+原目录、全部原锚点、7幅SVG和5幅内嵌图保留；历史结果与规划折叠展示，默认打印不包含历史区。模型目录、E特殊组合、C前提、FTTI响应、Safe State、预算及并发均按当前源码说明。新增完整操作附录C—F。来源/测试链接固定版本，本机运行证据另标识，不能假定转发HTML同时传走GB级checkpoint。
+
+## 2. 可维护源文
+
+| 文件 | 对应内容 |
+|---|---|
+| [00 入口、抽取与失效](00_入口抽取与失效.md) | wf-00—04：方法/输入身份、文档及功能、引导词、失效、来源基础场景 |
+| [01 场景、驾驶员与物理](01_场景组合驾驶员与物理.md) | wf-05—08：模板、Atom、去重、人员控制、物理任务/实例/求解/恢复 |
+| [02 因果、评分与报告](02_因果评分与下游报告.md) | wf-09—12：证据资格、RiskFacts、同分支评级、SG/SS/FTTI、报告关联 |
+| [03 当前结果与交接](03_当前结果与交接说明.md) | 五份总体、来源布局、成本/Token、未决原因及维护路线 |
+| [build_report.py](build_report.py) | 文档构建工具，读取原HTML与上述Markdown，保留原图和导航，检查链接及锚点 |
+
+构建工具只负责文档，不导入HARA运行时，不读取密钥、不调用Provider、不修改分析数据。其第三方依赖与生产环境分离，不加入项目运行依赖。正文安装、配置与维护章节复用上级交接文档，避免再维护一套不同CLI说明。
+
+## 3. 重新构建
+
+原HTML需要从移交附件取得；为避免重复归档图表，不在源码目录另存第二份原稿。直接阅读增强版不需要Python依赖或网络。修改源文后，在仓库根目录使用独立文档环境：
+
+```bash
+python3.12 -m venv /tmp/hara-doc-build
+/tmp/hara-doc-build/bin/python -m pip install Markdown beautifulsoup4
+/tmp/hara-doc-build/bin/python docs/handover/workflow_detail/build_report.py \
+  --reference '/ABS/PATH/HARA_方案评审_可视化报告_工作流详解版.html' \
+  --output docs/handover/HARA_Workflow_Engineering_Detail_20261124.html \
+  --qa-output /tmp/hara-workflow-html-check.json
+```
+
+源码基线、交接章节版本固定在工具顶部。本次生产逻辑与d6a400e相同；以后若改业务代码，先复核正文再更新版本，不要只替换链接。目录、旧样本图、局部证据都不能自动升级为新生产验收。
+
+本次构建使用文档临时依赖目录 `tmp/handover_render_tools`，未修改requirements、pyproject、.env或运行配置。工具保留原输入文件，拒绝输出路径与原文件相同；它不会覆盖用户原稿。
+
+## 4. 本次验证（2026-11-24）
+
+| 项目 | 实际结果 |
+|---|---|
+| 完整pytest | 2176 passed、1 skipped，136.21秒 |
+| 活动YAML与报告模板doctor | exit 0；ready_for_draft=true，ready_for_release=false |
+| compileall src scripts | exit 0 |
+| diff检查 | 通过；提交前另核对新增文档 |
+| 构建／静态HTML | 13步与原锚点完整；原5图逐字保留；无重复ID／坏内部锚点；本地源码/证据链接逐一检查 |
+| 独立内容核对 | 三个分工审阅当前源码及历史口径；纠正E精确集合、布局试验续跑计数、道路/天气focus含义 |
+| 浏览器预览 | 原生Chrome成功打开新HTML，读取到新目录、13步正文及wf-12内容；截图调用超时，之后用户页面变化触发受限URL，会话停止 |
+| 本次视觉结论 | 未完成截图级视觉验收、窄屏和打印分页验收；不能把静态检查称为这些检查通过 |
+| 新Provider／新分析 | 0请求；未重新评分，不启动全量 |
+
+1个skip为历史runtime守卫的显式opt-in测试，不是live Provider通过或未通过的证明。实际日志保存在[本次验证目录](../../../output/handover_workflow_detail_20261124/validation)，HTML结构统计在[html_validation.json](../../../output/handover_workflow_detail_20261124/html_validation.json)。
+
+前次交接文档中来源布局试验的“新增5次因果、0次物理”已同步收窄为**同范围续跑段**；首阶段还有5次物理（含修复）和3次因果，整个布局任务合计13次。此次仅修正文档统计含义，没有改变Provider账本。
+
+## 5. 冗余检查和未触及范围
+
+本轮复用已有架构和运行手册，扩写原卡片及对应章节，没有新增Agent、评分器、报告生成业务或审批流程。旧图表不复制成“最新结果”；重复操作章节由构建时读取已有Markdown形成。文档工具不是生产导出器，普通`analyze`无其依赖。
+
+已有个人改动 `docs/HARA_输入文档完整性与跨项目复用性评审_20261111.md` 保持原样、未纳入本次提交。输入文件、历史运行/检查点/响应、.env、.vscode和本机依赖均不提交。本轮没有被证明可安全移除的生产实现，因此没有删除业务代码，也不以删行数作验收。
