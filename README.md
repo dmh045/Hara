@@ -1,14 +1,25 @@
 # HARA V13
 
+## 当前开发与技术交接文档（2026-11-24）
+
+完整交接入口：[HARA V13 开发与技术交接手册](docs/handover/README.md)。以
+`d6a400e` 为程序基线，覆盖架构、输入与方法、场景物理、风险计算、SG/Safe State/FTTI、
+部署恢复、测试维护、五份最新报告及已知限制，并附源码和证据链接。
+
+新接手请先按交接手册运行；下方各带日期的阶段章节保留历史快照，旧样本数量、预算和
+验证结论不代表当前状态。当前运行平台及预算入口的限制见
+[部署配置运行与恢复](docs/handover/05_部署配置运行与恢复.md)。
+
 Template-driven, evidence-grounded HARA analysis with one production runtime.
 
 ```text
 Template workbook -> TemplateRoleContract -> MethodContract
+Governed YAML     -----------------------> MethodContract
 Item document     -> ProjectFacts + neutral RiskFacts
 MethodContract + facts -> HARAState -> ReportContract renderer
 ```
 
-The template owns the analysis method and report structure. The Item owns project facts. Python supplies generic discovery, validation, rule execution, provenance, quality gates, and rendering; it does not contain a second set of HARA business rules.
+The selected method source (an explicit template or a governed YAML baseline) owns the analysis method. The report template owns the layout, and the Item owns project facts. Python supplies discovery, validation, deterministic calculation, rule execution, provenance, quality gates, and rendering within that contract; it is not a second method authority.
 
 ## Run
 
