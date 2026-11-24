@@ -90,7 +90,7 @@
 </figure>
 
 <figure id="diagram-recovery" class="process-figure" aria-labelledby="diagram-recovery-title">
-  <h3 id="diagram-recovery-title">图 8｜运行恢复与请求复用</h3>
+  <h3 id="diagram-recovery-title">图 9｜运行恢复与请求复用</h3>
   <div class="recovery-sequence">
     <div><span class="flow-number">1</span><b>恢复业务位置</b><p>读取已保存checkpoint，核对输入、方法及相关身份。未完整提交的内存结果不能算已完成。</p></div>
     <div><span class="flow-number">2</span><b>判断当前任务是否仍有效</b><p>输入、来源范围、提示语义或对象阶段改变时，不能直接沿用旧结论。</p></div>
@@ -99,4 +99,21 @@
     <div><span class="flow-number">4</span><b>持久化结果与恢复位置</b><p>原子保存可避免留下半份状态；下一次恢复从实际保存位置接着处理。</p></div>
   </div>
   <figcaption>这是各层职责关系，不是保证所有入口都有相同预算装配。普通全量与有界验证的差异见部署附录。响应缓存、业务checkpoint和请求账本是三类记录，缺一类不能靠另一类伪补。</figcaption>
+</figure>
+
+<figure id="diagram-report" class="process-figure" aria-labelledby="diagram-report-title">
+  <h3 id="diagram-report-title">图 7｜从主表追到具体成员、分支评级和原始依据</h3>
+  <p class="figure-intro">这是一张关联图，不是新的执行流程。定位使用失效与场景的稳定身份；Excel行号只表示本次排版位置。</p>
+  <div class="identity-root"><b>已保存的风险成员及分支结果</b><small>每个分支保留同一对象、轨迹和阶段的完整 S / E / C / ASIL 元组</small></div>
+  <div class="paired-notes">
+    <p><b>按真实条件和评级组织审核组 ↓</b>分组映射保留组内所有成员身份。共同文字可以集中呈现，必要工况和分支结果仍保留。</p>
+    <p><b>按实际安全目标关联 ↓</b>每个成员保留原SG身份。不同SG分别关联；QM成员无需SG的行为保留。</p>
+  </div>
+  <div class="authority-grid">
+    <div class="authority-path"><span class="path-label">04_HARA</span><b>主表审核组</b><p>查看具体失效、代表工况、完整评级、主要依据与缺口。</p><small>一行可关联多个成员，但不能拼接各分支的单列最大值</small></div>
+    <div class="authority-path"><span class="path-label">04A_Scenario Detail</span><b>关联成员与分支明细</b><p>核对每个成员的对象、参数、假设、结果以及所属主表组。</p><small>沿成员身份继续查完整分支评级与风险trace</small></div>
+    <div class="authority-path"><span class="path-label">06_Safety Goal</span><b>安全目标与成员关系</b><p>查看目标正文、实际关联成员、已知最高ASIL及审核范围。</p><small>已知最高结果不等于所有成员均完成或目标已批准</small></div>
+  </div>
+  <div class="join-note"><b>共同依据：方法说明、来源位置、假设记录与计算追踪</b><p>先由主表找到成员，再由成员查分支和依据。方法页、审计页及独立trace文件分别保留规则与详细证据，不把全部原始对象塞进主表文字。</p></div>
+  <figcaption>展示归组不等于计算复用。实际工作表布局由ReportContract确定；图中的页名是当前交付工作簿的阅读入口，程序不靠固定页名识别评分方法。</figcaption>
 </figure>
