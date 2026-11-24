@@ -1,0 +1,102 @@
+<!-- Maintained documentation diagrams. No production rules or executable requests. -->
+<figure id="diagram-main" class="process-figure" aria-labelledby="diagram-main-title">
+  <h3 id="diagram-main-title">图 1｜端到端生产流程</h3>
+  <p class="figure-intro">从上向下读。每一行写清“在解决什么问题、由谁处理、留下什么结果”。点击步骤名可进入13步详解。</p>
+  <div class="process-legend"><span class="role role-program">程序组织与计算</span><span class="role role-model">模型理解与提出</span><span class="role role-review">工程师审核</span></div>
+  <ol class="process-flow">
+    <li><span class="flow-number">1</span><div><a href="#wf-00">确认这次分析用什么</a><p>产品输入、运行模式、有效方法和报告模板分别确认身份。</p></div><div class="flow-output"><span class="role role-program">程序</span><b>输入指纹＋两类契约</b><small>分析规则与报告布局分开</small></div></li>
+    <li><span class="flow-number">2</span><div><a href="#wf-01">理解功能及其偏差</a><p>先识别原文功能与范围，再判断适用引导词和失效模式。</p></div><div class="flow-output"><span class="role role-model">模型＋程序校验</span><b>有来源的事实、功能、失效</b><small>标题、模式与功能不能混为一谈</small></div></li>
+    <li><span class="flow-number">3</span><div><a href="#wf-05">选择有分析意义的工况</a><p>组合相容的条件，保留必要对象、环境和人员差异，去除精确重复。</p></div><div class="flow-output"><span class="role role-program">方法驱动</span><b>候选身份及来源映射</b><small>候选尚不是已验证危险事件</small></div></li>
+    <li><span class="flow-number">4</span><div><a href="#wf-08">补成具体物理世界</a><p>已有输入足够就沿用；不足时按需请求方案或控制补全，实例化并计算轨迹。</p></div><div class="flow-output"><span class="role role-model">按需模型</span><span class="role role-program">程序推导</span><b>对象、阶段、参数与物理结果</b><small>通常先构建，再判断具体因果</small></div></li>
+    <li><span class="flow-number">5</span><div><a href="#wf-09">验证故障是否导致这个危险</a><p>检查故障→车辆行为→对象交互→危险事件；排除与未决分别留证据。</p></div><div class="flow-output"><span class="role role-model">模型＋资格检查</span><b>保留、排除或未决的判断</b><small>会接触，不等于故障导致接触</small></div></li>
+    <li><span class="flow-number">6</span><div><a href="#wf-11">计算同一分支的风险与响应</a><p>补必要风险事实；执行物理、S/E/C和ASIL，并记录适用响应、可达性及时间条件。</p></div><div class="flow-output"><span class="role role-program">确定性计算</span><b>完整评级元组＋响应追踪</b><small>不拼接不同分支的各列最大值</small></div></li>
+    <li><span class="flow-number">7</span><div><a href="#wf-12">关联安全目标并输出审核材料</a><p>汇总SG、保留成员关系，把既有评级、Safe State与FTTI证据投影到Excel。</p></div><div class="flow-output"><span class="role role-program">程序投影</span><span class="role role-review">工程审核</span><b>主表、关联明细与审计证据</b><small>报告生成不自动批准工程结论</small></div></li>
+  </ol>
+  <figcaption>这是业务阅读顺序，不是7个新Agent或7个独立工作流节点。物理在实例化和评分中均有计算职责；FTTI证据在相关计算中形成，下游负责汇总与展示。</figcaption>
+</figure>
+
+<figure id="diagram-authority" class="process-figure" aria-labelledby="diagram-authority-title">
+  <h3 id="diagram-authority-title">图 2｜三类输入，各自只有一份权威</h3>
+  <div class="authority-grid">
+    <div class="authority-path"><span class="path-label">本项目是什么</span><b>产品说明 DOCX / PDF</b><span class="down-arrow" aria-hidden="true">↓</span><p>保留原文位置、条件和否定</p><span class="down-arrow" aria-hidden="true">↓</span><b>功能与项目事实</b><small>事实不够时另标分析假设，不能补成“原文已确认”</small></div>
+    <div class="authority-path"><span class="path-label">按什么规则分析</span><b>显式方法模板<br>或受治理 YAML</b><span class="down-arrow" aria-hidden="true">↓</span><p>角色确认／规则编译</p><span class="down-arrow" aria-hidden="true">↓</span><b>MethodContract</b><small>两种来源汇入同一种方法契约，评分器不自行另读规则</small></div>
+    <div class="authority-path"><span class="path-label">结果怎样呈现</span><b>报告工作簿模板</b><span class="down-arrow" aria-hidden="true">↓</span><p>布局识别与编译</p><span class="down-arrow" aria-hidden="true">↓</span><b>ReportContract</b><small>决定坐标与布局，不从模板示例反推本项目能力</small></div>
+  </div>
+  <div class="join-note"><b>项目事实＋方法契约 → 统一分析状态 → 依据报告契约生成Excel</b><p>方法输入和报告模板在YAML模式下分别校验哈希；同一份文件可以包含多类内容，但其职责不能混用。</p></div>
+  <figcaption>读图时分别问“事实从哪里来、规则从哪里来、布局从哪里来”。来源不清时先定位这一层，不在报告单元格里补一个看似合理的值。</figcaption>
+</figure>
+
+<figure id="diagram-identities" class="process-figure" aria-labelledby="diagram-identities-title">
+  <h3 id="diagram-identities-title">图 4｜场景展开、分析身份与复用关系</h3>
+  <p class="figure-intro">下面是关系示意，没有给生产运行设定固定展开倍数。各层按自己的身份和复用条件计数。</p>
+  <div class="identity-tree">
+    <div class="identity-root"><b>一个有来源的功能失效</b><small>故障机制作为主线</small></div>
+    <div class="identity-branches">
+      <div class="identity-branch"><b>运行条件 A</b><p>例如室外、正常附着、前方静止对象</p><div class="identity-leaf">保留该运行条件的身份<br><small>对象、来源和约束一同保存</small></div></div>
+      <div class="identity-branch"><b>运行条件 B</b><p>例如坡道、明确朝向、移动交互</p><div class="identity-leaf">保留另一运行条件的身份<br><small>不能因文字近似直接并入A</small></div></div>
+    </div>
+    <div class="identity-layer"><span>↓ 依适用条件处理人员分支</span><b>车内／车外等条件由实际配置决定，不固定机械翻倍</b></div>
+    <div class="identity-layer"><span>↓ 按任务适用条件共享物理方案</span><b>运动、控制和响应分别核对；相容时共用方案，不丢弃人员差异</b></div>
+    <div class="identity-layer"><span>↓ 各成员实例化，按需要有限取点</span><b>保留原范围和代表点身份；当前每方案最多3个取点</b></div>
+    <div class="identity-layer"><span>↓ 分别核对因果资格与分支评级</span><b>对象、轨迹、阶段变化是否需要重验，按依赖证明决定</b></div>
+    <div class="identity-layer identity-final"><span>↓ 报告组织</span><b>完整明细与身份映射保留；主表按可解释的条件和评级归组</b></div>
+  </div>
+  <div class="paired-notes"><p><b>能复用什么？</b>同请求可以精确复用；适用时可共享物理方案或共同证据；完整因果结论须满足既有证明。</p><p><b>不能省掉什么？</b>不同对象、坡向、控制依赖、接触关系及不同评级的必要分析，不能因“看起来相似”而删除。</p></div>
+  <figcaption>基础候选、方案、取点、驾驶员身份、因果请求、风险成员和主表组是不同计数层。主表少了100行，不说明Provider少了100次请求。</figcaption>
+</figure>
+
+<figure id="diagram-physics" class="process-figure" aria-labelledby="diagram-physics-title">
+  <h3 id="diagram-physics-title">图 5｜物理输入检查与任务分流</h3>
+  <div class="decision-start"><b>检查当前工况的有效输入</b><span>同时核对对象、时间阶段、参数角色、坐标和来源范围</span></div>
+  <div class="decision-paths">
+    <div><span class="path-label">运动与所需控制均足够</span><b>沿用已有有效输入</b><p>走确定性实例化与计算；不为新增Agent重复请求。</p><a href="#wf-08">查看物理入口</a></div>
+    <div><span class="path-label">运动可用，只缺局部控制／响应</span><b>只做必要补全或纠正</b><p>保留已固定轨迹，限定待补字段；不重做整套运动方案。</p><a href="#section-5">查看任务范围</a></div>
+    <div><span class="path-label">尚不能构建所需运动</span><b>请求完整有界方案</b><p>模型选择适用模型和假设；程序检查相容性并执行计算。</p><a href="#code-p03">查看实际任务分流代码</a></div>
+  </div>
+  <div class="join-note"><b>三路汇回同一个实例化与物理服务</b><p>不新建平行评分器；模型不直接给最终S/E/C或ASIL，不自行声明批准。</p></div>
+  <div class="outcome-paths">
+    <div><b>得到相容的输入或有用条件</b><p>保留点／范围／符号性质，生成具体子场景，进入受影响因果判断。</p></div>
+    <div><b>有可纠正的结构或语义问题</b><p>用已有有限纠正机会反馈具体诊断；失败、升级、重试都保留记录。</p></div>
+    <div><b>模型范围不适用或条件仍不足</b><p>保留局部缺口。必要的因果分析可以继续；不能伪造数字迁就模型。</p></div>
+  </div>
+  <figcaption>以上是已有调度职责的解释。运行时是否命中复用、是否触发纠正，以该次请求和任务记录为准，不能只由最终Excel推断。</figcaption>
+</figure>
+
+<figure id="diagram-result-state" class="process-figure" aria-labelledby="diagram-result-state-title">
+  <h3 id="diagram-result-state-title">图 3｜评级数值与工程审批的关系</h3>
+  <div class="state-matrix">
+    <div class="state-case"><span class="path-label">已有数值 · 条件仍待审核</span><b>例如：C2，条件性结果</b><p>计算已经产生等级。接下来审核假设、控制能力及方法适用性，不应把它统计成“没有C”。</p></div>
+    <div class="state-case"><span class="path-label">没有数值 · 原因已明确</span><b>例如：缺适用的侧向C方法</b><p>不能编一个C值。要区分来源缺项、字段漏传、模型不支持和规则范围不覆盖。</p></div>
+    <div class="state-case"><span class="path-label">已有数值 · 相应依据已审核</span><b>查看实际审批记录及范围</b><p>这里只说明状态读法，不宣称本批结果已正式批准；整个报告发布仍有独立检查。</p></div>
+    <div class="state-case"><span class="path-label">合法负面／排除结论</span><b>例如：所选响应不能避碰</b><p>它可能是正常工程结论；因果排除与未决也要分开。不能修改输入来制造成功。</p></div>
+  </div>
+  <div class="join-note"><b>等级格保留纯等级；条件、依据、审核和发布状态分别说明</b><p>例中的C2仅用于解释状态，不是对某个新工况的评级。判断软件是否出错，要回查输入和适用规则，不能只看“待审核”三个字。</p></div>
+  <figcaption>当前五份结果的统计分别给出“有数值／无数值”。PENDING可能承载不同性质，不能把所有PENDING相加当成计算失败率。</figcaption>
+</figure>
+
+<figure id="diagram-time" class="process-figure" aria-labelledby="diagram-time-title">
+  <h3 id="diagram-time-title">图 6｜TTC、响应启动时间与FTTI的关系</h3>
+  <p class="figure-intro">这是阶段关系图，横向长度不代表真实时长。每次分析都必须明确故障时刻、物理模型起点和响应路径。</p>
+  <div class="time-origin"><b>故障发生</b><span>→ 物理分析起点：可能相同，也可能存在偏移；偏移不清时不能直接合并时钟</span></div>
+  <div class="timeline-row"><b>没有有效响应的轨迹</b><div class="timeline-track"><span>按故障运动继续</span><span class="time-end">首次接触</span></div></div>
+  <div class="timeline-row"><b>尝试响应的轨迹</b><div class="timeline-track response-track"><span>响应启动前</span><span>制动／转向等响应</span><span>后续运动／停止保持</span></div></div>
+  <div class="time-questions">
+    <div><b>问题A：何时接触？</b><p>TTC或首次接触时间描述给定轨迹。从哪个时刻开始计时必须写清楚。</p></div>
+    <div><b>问题B：何时启动仍有效？</b><p>程序计算适用响应后的完整轨迹；停止后仍要检查是否被移动目标撞上。</p></div>
+    <div><b>问题C：可否作为正式FTTI？</b><p>还需要故障时钟映射、方法范围、控制依赖及工程审核；条件性边界不能直接冒充正式限值。</p></div>
+  </div>
+  <div class="paired-notes"><p><b>立即响应也失败：</b>保留“所选响应不能避碰”的结果，不填一个假的正时间。</p><p><b>仅立即响应有效：</b>0秒必须说明其语义，不能被读成“本场景没有时间风险”。</p></div>
+  <figcaption>Safe State是希望达到的状态；响应是到达它的动作；可达性与时间边界由具体模型判断。已有响应模型及其局限见评分与下游章节。</figcaption>
+</figure>
+
+<figure id="diagram-recovery" class="process-figure" aria-labelledby="diagram-recovery-title">
+  <h3 id="diagram-recovery-title">图 8｜运行恢复与请求复用</h3>
+  <div class="recovery-sequence">
+    <div><span class="flow-number">1</span><b>恢复业务位置</b><p>读取已保存checkpoint，核对输入、方法及相关身份。未完整提交的内存结果不能算已完成。</p></div>
+    <div><span class="flow-number">2</span><b>判断当前任务是否仍有效</b><p>输入、来源范围、提示语义或对象阶段改变时，不能直接沿用旧结论。</p></div>
+    <div class="recovery-fork"><div><span class="path-label">有效保存结果／精确缓存命中</span><b>读取并继续原链路</b><p>保留原身份映射、证据和状态；缓存命中单独计数。</p></div><div><span class="path-label">确需新请求</span><b>核对当前授权与已用账本</b><p>有界入口在传输前记尝试；纠正、网络重试也占预算，不能换run_id重置。</p></div></div>
+    <div><span class="flow-number">3</span><b>响应保存不等于业务已提交</b><p>原始返回先成为可复核证据；解析、绑定、校验和阶段提交仍需完成。</p></div>
+    <div><span class="flow-number">4</span><b>持久化结果与恢复位置</b><p>原子保存可避免留下半份状态；下一次恢复从实际保存位置接着处理。</p></div>
+  </div>
+  <figcaption>这是各层职责关系，不是保证所有入口都有相同预算装配。普通全量与有界验证的差异见部署附录。响应缓存、业务checkpoint和请求账本是三类记录，缺一类不能靠另一类伪补。</figcaption>
+</figure>

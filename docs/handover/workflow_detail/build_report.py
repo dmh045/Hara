@@ -96,7 +96,7 @@ def main() -> None:
     main, nav = soup.main, soup.nav
     local_links: list[dict] = []
     examples: list[dict] = []
-    source_files: set[Path] = set()
+    source_files: set[Path] = {Path(__file__).resolve(), HERE / "report_style.css"}
 
     def tag(name: str, text: str = "", **attrs):
         element = soup.new_tag(name, attrs=attrs)
@@ -137,6 +137,7 @@ def main() -> None:
                 "00_入口抽取与失效.md": "wf-00", "01_场景组合驾驶员与物理.md": "wf-05",
                 "02_因果评分与下游报告.md": "wf-09", "03_当前结果与交接说明.md": "section-8",
                 "04_代码实现与问题定位索引.md": "appendix-g", "05_语义任务与执行职责.md": "section-5",
+                "06_项目概念与分析示例.md": "start-purpose",
                 "README.md": "appendix-f",
             }
             if target == args.output.resolve():
@@ -173,15 +174,15 @@ def main() -> None:
             content.append(f"### {heading[1]}\n\n" + chapter(source, number))
         section(ident, title, "\n\n".join(content), source)
 
-    def figure(svg, caption):
-        box = soup.new_tag("figure")
-        scroll = soup.new_tag("div", attrs={"class": "diagram-scroll"})
-        parsed = BeautifulSoup(svg, "html.parser").svg
-        parsed["viewBox"] = parsed.attrs.pop("viewbox")
-        scroll.append(parsed)
-        box.append(scroll)
-        box.append(tag("figcaption", caption))
-        return box
+    diagram_source = HERE / "workflow_diagrams.html"
+    diagrams = BeautifulSoup(diagram_source.read_text(), "html.parser")
+    source_files.add(diagram_source)
+
+    def diagram(ident):
+        node = diagrams.find("figure", id=ident)
+        if node is None:
+            raise ValueError(f"Missing documentation diagram: {ident}")
+        return node.extract()
 
     current_source = HERE / "03_当前结果与交接说明.md"
     current = sections(current_source.read_text(), "section-")
@@ -198,7 +199,7 @@ def main() -> None:
         if row["risk"] != row["c_known"] + row["c_missing"] or row["risk"] != row["asil_known"] + row["asil_missing"]:
             raise ValueError(f"Inconsistent project totals: {row}")
 
-    soup.title.string = "HARA 开发与技术交接｜五份输入最新测试结果"
+    soup.title.string = "HARA 开发与技术交接｜项目原理、完整流程与实现详解"
     soup.header.append(tag("b", "HARA / ENGINEERING HANDOVER"))
     soup.header.append(tag("span", "五份输入最新修订结果 · 2026-11-24 · 代码 d6a400e"))
     soup.header.append(tag("button", "打印 / 保存 PDF", onclick="window.print()", type="button"))
@@ -206,15 +207,24 @@ def main() -> None:
     style.string = (HERE / "report_style.css").read_text()
     soup.head.append(style)
     main.append(tag("h1", "HARA 开发与技术交接"))
-    main.append(tag("h2", "工作流工程详解 · 五份输入最新测试结果", id="section-0"))
+    main.append(tag("h2", "项目原理 · 完整流程、代码与五份输入最新结果", id="section-0"))
     nav.append(tag("b", "报告目录"))
-    nav.append(tag("a", "五份输入与当前基线", href="#section-0"))
+    nav.append(tag("a", "文档用途与阅读入口", href="#section-0"))
+    diagram_nav = soup.new_tag("details")
+    diagram_nav.append(tag("summary", "流程图与结果图索引"))
+    for ident, label in [("main", "1 端到端流程"), ("authority", "2 输入权威"),
+                         ("result-state", "3 数值与审批"), ("identities", "4 场景与身份"),
+                         ("physics", "5 物理任务分流"), ("time", "6 时间与响应"),
+                         ("results", "7 五项目C数值"), ("recovery", "8 恢复与复用")]:
+        diagram_nav.append(tag("a", label, href="#diagram-" + ident, **{"class": "subnav"}))
+    nav.append(diagram_nav)
     cover = soup.new_tag("div", attrs={"class": "handover-cover"})
     cover.append(tag("p", "文档核对：2026-11-24 ｜ 业务结果：2026-11-23完整修订 ｜ 生产代码：d6a400e", **{"class": "edition"}))
     cover.append(tag("p", "本报告仅呈现AVP、IPA-High、IPA-Main、RPA、rTPA五份输入的最新可核查结果，以及当前13步生产流程、17个代码实例和开发交接说明。五份结果来自已完成的全量与后续定向修订，不是本次又从头运行五次全量。"))
     cover.append(tag("p", "有数值、计算完成、条件性结果与工程批准分别标明。报告中的本机证据链接需对应运行资产；正文与图表可以离线阅读。本次文档更新不调用Provider、不重新评分。"))
+    cover.append(tag("p", "文档从项目用途、输入边界和核心概念展开，以端到端示例贯通分析流程，再逐步说明数据变化、执行职责、实现代码和验证依据。业务解释、计算条件与维护细节相互对应，便于工程评审和开发交接。"))
     links = soup.new_tag("div", attrs={"class": "quick-links"})
-    for ident, title in [("section-8", "五份最新结果"), ("section-11", "当前剩余问题"), ("workflow", "13步生产流程"), ("appendix-g", "代码与问题索引"), ("section-15", "五份证据索引")]:
+    for ident, title in [("start-purpose", "项目用途与边界"), ("diagram-main", "端到端主流程"), ("start-walkthrough", "贯穿分析示例"), ("section-8", "五份最新结果"), ("appendix-g", "代码与问题索引")]:
         links.append(tag("a", title, href="#" + ident))
     cover.append(links)
     main.append(cover)
@@ -222,6 +232,19 @@ def main() -> None:
     for value, label in [(5, "输入项目"), (sum(x["risk"] for x in project_metrics), "活动风险成员"), (sum(x["main"] for x in project_metrics), "HARA主表审核组"), (sum(x["sg"] for x in project_metrics), "已关联SG · 非工程批准数")]:
         card = soup.new_tag("div", attrs={"class": "metric"})
         card.append(tag("strong", f"{value:,}")); card.append(tag("span", label)); cards.append(card)
+    # Metrics are introduced only after the reader has learned their meaning.
+
+    concept_source = HERE / "06_项目概念与分析示例.md"
+    concepts = sections(concept_source.read_text(), "start-")
+    nav.append(tag("div", "项目概念与分析过程", **{"class": "nav-group"}))
+    for ident, (title, text) in concepts.items():
+        section(ident, title, text, concept_source)
+        if ident == "start-purpose":
+            main.append(diagram("diagram-main"))
+        elif ident == "start-input":
+            main.append(diagram("diagram-authority"))
+        elif ident == "start-result":
+            main.append(diagram("diagram-result-state"))
     main.append(cards)
 
     def current_section(ident):
@@ -230,17 +253,14 @@ def main() -> None:
 
     current_section("section-1")
     source_chapters("section-2", "程序架构、状态与职责边界", "01_架构与端到端流程.md", [1, 4, 5, 6, 7])
-    main.append(figure('''<svg viewBox="0 0 960 340" role="img" aria-label="当前三类输入与统一分析链">
-    <defs><marker id="arch-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#087e87"/></marker></defs>
-    <g fill="#edf7f4" stroke="#8ebeb8"><rect x="20" y="20" width="270" height="58" rx="8"/><rect x="345" y="20" width="270" height="58" rx="8"/><rect x="670" y="20" width="270" height="58" rx="8"/><rect x="20" y="120" width="270" height="58" rx="8"/><rect x="345" y="120" width="270" height="58" rx="8"/><rect x="670" y="120" width="270" height="58" rx="8"/><rect x="150" y="230" width="405" height="70" rx="8"/><rect x="650" y="230" width="290" height="70" rx="8"/></g>
-    <g text-anchor="middle" font-size="17"><text x="155" y="55">产品输入：DOCX / PDF</text><text x="480" y="55">方法来源：模板或治理YAML</text><text x="805" y="55">报告模板：工作簿布局</text><text x="155" y="155">功能与有来源的项目事实</text><text x="480" y="155">唯一 MethodContract</text><text x="805" y="155">ReportContract</text><text x="352" y="260">统一场景、物理、因果与风险分析</text><text x="352" y="286">HARAState 与完整追溯</text><text x="795" y="260">报告投影与模板写入</text><text x="795" y="286">Excel 与关联明细</text></g>
-    <g fill="none" stroke="#087e87" stroke-width="2" marker-end="url(#arch-arrow)"><path d="M155 78V120"/><path d="M480 78V120"/><path d="M805 78V120"/><path d="M155 178V205H270V230"/><path d="M480 178V230"/><path d="M805 178V230"/><path d="M555 265H650"/></g></svg>''', "三类输入的权威分开：项目资料提供事实，活动方法决定计算，报告契约决定呈现。"))
 
     main.append(tag("h2", "当前工作流：逐步处理、组合与结果流转", id="workflow"))
     main.append(tag("p", "00—12是业务讲解顺序，不是13个独立WorkflowGraph节点。场景、物理、因果和风险事实集中于MALFUNCTIONS复合节点；各阶段按各自身份计数。", **{"class": "scope-note"}))
     nav.append(tag("a", "13步生产工作流", href="#workflow"))
     step_nav = soup.new_tag("details"); step_nav.append(tag("summary", "展开13步")); nav.append(step_nav)
     step_index = soup.new_tag("div", attrs={"class": "workflow-index"}); main.append(step_index)
+    step_diagrams = {"wf-06": "diagram-identities", "wf-08": "diagram-physics",
+                     "wf-11": "diagram-time"}
     for source in sorted(HERE.glob("0[012]_*.md")):
         for ident, (title, prose) in sections(source.read_text(), "wf-").items():
             card = soup.new_tag("section", attrs={"class": "workflow-step", "id": ident})
@@ -250,7 +270,10 @@ def main() -> None:
             toc = soup.new_tag("div", attrs={"class": "step-toc"})
             for h in detail.select("h4"):
                 toc.append(tag("a", h.get_text(), href="#" + h["id"]))
-            card.append(toc); card.append(detail); main.append(card)
+            card.append(toc)
+            if ident in step_diagrams:
+                card.append(diagram(step_diagrams[ident]))
+            card.append(detail); main.append(card)
             step_index.append(tag("a", ident[-2:] + " " + title, href="#" + ident))
             step_nav.append(tag("a", ident[-2:] + " " + title, href="#" + ident, **{"class": "subnav"}))
 
@@ -262,13 +285,19 @@ def main() -> None:
     source_chapters("section-7", "S/E/C、分支ASIL及控制通道", "03_场景物理与风险计算.md", [7, 8])
     nav.append(tag("div", "五份输入的实际结果", **{"class": "nav-group"}))
     current_section("section-8")
-    bars = []
-    for index, row in enumerate(project_metrics):
-        y = 60 + index * 55
-        width = 500 * row["c_known"] / row["risk"]
-        bars.append(f'<text x="20" y="{y+20}" font-size="17">{row["project"]}</text><rect x="145" y="{y}" width="500" height="28" rx="3" fill="#f3d5b5"/><rect x="145" y="{y}" width="{width:.3f}" height="28" fill="#087e87"/><text x="665" y="{y+19}" font-size="16">有值 {row["c_known"]} / 无值 {row["c_missing"]} / 共 {row["risk"]}</text>')
-    chart = '<svg viewBox="0 0 1000 365" role="img" aria-label="五份最新结果的C数值完整度"><rect x="145" y="16" width="18" height="16" fill="#087e87"/><text x="172" y="30" font-size="14">已有C数值（含条件性待审核）</text><rect x="470" y="16" width="18" height="16" fill="#f3d5b5"/><text x="497" y="30" font-size="14">尚无C数值</text>' + ''.join(bars) + '</svg>'
-    main.append(figure(chart, "图中分母为各项目的活动风险成员，数据与本节表格同源；有C数值不等于方法适用性和工程审批已经全部完成。"))
+    chart = soup.new_tag("figure", attrs={"class": "process-figure result-chart", "id": "diagram-results", "aria-labelledby": "diagram-results-title"})
+    chart.append(tag("h3", "图 7｜五份最新结果：C有数值和无数值的比例", id="diagram-results-title"))
+    chart.append(tag("p", "深色表示已有数值（含条件性待审核）；浅色表示尚无数值。每条横条的总长代表该项目全部活动风险，不表示项目之间风险数量相同。", **{"class": "figure-intro"}))
+    for row in project_metrics:
+        item = soup.new_tag("div", attrs={"class": "result-bar-row"})
+        item.append(tag("b", row["project"]))
+        track = soup.new_tag("div", attrs={"class": "result-bar", "aria-hidden": "true"})
+        track.append(tag("span", style=f"width:{100 * row['c_known'] / row['risk']:.6f}%"))
+        item.append(track)
+        item.append(tag("span", f"有值 {row['c_known']} / 无值 {row['c_missing']} / 共 {row['risk']}"))
+        chart.append(item)
+    chart.append(tag("figcaption", "图与本节表格来自同一份项目统计；有C数值不等于工程审批已经完成，也不表示剩余缺口都应通过重新调用模型解决。"))
+    main.append(chart)
     for ident in range(9, 16):
         current_section(f"section-{ident}")
 
@@ -277,13 +306,15 @@ def main() -> None:
         source = HERE.parent / name
         text = source.read_text(); text = text[text.index("\n## ") + 1:]
         section(ident, title, text, source)
+        if ident == "appendix-c":
+            main.append(diagram("diagram-recovery"))
     source = HERE / "README.md"
     section("appendix-f", "附录 F｜当前文档构建、验证与交付边界", source.read_text().split("\n", 1)[1], source)
     source = HERE / "04_代码实现与问题定位索引.md"
     section("appendix-g", "附录 G｜真实代码实例、问题定位与数据对象索引", source.read_text().split("\n", 1)[1], source)
     main.append(tag("p", "HARA 开发与技术交接 · 五份输入最新结果版 · 2026-11-24", **{"class": "bottom"}))
 
-    manifest = {"revision": "five-input-current-results-20261124", "production_code": CODE,
+    manifest = {"revision": "detailed-readable-workflow-20261124", "production_code": CODE,
                 "documentation_base": DOCS, "result_date": "2026-11-23", "project_metrics": project_metrics,
                 "new_provider_requests": 0, "scope": "Existing full populations plus targeted revisions; no new full run or engineering approval.",
                 "document_sources": {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(source_files)}}
@@ -291,7 +322,8 @@ def main() -> None:
     metadata.string = json.dumps(manifest, ensure_ascii=False); soup.body.append(metadata)
     all_ids = [x["id"] for x in soup.select("[id]")]
     duplicate_ids = sorted({i for i in all_ids if all_ids.count(i) > 1})
-    required_ids = {"workflow", *[f"section-{i}" for i in range(16)], *[f"wf-{i:02d}" for i in range(13)], *["code-"+e["id"].lower() for e in examples]}
+    required_ids = {"workflow", *concepts, *[f"section-{i}" for i in range(16)], *[f"wf-{i:02d}" for i in range(13)], *["code-"+e["id"].lower() for e in examples],
+                    *["diagram-"+name for name in ("main", "authority", "identities", "physics", "result-state", "time", "recovery", "results")]}
     missing_ids = sorted(required_ids - set(all_ids))
     broken_anchors = [x["href"] for x in soup.select("a[href^='#']") if unquote(x["href"][1:]) not in all_ids]
     legacy = soup.select(".historical-section,#report-evidence,#toggle-implementation,img")
@@ -303,6 +335,7 @@ def main() -> None:
     report = {"output": str(args.output.resolve()), "sha256": hashlib.sha256(args.output.read_bytes()).hexdigest(), "html_bytes": args.output.stat().st_size,
               "visible_text_chars": len(text), "workflow_steps": len(soup.select(".workflow-step")), "workflow_subsections": len(soup.select(".workflow-step .current-detail h4")),
               "tables": len(soup.select("table")), "svg_figures": len(soup.select("svg")), "legacy_sections": len(legacy), "local_source_links_checked": len(local_links),
+              "readable_figures": len(soup.select("figure.process-figure")), "concept_chapters": len(concepts),
               "source_examples_checked": len(examples), "source_examples": examples, "project_metrics": project_metrics,
               "broken_anchors": broken_anchors, "duplicate_ids": duplicate_ids, "missing_ids": missing_ids, "new_provider_requests": 0, "local_links": local_links}
     if args.qa_output:
