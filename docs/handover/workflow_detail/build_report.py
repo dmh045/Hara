@@ -11,6 +11,8 @@ import copy
 import hashlib
 import json
 import re
+import subprocess
+import textwrap
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
@@ -56,6 +58,36 @@ def chapter(path: Path, number: int) -> str:
     raise ValueError(f"Missing chapter {number}: {path}")
 
 
+def verified_examples(text: str, source: Path, section: str) -> list[dict]:
+    """Check maintained excerpts against both the worktree and pinned source."""
+    pattern = re.compile(
+        r"<!-- source-example: ([^\n]+?):L(\d+)-L(\d+) -->\s*"
+        r"```python\n(.*?)\n```", re.S
+    )
+    result = []
+    for match in pattern.finditer(text):
+        path, start, end = match[1], int(match[2]), int(match[3])
+        headings = list(re.finditer(r"^#{2,4} 实现例 ([A-Z]\d+)｜([^\n]+)$", text[:match.start()], re.M))
+        if not headings:
+            raise ValueError(f"Code example has no indexed heading: {source.name}:{path}")
+        heading = headings[-1]
+        current = (ROOT / path).read_text(encoding="utf-8")
+        pinned = subprocess.check_output(["git", "show", f"{CODE}:{path}"], cwd=ROOT, text=True)
+        for version, contents in (("worktree", current), (CODE[:7], pinned)):
+            lines = contents.splitlines()
+            if not 1 <= start <= end <= len(lines):
+                raise ValueError(f"Code range outside {version}: {path}:{start}-{end}")
+            expected = textwrap.dedent("\n".join(lines[start - 1:end])).strip("\n")
+            actual = textwrap.dedent(match[4]).strip("\n")
+            if actual != expected:
+                raise ValueError(f"Stale code excerpt in {source.name}: {path}:{start}-{end} ({version})")
+        result.append({"id": heading[1], "title": heading[2], "section": section,
+                       "source": path, "start": start, "end": end})
+    if text.count("<!-- source-example:") != len(result):
+        raise ValueError(f"Malformed source-example marker in {source.name}")
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path, required=True)
@@ -69,6 +101,7 @@ def main() -> None:
     original_ids = {x["id"] for x in soup.select("[id]")}
     original_images = [hashlib.sha256(x["src"].encode()).hexdigest() for x in soup.select("img")]
     local_links: list[dict] = []
+    examples: list[dict] = []
 
     def tag(name: str, text: str = "", **attrs):
         element = soup.new_tag(name, attrs=attrs)
@@ -76,6 +109,15 @@ def main() -> None:
         return element
 
     def fragment(text: str, source: Path, prefix: str):
+        examples.extend(verified_examples(text, source, prefix))
+        if "<!-- code-example-index -->" in text:
+            rows = ["| 实例 | 解决的问题 | 所在步骤 | 固定版本源码 |", "|---|---|---|---|"]
+            for example in examples:
+                ident, path = example["id"], example["source"]
+                location = f"L{example['start']}-L{example['end']}"
+                url = GITHUB + "blob/" + CODE + "/" + path + "#" + location
+                rows.append(f"| [{ident}](#code-{ident.lower()}) | {example['title']} | [{example['section']}](#{example['section']}) | [{Path(path).name}:{location}]({url}) |")
+            text = text.replace("<!-- code-example-index -->", "\n".join(rows))
         rendered = markdown.markdown(text, extensions=["tables", "fenced_code", "sane_lists"])
         node = soup.new_tag("div", attrs={"class": "current-detail", "data-source": source.name})
         parsed = BeautifulSoup(rendered, "html.parser")
@@ -83,7 +125,8 @@ def main() -> None:
             node.append(child.extract())
         for i, heading in enumerate(node.select("h2,h3,h4,h5")):
             heading.name = "h4" if prefix.startswith("wf-") else "h3" if heading.name == "h2" else heading.name
-            heading["id"] = f"{prefix}-part-{i + 1}"
+            example = re.match(r"实现例 ([A-Z]\d+)｜", heading.get_text())
+            heading["id"] = "code-" + example[1].lower() if example else f"{prefix}-part-{i + 1}"
         for anchor in node.select("a[href]"):
             href = anchor["href"]
             parts = urlsplit(href)
@@ -141,7 +184,7 @@ def main() -> None:
     cover.append(tag("p", "本版保留原稿的目录、13步工作流、图示放大与打印。每一步补入实际调用、字段与来源、条件分支、错误去向、成本及恢复机制；重点展开物理方案、因果资格、S/E/C、SG、Safe State、FTTI和关联报告。"))
     cover.append(tag("p", "正文为当前核对说明；橙色折叠区保留历史原文。代码链接锁定生产提交；带↗本机证据的链接需要原项目资料，转发HTML本身不包含这些大文件。本次仅编写文档，0 Provider，不改变计算或批准。"))
     jump = soup.new_tag("div", attrs={"class": "quick-links"})
-    for ident, label in [("workflow", "13步调用详解"), ("wf-08", "物理方案与模型"), ("wf-12", "SG / Safe State / FTTI / Excel"), ("appendix-c", "运行与恢复命令"), ("section-11", "真实未决与边界")]:
+    for ident, label in [("workflow", "13步调用详解"), ("appendix-g", "代码实例与问题索引"), ("wf-08", "物理方案与模型"), ("wf-12", "SG / Safe State / FTTI / Excel"), ("appendix-c", "运行与恢复命令"), ("section-11", "真实未决与边界")]:
         jump.append(tag("a", label, href="#" + ident))
     cover.append(jump)
     top_heading.insert_after(cover)
@@ -274,7 +317,11 @@ def main() -> None:
     footer.insert_before(tag("p", "本版完整读取原HTML可见正文，沿原13步扩写；保留原图和原记录，当前正文以锁定生产代码及已保存五项目证据为准。新加三个完整操作附录。生产代码、方法资产、原始输入、checkpoint、响应、审批和.env均未更改；没有新增业务运行。"))
     footer.insert_before(tag("p", "代码链接固定d6a400e；既有交接章节固定4429a2d。原稿S/W索引仍指其历史提交与工作簿。两套证据不混合。默认方法与五份报告冻结方法并不相同，重导必须使用proof给出的快照；具体路径和哈希见附录E。"))
     footer.insert_before(tag("p", "完整静态检查、实际门禁及预览范围见配套扩写说明；不把历史视觉选区验证说成本次新截图。HTML无需联网即可阅读，源码链接需GitHub访问权限，本机证据链接需移交对应资产。", id="validation-note"))
-    footer.insert_before(tag("p", "2026-11-24本次文档交付新跑：pytest 2176 passed、1 skipped（历史守卫opt-in），136.21秒；doctor、compileall和diff检查通过。doctor为ready_for_draft=true、ready_for_release=false。浏览器曾成功打开新正文并取得可访问性内容，截图超时；后续页面变化触发受限URL，预览停止。没有完成截图级、窄屏或打印分页验收。上述记录仅属于本次交付，不由重新构建HTML自动产生。", **{"class": "scope-note"}))
+    footer.insert_before(tag("p", "2026-11-24首版扩写验证：pytest 2176 passed、1 skipped（历史守卫opt-in），136.21秒；doctor、compileall和diff检查通过。doctor为ready_for_draft=true、ready_for_release=false。浏览器曾成功打开新正文并取得可访问性内容，截图超时；后续页面变化触发受限URL，预览停止。没有完成截图级、窄屏或打印分页验收。后续代码实例增补的检查另见配套README与验证记录，不由重新构建HTML自动产生。", **{"class": "scope-note"}))
+    source = HERE / "04_代码实现与问题定位索引.md"
+    heading = tag("h2", "附录 G｜真实代码实例、问题定位与数据对象索引", id="appendix-g")
+    footer.insert_before(heading)
+    footer.insert_before(fragment(source.read_text().split("\n", 1)[1], source, "appendix-g"))
     footer.string = "HARA 开发与技术交接 · 工作流工程详解增强版 · 2026-11-24 · 保留原稿及历史证据"
 
     # Current chapter titles in the existing sidebar plus new operational appendices.
@@ -284,7 +331,7 @@ def main() -> None:
             a.string = target.get_text()
     nav = soup.select_one("nav")
     nav.append(tag("div", "交接操作附录", **{"class": "nav-group-title"}))
-    for ident in ["appendix-c", "appendix-d", "appendix-e", "appendix-f"]:
+    for ident in ["appendix-c", "appendix-d", "appendix-e", "appendix-f", "appendix-g"]:
         nav.append(tag("a", soup.find(id=ident).get_text(), href="#" + ident))
 
     # Local-only reading controls: original diagrams/zoom retained; history off by default.
@@ -336,11 +383,11 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("\n".join(line.rstrip() for line in str(soup).splitlines()) + "\n", encoding="utf-8")
     text = " ".join(str(x).strip() for x in soup.find_all(string=True) if x.parent.name not in {"style", "script"} and str(x).strip())
-    report = {"output": str(args.output.resolve()), "sha256": hashlib.sha256(args.output.read_bytes()).hexdigest(), "reference_sha256": hashlib.sha256(original).hexdigest(), "html_bytes": args.output.stat().st_size, "visible_text_chars": len(text), "chinese_characters": len(re.findall(r"[\u4e00-\u9fff]", text)), "workflow_steps": len(soup.select(".workflow-step")), "workflow_subsections": len(soup.select(".workflow-step .current-detail h4")), "tables": len(soup.select("table")), "original_images_preserved": len(new_images), "svg_figures": len(soup.select("svg")), "local_source_links_checked": len(local_links), "broken_anchors": broken_anchors, "duplicate_ids": duplicate_ids, "lost_original_ids": lost_ids, "reference_unchanged": args.reference.read_bytes() == original, "new_provider_requests": 0, "local_links": local_links}
+    report = {"output": str(args.output.resolve()), "sha256": hashlib.sha256(args.output.read_bytes()).hexdigest(), "reference_sha256": hashlib.sha256(original).hexdigest(), "html_bytes": args.output.stat().st_size, "visible_text_chars": len(text), "chinese_characters": len(re.findall(r"[\u4e00-\u9fff]", text)), "workflow_steps": len(soup.select(".workflow-step")), "workflow_subsections": len(soup.select(".workflow-step .current-detail h4")), "tables": len(soup.select("table")), "original_images_preserved": len(new_images), "svg_figures": len(soup.select("svg")), "local_source_links_checked": len(local_links), "source_examples_checked": len(examples), "source_examples": examples, "broken_anchors": broken_anchors, "duplicate_ids": duplicate_ids, "lost_original_ids": lost_ids, "reference_unchanged": args.reference.read_bytes() == original, "new_provider_requests": 0, "local_links": local_links}
     if args.qa_output:
         args.qa_output.parent.mkdir(parents=True, exist_ok=True)
         args.qa_output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({k: v for k, v in report.items() if k != "local_links"}, ensure_ascii=False, indent=2))
+    print(json.dumps({k: v for k, v in report.items() if k not in {"local_links", "source_examples"}}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
