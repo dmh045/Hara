@@ -46,6 +46,8 @@ class FunctionValidator:
             if name in seen_names:
                 findings.append(self._finding(item, "duplicate_function", "功能名称重复"))
             seen_names.add(name)
+            if item.description.strip() and item.output.strip() == item.description.strip():
+                findings.append(self._finding(item, "output_repeats_description", "Output重复完整功能描述，需拆分为具体输出"))
             if not item.sources or not any(source.location and source.excerpt for source in item.sources):
                 findings.append(self._finding(item, "missing_source", "功能缺少可定位的来源和原文摘录"))
         return findings
