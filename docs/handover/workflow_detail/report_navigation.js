@@ -8,10 +8,9 @@
   const detailLabel = document.getElementById('reading-subsection');
   const header = document.querySelector('header');
   const desktop = matchMedia('(min-width: 781px)');
-  let points = [], frame = 0, activeEntry = null, activeLink = null, layoutChanged = true;
+  let points = [], frame = 0, activeEntry = null, activeLink = null;
 
   function measure() {
-    layoutChanged = true;
     const offset = Math.ceil(header.getBoundingClientRect().height);
     document.documentElement.style.setProperty('--header-height', `${offset}px`);
     points = [];
@@ -38,21 +37,21 @@
     }
     const point = points[Math.max(0, lo - 1)];
     const {entry, link} = point;
-    if (entry === activeEntry && link === activeLink && !layoutChanged) return;
-    layoutChanged = false;
-    if (activeEntry) activeEntry.classList.remove('is-current-section');
-    if (activeLink) {
-      activeLink.classList.remove('is-current');
-      activeLink.removeAttribute('aria-current');
+    if (entry !== activeEntry || link !== activeLink) {
+      if (activeEntry) activeEntry.classList.remove('is-current-section');
+      if (activeLink) {
+        activeLink.classList.remove('is-current');
+        activeLink.removeAttribute('aria-current');
+      }
+      entry.classList.add('is-current-section');
+      link.classList.add('is-current');
+      link.setAttribute('aria-current', 'location');
+      activeEntry = entry;
+      activeLink = link;
+      const chapter = entry.querySelector('.toc-chapter');
+      chapterLabel.textContent = chapter.textContent;
+      detailLabel.textContent = link === chapter ? '' : link.textContent;
     }
-    entry.classList.add('is-current-section');
-    link.classList.add('is-current');
-    link.setAttribute('aria-current', 'location');
-    activeEntry = entry;
-    activeLink = link;
-    const chapter = entry.querySelector('.toc-chapter');
-    chapterLabel.textContent = chapter.textContent;
-    detailLabel.textContent = link === chapter ? '' : link.textContent;
     const group = entry.closest('details');
     if (group) group.open = true;
 
@@ -83,7 +82,7 @@
   // The native links and source disclosures still work without JavaScript.
   const printOpened = [];
   window.addEventListener('beforeprint', () => {
-    for (const item of main.querySelectorAll('details.source-code:not([open])')) {
+    for (const item of main.querySelectorAll('details.source-code:not([open]),details.asset-index:not([open]),details.record-details:not([open])')) {
       printOpened.push(item);
       item.open = true;
     }

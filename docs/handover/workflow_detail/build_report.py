@@ -177,6 +177,27 @@ def main() -> None:
             disclosure.append(pre)
         for table in list(node.select("table")):
             table.wrap(soup.new_tag("div", attrs={"class": "table-scroll"}))
+        for block in list(node.select("blockquote")):
+            label = block.find("p")
+            title = label.get_text(strip=True) if label else ""
+            is_index = title == "实现与验证索引"
+            if not is_index and not title.endswith("保存细节"):
+                continue
+            label.decompose()
+            disclosure = soup.new_tag("details", attrs={"class": "asset-index" if is_index else "record-details"})
+            summary = f"实现与验证索引 · {len(block.select('a[href]'))} 处引用" if is_index else title
+            disclosure.append(tag("summary", summary))
+            for child in list(block.contents):
+                disclosure.append(child.extract())
+            block.replace_with(disclosure)
+        if prefix.startswith("wf-"):
+            topic = None
+            for child in list(node.contents):
+                if getattr(child, "name", None) == "h4":
+                    topic = soup.new_tag("section", attrs={"class": "workflow-topic", "aria-labelledby": child["id"]})
+                    child.insert_before(topic)
+                if topic is not None:
+                    topic.append(child.extract())
         return node
 
     def section(ident, title, content, source):
@@ -220,7 +241,7 @@ def main() -> None:
 
     soup.title.string = "HARA 开发与技术交接｜项目原理、完整流程与实现详解"
     soup.header.append(tag("b", "HARA / ENGINEERING HANDOVER"))
-    soup.header.append(tag("span", "五份输入最新修订结果 · 2026-11-24 · 代码 d6a400e"))
+    soup.header.append(tag("span", "五份输入最新修订结果 · 文档更新 2026-11-25 · 代码 d6a400e"))
     soup.header.append(tag("button", "打印 / 保存 PDF", onclick="window.print()", type="button"))
     style = soup.new_tag("style")
     style.string = (HERE / "report_style.css").read_text()
@@ -238,7 +259,7 @@ def main() -> None:
         diagram_nav.append(tag("a", label, href="#diagram-" + ident, **{"class": "subnav"}))
     nav.append(diagram_nav)
     cover = soup.new_tag("div", attrs={"class": "handover-cover"})
-    cover.append(tag("p", "文档核对：2026-11-24 ｜ 业务结果：2026-11-23完整修订 ｜ 生产代码：d6a400e", **{"class": "edition"}))
+    cover.append(tag("p", "文档更新：2026-11-25 ｜ 业务结果：2026-11-23完整修订 ｜ 生产代码：d6a400e", **{"class": "edition"}))
     cover.append(tag("p", "本报告仅呈现AVP、IPA-High、IPA-Main、RPA、rTPA五份输入的最新可核查结果，以及当前13步生产流程、17个代码实例和开发交接说明。五份结果来自已完成的全量与后续定向修订，不是本次又从头运行五次全量。"))
     cover.append(tag("p", "有数值、计算完成、条件性结果与工程批准分别标明。报告中的本机证据链接需对应运行资产；正文与图表可以离线阅读。本次文档更新不调用Provider、不重新评分。"))
     cover.append(tag("p", "文档从项目用途、输入边界和核心概念展开，以端到端示例贯通分析流程，再逐步说明数据变化、执行职责、实现代码和验证依据。业务解释、计算条件与维护细节相互对应，便于工程评审和开发交接。"))
@@ -289,7 +310,10 @@ def main() -> None:
             toc = soup.new_tag("div", attrs={"class": "step-toc"})
             for h in detail.select("h4"):
                 toc.append(tag("a", h.get_text(), href="#" + h["id"]))
-            card.append(toc)
+            outline = soup.new_tag("details", attrs={"class": "step-outline"})
+            outline.append(tag("summary", f"本步内容 · {len(toc.select('a'))} 个小节"))
+            outline.append(toc)
+            card.append(outline)
             if ident in step_diagrams:
                 drawing = diagram(step_diagrams[ident])
                 drawing.h3.name = "h4"
@@ -334,7 +358,7 @@ def main() -> None:
     section("appendix-f", "附录 D｜当前文档构建、验证与交付边界", source.read_text().split("\n", 1)[1], source)
     source = HERE / "04_代码实现与问题定位索引.md"
     section("appendix-g", "附录 E｜真实代码实例、问题定位与数据对象索引", source.read_text().split("\n", 1)[1], source)
-    main.append(tag("p", "HARA 开发与技术交接 · 五份输入最新结果版 · 2026-11-24", **{"class": "bottom"}))
+    main.append(tag("p", "HARA 开发与技术交接 · 五份输入最新结果版 · 文档更新 2026-11-25", **{"class": "bottom"}))
 
     location = soup.new_tag("div", attrs={"class": "reading-location"})
     location.append(tag("span", "当前位置"))
@@ -368,7 +392,7 @@ def main() -> None:
     script.string = (HERE / "report_navigation.js").read_text()
     soup.body.append(script)
 
-    manifest = {"revision": "detailed-readable-workflow-20261124", "production_code": CODE,
+    manifest = {"revision": "workflow-reading-flow-20261125", "production_code": CODE,
                 "documentation_base": DOCS, "result_date": "2026-11-23", "project_metrics": project_metrics,
                 "new_provider_requests": 0, "scope": "Existing full populations plus targeted revisions; no new full run or engineering approval.",
                 "document_sources": {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(source_files)}}
@@ -392,6 +416,8 @@ def main() -> None:
               "readable_figures": len(soup.select("figure.process-figure")), "concept_chapters": len(concepts),
               "navigation_chapters": len(nav.select(".toc-entry")), "navigation_targets": len(nav.select("[data-reading-target]")),
               "collapsible_source_examples": len(soup.select("details.source-code")),
+              "workflow_topics": len(soup.select(".workflow-topic")), "asset_indexes": len(soup.select("details.asset-index")),
+              "saved_record_disclosures": len(soup.select("details.record-details")),
               "source_examples_checked": len(examples), "source_examples": examples, "project_metrics": project_metrics,
               "broken_anchors": broken_anchors, "duplicate_ids": duplicate_ids, "missing_ids": missing_ids, "new_provider_requests": 0, "local_links": local_links}
     if args.qa_output:

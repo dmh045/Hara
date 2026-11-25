@@ -97,3 +97,27 @@ nav a.is-current{color:#0c555d;border-left:3px solid var(--teal);background:#d9e
 @media(max-width:780px){nav{top:0;height:auto;max-height:280px}.reading-location{position:relative}.term-legend{grid-template-columns:1fr}.source-code summary{padding:12px}.source-code pre{padding:14px}.process-figure>h4{font-size:18px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 @media print{.source-code{break-inside:auto}.source-code summary{color:inherit}.source-code pre,.source-code pre code{white-space:pre-wrap;overflow-wrap:anywhere;font-size:8pt}.source-code::details-content{content-visibility:visible}.term-legend>div{break-inside:avoid}}
+
+/* The workflow separates explanation, implementation lookup and local navigation. */
+.workflow-step{padding:28px 28px 36px}
+.workflow-topic{padding-top:24px;margin-top:48px;border-top:1px solid #dce7eb}
+.workflow-topic:first-child{margin-top:30px;border-top:0;padding-top:0}
+.workflow-topic>h4{font-size:20px;line-height:1.6;margin:0 0 26px;padding:0;border:0;color:#174c43}
+.workflow-topic>p{max-width:52em;margin:22px 0;line-height:2.05}
+.workflow-topic>ul,.workflow-topic>ol{max-width:52em;margin:22px 0 28px}
+.workflow-topic>ul>li,.workflow-topic>ol>li{margin:14px 0;line-height:1.95}
+.workflow-topic>.table-scroll{margin:28px 0 32px}
+.workflow-topic>.source-code{margin:26px 0 30px}
+:is(.asset-index,.record-details){margin:28px 0 8px;padding:0 18px;border-left:3px solid #b7cbd6;background:#f5f8fa;border-radius:0 7px 7px 0;font-size:13px;line-height:1.9}
+:is(.asset-index,.record-details)>summary,.step-outline>summary{cursor:pointer;padding:13px 0;font-size:13px;font-weight:600;color:#48697c}
+:is(.asset-index,.record-details)>summary::marker,.step-outline>summary::marker{color:#547d8b}
+:is(.asset-index,.record-details)>summary:focus-visible,.step-outline>summary:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
+:is(.asset-index,.record-details) ul{list-style:none;margin:0;padding:0 0 10px}
+:is(.asset-index,.record-details) li{margin:0;padding:10px 0;border-top:1px solid #e0e9ee}
+:is(.asset-index,.record-details) a{font-size:13px;line-height:1.9}
+:is(.asset-index,.record-details) p{margin:10px 0;font-size:13px}
+.step-outline{margin:22px 0 30px;border-bottom:1px solid #dce7eb}
+.step-outline .step-toc{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 20px;margin:0 0 18px}
+.step-outline .step-toc a{display:block;padding:7px 0;border:0;border-radius:0;background:none;font-size:13px;line-height:1.8}
+@media(max-width:780px){.workflow-step{padding:22px 16px 28px}.workflow-topic{margin-top:36px;padding-top:22px}.workflow-topic>h4{font-size:19px;margin-bottom:22px}.workflow-topic>p{line-height:1.95}.step-outline .step-toc{grid-template-columns:1fr}:is(.asset-index,.record-details){padding:0 12px}}
+@media print{.workflow-topic{margin-top:20px;padding-top:12px}.workflow-topic>h4{font-size:13pt;margin-bottom:12px}.workflow-topic>p{max-width:none;line-height:1.65;margin:10px 0}.step-outline{display:none}:is(.asset-index,.record-details){background:none;font-size:9pt;break-inside:auto}:is(.asset-index,.record-details) li{break-inside:avoid}:is(.asset-index,.record-details)::details-content{content-visibility:visible}:is(.asset-index,.record-details) a{font-size:9pt}}
