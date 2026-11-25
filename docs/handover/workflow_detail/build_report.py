@@ -159,7 +159,7 @@ def main() -> None:
                 anchor["title"] = "本机运行证据；异机需取得对应资产包"
             else:
                 relative = target.relative_to(ROOT)
-                version = DOCS if relative.parts[0] == "docs" else CODE
+                version = DOCS if relative.parts[0] in {"docs", "input"} else CODE
                 route = "tree/" if target.is_dir() else "blob/"
                 anchor["href"] = GITHUB + route + version + "/" + quote(str(relative), safe="/") + ("#" + parts.fragment if parts.fragment else "")
                 anchor["title"] = f"{relative} @ {version[:7]}"

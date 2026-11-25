@@ -5808,10 +5808,10 @@ git diff --check
 <td>历史文档注明时点</td>
 </tr>
 <tr>
-<td>原始产品资料</td>
-<td><code>input/</code>、<code>new reference/</code>及历史保存位置</td>
-<td>依据已有权限单独交接</td>
-<td>不按文件名猜版本；某些输入并未被 Git 跟踪</td>
+<td>五份固定产品资料</td>
+<td><code>input/</code>中的AVP DOCX与四份FSB PDF</td>
+<td>已按用户授权提交</td>
+<td>统一路径与完整SHA256见<a href="https://github.com/dmh045/Hara/blob/master/input/README.md" title="input/README.md @ master">输入资产说明</a>；本地重复副本不重复提交</td>
 </tr>
 <tr>
 <td>完整运行状态</td>
@@ -5833,7 +5833,8 @@ git diff --check
 </tr>
 </tbody>
 </table></div>
-<p><code>.gitignore</code>明确忽略 <code>.env</code>、虚拟环境、运行与输出目录。<strong>因此 Git clone 成功只证明拿到了程序，不证明拿到了五份输入和历史证据。</strong></p>
+<p>五份固定输入已与代码一同纳入版本管理，完整性可用<a href="https://github.com/dmh045/Hara/blob/master/input/SHA256SUMS" title="input/SHA256SUMS @ master"><code>input/SHA256SUMS</code></a>核对。
+<code>.gitignore</code>继续忽略<code>.env</code>、虚拟环境、运行与输出目录；历史checkpoint、响应、账本及方法快照仍需独立移交。</p>
 <h3 id="appendix-e-part-2">2. 最新五份完整报告映射</h3>
 <p>当前交接以 2026-11-23 的完整修订输出为准，位置为：</p>
 <p><a class="local-evidence" href="file:///Users/gordon/Hara/output/closure_continuation_20261123/release_reports" title="本机运行证据；异机需取得对应资产包"><code>output/closure_continuation_20261123/release_reports/</code></a></p>
@@ -5848,31 +5849,31 @@ git diff --check
 </thead>
 <tbody>
 <tr>
-<td>原 AVP DOCX</td>
+<td><a href="https://github.com/dmh045/Hara/blob/master/input/ItemDef.docx" title="input/ItemDef.docx @ master">原 AVP DOCX</a></td>
 <td><a class="local-evidence" href="file:///Users/gordon/Hara/output/closure_continuation_20261123/release_reports/HARA_AVP_%E5%AE%8C%E6%95%B4%E4%BF%AE%E8%AE%A2_20261123.xlsx" title="本机运行证据；异机需取得对应资产包">HARA_AVP_完整修订_20261123.xlsx</a></td>
 <td><code>release-avp-20261123</code></td>
 <td style="text-align: right;">1087 / 832</td>
 </tr>
 <tr>
-<td>FSB_IPA-High_2.2.pdf</td>
+<td><a href="https://github.com/dmh045/Hara/blob/master/input/FSB_IPA-High_2.2.pdf" title="input/FSB_IPA-High_2.2.pdf @ master">FSB_IPA-High_2.2.pdf</a></td>
 <td><a class="local-evidence" href="file:///Users/gordon/Hara/output/closure_continuation_20261123/release_reports/HARA_IPA-High_%E5%AE%8C%E6%95%B4%E4%BF%AE%E8%AE%A2_20261123.xlsx" title="本机运行证据；异机需取得对应资产包">HARA_IPA-High_完整修订_20261123.xlsx</a></td>
 <td><code>release-ipa-high-20261123</code></td>
 <td style="text-align: right;">560 / 519</td>
 </tr>
 <tr>
-<td>FSB_IPA-Main_2.2.pdf</td>
+<td><a href="https://github.com/dmh045/Hara/blob/master/input/FSB_IPA-Main_2.2.pdf" title="input/FSB_IPA-Main_2.2.pdf @ master">FSB_IPA-Main_2.2.pdf</a></td>
 <td><a class="local-evidence" href="file:///Users/gordon/Hara/output/closure_continuation_20261123/release_reports/HARA_IPA-Main_%E5%AE%8C%E6%95%B4%E4%BF%AE%E8%AE%A2_20261123.xlsx" title="本机运行证据；异机需取得对应资产包">HARA_IPA-Main_完整修订_20261123.xlsx</a></td>
 <td><code>release-ipa-main-20261123</code></td>
 <td style="text-align: right;">251 / 244</td>
 </tr>
 <tr>
-<td>FSB_RPA-High_2.2.pdf</td>
+<td><a href="https://github.com/dmh045/Hara/blob/master/input/FSB_RPA-High_2.2.pdf" title="input/FSB_RPA-High_2.2.pdf @ master">FSB_RPA-High_2.2.pdf</a></td>
 <td><a class="local-evidence" href="file:///Users/gordon/Hara/output/closure_continuation_20261123/release_reports/HARA_RPA_%E5%AE%8C%E6%95%B4%E4%BF%AE%E8%AE%A2_20261123.xlsx" title="本机运行证据；异机需取得对应资产包">HARA_RPA_完整修订_20261123.xlsx</a></td>
 <td><code>release-rpa-20261123</code></td>
 <td style="text-align: right;">174 / 173</td>
 </tr>
 <tr>
-<td>FSB_rTPA-High_2.2.pdf</td>
+<td><a href="https://github.com/dmh045/Hara/blob/master/input/FSB_rTPA-High_2.2.pdf" title="input/FSB_rTPA-High_2.2.pdf @ master">FSB_rTPA-High_2.2.pdf</a></td>
 <td><a class="local-evidence" href="file:///Users/gordon/Hara/output/closure_continuation_20261123/release_reports/HARA_rTPA_%E5%AE%8C%E6%95%B4%E4%BF%AE%E8%AE%A2_20261123.xlsx" title="本机运行证据；异机需取得对应资产包">HARA_rTPA_完整修订_20261123.xlsx</a></td>
 <td><code>release-rtpa-20261123</code></td>
 <td style="text-align: right;">317 / 303</td>
@@ -6762,4 +6763,4 @@ try:
     measure();
   });
 })();
-</script><script id="handover-evidence" type="application/json">{"revision": "workflow-reading-flow-20261125", "production_code": "d6a400e7010d62ff5dda56efd8215f23729bb3ec", "documentation_base": "master", "result_date": "2026-11-23", "project_metrics": [{"project": "AVP", "risk": 1087, "main": 832, "sg": 70, "c_known": 962, "c_missing": 125, "asil_known": 970, "asil_missing": 117}, {"project": "IPA-High", "risk": 560, "main": 519, "sg": 90, "c_known": 428, "c_missing": 132, "asil_known": 428, "asil_missing": 132}, {"project": "IPA-Main", "risk": 251, "main": 244, "sg": 42, "c_known": 213, "c_missing": 38, "asil_known": 213, "asil_missing": 38}, {"project": "RPA", "risk": 174, "main": 173, "sg": 51, "c_known": 163, "c_missing": 11, "asil_known": 163, "asil_missing": 11}, {"project": "rTPA", "risk": 317, "main": 303, "sg": 96, "c_known": 302, "c_missing": 15, "asil_known": 302, "asil_missing": 15}], "new_provider_requests": 0, "scope": "Existing full populations plus targeted revisions; no new full run or engineering approval.", "document_sources": {"docs/handover/01_架构与端到端流程.md": "0a3cc4f883eabe1acf7123ce9d11d3362210849dfe70363102ef2d34730853de", "docs/handover/02_输入抽取数据契约与方法治理.md": "1ae56bf2c2a19a71f685a01398806ff867f2387f75ac99b7d86326d388d76cd3", "docs/handover/03_场景物理与风险计算.md": "c662f9a26d01d4fac9e044b1ff0568704671c6d13e827d82a35b296d1cff2e16", "docs/handover/05_部署配置运行与恢复.md": "0f900aa6356de0cd3afc36c8b2b41f7e41de9964c3d4c7377ef7ff194c2ec9af", "docs/handover/06_开发测试与维护.md": "a159cb2476b65ea99ced0e880b5e191fe4aacfbacadd0ad747b7b5fd0d1adce3", "docs/handover/08_资产移交与接手清单.md": "c960769470d3bab97cb75c557dc0370c496464812c19e7c0f64f017851a84f1c", "docs/handover/workflow_detail/00_入口抽取与失效.md": "20dbdfc3fa7346c599d916402909250a8821c7947ab88dff42c4ee9a29b1ffff", "docs/handover/workflow_detail/01_场景组合驾驶员与物理.md": "16974022005c6f39a0f58fc77d57be35df086231ce764327a9d342031e1e3c71", "docs/handover/workflow_detail/02_因果评分与下游报告.md": "e8b57951c03aec4fd4a1735481c1937968c39e5c75dcfdc02df4f5469e032189", "docs/handover/workflow_detail/03_当前结果与交接说明.md": "a94a63d9d1f58000b520c04f9cf701ffc51a37736a8abfa235f64e6c2dcb9b4d", "docs/handover/workflow_detail/04_代码实现与问题定位索引.md": "7801f516aef996bbf5e39cb32b5cf013380a5a8dd1e7c1f723225dde5662f290", "docs/handover/workflow_detail/05_语义任务与执行职责.md": "d2e008f0560fb4bad28afe7dacf612a38aae6b7a9089551ab6f5bdba47904c37", "docs/handover/workflow_detail/06_项目概念与分析示例.md": "bdd528b35724042f16646243fad909eb11dca183dc9be4218db447f42b04402d", "docs/handover/workflow_detail/README.md": "16323c3a1bdbaebe1124eedcf56ee5c9b64f7e1203826f7475b5cf25e7d9017f", "docs/handover/workflow_detail/build_report.py": "c29e7da53355dd74ecfae2f6642b5ccc2276a3f47c82deba587587fec1c7b9b9", "docs/handover/workflow_detail/report_navigation.js": "6972df508a8b5b53f8bab50adc8ed1a5118a1ba722e645ce75bd05dcf329fb49", "docs/handover/workflow_detail/report_style.css": "6edc46e015479ae6eaaf06ab88d80e58048798785d78c01f23bae2f79161c88d", "docs/handover/workflow_detail/workflow_diagrams.html": "b5b429ab9c0ae3b5d573f7743c4cfe712b855cb59fd170e88a0fbb4099d862fb"}}</script></body></html>
+</script><script id="handover-evidence" type="application/json">{"revision": "workflow-reading-flow-20261125", "production_code": "d6a400e7010d62ff5dda56efd8215f23729bb3ec", "documentation_base": "master", "result_date": "2026-11-23", "project_metrics": [{"project": "AVP", "risk": 1087, "main": 832, "sg": 70, "c_known": 962, "c_missing": 125, "asil_known": 970, "asil_missing": 117}, {"project": "IPA-High", "risk": 560, "main": 519, "sg": 90, "c_known": 428, "c_missing": 132, "asil_known": 428, "asil_missing": 132}, {"project": "IPA-Main", "risk": 251, "main": 244, "sg": 42, "c_known": 213, "c_missing": 38, "asil_known": 213, "asil_missing": 38}, {"project": "RPA", "risk": 174, "main": 173, "sg": 51, "c_known": 163, "c_missing": 11, "asil_known": 163, "asil_missing": 11}, {"project": "rTPA", "risk": 317, "main": 303, "sg": 96, "c_known": 302, "c_missing": 15, "asil_known": 302, "asil_missing": 15}], "new_provider_requests": 0, "scope": "Existing full populations plus targeted revisions; no new full run or engineering approval.", "document_sources": {"docs/handover/01_架构与端到端流程.md": "0a3cc4f883eabe1acf7123ce9d11d3362210849dfe70363102ef2d34730853de", "docs/handover/02_输入抽取数据契约与方法治理.md": "1ae56bf2c2a19a71f685a01398806ff867f2387f75ac99b7d86326d388d76cd3", "docs/handover/03_场景物理与风险计算.md": "c662f9a26d01d4fac9e044b1ff0568704671c6d13e827d82a35b296d1cff2e16", "docs/handover/05_部署配置运行与恢复.md": "0f900aa6356de0cd3afc36c8b2b41f7e41de9964c3d4c7377ef7ff194c2ec9af", "docs/handover/06_开发测试与维护.md": "a159cb2476b65ea99ced0e880b5e191fe4aacfbacadd0ad747b7b5fd0d1adce3", "docs/handover/08_资产移交与接手清单.md": "5c84e0ae9a67272527c01dcb69785b5738723818f4d5a419387f4e4fd876cfdc", "docs/handover/workflow_detail/00_入口抽取与失效.md": "20dbdfc3fa7346c599d916402909250a8821c7947ab88dff42c4ee9a29b1ffff", "docs/handover/workflow_detail/01_场景组合驾驶员与物理.md": "16974022005c6f39a0f58fc77d57be35df086231ce764327a9d342031e1e3c71", "docs/handover/workflow_detail/02_因果评分与下游报告.md": "e8b57951c03aec4fd4a1735481c1937968c39e5c75dcfdc02df4f5469e032189", "docs/handover/workflow_detail/03_当前结果与交接说明.md": "a94a63d9d1f58000b520c04f9cf701ffc51a37736a8abfa235f64e6c2dcb9b4d", "docs/handover/workflow_detail/04_代码实现与问题定位索引.md": "7801f516aef996bbf5e39cb32b5cf013380a5a8dd1e7c1f723225dde5662f290", "docs/handover/workflow_detail/05_语义任务与执行职责.md": "d2e008f0560fb4bad28afe7dacf612a38aae6b7a9089551ab6f5bdba47904c37", "docs/handover/workflow_detail/06_项目概念与分析示例.md": "bdd528b35724042f16646243fad909eb11dca183dc9be4218db447f42b04402d", "docs/handover/workflow_detail/README.md": "16323c3a1bdbaebe1124eedcf56ee5c9b64f7e1203826f7475b5cf25e7d9017f", "docs/handover/workflow_detail/build_report.py": "b3df45583046a993b44f21364706fb0af9c4834795efcf303cf3f5dda874dcc6", "docs/handover/workflow_detail/report_navigation.js": "6972df508a8b5b53f8bab50adc8ed1a5118a1ba722e645ce75bd05dcf329fb49", "docs/handover/workflow_detail/report_style.css": "6edc46e015479ae6eaaf06ab88d80e58048798785d78c01f23bae2f79161c88d", "docs/handover/workflow_detail/workflow_diagrams.html": "b5b429ab9c0ae3b5d573f7743c4cfe712b855cb59fd170e88a0fbb4099d862fb"}}</script></body></html>
