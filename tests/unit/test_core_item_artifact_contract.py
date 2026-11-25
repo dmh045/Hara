@@ -480,3 +480,105 @@ def test_candidate_cache_is_isolated_from_validated_cache() -> None:
         assert cache.load_candidate_with_status(key) == (payload, "hit")
     finally:
         candidate_path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_copied_function_description_is_rejected_on_live_and_cached_parse(cached):
+    artifact = _current_item_artifact()
+    invalid = _payload_with_function_names(EXPLICIT_FUNCTION_NAMES)
+    function = invalid["functions"][0]
+    function["description"] = "MDC发送制动请求并控制车辆减速"
+    function["output"] = function["description"]
+    client = _Client([] if cached else [invalid])
+    candidate = LLMResponse(data=invalid, model="offline") if cached else None
+    with pytest.raises(ValueError, match="F-001:output_repeats_description"):
+        ItemArtifactExtractionAgent(client).extract(
+            artifact.text, artifact.source_id, artifact.blocks,
+            candidate_response=candidate,
+        )
+    assert len(client.requests) == (0 if cached else 1)
+
+
+def _avp_semantic_payload(artifact):
+    """Scripted source sample for role/field transport, not a new Provider result."""
+    payload = _payload_with_function_names(EXPLICIT_FUNCTION_NAMES)
+    rows = {block.location: block for block in artifact.blocks}
+    outputs = [
+        "制动扭矩", "驱动扭矩", "转向扭矩", "功能开启", "功能激活",
+        "功能退出", "功能关闭", "驻车制动", "仪表或中控显示图像或文字信息",
+    ]
+    for function, output in zip(payload["functions"], outputs):
+        function["output"] = output
+        function["description"] = rows[function["source_location"]].text.split(" | ", 2)[2]
+    activation = payload["functions"][4]
+    activation.update(
+        preconditions=["Standby状态下"],
+        triggers=["任务开始指令下发"],
+        odd_constraints=["控车范围0-7kph"],
+        fallback_behavior="系统进failure功能被禁用，提示驾驶员摄像头失效。",
+    )
+    payload["functions"][0]["consequences"] = ["减速"]
+    return payload
+
+
+def test_avp_source_semantics_remain_locatable_without_becoming_extra_functions():
+    artifact = _current_item_artifact()
+    environmental_labels = {
+        "停车场", "上下坡", "停车位类型", "停车位样式", "标线车位类型", "空间车位类型",
+        "标线车位颜色", "天气", "雨天", "雾霾", "光照度",
+    }
+    environment = [block for block in artifact.blocks
+                   if block.text.split(" | ")[0] in environmental_labels]
+    transitions = [block for block in artifact.blocks if block.text.startswith("跳转")]
+    fallbacks = [block for block in artifact.blocks
+                 if "系统进failure功能被禁用" in block.text]
+    assert len(environment) == 11
+    assert len(transitions) >= 10
+    assert len(fallbacks) >= 1
+    assert any("上坡15%，下坡15%" in block.text for block in environment)
+    assert all(block.kind == "table_row" and block.location for block in
+               [*environment, *transitions, *fallbacks])
+    # Source conditions remain separate from the explicit nine-function list.
+    assert not environmental_labels.intersection(EXPLICIT_FUNCTION_NAMES)
+    assert not any(name in {block.text for block in transitions} for name in EXPLICIT_FUNCTION_NAMES)
+
+
+def test_avp_semantic_fields_survive_production_extraction_and_state_roundtrip():
+    from hara_agent.workflow.state import HARAState
+    from dataclasses import asdict
+
+    artifact = _current_item_artifact()
+    payload = _avp_semantic_payload(artifact)
+    for field in ("preconditions", "triggers", "odd_constraints", "fallback_behavior"):
+        value = payload["functions"][4][field]
+        assert all(text in artifact.text for text in ([value] if isinstance(value, str) else value))
+    client = _Client([payload])
+    facts, functions, audit = ItemArtifactExtractionAgent(client).extract(
+        artifact.text, artifact.source_id, artifact.blocks,
+    )
+    assert len(functions) == 9
+    assert [function.name for function in functions] == EXPLICIT_FUNCTION_NAMES
+    expected = {item["function_id"]: item for item in payload["functions"]}
+    locations = {block.location: block for block in artifact.blocks}
+    for function in functions:
+        assert len(function.name) <= 40
+        assert function.output and function.description != function.output
+        for field in ("preconditions", "triggers", "odd_constraints", "consequences"):
+            assert isinstance(getattr(function, field), list)
+            assert getattr(function, field) == expected[function.function_id][field]
+        assert function.fallback_behavior == (expected[function.function_id]["fallback_behavior"] or "")
+        assert function.sources
+        assert all(source.location in locations and source.excerpt in locations[source.location].text
+                   for source in function.sources)
+        assert function.sources[0].location == expected[function.function_id]["source_location"]
+    assert functions[4].preconditions and functions[4].triggers and functions[4].fallback_behavior
+    assert functions[0].consequences == ["减速"]
+    # Unspecified source conditions stay empty, rather than inventing triggers.
+    assert functions[0].preconditions == [] and functions[0].triggers == []
+    state = HARAState(run_id="avp-semantics", functions=[asdict(item) for item in functions],
+                      item_definition={"typed": asdict(facts)})
+    restored = HARAState.read_committed(json.loads(json.dumps(state.to_dict())))
+    assert restored.functions == state.functions
+    assert restored.item_definition == state.item_definition
+    assert audit["function_source_guard"]["expected_count"] == 9
+    assert [request.task for request in client.requests] == ["extract_core_item_artifacts"]
