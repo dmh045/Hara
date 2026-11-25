@@ -1,5 +1,7 @@
 # HARA V13 FuSa YAML 与模板对账记录
 
+> 历史设计与核验记录：本文中的“当前”、缺口和运行结论仅对应下述日期或提交。现行实现与使用方式见[开发交接手册](../handover/README.md)；历史记录索引见[文档目录](../README.md#历史开发与验证记录)。
+
 日期：2026-09-01  
 活动模板：`references/HARA_Template_AI_20260327.xlsx`  
 模板哈希：`f3d2e4f7a16cbfda2d9e30c5f437ed94bb1b51affd635dc73215b8d307fb87ef`

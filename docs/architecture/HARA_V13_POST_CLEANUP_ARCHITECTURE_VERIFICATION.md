@@ -1,5 +1,7 @@
 # HARA_V13 Post-Cleanup Architecture Verification Report
 
+> 历史设计与核验记录：本文中的“当前”、缺口和运行结论仅对应下述日期或提交。现行实现与使用方式见[开发交接手册](../handover/README.md)；历史记录索引见[文档目录](../README.md#历史开发与验证记录)。
+
 日期：2026-08-21  
 审阅基线：`68c0bfd`（Runtime Cleanup + Cutover），当前工作树 HEAD 为 `77fc921`。  
 验证原则：先验证能力与调用链，不恢复旧 Runtime、不修改生产计算逻辑。
