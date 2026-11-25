@@ -6,11 +6,10 @@ from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
-import os
 from pathlib import Path
-import tempfile
 from typing import Any
 
+from hara_agent.infrastructure.atomic_files import write_json_atomic as _write_json
 from hara_agent.contracts import MethodContract
 from hara_agent.infrastructure.llm.provider_budget import ProviderAttemptBudgetExceeded
 from hara_agent.models import (
@@ -28,22 +27,6 @@ from hara_agent.services.semantic import (
 from hara_agent.workflow.checkpoints import CheckpointRepository
 from hara_agent.workflow.review_artifacts import ReviewArtifactWriter
 from hara_agent.workflow.state import HARAState, WorkflowStage
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", newline="\n", dir=path.parent,
-        prefix=f".{path.stem}-", suffix=".tmp", delete=False,
-    ) as stream:
-        json.dump(payload, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-        temporary = Path(stream.name)
-    try:
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _sha256(path: Path) -> str:

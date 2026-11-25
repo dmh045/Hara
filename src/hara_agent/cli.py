@@ -7,12 +7,14 @@ import json
 import os
 from pathlib import Path
 import re
-import tempfile
 from types import SimpleNamespace
 
 from hara_agent.application import HARAApplication
 from hara_agent.config import RunConfig
 from hara_agent.config import LLMConfig, load_local_env
+from hara_agent.infrastructure.atomic_files import (
+    write_json_atomic as _write_json_atomic, write_text_atomic as _write_text_atomic,
+)
 from hara_agent.contracts import (
     CompileStatus, TemplateRole, TemplateRoleConfirmation,
 )
@@ -51,37 +53,6 @@ def _role_compiler() -> TemplateRoleCompiler:
     return TemplateRoleCompiler(
         manifest_store=TemplateRoleManifestStore(manifest_root)
     )
-
-
-def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", newline="\n", dir=path.parent,
-        prefix=f".{path.stem}-", suffix=".tmp", delete=False,
-    ) as stream:
-        json.dump(payload, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-        temporary = Path(stream.name)
-    try:
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def _write_text_atomic(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", newline="\n", dir=path.parent,
-        prefix=f".{path.stem}-", suffix=".tmp", delete=False,
-    ) as stream:
-        stream.write(value)
-        temporary = Path(stream.name)
-    try:
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _parse_role_selections(values: list[str]) -> dict[str, dict[str, str]]:
